@@ -770,7 +770,7 @@ pub(crate) struct ControlAvailability {
 }
 
 /// Reserved transport namespace. Domain resources never contain this rewrite.
-pub(crate) const PUBLICATION_PREFIX: &str = "tilo-ui-bound:v1:";
+pub(crate) const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
 const MAX_PUBLICATION_ALIAS: usize = 4096;
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,
@@ -1986,12 +1986,8 @@ impl OrdinaryConfirmation {
             return Err(Self::stale());
         }
         let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, _) = unique_control_spec(&resources, &address)?;
-        let context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         let snapshot = Self::snapshot(
             &resources,
             &address,
@@ -2556,11 +2552,8 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
-        let mut context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let mut context =
+            spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
@@ -3910,6 +3903,13 @@ impl ActionFrame {
         if doc.pending_ops() == 0 {
             return doc.get_heads();
         }
+        tilo_resource::history::commit_stamped_with_message(doc, self.step_message());
+        doc.get_heads()
+    }
+
+    /// The change message the open step commits with: the action it belongs
+    /// to, or `None` when no action is open to name it.
+    fn step_message(&self) -> Option<String> {
         let context = if let Some(operation) = self
             .operations
             .last()
@@ -3927,11 +3927,7 @@ impl ActionFrame {
                 (None, pending) => pending.as_ref().map(|pending| pending.context.clone()),
             }
         };
-        tilo_resource::history::commit_stamped_with_message(
-            doc,
-            context.and_then(|context| context.in_step().change_message()),
-        );
-        doc.get_heads()
+        context.and_then(|context| context.in_step().change_message())
     }
 
     /// Write as `actor` from here on. What is pending was written as the
@@ -4356,6 +4352,56 @@ impl CallbackBinding {
     /// Immediate action boundary inside the already admitted owned frame. The
     /// explicit Doc witness is checked before any frame access; no references
     /// are recovered from ACTIVE.
+    /// [`Self::close_open_step`], but only when an open action names the
+    /// step: an unnamed change is one the identity service refuses to sign,
+    /// so a step nothing names stays open for its own boundary. Whether the
+    /// document has no unfinished edit afterwards.
+    pub(crate) fn close_named_step(
+        &self,
+        outer: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        // Edits written outside any action carry no context; entering the
+        // document's frame would commit them as they are, unnamed.
+        let nameable = self
+            .records
+            .with_action_state(&self.checkout.id, |doc, _, state| {
+                doc.pending_ops() == 0 || state.pending.is_some()
+            })
+            .map_err(BoundDispatchError::Record)?;
+        if !nameable {
+            return Ok(false);
+        }
+        self.with_document(outer, |doc, _| {
+            if doc.pending_ops() == 0 {
+                return self.finish_action_boundary(doc).map(|()| true);
+            }
+            let named = self.with_active_frame(doc, |frame| frame.step_message().is_some())?;
+            if named {
+                self.finish_action_boundary(doc)?;
+            }
+            Ok(named)
+        })?
+    }
+
+    fn with_active_frame<R>(
+        &self,
+        doc: &AutoCommit,
+        read: impl FnOnce(&ActionFrame) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        let active = self.check_record()?;
+        if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {
+            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+        }
+        let handle = ACTIVE
+            .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
+            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        let owned = handle.borrow();
+        let frame = owned
+            .as_ref()
+            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        Ok(read(frame))
+    }
+
     fn finish_action_boundary(&self, doc: &mut AutoCommit) -> Result<(), BoundDispatchError> {
         let active = self.check_record()?;
         if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {

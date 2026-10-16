@@ -13,14 +13,18 @@ name = "tilo-room-load"
 path = "src/main.rs"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false }
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+# The relay as the room service builds it, agents included: a governor
+# authoring the seeded chat is one of its agents-only host actions.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "agents"] }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-automerge-isolate.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 collab-types = { path = "../../collab/collab-types" }
+automerge.workspace = true
+tilo-automerge.workspace = true
 tokio = { workspace = true, features = ["full"] }
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

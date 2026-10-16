@@ -1,6 +1,7 @@
 """tools/extensions/resolve.py without network, dnf or rpm.
 
-The real run happens in extension-manifests.yml, inside each published image.
+The real run happens in t's extension-manifests-{x86_64,aarch64} checks
+(tools/ci/publish/extension-manifests.sh), inside each published image.
 """
 
 import datetime

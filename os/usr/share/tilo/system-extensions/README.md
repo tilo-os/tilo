@@ -115,8 +115,9 @@ image, because the image decides which bytes are acceptable:
    manifest that pins every artifact by URL, exact byte length and SHA-256, and
    the exact base it was resolved for. CI signs the manifest bytes with the
    extension-manifest key: a non-exportable KMS key
-   (`alias/tilo-extension-manifests`) that only `extension-manifests.yml` on
-   main can use, separate from the OS release key. Its public half is
+   (`alias/tilo-extension-manifests`) that only t's
+   `publish-extension-manifests` check on main can use, separate from the OS
+   release key. Its public half is
    `keys/extensions.pub`.
 3. The device fetches the manifest and its detached signature, verifies the
    signature against `/usr/share/tilo/extensions.pub`, and only that key,
@@ -262,8 +263,8 @@ pinned sizes are what is enforced).
 A `sysext-raw` part is exactly one artifact (up to 6 GiB) pinned by URL, length
 and SHA-256 in a manifest signed by the same extension-manifest key as every
 other manifest. `tools/extensions/sysext_image.py manifest` writes it from the
-descriptor the build printed; `extension-manifests.yml` pins it for each
-promoted image and `publish.sh` signs and publishes it unchanged. On the device
+descriptor the build printed; `tools/ci/publish/extension-manifests.sh` pins
+it for each promoted image and `publish.sh` signs and publishes it unchanged. On the device
 the helper verifies the signature, downloads and hashes the file, and activation
 (every boot, offline) re-hashes it and links it into `/var/lib/extensions` as
 `<part>.raw` (copying when `/var/lib/extensions` and the state directory are
@@ -317,10 +318,20 @@ URL, upstream signature, license and base constraint, then compute:
 python3 tools/extensions/resolve.py content-sha256 media-codecs.json
 ```
 
-Dispatch the existing main-only `extension-manifests.yml` workflow with that
-exact digest-qualified `images` input, `publish=false` and
-`expected_content_sha256` set to the reviewed hash. It re-resolves using the
-same production recipe and rejects any material change before signing. Only
+Dispatch t's extension-manifest checks on main with that exact
+digest-qualified image and the reviewed hash:
+
+```sh
+t dispatch publish-extension-manifests \
+  --input images=registry.tilo.so/tilo/tilo@sha256:… \
+  --input expected_content_sha256=… \
+  --input publish=false
+```
+
+It re-resolves using the same production recipe and rejects any material
+change before signing; with `publish=false`,
+`tools/ci/publish/extension-manifests.sh` signs without publishing
+(`publish.sh --sign-only`). Only
 `created` and `revision` timestamps are excluded from this hash; the image,
 RPM base, complete artifact metadata, URLs, hashes, licenses and requirements
 are included. One explicit image and one native lane are required.
@@ -329,14 +340,15 @@ The existing extension-manifest KMS role signs through temporary OIDC/STS
 credentials. The same image trust key verifies the resulting detached
 signature. No trust key, persistent grant, RPM payload, package-registry upload,
 latest-feed update or client activation is created. The signed manifest and
-signature are retained only as CI artifacts. Qualification must use the real
+signature exist only in that CI run. Qualification must use the real
 consumer's signature, upstream-package and compatibility checks before a
 synthetic encode/decode or encrypted-session test; a test key is not evidence
 of image admission. A passing HEVC or VP8 test does not qualify H.264 or AirPlay.
 
-Later promotion is a separate explicit dispatch with `publish=true`, the same
-immutable image and reviewed content hash. Re-resolution or copy drift must
-fail rather than silently publishing an untested package set. Revision and
+Later promotion is a separate explicit dispatch of the same immutable image
+and the same reviewed hash with `publish=true` (the default), so
+re-resolution or copy drift fails rather than silently publishing an untested
+package set. Revision and
 creation time may advance; archive the exact signed bytes used by each test.
 The publisher rechecks the copied manifest immediately before signing. Any
 latest-feed publication can affect existing opted-in devices on the matching

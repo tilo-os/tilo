@@ -119,10 +119,6 @@ pub struct DropboxSource {
     backoff_until: Arc<Mutex<Option<Instant>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock_recover()
-}
-
 /// A Dropbox id (`id:…`); anything else cannot name an item.
 fn is_dropbox_id(id: &ItemId) -> bool {
     id.as_str().len() > 3 && id.as_str().starts_with("id:")
@@ -189,7 +185,7 @@ impl DropboxSource {
     }
 
     fn paths(&self) -> MutexGuard<'_, Paths> {
-        lock(&self.paths)
+        self.paths.lock_recover()
     }
 
     /// The API `path` argument for an item.
@@ -617,7 +613,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn wait(&self, cursor: Option<&Cursor>, timeout: Duration) -> Result<Wait> {
-        let backing_off = *lock(&self.backoff_until);
+        let backing_off = *self.backoff_until.lock_recover();
         if let Some(until) = backing_off {
             let now = Instant::now();
             if now < until {
@@ -649,7 +645,7 @@ impl CloudSource for DropboxSource {
             .get("backoff")
             .and_then(Value::as_u64)
             .map(Duration::from_secs);
-        *lock(&self.backoff_until) = backoff.and_then(|b| Instant::now().checked_add(b));
+        *self.backoff_until.lock_recover() = backoff.and_then(|b| Instant::now().checked_add(b));
         let changed = value
             .get("changes")
             .and_then(Value::as_bool)

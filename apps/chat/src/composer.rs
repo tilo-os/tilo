@@ -117,11 +117,6 @@ impl RichTextSource for DraftField {
         }
         self.field.apply(edits, edit)
     }
-
-    // Chat keys collaborators' carets by draft itself (`composer_presence`).
-    fn presence_keys(&self) -> Option<PresenceKeyFn> {
-        None
-    }
 }
 
 /// The source behind Chat's one retained composer. Ordinary channels point

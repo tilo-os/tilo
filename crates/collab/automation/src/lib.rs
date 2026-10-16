@@ -74,6 +74,8 @@ pub const SHORTCUT_RUN_ACTION: &str = "run";
 pub const AGENT_APP_ID: &str = "so.tilo.agent";
 /// Resource kind carrying the transform actions.
 pub const AGENT_TRANSFORM_KIND: &str = "agent.transform";
+/// The one resource the agent publishes its transforms on.
+pub const AGENT_TRANSFORM_RESOURCE: &str = "agent.transform:default";
 /// Condense the input into a short text.
 pub const AGENT_SUMMARISE_ACTION: &str = "summarise";
 /// Pull a JSON value of a given schema out of the input.
@@ -82,6 +84,9 @@ pub const AGENT_EXTRACT_ACTION: &str = "extract";
 pub const AGENT_CLASSIFY_ACTION: &str = "classify";
 /// Answer a free-form prompt about the input.
 pub const AGENT_FREEFORM_ACTION: &str = "freeform";
+/// Take a person's request to their agent: answer it when it asks for
+/// information, or name the work when it asks for something to be done.
+pub const AGENT_RESPOND_ACTION: &str = "respond";
 
 /// The stable resource id under which shortcut `id` is published.
 #[must_use]

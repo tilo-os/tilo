@@ -140,6 +140,7 @@ impl MediaCache {
     ///
     /// Returns an error for empty bytes, a failed local directory/object write,
     /// or a failed atomic manifest replacement.
+    #[cfg(test)]
     pub fn install_bytes(
         &mut self,
         root: &Path,

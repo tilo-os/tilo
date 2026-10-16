@@ -38,6 +38,7 @@ runtime-client = ["dep:tilo-rt"]
 server = [
     "dep:tilo-clock",
     "dep:accounts",
+    "dep:account-custody",
     "dep:reqwest",
     "dep:hyper",
     "dep:hyper-util",
@@ -57,8 +58,9 @@ host-backend = ["server"]
 local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The authenticated fetch client is portable; native provider plumbing is gated below.
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-tilo-lock = { path = "../../platform/tilo-lock" }
 hex.workspace = true
 
 serde.workspace = true
@@ -77,9 +79,11 @@ agent-provider-config = { path = "../provider-config" }
 # Native descriptor transport is available to clients; server dependencies
 # below are activated only by explicit feature selection.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tilo-clock = { optional = true, path = "../../platform/tilo-clock" }
-accounts = { optional = true, path = "../../system/accounts" }
-reqwest = { optional = true, workspace = true, features = ["json"] }
+tilo-clock = { path = "../../platform/tilo-clock", optional = true }
+accounts = { path = "../../system/accounts", optional = true }
+# Custody refreshes the Google grant sealed by Settings; no API key is stored.
+account-custody = { path = "../../system/account-custody", optional = true }
+reqwest = { workspace = true, features = ["json"], optional = true }
 hyper = { optional = true, version = "1", features = ["server", "http1"] }
 hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
 http-body-util = { version = "0.1", optional = true }

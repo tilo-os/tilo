@@ -174,9 +174,11 @@ fn proof(
     if originals.is_empty() {
         return Ok(StoredReservation::default());
     }
-    let proof =
-        view.peer
-            .reserve_local_recovery(originals, None, view.device().device_public_key)?;
+    let proof = view.peer.outbox().reserve_local_recovery(
+        originals,
+        None,
+        view.device().device_public_key,
+    )?;
     if proof.entries() > MAX_ENTRIES || proof.max_encoded_bytes() > MAX_BYTES {
         return Err("native outgoing cannot reserve complete causal recovery".into());
     }

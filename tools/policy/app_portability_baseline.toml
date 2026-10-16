@@ -142,6 +142,9 @@ R1 = 41
 R2 = 16
 R3 = 3
 
+[apps.thumbnails]
+D2 = 1
+
 [apps.totp]
 D2 = 1
 
@@ -184,7 +187,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 250
-W1 = 14
+R1 = 251
+W1 = 13
 W2 = 2
 W3 = 57

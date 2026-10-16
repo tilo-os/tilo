@@ -159,13 +159,23 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: Value,
+    /// Opaque provider extensions, including Gemini thought signatures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<Value>,
 }
 
 impl ToolCall {
     /// # Errors
     /// Rejects missing identifiers, missing names, and non-object arguments.
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self.id.trim().is_empty() || self.name.trim().is_empty() || !self.input.is_object() {
+        if self.id.trim().is_empty()
+            || self.name.trim().is_empty()
+            || !self.input.is_object()
+            || self
+                .extra_content
+                .as_ref()
+                .is_some_and(|extra| !extra.is_object())
+        {
             return Err(ModelError::invalid(
                 "tool calls need an id, a name and an argument object",
             ));
@@ -683,6 +693,7 @@ mod tests {
                             id: (*id).into(),
                             name: "invoke".into(),
                             input: json!({"enabled": false, "count": 2}),
+                            extra_content: None,
                         })
                     })
                     .collect(),

@@ -263,12 +263,6 @@ impl Widget for Probe {
                 &FollowUp,
                 tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
             ),
-            8 => {
-                let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());
-                self.actions
-                    .dispatch_optimistic(doc.document_mut(), &mut queue, "bound.apply", &FollowUp)
-                    .unwrap();
-            }
             9 | 10 => {
                 assert_eq!(
                     self.actions
@@ -1616,9 +1610,9 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         }
     }
 
-    // Case `task4_compound_contextual_optimistic_noop_and_failed_producers`.
+    // Case `task4_compound_contextual_noop_and_failed_producers`.
     {
-        for mode in [7, 8, 9, 10] {
+        for mode in [7, 9, 10] {
             COMPOUND_MODE.set(mode);
             let mut fixture = ActionFixture::with_same_record(true);
             let a = fixture.bindings[0].clone();

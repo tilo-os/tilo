@@ -81,6 +81,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
             .with_current(fixture.room, |view| {
                 let now = std::time::SystemTime::now();
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(fixture.certificate.device_public_key, now)?;
                 let member = view
                     .peer()
@@ -457,7 +458,12 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
                 .len(),
                 130
             );
-            assert!(view.peer().workspace_effect_history_root()?.is_some());
+            assert!(
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root()?
+                    .is_some()
+            );
             Ok(())
         })
         .unwrap();

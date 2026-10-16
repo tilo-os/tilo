@@ -556,13 +556,14 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     // Every member device of the fixture is this person's: the Deny names
     // the person, so it withholds the record from all of them.
     let devices: std::collections::BTreeSet<[u8; 32]> = peer
+        .governance()
         .governed_access(now)
         .unwrap()
         .member_devices
         .into_iter()
         .collect();
     assert!(devices.contains(&source));
-    let open = peer.withheld_record_readers(now, &[]).unwrap();
+    let open = peer.governance().withheld_record_readers(now, &[]).unwrap();
     assert!(open.withheld.is_empty());
     assert!(open.unrouted.is_empty());
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
@@ -600,7 +601,10 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
         collab_types::ChannelRoute::new("app", "notes"),
     ];
     for known in [&[][..], &routes[..]] {
-        let readers = peer.withheld_record_readers(now, known).unwrap();
+        let readers = peer
+            .governance()
+            .withheld_record_readers(now, known)
+            .unwrap();
         let payroll = collab_types::document_channel_id("app", &room_id, "payroll");
         assert_eq!(readers.withheld.get(&payroll), Some(&devices));
         assert!(

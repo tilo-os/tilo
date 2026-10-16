@@ -5,8 +5,10 @@
 #
 # usage: oci-build.sh CONTEXT CONTAINERFILE OUT [--build-arg K=V]...
 #
-# Runs in the buildah image as root in t's sandbox: chroot isolation and the vfs driver need no
-# daemon, no user namespace of their own and no writable root.
+# Runs in the buildah image as root in a micro-VM step (isolation = "vm"): chroot isolation needs
+# no daemon, and the overlay driver works on the step's own ext4 scratch disk. vfs, which needs
+# nothing, copies every layer whole, so an image FROM the multi-GB CI builder or the bootc base
+# filled the step's memory and disk.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 context=${1:?usage: oci-build.sh CONTEXT CONTAINERFILE OUT [buildah args]}
@@ -14,10 +16,11 @@ containerfile=${2:?}
 out=${3:?}
 shift 3
 store=$scratch/buildah
-export STORAGE_DRIVER=vfs BUILDAH_ISOLATION=chroot
+driver=${TILO_BUILDAH_DRIVER:-overlay}
+export STORAGE_DRIVER=$driver BUILDAH_ISOLATION=chroot
 # The image's own storage.conf names an additional image store under its read-only root.
 mkdir -p "$store"
-printf '[storage]\ndriver = "vfs"\n' > "$store/storage.conf"
+printf '[storage]\ndriver = "%s"\n' "$driver" > "$store/storage.conf"
 export CONTAINERS_STORAGE_CONF=$store/storage.conf
 b() { buildah --root "$store/root" --runroot "$store/run" "$@"; }
 mkdir -p "$out"

@@ -7,14 +7,12 @@
 #   legacy-guest.sh agent OUT           build the guest agent into OUT (CI builder)
 #   legacy-guest.sh build AGENT OUT     build the guest image with that agent, install it to a
 #                                       disk, boot it until the agent serves, and wrap the disk
-#                                       into OUT/image.oci.tar (a privileged x86_64 node, as root)
+#                                       into OUT/image.oci.tar (as root in an x86_64 micro-VM
+#                                       step); legacy-guest-e2e.sh, beside this script, tests it
 #   legacy-guest.sh binaries OUT        the shell under test (debug, agent-control), tilo-legacy
 #                                       and the relay's integration tests (CI builder)
-#   legacy-guest.sh e2e GUEST BINARIES IMAGE
-#                                       boot GUEST's disk through tilo-legacy against a headless
-#                                       shell (os/dev/legacy-vm-e2e.sh) in the CI builder IMAGE,
-#                                       privileged with KVM (a privileged x86_64 node, as root)
-#   legacy-guest.sh release OUT         publish the signed OUT and write OUT/pins.env (skopeo)
+#   legacy-guest.sh pins OUT            after publish-legacy-guest published OUT, write
+#                                       OUT/pins.env: its reference and the inputs it was built from
 #   legacy-guest.sh pin                 write os/legacy-guest-snapshot.env from stable's pins
 #                                       (T_POINTER_LEGACY_GUEST) when main builds the same guest
 set -euo pipefail
@@ -41,7 +39,7 @@ case ${1:-} in
     out=${3:?}
     [[ $(uname -m) == x86_64 ]] || die 'the legacy guest is built on x86_64'
     dnf install -y --setopt=install_weak_deps=False btrfs-progs dosfstools e2fsprogs edk2-ovmf \
-      fuse-overlayfs jq python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
+      fuse-overlayfs jq podman python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
     # The VM's /dev is static; the kernel's own loop and FUSE nodes appear with devtmpfs.
     modprobe fuse 2>/dev/null || true
     modprobe loop 2>/dev/null || true
@@ -88,32 +86,9 @@ case ${1:-} in
     test -x "$relay_tests"
     install -D -m 0755 "$relay_tests" "$out/relay-it"
     ;;
-  e2e)
-    guest=${2:?usage: legacy-guest.sh e2e GUEST BINARIES IMAGE}
-    binaries=${3:?}
-    image=${4:?}
-    modprobe vhost_vsock 2>/dev/null || echo 'no vhost_vsock: the test uses vhost-device-vsock'
-    test -c /dev/kvm
-    work=$scratch/legacy-e2e
-    rm -rf "$work"
-    mkdir -p "$work/e2e/disk" "$work/e2e/bin" "$work/e2e/artifacts"
-    # The disk is the single layer of the wrapped image.
-    id=$(podman pull --quiet "oci-archive:$guest/image.oci.tar")
-    container=$(podman create "$id" /disk.qcow2)
-    podman cp "$container:/disk.qcow2" "$work/e2e/disk/disk.qcow2"
-    podman rm "$container" >/dev/null
-    cp "$binaries"/{shell,tilo-legacy,relay-it} "$work/e2e/bin/"
-    cp -a "$repo_root/." "$work/src"
-    mv "$work/e2e" "$work/src/e2e"
-    chmod -R a+rwX "$work/src/e2e"
-    devices=(--device /dev/kvm)
-    [[ ! -c /dev/vhost-vsock ]] || devices+=(--device /dev/vhost-vsock)
-    podman run --rm --privileged --network host "${devices[@]}" -v "$work/src:/w" -w /w "$image" \
-      bash os/dev/legacy-vm-e2e.sh
-    ;;
-  release)
-    out=${2:?usage: legacy-guest.sh release OUT}
-    bash tools/ci/publish/oci-publish.sh release "$repository" "$out" 'x86_64-{commit}'
+  pins)
+    out=${2:?usage: legacy-guest.sh pins OUT}
+    [[ -s $out/receipt.json ]] || die "$out is not published"
     printf 'LEGACY_GUEST_X86_64_REF=%s@%s\nINPUTS_SHA256=%s\n' \
       "$repository" "$(cat "$out/digest")" "$(inputs_digest)" > "$out/pins.env"
     cat "$out/pins.env"
@@ -134,5 +109,5 @@ case ${1:-} in
     printf 'build(os): pin the Linux legacy VM guest image\n' > .t-commit-message
     cat "$pins"
     ;;
-  *) die 'usage: legacy-guest.sh agent|build|release|pin ...' ;;
+  *) die 'usage: legacy-guest.sh agent|build|binaries|pins|pin ...' ;;
 esac

@@ -65,17 +65,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
     ]
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// See [`translated`]: scaling about a pivot point is translate, scale,
 /// translate back — still the same plain f64 matrix math.
 #[allow(
@@ -249,6 +238,15 @@ impl Binding {
             self.settled_frontier = None;
         }
         Ok(self.live.clone())
+    }
+}
+
+/// What the tile shows while its record cannot be opened. A document the
+/// store is still opening on its own thread is not a failure.
+fn record_unavailable(error: &crate::record::RecordOpenError) -> String {
+    match error {
+        crate::record::RecordOpenError::Opening => "Opening the document".to_owned(),
+        other => format!("Document storage unavailable: {other}"),
     }
 }
 
@@ -1022,8 +1020,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             if self.binding.is_some() && self.owner_bound_work {
                 self.pending_binding = Some(PendingBinding { store, tab, create });
-                self.record_transition_error =
-                    Some(format!("Document storage unavailable: {error}"));
+                self.record_transition_error = Some(record_unavailable(&error));
                 self.record_intent_transition_blocked = false;
                 return;
             }
@@ -1034,7 +1031,7 @@ impl TileHost {
             self.renew_history_lifetime();
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         if self.binding.is_some()
@@ -1058,7 +1055,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         self.pending_binding = None;
@@ -1085,7 +1082,7 @@ impl TileHost {
                 self.pending_binding = Some(pending);
                 // The tile shows the storage context; the caller gets the
                 // exact admission refusal.
-                let shown = format!("Document storage unavailable: {error}");
+                let shown = record_unavailable(&error);
                 if self.binding.is_some() {
                     self.record_transition_error = Some(shown);
                 } else {
@@ -1130,7 +1127,7 @@ impl TileHost {
         let changing_owner = match (&self.binding, &want) {
             (Some(binding), Some(want)) if want.id != binding.live => {
                 if let Err(error) = binding.store.open_existing_record_checked(want) {
-                    let shown = format!("Document storage unavailable: {error}");
+                    let shown = record_unavailable(&error);
                     if self.owner_bound_work {
                         self.record_transition_error = Some(shown);
                         self.record_intent_transition_blocked = true;
@@ -1169,7 +1166,7 @@ impl TileHost {
                 if !was_unavailable {
                     self.renew_history_lifetime();
                 }
-                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                self.record_error = Some(record_unavailable(&error));
                 return Err(error.to_string());
             }
         };
@@ -3087,7 +3084,7 @@ pub fn paint_opening_card(
             scene,
             name,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
@@ -3110,10 +3107,8 @@ pub fn paint_opening_card(
             scene,
             status,
             theme.on_content().ink_dim,
-            translated(
-                transform,
-                cx - f64::from(tw) / 2.0,
-                indicator.y1 + OPENING_SPINNER_GAP,
+            transform.pre_translate(
+                (cx - f64::from(tw) / 2.0, indicator.y1 + OPENING_SPINNER_GAP).into(),
             ),
             None,
             &style,
@@ -3477,9 +3472,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     struct FloatingProbe {
@@ -3538,9 +3530,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -3987,9 +3976,6 @@ mod tests {
         fn app_title(&self) -> &str {
             "Declared history probe"
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("H")
         }
@@ -4370,9 +4356,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("E")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Records the window a panic hook would name while it lays out.
@@ -4404,9 +4387,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4678,9 +4658,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// Module-scoped alongside [`FloodFill`] purely to keep its one test's
@@ -4730,9 +4707,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("F")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 
@@ -4799,9 +4773,6 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("S")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
     }
 
     /// A presented app that remembers the transform it was drawn with.
@@ -4846,9 +4817,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 

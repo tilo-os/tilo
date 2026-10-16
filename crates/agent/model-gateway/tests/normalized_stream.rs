@@ -20,6 +20,7 @@ fn answer(duplicate: bool) -> ModelResponse {
         id: "call".into(),
         name: "invoke".into(),
         input: json!({}),
+        extra_content: None,
     });
     ModelResponse {
         message: Message {

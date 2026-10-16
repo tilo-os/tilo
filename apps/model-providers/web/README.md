@@ -35,6 +35,9 @@ CHROME=/path/to/chrome node apps/model-providers/web/run.mjs /absolute/path/to/b
 
 Chrome discovery otherwise uses the existing Playwright cache helper. Missing
 Chrome, WebGPU, controls, registration, or HTTP operations fail the check;
-nothing is skipped. The HTTPS fixture uses an ephemeral in-memory self-signed certificate
+nothing is skipped. Headless Linux runs select the same SwiftShader Vulkan/ANGLE
+backend as the desktop browser journeys; other platforms retain their default backend.
+Failures include browser-process diagnostics as well as runtime and control state.
+The HTTPS fixture uses an ephemeral in-memory self-signed certificate
 and Chrome's certificate-error override only in this owned test browser.
 Both the server and browser are closed even on failure.

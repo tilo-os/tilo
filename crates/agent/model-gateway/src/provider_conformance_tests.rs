@@ -91,6 +91,7 @@ async fn invoke(
                     failure: Arc::default(),
                     status: Arc::default(),
                     unary_body: Arc::default(),
+                    profile_headers: Vec::new(),
                 },
                 None,
                 request,

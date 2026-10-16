@@ -2,8 +2,9 @@
 //!
 //! This crate stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
-//! [`SecretReference`], while the process that owns the secret service is
-//! responsible for resolving that reference at call time. Keeping this
+//! [`SecretReference`], or name a sign-in held by account custody via
+//! [`SignInCredential`], while the process that owns the secret service is
+//! responsible for resolving either at call time. Keeping this
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
@@ -115,6 +116,110 @@ impl SecretReference {
             && !self.locator.trim().is_empty()
             && !self.locator.contains('\n')
             && !self.locator.contains('\r')
+    }
+}
+
+/// The issuer of a [`SignInCredential`] that signs in with Google.
+pub const GOOGLE_SIGN_IN: &str = "google";
+
+/// A sign-in held by account custody in place of an API key: the gateway
+/// mints a short-lived access token from it for each request and refreshes
+/// it when due. The grant itself lives in this device's vault under
+/// [`sign_in_grant_id`], derived from the profile id so a profile cannot
+/// name another account's grant (Gmail's, say).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
+pub struct SignInCredential {
+    /// Who signed the person in; [`GOOGLE_SIGN_IN`] is the one supported.
+    pub issuer: String,
+    /// The Google Cloud project billed for requests made with a person's own
+    /// credentials, sent as `x-goog-user-project`. Without it Google bills
+    /// the project of Tilo's `OAuth` client, which the person cannot use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_project: Option<String>,
+}
+
+settings_store::read_through_json_value!(SignInCredential);
+
+impl SignInCredential {
+    pub fn google(billing_project: impl Into<String>) -> Self {
+        Self {
+            issuer: GOOGLE_SIGN_IN.to_string(),
+            billing_project: Some(billing_project.into()),
+        }
+    }
+}
+
+/// The vault id of `profile_id`'s sign-in grant. Its own namespace, apart
+/// from the API keys (`agent-provider-…`), so neither can address the other.
+pub fn sign_in_grant_id(profile_id: &str) -> String {
+    format!("agent-model-grant-{profile_id}")
+}
+
+/// Vertex AI's default location; Google's newest models are served there
+/// first, some only there.
+pub const VERTEX_DEFAULT_LOCATION: &str = "global";
+/// The model a new Vertex AI provider offers.
+pub const VERTEX_DEFAULT_MODEL: &str = "gemini-4-argon";
+
+/// Whether `project` is a Google Cloud project id: lowercase letters,
+/// digits and hyphens, or a domain-scoped id (`example.com:project`).
+pub fn is_cloud_project_id(project: &str) -> bool {
+    !project.is_empty()
+        && project.len() <= 100
+        && project.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-.:".contains(&byte)
+        })
+}
+
+/// Whether `location` is a Vertex AI location name (`global`,
+/// `us-central1`, `europe-west4`).
+pub fn is_vertex_location(location: &str) -> bool {
+    !location.is_empty()
+        && location.len() <= 40
+        && location
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !location.starts_with('-')
+}
+
+/// Vertex AI's OpenAI-compatible endpoint for `project` in `location`. The
+/// global location is served from the global host, every other one from
+/// its regional host.
+pub fn vertex_endpoint(project: &str, location: &str) -> String {
+    let host = if location == VERTEX_DEFAULT_LOCATION {
+        "aiplatform.googleapis.com".to_string()
+    } else {
+        format!("{location}-aiplatform.googleapis.com")
+    };
+    format!("https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi")
+}
+
+/// The project and location of a [`vertex_endpoint`], or `None` for any
+/// other endpoint.
+pub fn vertex_target(endpoint: &str) -> Option<(String, String)> {
+    let rest = endpoint.trim().strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix("/chat/completions").unwrap_or(path);
+    let path = path.strip_prefix("v1/projects/")?;
+    let (project, path) = path.split_once("/locations/")?;
+    let location = path.strip_suffix("/endpoints/openapi")?;
+    let canonical = vertex_endpoint(project, location);
+    (is_cloud_project_id(project)
+        && is_vertex_location(location)
+        && canonical.strip_prefix("https://")?.split_once('/')?.0 == host)
+        .then(|| (project.to_string(), location.to_string()))
+}
+
+/// The id Vertex AI's OpenAI-compatible endpoint takes for `model`: a
+/// publisher-qualified id as given, a bare Gemini name under `google/`.
+pub fn vertex_model_id(model: &str) -> String {
+    let model = model.trim();
+    if model.contains('/') {
+        model.to_string()
+    } else {
+        format!("google/{model}")
     }
 }
 
@@ -242,6 +347,11 @@ pub struct ProviderProfile {
     /// itself is never accepted or serialised by this type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<SecretReference>,
+    /// A sign-in in place of an API key (Google Vertex AI). Absent in
+    /// settings written before sign-in existed, so they read unchanged; a
+    /// reader that predates it ignores the field and asks for a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<SignInCredential>,
     pub enabled: bool,
     pub models: Vec<ModelDescriptor>,
     /// The default model id within `models`. Missing/unknown is represented
@@ -338,6 +448,7 @@ impl Default for ProviderProfile {
             endpoint: String::new(),
             location: EndpointLocation::default(),
             credential: None,
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model: None,
@@ -369,6 +480,7 @@ impl ProviderProfile {
             endpoint: endpoint.to_string(),
             location: EndpointLocation::Hosted,
             credential: Some(SecretReference::provider_api_key(&id)),
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model,
@@ -391,6 +503,7 @@ impl ProviderProfile {
             endpoint: "http://127.0.0.1:8000/v1".to_string(),
             location: EndpointLocation::ThisDevice,
             credential: None,
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model: None,
@@ -398,6 +511,41 @@ impl ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
         }
+    }
+
+    /// A Google Vertex AI profile for `project` in `location`, offering
+    /// `model`, signed in with Google rather than an API key. It speaks
+    /// Vertex AI's OpenAI-compatible endpoint, which accepts every field the
+    /// gateway sends (`stream_options`, `parallel_tool_calls`,
+    /// `max_completion_tokens`, `reasoning_effort`), so nothing is omitted.
+    pub fn google_vertex(project: &str, location: &str, model: &str) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
+        let model = ModelDescriptor {
+            label: model.trim().to_string(),
+            ..ModelDescriptor::new(vertex_model_id(model))
+        };
+        Self {
+            id,
+            label: "Google Vertex AI".to_string(),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            endpoint: vertex_endpoint(project, location),
+            location: EndpointLocation::Hosted,
+            credential: None,
+            sign_in: Some(SignInCredential::google(project)),
+            enabled: true,
+            default_model: Some(model.id.clone()),
+            models: vec![model],
+            token_limit_param: None,
+            reasoning: None,
+            omit_params: Vec::new(),
+        }
+    }
+
+    /// Whether this profile signs in with Google instead of using a key.
+    pub fn signs_in_with_google(&self) -> bool {
+        self.sign_in
+            .as_ref()
+            .is_some_and(|sign_in| sign_in.issuer == GOOGLE_SIGN_IN)
     }
 
     pub fn display_label(&self) -> &str {
@@ -608,6 +756,7 @@ impl ProviderConfig {
                     "Credential reference is incomplete.",
                 ));
             }
+            sign_in_issues(profile, &mut issues);
             let model_ids: BTreeSet<_> =
                 profile.models.iter().map(|model| model.id.trim()).collect();
             if model_ids.len() != profile.models.len() || model_ids.contains("") {
@@ -731,6 +880,34 @@ impl ProfileIssue {
         Self {
             profile_id: profile_id.to_string(),
             message: message.to_string(),
+        }
+    }
+}
+
+/// What is wrong with `profile`'s sign-in, if it has one.
+fn sign_in_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
+    if let Some(sign_in) = &profile.sign_in {
+        if profile.credential.is_some() {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Profile uses both an API key and a sign-in.",
+            ));
+        }
+        if sign_in.issuer != GOOGLE_SIGN_IN {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Profile signs in with an unsupported provider.",
+            ));
+        }
+        if sign_in
+            .billing_project
+            .as_deref()
+            .is_some_and(|project| !is_cloud_project_id(project))
+        {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Billing project is not a Google Cloud project id.",
+            ));
         }
     }
 }
@@ -959,6 +1136,108 @@ mod tests {
                     .any(|issue| issue.profile_id == "default")
             );
         }
+    }
+
+    /// Settings written before sign-in existed read unchanged, a sign-in
+    /// round-trips, and a profile without one writes no new field.
+    #[test]
+    fn sign_in_profiles_are_backward_compatible_settings() {
+        let older = serde_json::json!({
+            "profiles": [{
+                "id": "p", "label": "OpenRouter", "protocol": "open_ai_compatible",
+                "endpoint": "https://openrouter.ai/api/v1", "location": "hosted",
+                "credential": {"vault": "tilo.secret-service", "locator": "agent-provider/p/api-key"},
+                "enabled": true, "models": [{"id": "m"}], "default_model": "m"
+            }],
+            "default_profile": "p"
+        });
+        let config: ProviderConfig = serde_json::from_value(older).unwrap();
+        assert_eq!(config.profiles.len(), 1);
+        assert!(config.profiles[0].sign_in.is_none());
+        assert!(config.validation_errors().is_empty());
+        let written = serde_json::to_value(&config).unwrap();
+        assert!(written["profiles"][0].get("sign_in").is_none());
+
+        let vertex = ProviderProfile::google_vertex("tilo-509618", "global", "gemini-4-argon");
+        assert!(vertex.credential.is_none());
+        assert!(vertex.signs_in_with_google());
+        assert_eq!(
+            vertex.default_model.as_deref(),
+            Some("google/gemini-4-argon")
+        );
+        assert_eq!(vertex.models[0].label, "gemini-4-argon");
+        let config = ProviderConfig {
+            profiles: vec![vertex.clone()],
+            default_profile: Some(vertex.id.clone()),
+        };
+        assert!(config.validation_errors().is_empty());
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            written["profiles"][0]["sign_in"],
+            serde_json::json!({"issuer": "google", "billing_project": "tilo-509618"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ProviderConfig>(written).unwrap(),
+            config
+        );
+
+        for (credential, issuer, project) in [
+            (true, GOOGLE_SIGN_IN, "tilo-509618"),
+            (false, "elsewhere", "tilo-509618"),
+            (false, GOOGLE_SIGN_IN, "Not A Project"),
+        ] {
+            let mut invalid = vertex.clone();
+            invalid.credential = credential.then(|| SecretReference::provider_api_key(&invalid.id));
+            invalid.sign_in = Some(SignInCredential {
+                issuer: issuer.into(),
+                billing_project: Some(project.into()),
+            });
+            let config = ProviderConfig {
+                profiles: vec![invalid],
+                default_profile: None,
+            };
+            assert_eq!(config.validation_errors().len(), 1, "{issuer} {project}");
+        }
+        assert_ne!(sign_in_grant_id("p"), "agent-provider-p");
+    }
+
+    #[test]
+    fn vertex_endpoints_name_their_project_and_location() {
+        assert_eq!(
+            vertex_endpoint("tilo-509618", "global"),
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            vertex_endpoint("p-1", "europe-west4"),
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/p-1/locations/europe-west4/endpoints/openapi"
+        );
+        for (project, location) in [("tilo-509618", "global"), ("example.com:p", "us-central1")] {
+            assert_eq!(
+                vertex_target(&vertex_endpoint(project, location)),
+                Some((project.to_string(), location.to_string()))
+            );
+        }
+        assert_eq!(
+            vertex_target(&format!(
+                "{}/chat/completions",
+                vertex_endpoint("p", "global")
+            )),
+            Some(("p".into(), "global".into()))
+        );
+        // A regional location on the global host, or any other endpoint, is
+        // not a Vertex target.
+        assert_eq!(
+            vertex_target(
+                "https://aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi"
+            ),
+            None
+        );
+        assert_eq!(vertex_target("https://api.openai.com/v1"), None);
+        assert_eq!(vertex_model_id("gemini-4-argon"), "google/gemini-4-argon");
+        assert_eq!(vertex_model_id(" meta/llama-4 "), "meta/llama-4");
+        assert!(is_vertex_location("us-east5") && !is_vertex_location("US"));
+        assert!(!is_vertex_location("a/b") && !is_vertex_location(""));
+        assert!(is_cloud_project_id("tilo-509618") && !is_cloud_project_id("a/b"));
     }
 
     #[test]

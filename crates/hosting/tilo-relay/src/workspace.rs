@@ -1003,46 +1003,6 @@ impl WorkspaceRuntime {
         doc.save_after(&heads)
     }
 
-    /// Ingest a batch of Automerge changes obtained via anti-entropy
-    /// from an upstream peer relay: materialize them into the pinned
-    /// doc, and — if they advanced the doc — fan the batch out to local
-    /// device subscribers as a `Delta` so devices on THIS relay converge
-    /// even when echo-suppression prevented the change from arriving via
-    /// live fan-out (the middle hop of a relay chain). Returns `true`
-    /// when new changes were ingested.
-    ///
-    /// Fanned out with a zero sentinel author + `PeerRole::PeerRelay`
-    /// origin, so it reuses the same routing (offline members get
-    /// store-and-forward; other peer relays are not re-echoed) as any
-    /// federated delta — no new delivery path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if fanning the ingested batch back out to
-    /// local subscribers fails to persist (see [`Self::fanout_delta`]).
-    pub fn ingest_sync_changes(
-        &mut self,
-        workspace_id: u64,
-        changes: &[u8],
-        seq: u64,
-    ) -> Result<bool, crate::store::StoreError> {
-        if !self.materialize(changes) {
-            // Nothing new (empty, already-held, or non-Automerge bytes).
-            return Ok(false);
-        }
-        let env = Envelope::Delta {
-            workspace_id,
-            author_device_public_key: [0u8; 32],
-            authored_at_ns: seq,
-            delta: changes.to_vec(),
-            signature: [0u8; 64],
-        };
-        // fan-out re-materializes, but `changes` are now already present
-        // so that inner call is a no-op (no second snapshot write).
-        self.fanout_delta(&[0u8; 32], PeerRole::PeerRelay, &env, changes, seq)?;
-        Ok(true)
-    }
-
     /// Note that `author` sent a delta at `now`, before it is admitted: the
     /// caret and typing it sends next are held to go with it
     /// ([`Self::fanout_presence`]) until it is published.

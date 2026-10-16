@@ -73,7 +73,8 @@ pub fn set_open_with_route(route: SharedOpenWithRoute) {
 }
 
 /// Remove the installed route. Used by tests, which share the thread-local.
-pub fn clear_open_with_route() {
+#[cfg(test)]
+pub(crate) fn clear_open_with_route() {
     ROUTE.with(|slot| *slot.borrow_mut() = None);
 }
 

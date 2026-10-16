@@ -169,10 +169,9 @@ impl CalcScreen {
         &self.keys
     }
 
-    /// Bench/test helper: screen-space center of keypad key `i`, once the pad
-    /// has been laid out. Used by the headless interaction bench + tests.
-    #[doc(hidden)]
-    pub fn key_center(&self, i: usize) -> Option<Point> {
+    /// Screen-space center of keypad key `i`, once the pad has been laid out.
+    #[cfg(test)]
+    pub(crate) fn key_center(&self, i: usize) -> Option<Point> {
         self.key_rects.get(i).map(ui::kurbo::Rect::center)
     }
     /// Key geometry for the app's custom-canvas accessibility tree.
@@ -180,15 +179,15 @@ impl CalcScreen {
         self.key_rects.get(i).copied()
     }
 
-    /// Bench/test helper: index of the first keypad key whose label is `label`.
-    #[doc(hidden)]
-    pub fn key_index_for_label(&self, label: &str) -> Option<usize> {
+    /// Index of the first keypad key whose label is `label`.
+    #[cfg(test)]
+    pub(crate) fn key_index_for_label(&self, label: &str) -> Option<usize> {
         self.keys.iter().position(|k| k.label() == label)
     }
 
-    /// Test helper: screen-space center of memory-bar button `i`, once laid out.
-    #[doc(hidden)]
-    pub fn mem_center(&self, i: usize) -> Option<Point> {
+    /// Screen-space center of memory-bar button `i`, once laid out.
+    #[cfg(test)]
+    pub(crate) fn mem_center(&self, i: usize) -> Option<Point> {
         self.mem_rects.get(i).map(ui::kurbo::Rect::center)
     }
     /// Memory-button geometry for the app's custom-canvas accessibility tree.
@@ -196,10 +195,10 @@ impl CalcScreen {
         self.mem_rects.get(i).copied()
     }
 
-    /// Test helper: screen-space center of the history row for entry `i`, if it
+    /// Screen-space center of the history row for entry `i`, if it
     /// is currently laid out (panel shown and the row is in the viewport).
-    #[doc(hidden)]
-    pub fn history_row_center(&self, i: usize) -> Option<Point> {
+    #[cfg(test)]
+    pub(crate) fn history_row_center(&self, i: usize) -> Option<Point> {
         self.history_rects
             .iter()
             .find(|(idx, _)| *idx == i)
@@ -213,10 +212,10 @@ impl CalcScreen {
             .map(|(_, rect)| *rect)
     }
 
-    /// Test helper: screen-space center of the "Clear history" button, if the
+    /// Screen-space center of the "Clear history" button, if the
     /// panel is currently shown.
-    #[doc(hidden)]
-    pub fn clear_history_center(&self) -> Option<Point> {
+    #[cfg(test)]
+    pub(crate) fn clear_history_center(&self) -> Option<Point> {
         (self.panel.is_open() && self.clear_hist_rect != Rect::ZERO)
             .then(|| self.clear_hist_rect.center())
     }

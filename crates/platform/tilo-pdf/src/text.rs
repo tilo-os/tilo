@@ -420,48 +420,6 @@ impl TextLayer {
         Selection::from_range(range.start.min(end)..end)
     }
 
-    /// Box selection: every character whose centre lies inside `rect`, in
-    /// reading order.
-    #[must_use]
-    pub fn select_rect(&self, rect: Rect) -> Selection {
-        let rect = Rect::from_corners(
-            self.to_layout(Point::new(rect.x0, rect.y0)),
-            self.to_layout(Point::new(rect.x1, rect.y1)),
-        );
-        let mut ranges = Vec::new();
-        let mut start: Option<usize> = None;
-        for (pos, c) in self.chars.iter().enumerate() {
-            let r = self.layout_rect(pos);
-            let inside = !r.is_empty() && rect.contains(r.center());
-            // Generated spaces between two selected glyphs stay selected so
-            // the copied words keep their separation.
-            let bridge = c.is_generated() && !c.is_line_break() && start.is_some();
-            match (inside || bridge, start) {
-                (true, None) => start = Some(pos),
-                (false, Some(s)) => {
-                    ranges.push(s..pos);
-                    start = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(s) = start {
-            ranges.push(s..self.chars.len());
-        }
-        // Trim trailing generated characters from each range.
-        for r in &mut ranges {
-            while r.end > r.start
-                && self
-                    .chars
-                    .get(r.end.saturating_sub(1))
-                    .is_some_and(TextChar::is_generated)
-            {
-                r.end = r.end.saturating_sub(1);
-            }
-        }
-        Selection::from_ranges(ranges)
-    }
-
     /// The word containing position `pos` (letters, digits and marks within
     /// one line), or just that character when it is not part of a word.
     #[must_use]
@@ -1401,16 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_and_search_pick_boxes_words_lines_and_folded_matches() {
-        // Phase `box_selection_picks_glyphs_inside`.
-        {
-            let mut raw = run("abc def", 0, 0.0, 0.0);
-            raw.extend(run("ghi jkl", 10, 0.0, 14.0));
-            let layer = TextLayer::from_raw(&raw).unwrap();
-            // Box around "abc" and "ghi" only (x 0..18).
-            let sel = layer.select_rect(Rect::from_xywh(0.0, 0.0, 18.0, 24.0));
-            assert_eq!(layer.text_for(&sel), "abc\nghi");
-        }
+    fn search_and_ranges_pick_words_lines_and_folded_matches() {
         // Phase `search_is_case_and_optionally_diacritic_insensitive`.
         {
             let raw = run("Café CAFE", 0, 0.0, 0.0);

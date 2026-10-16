@@ -10,7 +10,6 @@
 )]
 
 pub mod evidence;
-pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]
 pub mod typed_collab;

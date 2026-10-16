@@ -15,15 +15,16 @@
 //! the Ctrl+K entries build it with [`network_change`], and both reach
 //! [`DiskUnlockModel::start`].
 
+use crate::channel;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::panes::model::{PaneModel, Replies, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use serde::Deserialize;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
-use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use ui::framework::ActionControl;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
@@ -446,8 +447,8 @@ pub struct DiskUnlockModel {
     /// `None` until the first read answers.
     volumes: Option<Result<Vec<UnlockVolume>, String>>,
     saved_wifi: Result<Vec<String>, String>,
-    read_rx: Option<mpsc::Receiver<Snapshot>>,
-    change_rx: Option<mpsc::Receiver<(DiskUnlockEffect, Result<String, String>)>>,
+    read_rx: Option<channel::Receiver<Snapshot>>,
+    change_rx: Option<channel::Receiver<(DiskUnlockEffect, Result<String, String>)>>,
     /// The last change's outcome: `Ok` said plainly, `Err` as a failure.
     outcome: Option<Result<String, String>>,
     cx: PaneCx,
@@ -478,13 +479,14 @@ impl DiskUnlockModel {
             return;
         }
         let authority = Arc::clone(&self.authority);
-        let (tx, rx) = mpsc::channel();
-        match std::thread::Builder::new()
-            .name("tilo-disk-unlock-read".into())
-            .spawn(move || {
+        let (tx, rx) = channel::channel();
+        match crate::device_read::thread(
+            "tilo-disk-unlock-read",
+            Box::new(move || {
                 let _ = tx.send(read(authority.as_ref()));
-            }) {
-            Ok(_) => self.read_rx = Some(rx),
+            }),
+        ) {
+            Ok(()) => self.read_rx = Some(rx),
             Err(error) => self.volumes = Some(Err(error.to_string())),
         }
     }
@@ -504,15 +506,16 @@ impl DiskUnlockModel {
             return;
         }
         let authority = Arc::clone(&self.authority);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         let sent = operation.clone();
-        match std::thread::Builder::new()
-            .name("tilo-disk-unlock-change".into())
-            .spawn(move || {
+        match crate::device_read::thread(
+            "tilo-disk-unlock-change",
+            Box::new(move || {
                 let result = change(authority.as_ref(), &sent);
                 let _ = tx.send((sent, result));
-            }) {
-            Ok(_) => {
+            }),
+        ) {
+            Ok(()) => {
                 self.change_rx = Some(rx);
                 self.outcome = None;
                 self.structure_dirty = true;

@@ -55,6 +55,10 @@ use crate::compute_session::{ComputeClient, ComputeSessionError};
 use crate::compute_transport::{ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate};
 use crate::mesh::DeviceKey;
 pub use crate::offload_content::{BindError, ReplicaContent, WorkspaceContent};
+pub use crate::offload_device::{
+    DeviceOffload, DeviceOffloadConfig, OffloadIdentity, OffloadRelay, START_TIMEOUT, home_relay,
+    start_route,
+};
 pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
 };

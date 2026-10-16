@@ -11,7 +11,7 @@ name = "tilo_agent_participant"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Each record is a framework participant of its app's resource kind; the
 # published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }

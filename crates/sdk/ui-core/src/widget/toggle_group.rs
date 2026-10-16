@@ -2078,8 +2078,17 @@ impl Widget for ToggleGroup {
         if !self.fill {
             self.measured_width = Some(intrinsic);
         }
+        // Offered less room than the full labels need, the strip takes the
+        // room and draws its short labels (`max_size` caps it there anyway).
+        // Answering the full width would report it as content overflowing
+        // the strip, and every container around it would grow its extent
+        // past a narrow window's edge.
+        let fitted = match available.width {
+            taffy::AvailableSpace::Definite(room) => intrinsic.min(room.max(0.0)),
+            _ => intrinsic,
+        };
         Size {
-            width: known.width.unwrap_or(intrinsic),
+            width: known.width.unwrap_or(fitted),
             height: known
                 .height
                 .unwrap_or(f32_of_f64(self.strip_height() + self.caption_height)),

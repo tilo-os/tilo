@@ -3010,6 +3010,7 @@ impl ForeignFrameStore {
 
     /// Activate a completed owned GPU copy through the ordinary capture-token path.
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_gpu_for_test(
         &self,
         id: SurfaceId,
@@ -3019,6 +3020,7 @@ impl ForeignFrameStore {
     }
 
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_damaged_gpu_for_test(
         &self,
         id: SurfaceId,
@@ -4449,18 +4451,6 @@ enum SharedFrame {
     ),
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
 /// `base` composed with a translation to `(dx, dy)` and then a non-uniform
 /// scale by `(sx, sy)`. See [`translated`] for why the allow is warranted.
 #[allow(
@@ -4639,7 +4629,7 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &headline,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
@@ -4649,11 +4639,8 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &detail,
             on_card_dim,
-            translated(
-                transform,
-                cx - f64::from(dw) / 2.0,
-                y + f64::from(style.size) + 8.0,
-            ),
+            transform
+                .pre_translate((cx - f64::from(dw) / 2.0, y + f64::from(style.size) + 8.0).into()),
             None,
             &sm,
         );
@@ -4694,6 +4681,10 @@ impl Widget for ForeignSurfaceWidget {
     /// frames at the refresh rate after the app itself had gone idle.
     fn needs_animation_frame(&self) -> bool {
         self.awaiting_first_paint()
+    }
+
+    fn animation_detail(&self) -> Option<String> {
+        Some(ForeignSurfaceWidget::animation_detail(self))
     }
 
     fn needs_redraw(&self) -> bool {
@@ -4794,131 +4785,6 @@ pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
         }
     }
     false
-}
-
-/// Reconcile the set of foreign tabs in `rendered` against `source`.
-///
-/// The compositor's protocol state and the chrome's rendered tree are
-/// separate — the chrome owns its own `WorkspaceTreeHandle` so widget
-/// state survives protocol churn. This copies foreign adoptions and teardowns across, the only direction data flows.
-///
-/// Returns `true` when `rendered` was mutated, signalling the caller to bump the chrome revision for strip resync.
-pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTree) -> bool {
-    // Both sides are read across every workspace — the two trees move
-    // their active pointers independently, so comparing only active workspaces made the mirror re-adopt a window the user walked away from.
-    let wanted = foreign_tabs_anywhere(source);
-    let present = foreign_tabs_anywhere(rendered);
-    let mut changed = false;
-
-    // Remove foreign tabs the protocol side no longer has.
-    let wanted_ids: std::collections::HashSet<SurfaceId> =
-        wanted.iter().map(|t| t.surface_id).collect();
-    for gone in present
-        .iter()
-        .filter(|t| !wanted_ids.contains(&t.surface_id))
-    {
-        if crate::shell::tab_binding::close_tab_for_destroyed_surface(rendered, gone.surface_id) {
-            changed = true;
-        }
-    }
-
-    // Collapse any surface with more than one tab: a session saved before
-    // this mirror compared whole trees carries duplicates on disk, so preventing new ones isn't enough — reopening must come back with one per window.
-    if drop_duplicate_foreign_tabs(rendered) {
-        changed = true;
-    }
-
-    // Add foreign tabs the rendered tree is missing via `adopt_toplevel`, the same production splice the protocol side uses.
-    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs_anywhere(rendered)
-        .iter()
-        .map(|t| t.surface_id)
-        .collect();
-    for add in wanted
-        .iter()
-        .filter(|t| !present_ids.contains(&t.surface_id))
-    {
-        crate::shell::tab_binding::adopt_toplevel(
-            rendered,
-            add.surface_id,
-            Some(add.app_id.clone()),
-        );
-        changed = true;
-    }
-
-    // Keep titles/app-ids in step for tabs on both sides (a client can call `set_app_id` after mapping).
-    for want in &wanted {
-        // A client may announce its toplevel before setting app-id.  The
-        // protocol tree re-homes that anonymous tab when the late identity
-        // arrives; apply the same claimed launch placement to the rendered
-        // mirror before syncing its label, otherwise the two trees can show
-        // the same surface in different groups.
-        if crate::shell::tab_binding::app_id_for_surface(rendered, want.surface_id)
-            .is_some_and(|app_id| app_id != want.app_id)
-            && crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                rendered,
-                want.surface_id,
-                &want.app_id,
-                Some(&want.title),
-            )
-        {
-            changed = true;
-        }
-        for ws in &mut rendered.desktop.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    for tab in &mut group.tabs {
-                        if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
-                            && *surface_id == want.surface_id
-                            && (*app_id != want.app_id || tab.title != want.title)
-                        {
-                            want.app_id.clone_into(app_id);
-                            want.title.clone_into(&mut tab.title);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    changed
-}
-
-/// Keep the first tab showing each surface and remove the rest.
-///
-/// One window is one tab. A second tab onto the same surface draws the
-/// client twice, offers it two sets of configures, and outlives it — a destroyed surface closes one tab, leaving the other pointing at nothing.
-///
-/// A session saved while the mirror still compared active workspaces
-/// carries duplicates on disk, so this runs every reconcile, not only at adoption. Returns whether anything was removed.
-fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
-    let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
-    // Resolve duplicates without mutating the cache during traversal.  The
-    // ordinary close primitive updates both the cache and the Automerge
-    // document and repairs active tab/group pointers.
-    // A bare `retain` here used to make the duplicate disappear for one
-    // frame while leaving it in the room document, so the next revision
-    // resurrected it.
-    let duplicate_tabs: Vec<_> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .filter_map(|tab| {
-            let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
-                return None;
-            };
-            (!seen.insert(*surface_id)).then_some(tab.id)
-        })
-        .collect();
-
-    let mut removed = false;
-    for tab in duplicate_tabs {
-        removed |= crate::shell::tab_binding::remove_tab(tree, tab);
-    }
-    removed
 }
 
 // Per-frame compositor passes
@@ -7159,415 +7025,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn reconcile_carries_adoptions_teardowns_and_late_app_ids_across_trees() {
-        fn reconcile_copies_adoptions_and_teardowns_across_trees() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "two pristine trees need no mirroring"
-            );
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                4242,
-                Some("org.example.client".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let mirrored = foreign_tabs(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            assert_eq!(mirrored[0].surface_id, 4242);
-            assert_eq!(mirrored[0].app_id, "org.example.client");
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "mirroring is idempotent"
-            );
-
-            crate::shell::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert!(foreign_tabs(&rendered).is_empty());
-        }
-
-        /// The rendered mirror must follow a late app-id re-home as well as the
-        /// protocol tree.  This is the two-tree version of the Electron/GTK race:
-        /// the first anonymous adoption is visible for one tick, then the launch
-        /// note is claimed when the client finally identifies itself.
-        fn reconcile_mirrors_late_app_id_launch_placement() {
-            crate::shell::launcher::clear_pending_placements();
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = source.clone();
-            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-            crate::shell::launcher::set_pending_placement(
-                "org.example.electron",
-                crate::shell::tab_binding::Placement::TabIn(target),
-            );
-
-            crate::shell::tab_binding::adopt_toplevel(&mut source, 0x501, None);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
-
-            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                &mut source,
-                0x501,
-                "org.example.electron",
-                None,
-            ));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let mirrored = foreign_tabs_anywhere(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            let mirrored_group = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-                .expect("mirrored surface group");
-            assert_eq!(mirrored_group.id, target);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        /// Satellite can give the rendered mirror a provisional non-anonymous
-        /// class before the protocol tree receives the final `WM_CLASS`. The
-        /// mirror must re-home on that identity transition too; restricting this
-        /// path to `anon-*` leaves protocol and chrome in different groups.
-        fn reconcile_rehomes_provisional_x11_identity_to_final_launch_placement() {
-            crate::shell::launcher::clear_pending_placements();
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = source.clone();
-            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-            let surface = 0x502;
-            crate::shell::launcher::set_pending_placement_for_identities(
-                "chatgpt",
-                &["chatgpt".to_string()],
-                crate::shell::tab_binding::Placement::NewGroup,
-            );
-
-            crate::shell::tab_binding::adopt_toplevel_at(
-                &mut source,
-                surface,
-                Some("electron".into()),
-                crate::shell::tab_binding::Placement::TabIn(target),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                &mut source,
-                surface,
-                "Chatgpt",
-                Some("ChatGPT"),
-            ));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            let mirrored = foreign_tabs_anywhere(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            assert_eq!(mirrored[0].app_id, "Chatgpt");
-            assert_eq!(mirrored[0].title, "ChatGPT");
-            let mirrored_group = rendered.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-                .expect("mirrored provisional surface group");
-            assert_ne!(mirrored_group.id, target);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        fn reconcile_propagates_a_late_set_app_id() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            crate::shell::tab_binding::adopt_toplevel(&mut source, 77, None);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
-
-            crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late");
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let t = &foreign_tabs(&rendered)[0];
-            assert_eq!(t.app_id, "io.example.late");
-            // The identifier propagates; the *title* is humanised from it rather than shown as a machine identifier nobody chose.
-            assert_eq!(
-                t.title, "Late",
-                "a tab wears a name, not the last segment of an app id"
-            );
-        }
-
-        reconcile_copies_adoptions_and_teardowns_across_trees();
-        reconcile_mirrors_late_app_id_launch_placement();
-        reconcile_rehomes_provisional_x11_identity_to_final_launch_placement();
-        reconcile_propagates_a_late_set_app_id();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn a_foreign_window_is_adopted_exactly_once() {
-        /// Consuming a user close removes the exact surface from the protocol
-        /// tree before reconciliation. The Wayland toplevel itself can still be
-        /// alive while processing `xdg_toplevel.close`; it must not be mirrored
-        /// back, and another window from the same application must be untouched.
-        fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            for surface in [51, 52] {
-                crate::shell::tab_binding::adopt_toplevel(
-                    &mut source,
-                    surface,
-                    Some("com.openai.chatgpt".into()),
-                );
-            }
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, 51), 1);
-            assert_eq!(tabs_for_surface(&rendered, 52), 1);
-
-            // This is the frame-loop ordering for a queued close: remove from
-            // both tree authorities, send close to the still-live toplevel, then
-            // reconcile. The application's process and app-id are irrelevant.
-            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-                &mut rendered,
-                51,
-            ));
-            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-                &mut source,
-                51,
-            ));
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "the consumed close leaves nothing for reconciliation to undo"
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, 51),
-                0,
-                "the still-live closing surface must not be adopted back"
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, 52),
-                1,
-                "surface identity keeps the same-app sibling exactly once"
-            );
-        }
-
-        /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
-        fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 31;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.word-processor".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the mirror should adopt the window exactly once",
-            );
-
-            // The user goes to another workspace — nothing about the window changed, it's simply no longer the one on screen.
-            let elsewhere = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .map(|w| w.id)
-                .find(|id| *id != rendered.desktop.active)
-                .expect("the demo tree has more than one workspace");
-            rendered.desktop.active = elsewhere;
-
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "switching workspaces opened a second window onto the same surface",
-            );
-
-            // And back again, which is the sequence a person actually performs.
-            rendered.desktop.active = source.desktop.active;
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "returning to the window's own workspace duplicated it",
-            );
-        }
-
-        /// A window the launcher placed in a workspace other than the active one
-        /// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
-        fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 32;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            // Move the adopted tab into a workspace that isn't the active one, the way a recorded placement or a peer's room does.
-            let elsewhere = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .map(|w| w.id)
-                .find(|id| *id != rendered.desktop.active)
-                .expect("the demo tree has more than one workspace");
-            let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
-            let ws = rendered
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|w| w.id == elsewhere)
-                .expect("the other workspace");
-            let strip = ws.strips.first_mut().expect("the other workspace's strip");
-            strip.window_groups.push(crate::shell::state::WindowGroup {
-                id: crate::shell::state::next_id(),
-                active_tab: moved.id,
-                tabs: vec![moved],
-                width: crate::shell::state::WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the window was adopted again because its tab was in another workspace",
-            );
-        }
-
-        a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling();
-        a_window_in_another_workspace_is_not_adopted_a_second_time();
-        a_window_placed_outside_the_active_workspace_is_adopted_once();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn duplicate_foreign_entries_collapse_and_stay_collapsed() {
-        /// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
-        fn a_duplicate_already_in_the_tree_is_collapsed() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 33;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            // Stage the state a pre-fix session left behind: a second tab onto the same surface, in the same tab bar, showing the same name.
-            let twin = {
-                let one = foreign_tabs_anywhere(&rendered)
-                    .into_iter()
-                    .find(|t| t.surface_id == surface)
-                    .expect("the adopted tab");
-                crate::shell::state::Tab {
-                    id: one.tab_id + 1_000_000,
-                    title: one.title.clone(),
-                    tile: ShellTile::Foreign {
-                        app_id: one.app_id,
-                        surface_id: surface,
-                    },
-                }
-            };
-            let group = rendered
-                .desktop
-                .active_workspace_mut()
-                .and_then(|w| w.strips.first_mut())
-                .and_then(|s| s.window_groups.first_mut())
-                .expect("the group the window was adopted into");
-            group.tabs.push(twin);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                2,
-                "the fixture is staged"
-            );
-
-            assert!(
-                reconcile_foreign_tabs(&source, &mut rendered),
-                "collapsing the duplicate is a change the chrome has to be told about",
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the restored desktop still shows the application twice",
-            );
-
-            // And the group is still showing something that exists.
-            let group = rendered
-                .desktop
-                .active_workspace()
-                .and_then(|w| w.strips.first())
-                .and_then(|s| s.window_groups.first())
-                .expect("the group");
-            assert!(
-                group.tabs.iter().any(|t| t.id == group.active_tab),
-                "the group is pointing at a tab that is no longer there",
-            );
-        }
-
-        /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
-        /// the current frame.  A later document update previously put the second
-        /// app card back because it was never removed from the replicated list.
-        fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
-            let surface = 34;
-            let mut source = WorkspaceTree::bootstrap_demo();
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            source.seed_doc_from_cache();
-            let mut rendered = source.clone();
-
-            let twin = foreign_tabs_anywhere(&rendered)
-                .into_iter()
-                .find(|tab| tab.surface_id == surface)
-                .expect("the source foreign tab");
-            let group = rendered
-                .desktop
-                .active_workspace_mut()
-                .and_then(|workspace| workspace.strips.first_mut())
-                .and_then(|strip| strip.window_groups.first_mut())
-                .expect("the group the tab was adopted into");
-            group.tabs.push(crate::shell::state::Tab {
-                id: twin.tab_id + 2_000_000,
-                title: twin.title,
-                tile: ShellTile::Foreign {
-                    app_id: twin.app_id,
-                    surface_id: twin.surface_id,
-                },
-            });
-            rendered.seed_doc_from_cache();
-            let mut stale_replica = rendered.clone();
-            let before_cleanup = rendered.current_heads();
-
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, surface), 1);
-
-            let deletion = rendered.export_changes_since(&before_cleanup);
-            stale_replica
-                .apply_changes(&deletion)
-                .expect("the document deletion applies to a stale replica");
-            assert_eq!(
-                tabs_for_surface(&stale_replica, surface),
-                1,
-                "a later resync must not restore the duplicate application"
-            );
-        }
-
+    fn a_stale_revision_after_a_close_keeps_one_live_app() {
         /// A real session can receive a room revision while a local external app
         /// is mapping.  The revision may have been authored from before a close,
         /// so this covers the complete ordering rather than each operation in
@@ -7642,24 +7104,18 @@ mod tests {
                 "a stale reorder must not bring the closed group back"
             );
 
-            // A conventional host application maps after that room revision.
-            // It belongs to the protocol tree, then reconciliation makes exactly
-            // one chrome tab for its surface.
+            // A conventional host application maps after that room revision
+            // and gets exactly one tab for its surface.
             let surface = 0x51_000;
             crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
+                &mut rendered,
                 surface,
                 Some("org.example.ExternalEditor".into()),
             );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
             assert_eq!(
                 tabs_for_surface(&rendered, surface),
                 1,
                 "one mapped external surface must produce exactly one tab"
-            );
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "reconciliation is idempotent once the external app is present"
             );
 
             // A state round-trip may not revive the closed group; live Wayland
@@ -7683,8 +7139,6 @@ mod tests {
             assert_active_groups_are_valid(&restarted);
         }
 
-        a_duplicate_already_in_the_tree_is_collapsed();
-        duplicate_cleanup_replicates_and_does_not_reappear_after_resync();
         stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app();
     }
 
@@ -7696,8 +7150,7 @@ mod tests {
     fn foreign_layout_lifecycle_and_visibility_follow_the_tree() {
         /// Exercise the layout as one deterministic state machine rather than a
         /// collection of isolated mutations.  This is deliberately shaped like
-        /// a busy desktop: hosted and external apps coexist, a legacy duplicate
-        /// is discovered, tabs and groups move, focus crosses workspaces, an old
+        /// a busy desktop: hosted and external apps coexist, tabs and groups move, focus crosses workspaces, an old
         /// peer revision lands, a newer revision follows it, and the compositor
         /// restarts after the external process exits.
         ///
@@ -7748,53 +7201,17 @@ mod tests {
             let close_group = group_for_tab(&rendered, close_tab);
             rendered.seed_doc_from_cache();
 
-            // Protocol and chrome start from the same layout.  A pending launch
-            // is queried independently by both trees in production; the same
-            // surface id must get the same answer rather than minting two tabs.
-            let mut source = rendered.clone();
             crate::shell::launcher::set_pending_placement(
                 "org.example.ExternalEditor",
                 Placement::TabIn(anchor),
             );
             let surface = 0x00C0_FFEE;
             crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
+                &mut rendered,
                 surface,
                 Some("org.example.ExternalEditor".into()),
             );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
             assert_eq!(tabs_for_surface(&rendered, surface), 1);
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "a second frame cannot duplicate one mapped toplevel"
-            );
-
-            // Model the bad on-disk state produced by an older build.  Make the
-            // duplicate active as well, so cleanup has to repair selection, not
-            // merely shorten a background vector.
-            let original = foreign_tabs_anywhere(&rendered)
-                .into_iter()
-                .find(|tab| tab.surface_id == surface)
-                .expect("mirrored foreign tab");
-            let duplicate_id = original.tab_id.saturating_add(9_000_000);
-            let owner = group_for_tab(&rendered, original.tab_id);
-            let group = rendered
-                .desktop
-                .workspaces
-                .iter_mut()
-                .flat_map(|workspace| workspace.strips.iter_mut())
-                .flat_map(|strip| strip.window_groups.iter_mut())
-                .find(|group| group.id == owner)
-                .expect("foreign tab owner");
-            group.tabs.push(crate::shell::state::Tab {
-                id: duplicate_id,
-                title: original.title,
-                tile: ShellTile::Foreign {
-                    app_id: original.app_id,
-                    surface_id: surface,
-                },
-            });
-            group.active_tab = duplicate_id;
             rendered.seed_doc_from_cache();
             let stale_seed = rendered.export_changes_since(&[]);
             let mut stale_peer = WorkspaceTree::default();
@@ -7803,8 +7220,6 @@ mod tests {
                 .expect("stale peer accepts the shared baseline");
             let stale_base = stale_peer.current_heads();
 
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, surface), 1);
             assert!(remove_tab(&mut rendered, close_tab));
             assert!(
                 rendered
@@ -7881,8 +7296,7 @@ mod tests {
             assert_active_groups_are_valid(&rendered);
 
             // A clean external exit is a protocol teardown, not a layout reset.
-            assert!(close_tab_for_destroyed_surface(&mut source, surface));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert!(close_tab_for_destroyed_surface(&mut rendered, surface));
             assert_eq!(tabs_for_surface(&rendered, surface), 0);
             assert!(
                 rendered
@@ -8010,28 +7424,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Detach the tab showing `surface` from wherever it is, so a test can put it somewhere else.
-    fn take_foreign_tab(
-        tree: &mut WorkspaceTree,
-        surface: SurfaceId,
-    ) -> Option<crate::shell::state::Tab> {
-        for ws in &mut tree.desktop.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    if let Some(i) = group.tabs.iter().position(|t| {
-                        matches!(
-                            &t.tile,
-                            ShellTile::Foreign { surface_id, .. } if *surface_id == surface
-                        )
-                    }) {
-                        return Some(group.tabs.remove(i));
-                    }
-                }
-            }
-        }
-        None
     }
 
     /// Wait until `barrier` is signalled, failing past the hang bound.

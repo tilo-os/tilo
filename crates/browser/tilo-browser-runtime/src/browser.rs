@@ -901,7 +901,14 @@ impl ApplicationHandler<u64> for Runner {
                     m.semantics.borrow().due()
                 };
                 if let Some(due) = semantics_due {
-                    if due <= now {
+                    let drawable = !m.viewport.suspended() && m.gpu.is_some();
+                    if due <= now && m.frame.replayed_draws() && drawable {
+                        // The last frame replayed windows instead of drawing
+                        // them; the next one draws every window and delivers
+                        // the tree, which then needs no second draw.
+                        m.pending = true;
+                        m.window.request_redraw();
+                    } else if due <= now {
                         m.publish(id);
                     } else {
                         wake(due);
@@ -2006,6 +2013,13 @@ impl Mount {
             }
             host_changed = true;
         }
+        // A frame whose semantics will be built draws every window: one it
+        // replayed instead (a pan frame may) would have to be drawn again
+        // before its tree could be read.
+        let tree_due = host_changed
+            || self.entries != self.tree_entries.get()
+            || !self.semantics.borrow().would_defer_unbuilt(ui::time::now());
+        self.frame.set_pan_replay(!tree_due);
         // Poll only after applying the new viewport, avoiding an old-size
         // layout merely to discover work.
         let stage = self.metric_start();
@@ -2173,20 +2187,15 @@ impl Mount {
         }))
     }
 
-    fn publish(&self, id: u64) {
+    fn publish(&mut self, id: u64) {
         self.publish_frame(id, false);
     }
 
-    /// Publish the status of a presented frame. `moved_only` says the frame
-    /// only moved laid-out content ([`Self::draw`]); then, while the gate
-    /// would defer a content-only change anyway, the tree is not built at
-    /// all, and the gate's deadline delivers it as it then is.
-    fn publish_frame(&self, id: u64, moved_only: bool) {
-        let ime_window = self.frame.ime_window();
-        let ime = ime_window.as_ref().map(|i| {
-            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
-        });
-        let unbuilt = if !moved_only || self.error.is_some() {
+    /// Whether a frame's tree stays unbuilt: only a frame that moved
+    /// laid-out content may leave it, while the gate would defer it or the
+    /// frame replayed windows its tree would need drawn again.
+    fn tree_unbuilt(&self, moved_only: bool, ime: Option<&ui::ime::ImeWindowState>) -> bool {
+        if !moved_only || self.error.is_some() {
             false
         } else if self.entries != self.tree_entries.get() {
             // What kept a moved frame's tree from waiting, for attribution.
@@ -2195,16 +2204,44 @@ impl Mount {
         } else if self
             .semantics
             .borrow_mut()
-            .defer_unbuilt(ime_window.as_ref(), ui::time::now())
+            .defer_unbuilt(ime, ui::time::now())
         {
+            true
+        } else if self.frame.replayed_draws()
+            && self
+                .semantics
+                .borrow_mut()
+                .hold_for_next_frame(ime, ui::time::now())
+        {
+            // The window ended on a frame that replayed windows instead of
+            // drawing them: the next frame draws every window and delivers
+            // the tree, which then needs no second draw.
+            self.metric_end("tree_held:replayed", self.metric_start());
             true
         } else {
             self.metric_end("tree_built:gate", self.metric_start());
             false
-        };
+        }
+    }
+
+    /// Publish the status of a presented frame. `moved_only` says the frame
+    /// only moved laid-out content ([`Self::draw`]); then, while the gate
+    /// would defer a content-only change anyway, the tree is not built at
+    /// all, and the gate's deadline delivers it as it then is.
+    fn publish_frame(&mut self, id: u64, moved_only: bool) {
+        let ime_window = self.frame.ime_window();
+        let ime = ime_window.as_ref().map(|i| {
+            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
+        });
+        let unbuilt = self.tree_unbuilt(moved_only, ime_window.as_ref());
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
+            // A window a pan frame replayed instead of drawing has not noted
+            // where it now paints what its semantics name.
+            let stage = self.metric_start();
+            self.frame.settle_replayed_draws();
+            self.metric_end("settle_replayed_draws", stage);
             let stage = self.metric_start();
             let semantics = self.frame.inspection();
             self.metric_end("inspection", stage);

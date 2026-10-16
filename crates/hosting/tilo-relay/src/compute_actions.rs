@@ -40,7 +40,7 @@ use tilo_user_identity::DeviceCert;
 
 use crate::app_serving::AppServingPlane;
 use crate::compute::MAX_COMPUTE_INPUTS;
-use crate::compute_transport::{InputWeight, WeighedPlacement};
+use crate::compute_transport::{InputWeight, InputsHeavierThanGain, WeighedPlacement};
 use crate::host_authority::HostOperation;
 use crate::peer::WorkspaceRegistry;
 use crate::placement::{ComputeRequirements, NoEligibleWorker, PlacementCandidate};
@@ -223,6 +223,18 @@ fn listed_inputs(arguments: &Map<String, Value>) -> Result<Vec<([u8; 32], u64)>,
     Ok(inputs.into_iter().collect())
 }
 
+/// What moving a job's inputs to a worker was estimated to cost.
+fn estimate_json(estimate: &InputsHeavierThanGain) -> Value {
+    json!({
+        "worker": hex::encode(estimate.worker),
+        "input_bytes": estimate.input_bytes,
+        "held_bytes": estimate.held_bytes,
+        "bytes_per_second": estimate.bytes_per_second,
+        "transfer_ms": estimate.transfer_ms,
+        "local_wall_ms": estimate.local_wall_ms,
+    })
+}
+
 fn candidate_json(candidate: &PlacementCandidate) -> Value {
     match &candidate.verdict {
         Ok(rank) => json!({
@@ -344,15 +356,18 @@ impl ComputeActions {
                 json!({
                     "worker": Value::Null,
                     "reason": heavier.to_string(),
-                    "estimate": {
-                        "worker": hex::encode(heavier.worker),
-                        "input_bytes": heavier.input_bytes,
-                        "held_bytes": heavier.held_bytes,
-                        "bytes_per_second": heavier.bytes_per_second,
-                        "transfer_ms": heavier.transfer_ms,
-                        "local_wall_ms": heavier.local_wall_ms,
-                    },
+                    "estimate": estimate_json(&heavier),
                     "candidates": heavier.considered.iter().map(candidate_json).collect::<Vec<_>>(),
+                })
+            }
+            Ok(WeighedPlacement::Reprobe(reprobe)) => {
+                tracing::info!(workspace_id, app, gpu, %reprobe, "re-probing a compute worker's held inputs");
+                json!({
+                    "worker": hex::encode(reprobe.placement.worker),
+                    "reason": reprobe.to_string(),
+                    "reprobe": true,
+                    "estimate": estimate_json(&reprobe.estimate),
+                    "candidates": reprobe.placement.considered.iter().map(candidate_json).collect::<Vec<_>>(),
                 })
             }
             Err(refused) => {

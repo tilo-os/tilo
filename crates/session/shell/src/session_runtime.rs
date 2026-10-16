@@ -152,6 +152,34 @@ where
     PendingStart { mailbox }
 }
 
+/// The thread session start's blocking jobs run on, one at a time in the
+/// order they were started: binding the collaboration broker opens its
+/// invocation journal (directory and file syncs), its MLS vault (the system
+/// secret store) and every channel's sealed state. A thread of its own, so
+/// a slow keyring holds up neither the loop nor the state writer, and so
+/// it can be started before a test denies its loop thread disk syncs.
+pub fn start_worker() -> &'static crate::shell::durable_writer::DurableWriter {
+    static WORKER: OnceLock<crate::shell::durable_writer::DurableWriter> = OnceLock::new();
+    WORKER.get_or_init(|| crate::shell::durable_writer::DurableWriter::spawn("tilo-session-start"))
+}
+
+/// Run `job` on [`start_worker`] and deliver its outcome to the loop
+/// through `wake`. A job that panics is reported by [`PendingStart::poll`]
+/// as ended without an outcome, never waited on.
+pub fn start_on_worker<T, F>(wake: Wake, job: F) -> PendingStart<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let (delivery, mailbox) = mailbox(wake);
+    match start_worker().submit_ordered(move || delivery.deliver(job())) {
+        Ok(()) => PendingStart { mailbox },
+        Err(error) => PendingStart::finished(Err(format!(
+            "the session start worker is unavailable: {error}"
+        ))),
+    }
+}
+
 enum Slot<T> {
     Pending,
     Registered(T),

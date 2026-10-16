@@ -114,6 +114,7 @@ async fn test_stream_gated(
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        profile_headers: Vec::new(),
     };
     let request = stream_test_request();
     let mut timing = PlanTiming::start();

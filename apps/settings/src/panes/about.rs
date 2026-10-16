@@ -51,8 +51,9 @@ pub(crate) fn answer(
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens the identity backup".into());
             }
-            Ok(cx.thread(
-                move |_| os_actions::open_tool(portable_identity_backup_intent()),
+            Ok(crate::device_read::job(
+                cx,
+                move || os_actions::open_tool(portable_identity_backup_intent()),
                 |_: &mut SettingsApp, opened: Result<(), String>, _| {
                     opened.map(|()| Effected::done())
                 },
@@ -99,10 +100,14 @@ impl AboutInfo {
             Path::new("/proc/cpuinfo"),
             Path::new("/proc/meminfo"),
         );
-        if let Ok(identity) = runtime_identity::load() {
+        // Only who this is is shown, so only the identity's public fields
+        // are read: a record on disk is read without asking its secret
+        // provider, which may wait on (or prompt for) the system secret
+        // store while the window waits.
+        if let Ok(identity) = runtime_identity::load_metadata() {
             info.identity_name =
-                Some(identity.display_name().trim().to_string()).filter(|name| !name.is_empty());
-            info.identity_public_key = Some(identity.group_public_key());
+                Some(identity.display_name.trim().to_string()).filter(|name| !name.is_empty());
+            info.identity_public_key = Some(identity.group_public_key);
         }
         info
     }

@@ -1,11 +1,12 @@
 //! Governor-only registration of a currently admitted writer's own windows.
-use super::{ObjType, ROOT, ReadDoc, StatePeer, SystemTime, err};
+use super::facades::PeerGovernanceMut;
+use super::{ObjType, ROOT, ReadDoc, SystemTime, err};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{ActionKind, TreePath};
 use tilo_user_identity::DeviceCert;
 
-impl StatePeer {
+impl PeerGovernanceMut<'_> {
     /// Register `salt` only to the authenticated caller's current admitted device.
     /// The transport must bind that certificate independently to its endpoint.
     /// This grants no room, app, record, input or enrollment permission.
@@ -15,7 +16,7 @@ impl StatePeer {
     /// undoable changes in the room, zero/conflicting namespaces or
     /// unavailable pinned governor custody.
     pub fn claim_topology_namespace(
-        &mut self,
+        self,
         caller: &DeviceCert,
         salt: u16,
         key: &SigningKey,
@@ -24,15 +25,20 @@ impl StatePeer {
         if salt == 0 {
             return Err("topology namespace must be nonzero".into());
         }
-        if self.certificate(&caller.device_public_key, now)? != caller {
+        if self.peer.certificate(&caller.device_public_key, now)? != caller {
             return Err("topology caller is not current admitted evidence".into());
         }
-        let member = self.permissions(caller.device_public_key, now)?;
-        if !member.allows(&TreePath::room(&self.core.room), ActionKind::Undoable, now) {
+        let member = self.peer.permissions(caller.device_public_key, now)?;
+        if !member.allows(
+            &TreePath::room(&self.peer.core.room),
+            ActionKind::Undoable,
+            now,
+        ) {
             return Err("topology namespace requires changing this workspace".into());
         }
-        self.require_governance_writer(key, now)?;
+        self.peer.require_governance_writer(key, now)?;
         let mut doc = self
+            .peer
             .core
             .room_doc
             .clone()
@@ -59,13 +65,14 @@ impl StatePeer {
         ));
         doc.put(&owners, name, device).map_err(err)?;
         doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
+        self.peer.apply_governance_doc(doc, &before, key, now)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StatePeer;
     use tilo_action_policy::{Answer, Grant, KindSet, Subject};
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -76,9 +83,16 @@ mod tests {
     )]
     fn topology_namespace_is_durable_exact_and_never_rebound() -> TestResult {
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
-        assert!(peer.claim_topology_namespace(&caller, 42, &governor, now)?);
+        assert!(
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 42, &governor, now)?
+        );
         let stored = peer.durable()?;
-        assert!(!peer.claim_topology_namespace(&caller, 42, &governor, now)?);
+        assert!(
+            !peer
+                .governance_mut()
+                .claim_topology_namespace(&caller, 42, &governor, now)?
+        );
         assert_eq!(stored, peer.durable()?);
         let mut restored = StatePeer::restore(
             &stored,
@@ -98,6 +112,7 @@ mod tests {
         let other = restored.authority().clone();
         assert!(
             restored
+                .governance_mut()
                 .claim_topology_namespace(&other, 42, &governor, now)
                 .is_err()
         );
@@ -114,18 +129,21 @@ mod tests {
         let (mut peer, governor, caller_key, caller, now) = crate::admission_tests::seeded();
         let before = peer.durable()?;
         assert!(
-            peer.claim_topology_namespace(&caller, 0, &governor, now)
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 0, &governor, now)
                 .is_err()
         );
         assert!(
-            peer.claim_topology_namespace(&caller, 42, &caller_key, now)
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 42, &caller_key, now)
                 .is_err()
         );
-        let mut substitute = caller.clone();
+        let mut substitute = caller;
         substitute.device_label.push('!');
         tilo_user_identity::sign_device_cert(&mut substitute, &SigningKey::from_bytes(&[1; 32]))?;
         assert!(
-            peer.claim_topology_namespace(&substitute, 42, &governor, now)
+            peer.governance_mut()
+                .claim_topology_namespace(&substitute, 42, &governor, now)
                 .is_err()
         );
         assert_eq!(before, peer.durable()?);
@@ -140,13 +158,17 @@ mod tests {
     fn topology_namespace_retry_rechecks_deny_biased_write_before_observing_ownership() -> TestResult
     {
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded_editor();
-        assert!(peer.claim_topology_namespace(&caller, 42, &governor, now)?);
+        assert!(
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 42, &governor, now)?
+        );
         let person = peer.permissions(caller.device_public_key, now)?.person;
-        peer.put_governed_grants(
+        let room = peer.room().to_owned();
+        peer.governance_mut().put_governed_grants(
             &[Grant::new(
                 "fixture-topology-deny",
                 Subject::Person(person),
-                TreePath::room(peer.room()),
+                TreePath::room(&room),
                 KindSet::ALL,
                 Answer::Deny,
                 Subject::person("fixture-governor"),
@@ -156,11 +178,13 @@ mod tests {
         )?;
         let denied = peer.durable()?;
         assert!(
-            peer.claim_topology_namespace(&caller, 42, &governor, now)
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 42, &governor, now)
                 .is_err()
         );
         assert!(
-            peer.claim_topology_namespace(&caller, 43, &governor, now)
+            peer.governance_mut()
+                .claim_topology_namespace(&caller, 43, &governor, now)
                 .is_err()
         );
         assert_eq!(denied, peer.durable()?);

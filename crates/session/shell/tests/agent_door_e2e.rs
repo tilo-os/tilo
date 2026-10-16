@@ -433,7 +433,9 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     );
     // Reading the room is its membership's (the door admits an agent as an
     // Observer: AgentPreset grants it the room's reads), so the read stands
-    // until the membership is taken back, and then ends with the next call.
+    // until the agent is removed, and then ends with the next call. Removed
+    // the way the Agents tab's Remove does it, through the one action that
+    // revokes every grant naming the agent.
     let (still, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
     assert!(
         !failed && still.contains("buy milk"),
@@ -441,13 +443,14 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
     );
     let removed = control(
         &session.control(),
-        &serde_json::json!({"op":"disallow","id":"agent-member:claude-code:observer"}),
+        &serde_json::json!({"op":"actions_invoke","provider":"actions","id":"agent.remove",
+            "args":{"name":"claude-code","confirm":true}}),
     );
     assert!(removed.get("err").is_none(), "{removed}");
     let (text, failed) = agent.tool("tilo_read", &serde_json::json!({"path": page}));
     assert!(
         failed && !text.contains("buy milk"),
-        "an agent whose membership was taken back still read a note: {text}"
+        "an agent removed from the workspace still read a note: {text}"
     );
 
     // The compositor kept its state file's writer the whole time.

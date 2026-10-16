@@ -999,10 +999,6 @@ impl Widget for DiffMergeApp {
         false
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        None
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }

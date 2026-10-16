@@ -42,6 +42,14 @@ case "$arch" in
         firmware_code="$directory/AAVMF_CODE.ms.fd"
         firmware_vars="$directory/AAVMF_VARS.fd"
         break
+      elif [ -f "$directory/QEMU_EFI-qemuvars-pflash.raw" ] \
+         && [ -f "$directory/vars.blank.json" ]; then
+        # Fedora's Secure-Boot-capable aarch64 firmware keeps its variables in QEMU's
+        # uefi-vars device rather than in a flash image; its plain QEMU_EFI-pflash.raw has
+        # no Secure Boot. The blank store starts in setup mode.
+        firmware_code="$directory/QEMU_EFI-qemuvars-pflash.raw"
+        firmware_vars="$directory/vars.blank.json"
+        break
       elif [ -f "$directory/QEMU_EFI-pflash.raw" ]; then
         firmware_code="$directory/QEMU_EFI-pflash.raw"
         firmware_vars="$directory/vars-template-pflash.raw"
@@ -143,14 +151,22 @@ list="$work/initramfs.list"
 "$gen_cpio" -o "$work/enroll.cpio" "$list"
 
 cp "$firmware_vars" "$work/vars.enrolled.fd"
+# The QEMU arguments for variable store $1 in vars_args: a JSON store is QEMU's own
+# (uefi-vars), not a second flash drive.
+vars_args() {
+  case "$firmware_vars" in
+    *.json) vars_args=(-device "uefi-vars-sysbus,jsonfile=$1") ;;
+    *) vars_args=(-drive "if=pflash,format=raw,file=$1") ;;
+  esac
+}
+vars_args "$work/vars.enrolled.fd"
 if [ "$arch" = x86_64 ]; then
   machine=(-machine q35,accel=tcg -cpu max)
 else
   machine=(-machine virt,accel=tcg,gic-version=max -cpu max)
 fi
 timeout 40s "$qemu" "${machine[@]}" -m 1024 \
-  -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
-  -drive if=pflash,format=raw,file="$work/vars.enrolled.fd" \
+  -drive if=pflash,format=raw,readonly=on,file="$firmware_code" "${vars_args[@]}" \
   -kernel "$kernel" -initrd "$work/enroll.cpio" \
   -append "console=$console rdinit=/init panic=-1" -nic none -nographic -no-reboot \
   > "$work/enroll.log" 2>&1 || status=$?
@@ -184,9 +200,9 @@ boot_efi() {
   else
     disk_args=(-drive "if=virtio,format=raw,file=$disk")
   fi
+  vars_args "$vars"
   timeout 35s "$qemu" "${machine[@]}" -m 512 \
-    -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
-    -drive if=pflash,format=raw,file="$vars" \
+    -drive if=pflash,format=raw,readonly=on,file="$firmware_code" "${vars_args[@]}" \
     "${disk_args[@]}" -nic none -nographic -no-reboot \
     > "$log" 2>&1 || test "$?" -eq 124
 }

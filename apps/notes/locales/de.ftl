@@ -13,6 +13,7 @@ notes-surface-tag = Notizen mit dem Schlagwort { $tag } anzeigen
 notes-surface-backlink = Verlinkende Notiz öffnen: { $title }
 notes-parent-path = In { $path }
 notes-linked-from = Verlinkt von
+notes-title-placeholder = Ohne Titel
 notes-save-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 notes-affordance-new-note = Neue Notiz
 notes-affordance-new-child = Neue untergeordnete Notiz

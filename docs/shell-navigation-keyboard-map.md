@@ -49,6 +49,15 @@ strip changes context; switching a window or tab changes focus within it.
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
 | Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
 | Insert an emoji into the focused text field | Super+. | — |
+| Ask an agent about the focused window's selection | Super+C | "Ask agent…" in a text field, list row or context menu |
+
+Super+C (the chord Windows gives its assistant) opens the agent quick composer on
+what is selected in the focused window, set to queue a task about it. A Tilo
+app answers with the selection's place in its own resource, so the agent
+acts on exactly that range; any other app contributes the primary selection's
+text, which travels quoted in the instruction. The composer asks the agent
+asked last in the workspace, else its first live one; with no live agent the
+chord says so on screen.
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same
@@ -96,7 +105,7 @@ settings file that still holds a previous default takes the new one. Super+F mak
 window group instead. Each resize step is 5% of the display's width. With
 one display, the move-to-display chords do nothing; displays are ordered left
 to right, then top to bottom. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
-Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+- and Ctrl+Alt+Delete are
+Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+-, Super+C and Ctrl+Alt+Delete are
 defaults, rebindable in Settings → Keyboard shortcuts.
 
 The magnifier zooms from 2× to 6×; zooming out of 2× turns it off, and

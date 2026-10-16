@@ -33,6 +33,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the peer did not answer in time",
     ),
     (
+        "shell/remote_action_link.rs",
+        "the peer did not finish the action in time",
+    ),
+    (
         "shell/launcher.rs",
         "the command does not fit a terminal launch",
     ),

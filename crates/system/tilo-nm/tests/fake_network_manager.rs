@@ -6,6 +6,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use tilo_nm::{LinkKind, NetworkState, NmClient, NmConnectivity, NmState, PrimaryLink};
 use zbus::connection::Builder;
 use zbus::object_server::SignalEmitter;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use zbus::{Connection, Guid};
 
 const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/7";
@@ -27,6 +28,7 @@ struct FakeNm {
     primary_type: String,
     check_uri: String,
     checks: Arc<AtomicUsize>,
+    devices: Vec<OwnedObjectPath>,
 }
 
 #[zbus::interface(name = "org.freedesktop.NetworkManager")]
@@ -59,6 +61,11 @@ impl FakeNm {
     #[zbus(property)]
     fn connectivity_check_uri(&self) -> String {
         self.check_uri.clone()
+    }
+
+    #[zbus(property)]
+    fn devices(&self) -> Vec<OwnedObjectPath> {
+        self.devices.clone()
     }
 
     fn check_connectivity(&mut self) -> u32 {
@@ -98,6 +105,33 @@ impl FakeDevice {
     }
 }
 
+/// A Wi-Fi device whose scans finish when the test says so.
+struct FakeWireless {
+    last_scan: i64,
+    refusal: Option<String>,
+    requests: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
+impl FakeWireless {
+    #[zbus(property)]
+    fn last_scan(&self) -> i64 {
+        self.last_scan
+    }
+
+    fn request_scan(&self, options: HashMap<String, OwnedValue>) -> zbus::fdo::Result<()> {
+        // A plain "scan now": no SSIDs to probe for.
+        if let Some(option) = options.into_keys().next() {
+            return Err(zbus::fdo::Error::InvalidArgs(option));
+        }
+        if let Some(refusal) = &self.refusal {
+            return Err(zbus::fdo::Error::NotSupported(refusal.clone()));
+        }
+        let _ = self.requests.send(());
+        Ok(())
+    }
+}
+
 fn path(path: &str) -> OwnedObjectPath {
     OwnedObjectPath::try_from(path).unwrap()
 }
@@ -112,10 +146,24 @@ fn wifi_nm(metered: u32, checks: Arc<AtomicUsize>) -> FakeNm {
         primary_type: "802-11-wireless".into(),
         check_uri: "http://check.example/".into(),
         checks,
+        devices: vec![path(DEVICE)],
     }
 }
 
 async fn serve(nm: FakeNm) -> (Connection, Connection) {
+    let (requests, _) = tokio::sync::mpsc::unbounded_channel();
+    serve_with_wifi(
+        nm,
+        FakeWireless {
+            last_scan: 1_000,
+            refusal: None,
+            requests,
+        },
+    )
+    .await
+}
+
+async fn serve_with_wifi(nm: FakeNm, wireless: FakeWireless) -> (Connection, Connection) {
     let (server, client) = tokio::net::UnixStream::pair().unwrap();
     let server = Builder::unix_stream(server)
         .server(Guid::generate())
@@ -137,6 +185,8 @@ async fn serve(nm: FakeNm) -> (Connection, Connection) {
                 interface: "wlp2s0".into(),
             },
         )
+        .unwrap()
+        .serve_at(DEVICE, wireless)
         .unwrap()
         .build();
     let client = Builder::unix_stream(client).p2p().build();
@@ -247,5 +297,77 @@ async fn a_non_http_check_uri_is_refused() {
     assert!(matches!(
         NmClient::new(client).captive_portal_uri().await,
         Err(tilo_nm::NmError::UnsafeUri)
+    ));
+}
+
+/// A scan returns when the device's `LastScan` moves, not when the request is
+/// accepted: the list read after it is what the radio saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wifi_scan_returns_when_the_device_reports_it_finished() {
+    let (requests, mut requested) = tokio::sync::mpsc::unbounded_channel();
+    let (server, client) = serve_with_wifi(
+        wifi_nm(2, Arc::default()),
+        FakeWireless {
+            last_scan: 1_000,
+            refusal: None,
+            requests,
+        },
+    )
+    .await;
+    let scan = tokio::spawn(async move { NmClient::new(client).scan_wifi().await });
+    tokio::time::timeout(Duration::from_secs(5), requested.recv())
+        .await
+        .expect("the scan is requested")
+        .unwrap();
+    // Requested but not finished: the scan is still waiting.
+    tokio::task::yield_now().await;
+    assert!(
+        !scan.is_finished(),
+        "an accepted request is not a finished scan"
+    );
+
+    let wireless = server
+        .object_server()
+        .interface::<_, FakeWireless>(DEVICE)
+        .await
+        .unwrap();
+    wireless.get_mut().await.last_scan = 14_600;
+    wireless
+        .get()
+        .await
+        .last_scan_changed(wireless.signal_emitter())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), scan)
+        .await
+        .expect("LastScan moving finishes the scan")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_or_impossible_wifi_scan_says_why() {
+    let (requests, _) = tokio::sync::mpsc::unbounded_channel();
+    let (_server, client) = serve_with_wifi(
+        wifi_nm(2, Arc::default()),
+        FakeWireless {
+            last_scan: 1_000,
+            refusal: Some("Scanning not allowed while unavailable".into()),
+            requests,
+        },
+    )
+    .await;
+    let refused = NmClient::new(client).scan_wifi().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("Scanning not allowed"),
+        "{refused}"
+    );
+
+    let mut nm = wifi_nm(2, Arc::default());
+    nm.devices = Vec::new();
+    let (_server, client) = serve(nm).await;
+    assert!(matches!(
+        NmClient::new(client).scan_wifi().await,
+        Err(tilo_nm::NmError::NoWifiDevice)
     ));
 }

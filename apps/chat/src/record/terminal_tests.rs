@@ -70,7 +70,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
             description
         );
         assert_eq!(
-            crate::model::AgentWork::from_update(&work.to_update())
+            crate::model::AgentWork::from_update(&crate::testing::work_update(&work))
                 .unwrap()
                 .state,
             expected

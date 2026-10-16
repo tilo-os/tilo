@@ -29,6 +29,7 @@ fn neutral_history_preserves_tool_ids_names_and_typed_arguments() {
                 id: "call_1".into(),
                 name: "lookup".into(),
                 input: json!({"count":2,"enabled":false}),
+                extra_content: None,
             })],
         },
         neutral::Message {
@@ -165,6 +166,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        profile_headers: Vec::new(),
     };
     let mut timing = PlanTiming::start();
     let mut emit = |event: &Response| {
@@ -324,6 +326,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
             failure: Arc::default(),
             status: Arc::default(),
             unary_body: Arc::default(),
+            profile_headers: Vec::new(),
         };
         let response = execute(
             transport,

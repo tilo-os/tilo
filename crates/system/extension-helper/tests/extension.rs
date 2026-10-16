@@ -168,7 +168,10 @@ fn the_status_file_keeps_its_python_form() {
     let text = fs::read_to_string(machine.layout.status("media-codecs")).unwrap();
     let value: Value = serde_json::from_str(&text).unwrap();
     // json.dumps(indent=2, sort_keys=True) and a newline.
-    assert_eq!(text, tilo_extension::py::dumps(&value) + "\n");
+    assert_eq!(
+        text,
+        tilo_extension::py::Dumps::INDENTED.dumps(&value) + "\n"
+    );
     assert!(
         text.starts_with("{\n  \"base\": {\n    \"architecture\": \"x86_64\",\n"),
         "{text}"

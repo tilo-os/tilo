@@ -890,12 +890,40 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a
 wake. One it does not acknowledge within the budget is a stall, and the answer
-carries every thread's state, kernel wait channel and backtrace. The harness
-(`tests/support/desktop.rs`) polls it every 50 ms from a monitor thread and fails
-the test within the budget, whichever call it is blocked in, with that report.
+carries every thread's state and kernel wait channel. When the main thread is
+blocked it also carries the backtraces of the threads blocked in a system
+call; a main thread still working (slow, not stuck) is not interrupted, and
+neither is any thread that is running, faulting in a page or inside the
+allocator's memory calls, because a backtrace is captured by a signal handler
+that allocates, and a thread interrupted inside the allocator never comes back
+out. The harness (`tests/support/desktop.rs`) polls it every 50 ms from a
+monitor thread; a heartbeat overdue past the budget holds whichever call or
+wait the test is in until the report arrives (symbolizing the stacks can take
+many seconds under the pressure variant), then fails it with that report.
 Every control call has a hard deadline of its own, and a call that outlives it
-says whether the loop was frozen or still turning (slow). The same report is
-written to the compositor's stderr.
+on a loop that kept acknowledging wakes is reported as slow. The same report
+is written to the compositor's stderr.
+
+Each heartbeat is also a whole main-loop turn, which costs the loop the same
+whether or not anything changed. Twenty a second read 16-31% of a core on CI
+from a desktop that used none, so the scenario's closing idle check holds the
+monitor's pings (`Desktop::without_heartbeats`) while it measures, then asks for
+a heartbeat at once, so a loop that froze meanwhile still fails. Every run
+prints its idle reading by thread, with what woke the loop and what it painted
+(`TILO_PAINT_STATS`) in the window.
+
+Every build, release included, also runs the main-loop watchdog
+(`crates/session/shell/src/compositor/watchdog.rs`). It needs no client: a
+thread of its own notices a compositor thread that has slept without running
+once, outside the loop's wait, for longer than any wait it makes is bounded
+at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to
+stderr (the session flight record and the journal) and exits with status 70,
+which hands DRM master and the VT back and ends the session at the greeter.
+A loop that is working, starved of CPU, idle, stopped, under a debugger or in
+the kernel's uninterruptible sleep is never ended, nor one sampled across a
+suspend. `main_loop_watchdog::` in the shell `it` target injects a
+deadlock (`{"op":"deadlock_main_loop"}`, development builds only) and asserts
+both the record and the exit.
 
 Seat state is a second line of defence in a debug build. Smithay holds the
 seat's pointer and keyboard lock while it delivers an event, and calls

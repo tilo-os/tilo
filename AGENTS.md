@@ -105,8 +105,8 @@ Before pushing:
 3. Commit the candidate, then inspect the affected plan with
    `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
    Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
-   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source bundle from t's
-   `source-metadata` check (tools/ci/README.md). The launcher validates the committed clean
+   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
+   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
    source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
    and runs this worktree's selector while forbidding every non-Git subprocess. A stale
    selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.
@@ -321,20 +321,18 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
 
-Use a task branch and a pull request for routine integration. Group related,
-tested changes into small coherent increments; do not push work-in-progress or
-minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. Open the PR ready (not draft) and move on: it lands
-automatically once the required checks (`CI / affected packages` and
-`CI / fast quality`) pass on its current head. It does not need to be up to date
-with main; resolve only real conflicts. A change that reaches the shell also runs the
-desktop smoke (`desktop_smoke::` in the shell `it` target) inside `CI / affected packages`: a
-frozen compositor fails it within half a second with every thread's backtrace, so treat that
-failure as a freeze, never as a timeout to retry (docs/headless-testing.md, "Desktop smoke
-gate"). Park a PR with draft, the `hold` label or
-a `WIP` title. If a landed PR breaks main, it is reverted automatically and the
-PR gets a comment on how to reland. Review is optional and informational and never
-blocks integration. See `DEVELOPMENT.md`.
+Push your work straight to `main`; there are no pull requests to land and nothing
+reverts automatically. Before pushing, run `t` in your checkout and fix what fails
+because of you (exit code `3`: everything that failed also fails on `main` already).
+Keep each push a small, coherent, tested increment, then `git pull --rebase` and push.
+CI on `main` informs: `t main` shows what fails there and who is on it. Fix your own
+failures forward, and `t claim` someone else's before you work on it. `stable` is
+moved by the stabilizer alone. The full workflow is in `DEVELOPMENT.md`, "Routine
+delivery workflow"; using t is in `docs/t.md`. A change that reaches the shell also
+runs the desktop smoke (`desktop_smoke::` in the shell `it` target): a frozen
+compositor fails it within half a second with every thread's backtrace, so treat that
+failure as a freeze, never as a timeout to retry (docs/headless-testing.md, "Desktop
+smoke gate").
 
 Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS

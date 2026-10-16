@@ -254,6 +254,7 @@ mod tests {
         let path = dir.path().join("cpu.csv");
         let mut recorder = FrameRecorder::disabled();
         recorder.enabled = true;
+        recorder.env_enabled = true;
         recorder.cpu_trace = Some(CpuTrace::open(&path).expect("open real CPU trace"));
         let before = SystemTime::now().duration_since(UNIX_EPOCH).expect("UTC");
         let mono_lower = monotonic_time().expect("monotonic clock").as_micros();

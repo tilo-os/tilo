@@ -27,12 +27,14 @@ use crate::widgets::{
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_actions::policy::{Grant, Level, Lifetime};
 use ui::tilo_resource;
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{AppModel, Button, Column, ModelPath, Row, Spacer, Text, Widget};
 
+use crate::device_read::Reading;
 use crate::host::PaneCx;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -65,27 +67,34 @@ pub enum PermissionsEffect {
     },
 }
 
-/// Answer `effect` by opening the tool it names.
+/// Answer `effect` by opening the tool it names, or by changing what the
+/// secret store lets an application use. Both run off the UI thread.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PermissionsEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
-        PermissionsEffect::SetSecretsAccess { app, allowed } => {
+        PermissionsEffect::SetSecretsAccess { app: id, allowed } => {
             let verb = if allowed { "allow" } else { "revoke" };
-            Ok(secret_command(cx, vec!["apps".into(), verb.into(), app]))
+            Ok(secret_command(
+                app,
+                cx,
+                vec!["apps".into(), verb.into(), id],
+            ))
         }
-        PermissionsEffect::ForgetSecrets { app } => Ok(secret_command(
+        PermissionsEffect::ForgetSecrets { app: id } => Ok(secret_command(
+            app,
             cx,
-            vec!["apps".into(), "forget".into(), app],
+            vec!["apps".into(), "forget".into(), id],
         )),
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
             }
-            Ok(cx.thread(
-                move |_| {
+            Ok(crate::device_read::job(
+                cx,
+                move || {
                     os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
                         route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
                     })
@@ -102,14 +111,202 @@ pub(crate) fn answer(
 /// application and records which applications used it.
 const SECRET_SERVICE: &str = "/usr/bin/tilo-secret-service";
 
-fn secret_command(cx: &mut EffectCx<Settings, SettingsApp>, args: Vec<String>) -> Effected {
-    cx.thread(
-        move |_| {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            command_output(SECRET_SERVICE, &args).map(|_| ())
+/// Run `tilo-secret-service args…` off the UI thread, then read the store
+/// again (off the UI thread too) so the pane shows what it took.
+fn secret_command(
+    app: &SettingsApp,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+    args: Vec<String>,
+) -> Effected {
+    let reader = Arc::clone(&app.permissions().reader);
+    crate::device_read::job(
+        cx,
+        move || reader.secret_command(&args),
+        |app: &mut SettingsApp, done: Result<(), String>, _| {
+            app.permissions().reading.refresh();
+            done.map(|()| Effected::done())
         },
-        |_: &mut SettingsApp, done: Result<(), String>, _| done.map(|()| Effected::done()),
     )
+}
+
+/// What Privacy & Security reads of the device and the secret store. Every
+/// read runs a command or asks a service — `wpctl` and `pw-dump`, `findmnt`,
+/// `lsblk`, firewalld over D-Bus, `nft`, the secret store — each allowed
+/// seconds to answer, so they are read off the UI thread ([`Reading`]).
+trait PermissionsReader: Send + Sync {
+    /// The privacy switches and who is capturing now.
+    fn privacy(&self) -> os_actions::PrivacyStatus;
+    /// Disk encryption, Secure Boot and the firewall.
+    fn device_security(&self) -> DeviceSecurity;
+    /// The applications the secret store recorded.
+    fn secret_apps(&self) -> Result<Vec<SecretApp>, String>;
+    /// Change what the secret store lets an application use
+    /// (`apps allow|revoke|forget <id>`).
+    fn secret_command(&self, args: &[String]) -> Result<(), String>;
+}
+
+/// This device and its secret store.
+struct SystemPermissions;
+
+impl PermissionsReader for SystemPermissions {
+    fn privacy(&self) -> os_actions::PrivacyStatus {
+        crate::device_read::off_ui_thread();
+        os_actions::get_privacy_status()
+    }
+
+    fn device_security(&self) -> DeviceSecurity {
+        crate::device_read::off_ui_thread();
+        device_security()
+    }
+
+    fn secret_apps(&self) -> Result<Vec<SecretApp>, String> {
+        crate::device_read::off_ui_thread();
+        secret_apps()
+    }
+
+    fn secret_command(&self, args: &[String]) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        command_output(SECRET_SERVICE, &args).map(|_| ())
+    }
+}
+
+/// What a capture or a test shows in place of this device: a protected
+/// device with two applications in the secret store, whose access the
+/// controls change.
+struct SamplePermissions {
+    secrets: Mutex<Vec<SecretApp>>,
+}
+
+impl Default for SamplePermissions {
+    fn default() -> Self {
+        Self {
+            secrets: Mutex::new(vec![
+                SecretApp {
+                    id: "binary:/usr/bin/chromium".into(),
+                    name: "chromium".into(),
+                    access: "allowed".into(),
+                    uses: 42,
+                    items: 3,
+                },
+                SecretApp {
+                    id: "sandbox:so.tilo.mail".into(),
+                    name: "so.tilo.mail".into(),
+                    access: "allowed".into(),
+                    uses: 7,
+                    items: 1,
+                },
+            ]),
+        }
+    }
+}
+
+impl PermissionsReader for SamplePermissions {
+    fn privacy(&self) -> os_actions::PrivacyStatus {
+        crate::device_read::off_ui_thread();
+        os_actions::PrivacyStatus {
+            microphone_muted: Some(false),
+            microphone_kill: os_actions::KillState::Allowed,
+            camera_present: true,
+            camera_kill: os_actions::KillState::Allowed,
+            active_media: Vec::new(),
+            ..os_actions::PrivacyStatus::default()
+        }
+    }
+
+    fn device_security(&self) -> DeviceSecurity {
+        crate::device_read::off_ui_thread();
+        DeviceSecurity {
+            disk_encryption: "perm-encrypted",
+            secure_boot: "perm-enabled",
+            firewall: Ok("perm-firewall-firewalld"),
+        }
+    }
+
+    fn secret_apps(&self) -> Result<Vec<SecretApp>, String> {
+        crate::device_read::off_ui_thread();
+        Ok(self
+            .secrets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone())
+    }
+
+    fn secret_command(&self, args: &[String]) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        let unexpected = || format!("{SECRET_SERVICE}: unexpected arguments {args:?}");
+        let [apps, verb, id] = args else {
+            return Err(unexpected());
+        };
+        let access = match (apps.as_str(), verb.as_str()) {
+            ("apps", "allow") => Some("allowed"),
+            ("apps", "revoke") => Some("revoked"),
+            ("apps", "forget") => None,
+            _ => return Err(unexpected()),
+        };
+        let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        if !secrets.iter().any(|app| app.id == *id) {
+            return Err(format!("{SECRET_SERVICE}: no application `{id}`"));
+        }
+        match access {
+            Some(access) => secrets
+                .iter_mut()
+                .filter(|app| app.id == *id)
+                .for_each(|app| app.access = access.into()),
+            None => secrets.retain(|app| app.id != *id),
+        }
+        drop(secrets);
+        Ok(())
+    }
+}
+
+/// What Privacy & Security last read: everything it shows but the
+/// workspace grants, which are one small file read when the pane opens.
+#[derive(Clone)]
+struct PermissionsReading {
+    privacy: os_actions::PrivacyStatus,
+    security: DeviceSecurity,
+    secrets: Result<Vec<SecretApp>, String>,
+}
+
+impl PermissionsReading {
+    fn read(reader: &dyn PermissionsReader) -> Self {
+        Self {
+            privacy: reader.privacy(),
+            security: reader.device_security(),
+            secrets: reader.secret_apps(),
+        }
+    }
+}
+
+/// What the Privacy & Security area keeps for the window: where it reads
+/// the device, and what it last read.
+pub struct PermissionsArea {
+    reader: Arc<dyn PermissionsReader>,
+    /// Read again off the UI thread whenever the pane opens and after every
+    /// change to the secret store.
+    reading: Reading<PermissionsReading>,
+}
+
+impl PermissionsArea {
+    /// The area over this device, or a stand-in for a capture or a test.
+    /// Nothing is read until the pane opens.
+    pub fn new(cx: &PaneCx) -> Self {
+        let reader: Arc<dyn PermissionsReader> = if cx.reaches_devices() {
+            Arc::new(SystemPermissions)
+        } else {
+            Arc::new(SamplePermissions::default())
+        };
+        Self::over(reader)
+    }
+
+    fn over(reader: Arc<dyn PermissionsReader>) -> Self {
+        let read = Arc::clone(&reader);
+        Self {
+            reader,
+            reading: Reading::new(move || PermissionsReading::read(read.as_ref())),
+        }
+    }
 }
 
 /// One application the secret store recorded, as `apps list --json` says it.
@@ -198,12 +395,14 @@ fn load_text() -> Option<String> {
     std::fs::read_to_string(state_path()?).ok()
 }
 
+/// The device's protection, as message keys: it is read off the UI thread,
+/// where the window's locale is not, and said on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeviceSecurity {
-    disk_encryption: String,
-    secure_boot: String,
+    disk_encryption: &'static str,
+    secure_boot: &'static str,
     /// The firewall in force, or why that could not be read.
-    firewall: Result<String, String>,
+    firewall: Result<&'static str, String>,
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
@@ -212,6 +411,7 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 
 /// `program args…`'s trimmed standard output, or why it gave none.
 fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
+    crate::device_read::off_ui_thread();
     let out = bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5))
         .map_err(|error| format!("{program}: {error}"))?;
     if out.status.success() {
@@ -230,43 +430,43 @@ fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
 /// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
 /// root filesystem is encrypted. An unavailable probe stays unknown rather
 /// than guessing from a partition name.
-fn disk_encryption_status() -> String {
+fn disk_encryption_status() -> &'static str {
     let Some(source) = command_stdout("findmnt", &["-no", "SOURCE", "/"]) else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     let Some(chain) = command_stdout("lsblk", &["-s", "-n", "-o", "TYPE", &source]) else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     if chain.lines().any(|line| line.trim() == "crypt") {
-        t("perm-encrypted")
+        "perm-encrypted"
     } else {
-        t("perm-not-encrypted")
+        "perm-not-encrypted"
     }
 }
 
-fn secure_boot_status() -> String {
+fn secure_boot_status() -> &'static str {
     let Ok(entries) = std::fs::read_dir("/sys/firmware/efi/efivars") else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     let Some(path) = entries.flatten().map(|e| e.path()).find(|p| {
         p.file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with("SecureBoot-"))
     }) else {
-        return t("perm-disabled");
+        return "perm-disabled";
     };
     // EFI variable files start with four attribute bytes, followed by the
     // one-byte SecureBoot value.
     match std::fs::read(path).ok().and_then(|v| v.get(4).copied()) {
-        Some(1) => t("perm-enabled"),
-        Some(_) => t("perm-disabled"),
-        None => t("perm-unavailable"),
+        Some(1) => "perm-enabled",
+        Some(_) => "perm-disabled",
+        None => "perm-unavailable",
     }
 }
 
 /// firewalld when it runs, otherwise the nftables ruleset. "Not active" is
 /// only said when the ruleset was read and is empty; a ruleset that could
 /// not be read (it needs privileges) is reported as unreadable.
-fn firewall_status() -> Result<String, String> {
+fn firewall_status() -> Result<&'static str, String> {
     firewall_from(command_output("firewall-cmd", &["--state"]), || {
         command_output("nft", &["list", "ruleset"])
     })
@@ -275,13 +475,13 @@ fn firewall_status() -> Result<String, String> {
 fn firewall_from(
     firewalld: Result<String, String>,
     nft: impl FnOnce() -> Result<String, String>,
-) -> Result<String, String> {
+) -> Result<&'static str, String> {
     if firewalld.as_deref() == Ok("running") {
-        return Ok(t("perm-firewall-firewalld"));
+        return Ok("perm-firewall-firewalld");
     }
     match nft() {
-        Ok(ruleset) if !ruleset.trim().is_empty() => Ok(t("perm-firewall-nftables")),
-        Ok(_) => Ok(t("perm-firewall-off")),
+        Ok(ruleset) if !ruleset.trim().is_empty() => Ok("perm-firewall-nftables"),
+        Ok(_) => Ok("perm-firewall-off"),
         Err(nft_error) => Err(match firewalld {
             Err(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
             Ok(_) => nft_error,
@@ -575,19 +775,78 @@ fn app_block(grants: &AppGrants) -> Vec<Item> {
     items
 }
 
-pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
-    build_view(cx, load_text().as_deref())
-}
-
 /// Include the hosted disk-unlock model beside the device security summary.
-pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
+pub(crate) fn build_with_disk_unlock(
+    cx: &PaneCx,
+    area: &PermissionsArea,
+    disk_unlock: El,
+) -> Box<dyn Widget> {
     Box::new(
         Column::new()
             .with_no_padding()
             .with_rhythm(Rhythm::Group)
-            .push(build(cx))
+            .push(Box::new(PermissionsPane::new(cx.clone(), area)))
             .push(disk_unlock),
     )
+}
+
+/// Privacy & Security pane: the workspace grants, and what the area last
+/// read of the device — or, until its first reading lands, that the device
+/// is being read.
+pub struct PermissionsPane {
+    cx: PaneCx,
+    /// What the device reports, read off the UI thread.
+    reading: Reading<PermissionsReading>,
+    /// The revision of `reading` shown.
+    reading_seen: u64,
+    /// What the device reported; `None` while it is first read.
+    shown: Option<PermissionsReading>,
+    /// The workspace grants `state.json` holds; `None` when it could not
+    /// be read or parsed.
+    workspace_access: Option<Vec<WsGrants>>,
+    composed: ui::widget::Composed,
+}
+
+impl PermissionsPane {
+    /// The pane over `area`. It shows what the device last reported and
+    /// reads it again off the UI thread.
+    pub fn new(cx: PaneCx, area: &PermissionsArea) -> Self {
+        area.reading.refresh();
+        Self {
+            cx,
+            reading_seen: area.reading.revision(),
+            shown: area.reading.get(),
+            reading: area.reading.clone(),
+            workspace_access: workspace_access(load_text().as_deref()),
+            composed: ui::widget::Composed::default(),
+        }
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        panel(
+            &self.cx,
+            self.workspace_access.as_deref(),
+            self.shown.as_ref(),
+        )
+    }
+}
+
+impl Widget for PermissionsPane {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let revision = self.reading.revision();
+        if revision != self.reading_seen {
+            self.reading_seen = revision;
+            self.shown = self.reading.get();
+            self.composed.invalidate();
+        }
+        self.composed.sync(state, root);
+    }
+
+    crate::panes::composed_pane!();
+
+    fn name(&self) -> &'static str {
+        "PermissionsPane"
+    }
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection {
@@ -632,15 +891,14 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> SettingsSecti
     card(&t("perm-active-use"), rows(usage_rows))
 }
 
-fn device_security_card() -> SettingsSection {
-    let security = device_security();
+fn device_security_card(security: &DeviceSecurity) -> SettingsSection {
     card(
         &t("perm-device-security"),
         rows(vec![
-            value_row(&t("perm-disk"), &security.disk_encryption),
-            value_row(&t("perm-secure-boot"), &security.secure_boot),
+            value_row(&t("perm-disk"), &t(security.disk_encryption)),
+            value_row(&t("perm-secure-boot"), &t(security.secure_boot)),
             match &security.firewall {
-                Ok(firewall) => value_row(&t("perm-firewall"), firewall),
+                Ok(firewall) => value_row(&t("perm-firewall"), &t(firewall)),
                 Err(error) => error_row(
                     &t("perm-firewall"),
                     &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
@@ -735,28 +993,52 @@ fn enforcement_card() -> SettingsSection {
     )
 }
 
-/// Core builder, split from [`build`] so it can be exercised against an
-/// explicit state document in tests without touching the real config dir.
+/// The workspace grants a state document holds; `None` when there is no
+/// document or it does not parse, which the pane never shows as "no grants".
+fn workspace_access(state_json: Option<&str>) -> Option<Vec<WsGrants>> {
+    project(state_json?).ok()
+}
+
+/// The pane before its first reading lands, against an explicit state
+/// document, so tests exercise it without touching the real config dir.
+#[cfg(test)]
 fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
-    let workspace_access = state_json.map(project).transpose();
+    panel(cx, workspace_access(state_json).as_deref(), None)
+}
 
-    let mut panel: Vec<SettingsSection> = Vec::new();
+/// A device card whose reading has not landed yet.
+fn reading_card(title: &str) -> SettingsSection {
+    card(&t(title), rows(vec![note(&t("perm-reading"))]))
+}
 
-    let privacy = os_actions::get_privacy_status();
-    panel.push(scope_card());
-    panel.push(privacy_hardware_card(&privacy));
-    panel.push(active_privacy_use_card(&privacy));
-    panel.push(device_security_card());
-    panel.push(secrets_card(cx, &secret_apps()));
+/// Every card of the pane, from the workspace grants and what the device
+/// last reported (`None`: it is still being read).
+fn panel(
+    cx: &PaneCx,
+    workspace_access: Option<&[WsGrants]>,
+    reading: Option<&PermissionsReading>,
+) -> Box<dyn Widget> {
+    let mut panel: Vec<SettingsSection> = vec![scope_card()];
+    if let Some(reading) = reading {
+        panel.push(privacy_hardware_card(&reading.privacy));
+        panel.push(active_privacy_use_card(&reading.privacy));
+        panel.push(device_security_card(&reading.security));
+        panel.push(secrets_card(cx, &reading.secrets));
+    } else {
+        panel.push(reading_card("perm-privacy-hardware"));
+        panel.push(reading_card("perm-active-use"));
+        panel.push(reading_card("perm-device-security"));
+        panel.push(reading_card("perm-secrets-title"));
+    }
     panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
-        Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
-        Ok(Some(all)) => {
-            let total = grant_count(&all);
-            push_workspace_grant_cards(&mut panel, &all, total);
+        Some([]) => panel.push(no_workspace_grants_card()),
+        Some(all) => {
+            let total = grant_count(all);
+            push_workspace_grant_cards(&mut panel, all, total);
         }
-        Ok(None) | Err(_) => panel.push(workspace_grants_unavailable_card()),
+        None => panel.push(workspace_grants_unavailable_card()),
     }
 
     panel.push(enforcement_card());
@@ -826,6 +1108,87 @@ mod tests {
         assert!(said.contains(&t("perm-secrets-unavailable")));
     }
 
+    /// A device whose commands and services do not answer until let go (or
+    /// ten seconds pass), as firewalld behind a stalled system bus or a
+    /// secret store that waits for its unlock prompt.
+    struct StalledReader(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledReader {
+        fn wait(&self) {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open && std::time::Instant::now() < deadline {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+        }
+    }
+
+    impl PermissionsReader for StalledReader {
+        fn privacy(&self) -> os_actions::PrivacyStatus {
+            self.wait();
+            SamplePermissions::default().privacy()
+        }
+        fn device_security(&self) -> DeviceSecurity {
+            self.wait();
+            SamplePermissions::default().device_security()
+        }
+        fn secret_apps(&self) -> Result<Vec<SecretApp>, String> {
+            self.wait();
+            SamplePermissions::default().secret_apps()
+        }
+        fn secret_command(&self, args: &[String]) -> Result<(), String> {
+            self.wait();
+            SamplePermissions::default().secret_command(args)
+        }
+    }
+
+    /// Opening Privacy & Security while the device takes its time is
+    /// answered and drawn at once: its device cards say the device is being
+    /// read, and show what it reports once it answers.
+    #[test]
+    fn a_stalled_device_read_never_holds_privacy_and_security() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.set_permissions(PermissionsArea::over(Arc::new(StalledReader(stalled))));
+        })
+        .expect("the Settings window is mounted");
+        // Tall enough that every card of the pane is laid out and inspected.
+        app.harness().resize((1280, 4096)).unwrap();
+
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "opening the pane waited {answered:?} on the device"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("perm-reading")), "{frame}");
+        assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
+        assert!(!frame.contains("binary:/usr/bin/chromium"), "{frame}");
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(&t("perm-firewall-firewalld"))
+                        && frame.contains("binary:/usr/bin/chromium")
+                        && !frame.contains(&t("perm-reading")))),
+            "what the device reports is shown"
+        );
+    }
+
     /// "Not active" is only said about a ruleset that was read and is empty.
     /// A ruleset this session may not read (nft needs privileges) and no
     /// running firewalld is not a firewall that is off.
@@ -834,7 +1197,7 @@ mod tests {
         let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
         assert_eq!(
             firewall_from(Ok("running".into()), denied),
-            Ok(t("perm-firewall-firewalld"))
+            Ok("perm-firewall-firewalld")
         );
         assert_eq!(
             firewall_from(Err("firewall-cmd: not running".into()), denied),
@@ -847,13 +1210,13 @@ mod tests {
                 Err("firewall-cmd: not running".into()),
                 || Ok(String::new())
             ),
-            Ok(t("perm-firewall-off"))
+            Ok("perm-firewall-off")
         );
         assert_eq!(
             firewall_from(Err("firewall-cmd: not running".into()), || {
                 Ok("table inet filter {}".into())
             }),
-            Ok(t("perm-firewall-nftables"))
+            Ok("perm-firewall-nftables")
         );
     }
     use taffy::{NodeId, TaffyTree};

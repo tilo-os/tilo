@@ -137,6 +137,8 @@ mod input_device_settings;
 mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "key_repeat_wire.rs"]
+mod key_repeat_wire;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
 #[path = "keyboard_layout_wire.rs"]
@@ -147,6 +149,8 @@ mod leak_probe;
 mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
+#[path = "main_loop_watchdog.rs"]
+mod main_loop_watchdog;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
 #[path = "multi_output.rs"]
@@ -227,12 +231,16 @@ mod speaker_calibration_fabric;
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]
 mod state_file_format;
+#[path = "strip_holds_still.rs"]
+mod strip_holds_still;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
 mod surface_substream_e2e;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "top_chrome_stack.rs"]
+mod top_chrome_stack;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
 #[path = "toplevel_icon_protocol.rs"]

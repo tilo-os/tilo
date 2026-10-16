@@ -20,7 +20,7 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -80,9 +80,13 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-owner-commit = { path = "../../collab/owner-commit" }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
-# The relay session a joined room syncs through; the daemon is a dev-dependency.
+# The relay session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The offload route a session's action door places offloadable actions
+# through: the compute session with the home relay, placement and the
+# room-scoped route (`tilo_relay::offload`). Its tests also start real relays.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
@@ -110,8 +114,6 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
-# `standalone::joined` tests start a real relay.
-tilo-relay = { path = "../../hosting/tilo-relay" }
 # The steward channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins rooms over.

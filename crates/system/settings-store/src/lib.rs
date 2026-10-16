@@ -140,19 +140,6 @@ pub fn config_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
-/// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
-/// environment, applying the same rules.
-pub fn config_root_from(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    Some(
-        tilo_paths::xdg::Base::Config
-            .resolve_from(xdg_config_home, home)?
-            .join("tilo"),
-    )
-}
-
 /// Resolve one settings file under the config root.
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
@@ -341,7 +328,7 @@ pub fn update_section_with_at(
     change: &mut SectionChange<'_>,
 ) -> std::io::Result<()> {
     let _lock = session::lock_copy(path)?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     let current = match doc.get(name) {
         Some(Value::Object(section)) => section.clone(),
         _ => Map::new(),
@@ -396,11 +383,22 @@ fn unisolated_test_write(
     )
 }
 
+// Display reads may be forgiving; a writer must not erase a file it cannot read.
+// Malformed JSON remains repairable, but I/O and UTF-8 failures are preserved.
+fn load_for_update(path: &Path) -> std::io::Result<Map<String, Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(parse(&text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(error) => Err(error),
+    }
+}
+
 /// [`update_section`] against an explicit path.
 ///
 /// # Errors
 ///
-/// Returns an error if the document can't be serialised or written.
+/// Returns an error if an existing document can't be read, or the merged document can't
+/// be serialised or written. A missing file starts empty; malformed JSON is still repaired.
 pub fn update_section_at(
     path: &Path,
     name: &str,
@@ -424,7 +422,7 @@ pub fn compare_update_section_at(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     if doc.get(name) != Some(&Value::Object(expected.clone())) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -449,7 +447,7 @@ pub fn compare_display_update_at(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut document = load_at(path);
+    let mut document = load_for_update(path)?;
     if !update.matches(&document) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -484,7 +482,7 @@ pub fn update_document_at(
         )?),
         _ => None,
     };
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     change(&mut doc);
     write_atomic(path, &Value::Object(doc))
 }
@@ -646,54 +644,7 @@ mod tests {
     // Path resolution: the divergence this crate ends
 
     #[test]
-    fn config_root_resolution_accepts_only_absolute_xdg_paths() {
-        // Phase `an_absolute_xdg_config_home_wins`.
-        {
-            let dir = tmpdir();
-            assert_eq!(
-                config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
-                Some(dir.join("tilo"))
-            );
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Phase `a_relative_xdg_config_home_is_ignored_not_joined`.
-        {
-            // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
-            // moved with the working directory while `dirs::config_dir()` readers stayed on
-            // `$HOME/.config` — one file, two locations, silently.
-            let root =
-                config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
-                    .expect("falls back to $HOME/.config");
-            assert!(
-                root.is_absolute(),
-                "a settings path must never be relative: {root:?}"
-            );
-            assert_eq!(root, Path::new("/home/ada/.config/tilo"));
-        }
-        // Phase `an_empty_xdg_config_home_is_ignored`.
-        {
-            assert_eq!(
-                config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
-                Some(PathBuf::from("/home/ada/.config/tilo"))
-            );
-            assert_eq!(
-                config_root_from(None, None),
-                None,
-                "no usable variable and no home names no config root"
-            );
-        }
-        // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
-        {
-            let home = tilo_paths::home();
-            assert_eq!(
-                config_root(),
-                config_root_from(
-                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-                    home.as_deref().map(Path::as_os_str),
-                )
-            );
-        }
-        // Phase `a_session_settings_env_wins_over_the_remapped_xdg_root`.
+    fn a_session_settings_env_wins_over_the_remapped_xdg_root() {
         {
             let session = tmpdir();
             let xdg = tmpdir();
@@ -758,6 +709,35 @@ mod tests {
             assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
             assert_eq!(bool_at(&doc, "display", "mode"), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_refuses_unreadable_input_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A symlink loop fails even for privileged test runners, unlike mode bits.
+        symlink("settings.json", &path).unwrap();
+        let read_error = std::fs::read_to_string(&path).unwrap_err();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.raw_os_error(), read_error.raw_os_error());
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("settings.json")
+        );
+    }
+
+    #[test]
+    fn a_merge_does_not_replace_non_utf8_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bytes = b"{\"region\":\"\xff\"}";
+        std::fs::write(&path, bytes).unwrap();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     // Non-destructive writes

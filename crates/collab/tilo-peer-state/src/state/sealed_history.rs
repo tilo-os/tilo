@@ -53,7 +53,7 @@ pub(super) fn restore<S: Storage>(
     }
     sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
     if let Some(document) = core.documents.get_mut(route) {
-        document.sealed = ops;
+        document.sealed = ops.into();
     }
     Ok(())
 }

@@ -92,12 +92,15 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
-    /// "Send…" chose a target for the saved screenshot; the compositor
-    /// routes it over the device fabric or into the workspace.
+    /// "Send…" chose a device for the saved screenshot, and the capture
+    /// worker read it; the compositor offers it over the device fabric.
     ScreenshotSendRequested {
-        path: PathBuf,
-        target: ScreenshotSendTarget,
+        device: String,
+        screenshot: crate::shell::screenshot_send::PreparedScreenshot,
     },
+    /// "Send…" finished off the loop: the screenshot was copied into the
+    /// workspace files, or why not.
+    ScreenshotSent(Result<crate::shell::screenshot_send::SendReceipt, String>),
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -106,13 +109,106 @@ pub enum CaptureOutcome {
     Failed(String),
 }
 
+/// What a capture job hands back to the loop: applied there, in submission
+/// order, to the executor and the frame being built, and turned into the
+/// outcome the person sees.
+struct CaptureDone(ApplyOnLoop);
+
+/// The loop's half of a capture job.
+type ApplyOnLoop =
+    Box<dyn FnOnce(&mut CaptureExecutor, &mut FrameBuilder) -> Option<CaptureOutcome> + Send>;
+
+impl CaptureDone {
+    fn new(
+        apply: impl FnOnce(&mut CaptureExecutor, &mut FrameBuilder) -> Option<CaptureOutcome>
+        + Send
+        + 'static,
+    ) -> Self {
+        Self(Box::new(apply))
+    }
+
+    fn outcome(outcome: CaptureOutcome) -> Self {
+        Self::new(move |_, _| Some(outcome))
+    }
+
+    /// `result` as the outcome, or the failure it carries.
+    fn result(result: Result<CaptureOutcome, String>) -> Self {
+        Self::outcome(result.unwrap_or_else(CaptureOutcome::Failed))
+    }
+}
+
+impl super::capture_io::JobResult for CaptureDone {
+    fn panicked(message: String) -> Self {
+        Self::outcome(CaptureOutcome::Failed(message))
+    }
+}
+
+/// The newest finished artifact of one kind. Set by the capture worker only
+/// once its file is complete, and read by later jobs on the same worker, so
+/// "the last screenshot" is never a file still being written.
+#[derive(Clone, Default)]
+struct LastArtifact(std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>);
+
+impl LastArtifact {
+    fn get(&self) -> Option<PathBuf> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set(&self, path: PathBuf) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+    }
+}
+
+/// Who hears that a screenshot file was written.
+enum ScreenshotReceipt {
+    /// The shell's own capture: the receipt chrome and a `Saved` outcome.
+    Shell,
+    /// A portal caller's interactive selection, answered through the
+    /// `PortalScreenshotSaved` outcome.
+    PortalSelection,
+    /// A non-interactive portal request, answered once the file is complete
+    /// (or the capture failed). Runs on the capture worker.
+    PortalRequest(Box<dyn FnOnce(Result<PathBuf, String>) + Send>),
+}
+
+impl ScreenshotReceipt {
+    /// The capture failed before a file was started.
+    fn failed(self, error: String) -> Option<CaptureOutcome> {
+        match self {
+            Self::PortalRequest(deliver) => {
+                deliver(Err(error));
+                None
+            }
+            Self::Shell | Self::PortalSelection => Some(CaptureOutcome::Failed(error)),
+        }
+    }
+}
+
+/// A rendered screenshot whose file is still to be written.
+struct ScreenshotToWrite {
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+    preview: CapturePreview,
+}
+
 #[derive(Default)]
 pub struct CaptureExecutor {
     sequence: u64,
     live_mirrors: Vec<LiveMirror>,
     recording: Option<RecordingSession>,
-    last_recording: Option<PathBuf>,
-    last_screenshot: Option<PathBuf>,
+    last_recording: LastArtifact,
+    last_screenshot: LastArtifact,
+    /// Finishing recordings and writing or reading screenshots: work that
+    /// waits on the disk or a muxer, kept off the loop.
+    io: super::capture_io::CaptureIo<CaptureDone>,
     replay: Option<ReplaySession>,
     /// Requests from sandboxed app service connections. Kept separate from
     /// in-process widget handoffs: external clients cannot participate in the
@@ -192,7 +288,9 @@ struct ReplaySession {
 }
 
 struct BufferedReplayFrame {
-    access_unit: Vec<u8>,
+    /// Shared so saving "recent" hands the ring to the capture worker
+    /// without copying it.
+    access_unit: std::sync::Arc<[u8]>,
     keyframe: bool,
 }
 
@@ -267,24 +365,26 @@ impl CaptureExecutor {
     /// Wayland surface buffer (which could contain pixels outside the selected
     /// output) and the result is a finished file before its URI is returned.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when no output is captureable or compositor readback
-    /// and private PNG persistence cannot complete.
+    /// The pixels are read back now; the file is written on the capture
+    /// worker, and `deliver` is called there with its path once it is
+    /// complete, or with the error when no output is captureable or
+    /// compositor readback and private PNG persistence cannot complete.
     pub fn capture_portal_screenshot(
         &mut self,
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
         target: crate::portal::desktop_services::ScreenshotTarget,
         include_pointer: bool,
-    ) -> Result<PathBuf, String> {
+        deliver: impl FnOnce(Result<PathBuf, String>) + Send + 'static,
+    ) {
         let (viewport_width, viewport_height) = frame_builder.viewport();
         if !viewport_width.is_finite()
             || !viewport_height.is_finite()
             || viewport_width <= 0.0
             || viewport_height <= 0.0
         {
-            return Err("the compositor has no captureable output".into());
+            deliver(Err("the compositor has no captureable output".into()));
+            return;
         }
 
         // The portal frontend only supplies an intent, never app-controlled
@@ -321,12 +421,13 @@ impl CaptureExecutor {
             replay_command: None,
             screenshot_command: None,
         };
-        match self.execute_screenshot(frame_builder, clean_screen_scene, &intent)? {
-            CaptureOutcome::Saved(path) => Ok(path),
-            other => Err(format!(
-                "portal screenshot produced an unexpected outcome: {other:?}"
-            )),
-        }
+        // A file destination answers only through `deliver`.
+        let _ = self.execute_screenshot(
+            frame_builder,
+            clean_screen_scene,
+            &intent,
+            ScreenshotReceipt::PortalRequest(Box::new(deliver)),
+        );
     }
 
     /// Pick the compositor pixel currently under the trusted seat pointer.
@@ -487,6 +588,8 @@ impl CaptureExecutor {
             .cloned()
             .map(|id| CaptureOutcome::FloatingClosed { id })
             .collect();
+        let finished = self.io.take_finished();
+        outcomes.extend(self.apply_finished(frame_builder, finished));
         for id in &closed {
             frame_builder.on_floating_surface_host_message(
                 &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: id.clone() },
@@ -600,17 +703,34 @@ impl CaptureExecutor {
         for command in frame_builder.host_mut().take_screenshot_markup_commands() {
             let outcome = match command {
                 ui::widget::ScreenshotMarkupCommand::Save(export) => {
-                    let saved = next_screenshot_path(self.sequence).and_then(|path| {
-                        write_png(&path, export.width, export.height, &export.rgba).map(|()| path)
-                    });
-                    self.sequence = self.sequence.saturating_add(1);
-                    match saved {
+                    match next_screenshot_path(self.sequence) {
                         Ok(path) => {
-                            self.last_screenshot = Some(path.clone());
-                            frame_builder.host_mut().close_screenshot_markup();
-                            CaptureOutcome::Saved(path)
+                            self.sequence = self.sequence.saturating_add(1);
+                            // The markup stays open until its pixels are on
+                            // disk, so a failed save loses no edits.
+                            let last = self.last_screenshot.clone();
+                            self.io.submit(move || {
+                                let written =
+                                    write_png(&path, export.width, export.height, &export.rgba);
+                                if written.is_ok() {
+                                    last.set(path.clone());
+                                }
+                                CaptureDone::new(move |_, frame_builder| {
+                                    Some(match written {
+                                        Ok(()) => {
+                                            frame_builder.host_mut().close_screenshot_markup();
+                                            CaptureOutcome::Saved(path)
+                                        }
+                                        Err(error) => CaptureOutcome::Failed(error),
+                                    })
+                                })
+                            });
+                            None
                         }
-                        Err(error) => CaptureOutcome::Failed(error),
+                        Err(error) => {
+                            self.sequence = self.sequence.saturating_add(1);
+                            Some(CaptureOutcome::Failed(error))
+                        }
                     }
                 }
                 ui::widget::ScreenshotMarkupCommand::Copy(export) => {
@@ -619,23 +739,26 @@ impl CaptureExecutor {
                         export.height as usize,
                         &export.rgba,
                     ) {
-                        CaptureOutcome::Copied {
+                        Some(CaptureOutcome::Copied {
                             width: export.width,
                             height: export.height,
-                        }
+                        })
                     } else {
-                        CaptureOutcome::Failed("the clipboard refused marked-up pixels".into())
+                        Some(CaptureOutcome::Failed(
+                            "the clipboard refused marked-up pixels".into(),
+                        ))
                     }
                 }
-                ui::widget::ScreenshotMarkupCommand::OpenExternal => self
-                    .open_last_screenshot()
-                    .unwrap_or_else(CaptureOutcome::Failed),
+                ui::widget::ScreenshotMarkupCommand::OpenExternal => {
+                    self.open_last_screenshot();
+                    None
+                }
                 ui::widget::ScreenshotMarkupCommand::Cancel => {
                     frame_builder.host_mut().close_screenshot_markup();
-                    CaptureOutcome::ScreenshotMarkupClosed
+                    Some(CaptureOutcome::ScreenshotMarkupClosed)
                 }
             };
-            outcomes.push(outcome);
+            outcomes.extend(outcome);
         }
 
         let intents = frame_builder.take_capture_intents();
@@ -653,62 +776,55 @@ impl CaptureExecutor {
             if portal_intent {
                 self.portal_screenshot_armed = false;
             }
+            // Work that reads or writes a capture file runs on the capture
+            // worker and reports on a later frame: `None` here.
             let outcome = if let Some(command) = intent.screenshot_command {
                 match command {
-                    ScreenshotCommand::MarkupLast => self
-                        .open_last_screenshot_markup(frame_builder, &intent.regions)
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    ScreenshotCommand::OpenLast => self
-                        .open_last_screenshot()
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    ScreenshotCommand::PinLast => {
-                        match self.pin_last_screenshot(frame_builder, &intent.regions) {
-                            Ok(outcome) => {
-                                // The current clean scene already contains the
-                                // receipt proxy. Clearing widget state now
-                                // makes the next laid-out frame replace it
-                                // directly with the newly inserted surface.
-                                frame_builder.set_capture_screenshot_pinned();
-                                outcome
-                            }
-                            Err(error) => {
-                                frame_builder.set_capture_screenshot_pin_pending(false);
-                                CaptureOutcome::Failed(error)
-                            }
-                        }
+                    ScreenshotCommand::MarkupLast => {
+                        self.open_last_screenshot_markup(&intent.regions);
+                        None
                     }
-                    ScreenshotCommand::RevealLast => self
-                        .reveal_last_screenshot()
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    ScreenshotCommand::CopyLast => self
-                        .copy_last_screenshot(frame_builder)
-                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::OpenLast => {
+                        self.open_last_screenshot();
+                        None
+                    }
+                    ScreenshotCommand::PinLast => {
+                        self.pin_last_screenshot(&intent.regions);
+                        None
+                    }
+                    ScreenshotCommand::RevealLast => {
+                        self.reveal_last_screenshot();
+                        None
+                    }
+                    ScreenshotCommand::CopyLast => {
+                        self.copy_last_screenshot();
+                        None
+                    }
                     ScreenshotCommand::SendLast(target) => {
-                        self.last_screenshot.clone().map_or_else(
-                            || {
-                                CaptureOutcome::Failed(
-                                    "there is no saved screenshot to send".into(),
-                                )
-                            },
-                            |path| CaptureOutcome::ScreenshotSendRequested { path, target },
-                        )
+                        self.send_last_screenshot(
+                            target,
+                            crate::shell::screenshot_send::workspace_files_root(),
+                        );
+                        None
                     }
                 }
             } else if let Some(command) = intent.replay_command {
                 match command {
-                    ReplayCommand::Start => self
-                        .start_replay(frame_builder, clean_screen_scene, intent)
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    ReplayCommand::SaveRecent => self
-                        .save_replay(frame_builder)
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    ReplayCommand::Stop => self
-                        .stop_replay(frame_builder)
-                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ReplayCommand::Start => Some(
+                        self.start_replay(frame_builder, clean_screen_scene, intent)
+                            .unwrap_or_else(CaptureOutcome::Failed),
+                    ),
+                    ReplayCommand::SaveRecent => {
+                        self.save_replay().err().map(CaptureOutcome::Failed)
+                    }
+                    ReplayCommand::Stop => Some(
+                        self.stop_replay(frame_builder)
+                            .unwrap_or_else(CaptureOutcome::Failed),
+                    ),
                 }
             } else if let Some(command) = intent.recording_command {
                 match command {
-                    RecordingCommand::Start => {
+                    RecordingCommand::Start => Some(
                         match self.start_recording(frame_builder, clean_screen_scene, intent) {
                             Ok(outcome) => outcome,
                             Err(error) => {
@@ -718,23 +834,28 @@ impl CaptureExecutor {
                                 frame_builder.set_capture_recording_active(false);
                                 CaptureOutcome::Failed(error)
                             }
-                        }
-                    }
-                    RecordingCommand::Pause => self
-                        .set_recording_paused(frame_builder, true)
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    RecordingCommand::Resume => self
-                        .set_recording_paused(frame_builder, false)
-                        .unwrap_or_else(CaptureOutcome::Failed),
+                        },
+                    ),
+                    RecordingCommand::Pause => Some(
+                        self.set_recording_paused(frame_builder, true)
+                            .unwrap_or_else(CaptureOutcome::Failed),
+                    ),
+                    RecordingCommand::Resume => Some(
+                        self.set_recording_paused(frame_builder, false)
+                            .unwrap_or_else(CaptureOutcome::Failed),
+                    ),
                     RecordingCommand::Stop => self
                         .stop_recording(frame_builder)
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    RecordingCommand::OpenLast => self
-                        .open_last_recording()
-                        .unwrap_or_else(CaptureOutcome::Failed),
-                    RecordingCommand::RevealLast => self
-                        .reveal_last_recording()
-                        .unwrap_or_else(CaptureOutcome::Failed),
+                        .err()
+                        .map(CaptureOutcome::Failed),
+                    RecordingCommand::OpenLast => {
+                        self.open_last_recording();
+                        None
+                    }
+                    RecordingCommand::RevealLast => {
+                        self.reveal_last_recording();
+                        None
+                    }
                 }
             } else if intent.destination == CaptureDestination::FloatingWindow {
                 let id = format!("capture-mirror:{}", self.sequence);
@@ -766,19 +887,16 @@ impl CaptureExecutor {
                     tracking_source: None,
                     close_when_app_inactive: false,
                 });
-                CaptureOutcome::Floated { id }
+                Some(CaptureOutcome::Floated { id })
             } else {
-                self.execute_screenshot(frame_builder, clean_screen_scene, &intent)
-                    .unwrap_or_else(CaptureOutcome::Failed)
+                let receipt = if portal_intent {
+                    ScreenshotReceipt::PortalSelection
+                } else {
+                    ScreenshotReceipt::Shell
+                };
+                self.execute_screenshot(frame_builder, clean_screen_scene, &intent, receipt)
             };
-            if portal_intent {
-                outcomes.push(match outcome {
-                    CaptureOutcome::Saved(path) => CaptureOutcome::PortalScreenshotSaved(path),
-                    other => other,
-                });
-            } else {
-                outcomes.push(outcome);
-            }
+            outcomes.extend(outcome);
         }
 
         for mirror in &mut self.live_mirrors {
@@ -865,6 +983,75 @@ impl CaptureExecutor {
 
     pub fn has_live_mirrors(&self) -> bool {
         !self.live_mirrors.is_empty()
+    }
+
+    /// Whether capture work finished off the loop and waits for the next
+    /// frame to apply it: a finished recording's receipt, a written
+    /// screenshot, a decoded one to copy or pin.
+    pub fn has_finished_io(&self) -> bool {
+        self.io.has_finished()
+    }
+
+    /// Wait for the capture work still running off the loop and apply it.
+    /// Blocks: for offline renderers only, never the compositor loop.
+    pub fn finish_io_blocking(&mut self, frame_builder: &mut FrameBuilder) -> Vec<CaptureOutcome> {
+        let finished = self.io.wait_for_all();
+        self.apply_finished(frame_builder, finished)
+    }
+
+    fn apply_finished(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        finished: Vec<CaptureDone>,
+    ) -> Vec<CaptureOutcome> {
+        finished
+            .into_iter()
+            .filter_map(|done| (done.0)(self, frame_builder))
+            .collect()
+    }
+
+    /// Run `job` on the capture worker with the newest finished artifact in
+    /// `last`, after every write submitted before it; `missing` is the
+    /// failure when there is none.
+    fn with_last_artifact(
+        &mut self,
+        last: &LastArtifact,
+        missing: &'static str,
+        job: impl FnOnce(PathBuf) -> CaptureDone + Send + 'static,
+    ) {
+        let last = last.clone();
+        self.io.submit(move || match last.get() {
+            Some(path) => job(path),
+            None => CaptureDone::outcome(CaptureOutcome::Failed(missing.into())),
+        });
+    }
+
+    /// Decode the last screenshot on the capture worker, then hand its path
+    /// and pixels (or why there are none) to `apply` on the loop.
+    fn with_last_screenshot_pixels(
+        &mut self,
+        missing: &'static str,
+        apply: impl FnOnce(
+            &mut CaptureExecutor,
+            &mut FrameBuilder,
+            Result<(PathBuf, DecodedScreenshot), String>,
+        ) -> CaptureOutcome
+        + Send
+        + 'static,
+    ) {
+        let last = self.last_screenshot.clone();
+        self.io.submit(move || {
+            let decoded = last
+                .get()
+                .ok_or_else(|| missing.to_string())
+                .and_then(|path| {
+                    let pixels = read_png_rgba(&path)?;
+                    Ok((path, pixels))
+                });
+            CaptureDone::new(move |executor, frame_builder| {
+                Some(apply(executor, frame_builder, decoded))
+            })
+        });
     }
 
     pub fn is_recording(&self) -> bool {
@@ -1006,62 +1193,81 @@ impl CaptureExecutor {
         })
     }
 
-    fn stop_recording(
-        &mut self,
-        frame_builder: &mut FrameBuilder,
-    ) -> Result<CaptureOutcome, String> {
-        let Some(recording) = self.recording.take() else {
+    /// Stop taking frames now and finish the file on the capture worker:
+    /// draining the encoder and the muxer's end of stream wait up to 30 s.
+    /// The pill reads "Saving…" until the finished file is reported.
+    fn stop_recording(&mut self, frame_builder: &mut FrameBuilder) -> Result<(), String> {
+        let Some(mut recording) = self.recording.take() else {
             frame_builder.set_capture_recording_active(false);
             return Err("there is no active recording to stop".into());
         };
-        let mut recording = recording;
-        let path = recording.path.clone();
-        let frames = recording.frames;
-        let mut output = recording.output;
-        // The encoder may still hold the last frames; a failure to drain
-        // them must not cost the frames already written.
-        match recording.encoder.finish() {
-            Ok(tail) => {
-                for unit in tail {
-                    output.write_access_unit(&unit.data)?;
-                }
+        // The audio captured up to the stop belongs in the file.
+        let audio: Vec<(usize, Vec<u8>)> = recording
+            .audio_tracks
+            .iter_mut()
+            .filter_map(|track| {
+                track
+                    .capture
+                    .drain(true)
+                    .ok()
+                    .filter(|bytes| !bytes.is_empty())
+                    .map(|bytes| (track.mux_index, bytes))
+            })
+            .collect();
+        let RecordingSession {
+            encoder,
+            output,
+            path,
+            frames,
+            ..
+        } = recording;
+        let last = self.last_recording.clone();
+        self.io.submit(move || {
+            let finished = finish_recording(encoder, output, &path, &audio);
+            if finished.is_ok() {
+                last.set(path.clone());
             }
-            Err(error) => {
-                tracing::warn!("capture: recording ends without its last frames: {error}");
-            }
-        }
-        for track in &mut recording.audio_tracks {
-            if let Ok(bytes) = track.capture.drain(true)
-                && !bytes.is_empty()
-            {
-                output.write_pcm_audio(track.mux_index, &bytes)?;
-            }
-        }
-        output.finish(&path)?;
-        self.last_recording = Some(path.clone());
-        frame_builder.set_capture_recording_finished();
-        Ok(CaptureOutcome::RecordingStopped { path, frames })
+            CaptureDone::new(move |_, frame_builder| {
+                Some(match finished {
+                    Ok(()) => {
+                        frame_builder.set_capture_recording_finished();
+                        CaptureOutcome::RecordingStopped { path, frames }
+                    }
+                    Err(error) => {
+                        // Never a green receipt for an incomplete file.
+                        frame_builder.set_capture_recording_active(false);
+                        CaptureOutcome::Failed(error)
+                    }
+                })
+            })
+        });
+        Ok(())
     }
 
-    fn reveal_last_recording(&self) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_recording
-            .as_ref()
-            .ok_or_else(|| "there is no completed recording to reveal".to_string())?;
-        let folder = path
-            .parent()
-            .ok_or_else(|| format!("recording path has no parent: {}", path.display()))?;
-        xdg_open(folder).map_err(|error| format!("show recording in Files: {error}"))?;
-        Ok(CaptureOutcome::RecordingRevealed(path.clone()))
+    fn reveal_last_recording(&mut self) {
+        let last = self.last_recording.clone();
+        self.with_last_artifact(&last, "there is no completed recording to reveal", |path| {
+            CaptureDone::result(
+                path.parent()
+                    .ok_or_else(|| format!("recording path has no parent: {}", path.display()))
+                    .and_then(|folder| {
+                        xdg_open(folder)
+                            .map_err(|error| format!("show recording in Files: {error}"))
+                    })
+                    .map(|_| CaptureOutcome::RecordingRevealed(path.clone())),
+            )
+        });
     }
 
-    fn open_last_recording(&self) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_recording
-            .as_ref()
-            .ok_or_else(|| "there is no completed recording to play".to_string())?;
-        xdg_open(path).map_err(|error| format!("play recording {}: {error}", path.display()))?;
-        Ok(CaptureOutcome::RecordingOpened(path.clone()))
+    fn open_last_recording(&mut self) {
+        let last = self.last_recording.clone();
+        self.with_last_artifact(&last, "there is no completed recording to play", |path| {
+            CaptureDone::result(
+                xdg_open(&path)
+                    .map_err(|error| format!("play recording {}: {error}", path.display()))
+                    .map(|_| CaptureOutcome::RecordingOpened(path.clone())),
+            )
+        });
     }
 
     fn start_replay(
@@ -1114,7 +1320,10 @@ impl CaptureExecutor {
         Ok(CaptureOutcome::ReplayStarted)
     }
 
-    fn save_replay(&mut self, frame_builder: &mut FrameBuilder) -> Result<CaptureOutcome, String> {
+    /// Save the buffered "recent" seconds: the ring is handed to the capture
+    /// worker, which pushes its frames into a fresh muxer and finishes the
+    /// file while buffering goes on.
+    fn save_replay(&mut self) -> Result<(), String> {
         let sequence = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
         let replay = self
@@ -1126,48 +1335,48 @@ impl CaptureExecutor {
         }
         let include_audio = !replay.audio_tracks.is_empty();
         let path = next_replay_path(sequence, include_audio)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
-        }
-        let audio_track_names = replay
-            .audio_tracks
-            .iter()
-            .map(|track| track.source.track_name().to_string())
-            .collect();
-        let mut output = RecordingOutput::new(
-            &path,
-            replay.encoder.codec(),
-            replay.width,
-            replay.height,
-            REPLAY_FPS,
-            audio_track_names,
-        );
-        let audio: Vec<Vec<u8>> = replay
-            .audio_tracks
-            .iter()
-            .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
-            .collect();
-        for (frame_index, frame) in replay.frames.iter().enumerate() {
-            output.write_access_unit(&frame.access_unit)?;
-            for (track_index, pcm) in audio.iter().enumerate() {
-                let start = frame_index.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
-                let end = start.saturating_add(AUDIO_BYTES_PER_VIDEO_FRAME);
-                let samples = pcm
-                    .get(start..end)
-                    .ok_or_else(|| "replay audio frame is incomplete".to_string())?;
-                output.write_pcm_audio(track_index, samples)?;
-            }
-        }
-        output.finish(&path)?;
-        let seconds = replay
+        let clip = ReplayClip {
+            codec: replay.encoder.codec(),
+            width: replay.width,
+            height: replay.height,
+            audio_track_names: replay
+                .audio_tracks
+                .iter()
+                .map(|track| track.source.track_name().to_string())
+                .collect(),
+            frames: replay
+                .frames
+                .iter()
+                .map(|frame| std::sync::Arc::clone(&frame.access_unit))
+                .collect(),
+            audio: replay
+                .audio_tracks
+                .iter()
+                .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
+                .collect(),
+        };
+        let seconds = clip
             .frames
             .len()
             .div_ceil(REPLAY_FPS as usize)
             .min(REPLAY_SECONDS) as u8;
-        self.last_recording = Some(path.clone());
-        frame_builder.set_capture_replay_saved();
-        Ok(CaptureOutcome::ReplaySaved { path, seconds })
+        let last = self.last_recording.clone();
+        self.io.submit(move || {
+            let saved = clip.write(&path);
+            if saved.is_ok() {
+                last.set(path.clone());
+            }
+            CaptureDone::new(move |_, frame_builder| {
+                Some(match saved {
+                    Ok(()) => {
+                        frame_builder.set_capture_replay_saved();
+                        CaptureOutcome::ReplaySaved { path, seconds }
+                    }
+                    Err(error) => CaptureOutcome::Failed(error),
+                })
+            })
+        });
+        Ok(())
     }
 
     fn stop_replay(&mut self, frame_builder: &mut FrameBuilder) -> Result<CaptureOutcome, String> {
@@ -1178,56 +1387,106 @@ impl CaptureExecutor {
         Ok(CaptureOutcome::ReplayStopped)
     }
 
-    fn reveal_last_screenshot(&self) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_screenshot
-            .as_ref()
-            .ok_or_else(|| "there is no saved screenshot to reveal".to_string())?;
-        let folder = path
-            .parent()
-            .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))?;
-        xdg_open(folder).map_err(|error| format!("show screenshot in Files: {error}"))?;
-        Ok(CaptureOutcome::ScreenshotRevealed(path.clone()))
+    /// "Send…" for the last screenshot, after any screenshot still being
+    /// written, so the one sent is the one the person just took. Saving into
+    /// the workspace files copies onto the workspace mount, which may be
+    /// remote, so the copy runs on the capture worker. A device send reads
+    /// the screenshot there too, and hands what it read to the loop, which
+    /// owns the device fabric.
+    fn send_last_screenshot(&mut self, target: ScreenshotSendTarget, workspace_root: PathBuf) {
+        let last = self.last_screenshot.clone();
+        self.with_last_artifact(&last, "there is no saved screenshot to send", move |path| {
+            CaptureDone::outcome(match target {
+                ScreenshotSendTarget::Workspace => {
+                    CaptureOutcome::ScreenshotSent(crate::shell::screenshot_send::route(
+                        &path,
+                        &target,
+                        &mut crate::shell::screenshot_send::WorkspaceFilesBridge { workspace_root },
+                    ))
+                }
+                ScreenshotSendTarget::Device(device) => CaptureOutcome::ScreenshotSendRequested {
+                    device,
+                    screenshot: crate::shell::screenshot_send::PreparedScreenshot::new(
+                        crate::shell::screenshot_send::prepare_device_send(&path),
+                    ),
+                },
+            })
+        });
     }
 
-    fn open_last_screenshot(&self) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_screenshot
-            .as_ref()
-            .ok_or_else(|| "there is no saved screenshot to open".to_string())?;
-        xdg_open(path).map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
-        Ok(CaptureOutcome::ScreenshotOpened(path.clone()))
+    fn reveal_last_screenshot(&mut self) {
+        let last = self.last_screenshot.clone();
+        self.with_last_artifact(&last, "there is no saved screenshot to reveal", |path| {
+            CaptureDone::result(
+                path.parent()
+                    .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))
+                    .and_then(|folder| {
+                        xdg_open(folder)
+                            .map_err(|error| format!("show screenshot in Files: {error}"))
+                    })
+                    .map(|_| CaptureOutcome::ScreenshotRevealed(path.clone())),
+            )
+        });
     }
 
-    fn open_last_screenshot_markup(
-        &self,
-        frame_builder: &mut FrameBuilder,
-        spawn_regions: &[Rect],
-    ) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_screenshot
-            .as_ref()
-            .ok_or_else(|| "there is no saved screenshot to mark up".to_string())?;
-        let (width, height, rgba) = read_png_rgba(path)?;
-        frame_builder.host_mut().open_screenshot_markup(
-            std::sync::Arc::from(rgba),
-            width,
-            height,
-            region_bounds(spawn_regions),
+    fn open_last_screenshot(&mut self) {
+        let last = self.last_screenshot.clone();
+        self.with_last_artifact(&last, "there is no saved screenshot to open", |path| {
+            CaptureDone::result(
+                xdg_open(&path)
+                    .map_err(|error| format!("open screenshot {}: {error}", path.display()))
+                    .map(|_| CaptureOutcome::ScreenshotOpened(path.clone())),
+            )
+        });
+    }
+
+    fn open_last_screenshot_markup(&mut self, spawn_regions: &[Rect]) {
+        let spawn_from = region_bounds(spawn_regions);
+        self.with_last_screenshot_pixels(
+            "there is no saved screenshot to mark up",
+            move |_, frame_builder, decoded| match decoded {
+                Ok((path, (width, height, rgba))) => {
+                    frame_builder.host_mut().open_screenshot_markup(
+                        std::sync::Arc::from(rgba),
+                        width,
+                        height,
+                        spawn_from,
+                    );
+                    CaptureOutcome::ScreenshotMarkupOpened(path)
+                }
+                Err(error) => CaptureOutcome::Failed(error),
+            },
         );
-        Ok(CaptureOutcome::ScreenshotMarkupOpened(path.clone()))
     }
 
-    fn pin_last_screenshot(
+    fn pin_last_screenshot(&mut self, spawn_regions: &[Rect]) {
+        let spawn_from = region_bounds(spawn_regions);
+        self.with_last_screenshot_pixels(
+            "there is no saved screenshot to pin",
+            move |executor, frame_builder, decoded| match decoded {
+                Ok((_, pixels)) => {
+                    let outcome = executor.pin_screenshot(frame_builder, spawn_from, pixels);
+                    // The current clean scene already contains the receipt
+                    // proxy. Clearing widget state now makes the next laid-out
+                    // frame replace it directly with the newly inserted
+                    // surface.
+                    frame_builder.set_capture_screenshot_pinned();
+                    outcome
+                }
+                Err(error) => {
+                    frame_builder.set_capture_screenshot_pin_pending(false);
+                    CaptureOutcome::Failed(error)
+                }
+            },
+        );
+    }
+
+    fn pin_screenshot(
         &mut self,
         frame_builder: &mut FrameBuilder,
-        spawn_regions: &[Rect],
-    ) -> Result<CaptureOutcome, String> {
-        let path = self
-            .last_screenshot
-            .as_ref()
-            .ok_or_else(|| "there is no saved screenshot to pin".to_string())?;
-        let (width, height, rgba) = read_png_rgba(path)?;
+        spawn_from: Option<Rect>,
+        (width, height, rgba): DecodedScreenshot,
+    ) -> CaptureOutcome {
         let preview = capture_preview(&rgba, width, height);
         let id = format!("pinned-capture:{}", self.sequence);
         self.sequence = self.sequence.saturating_add(1);
@@ -1246,34 +1505,34 @@ impl CaptureExecutor {
                 rgba: std::sync::Arc::from(rgba),
                 width,
                 height,
-                spawn_from: region_bounds(spawn_regions),
+                spawn_from,
                 kind: CaptureSurfaceKind::Pinned { preview },
             });
-        Ok(CaptureOutcome::Pinned { id })
+        CaptureOutcome::Pinned { id }
     }
 
-    fn copy_last_screenshot(
-        &self,
-        frame_builder: &mut FrameBuilder,
-    ) -> Result<CaptureOutcome, String> {
+    fn copy_last_screenshot(&mut self) {
         // Decode the finished artifact rather than recapturing a desktop that
         // may already have changed. Keeping the raw frame resident would cost
         // as much as 256 MiB for an 8192×8192 extended-canvas screenshot.
-        let path = self
-            .last_screenshot
-            .as_ref()
-            .ok_or_else(|| "there is no saved screenshot to copy".to_string())?;
-        let (width, height, rgba) = read_png_rgba(path)?;
-        if !ui::clipboard_copy_image(width as usize, height as usize, &rgba) {
-            return Err("the clipboard refused image data".into());
-        }
-        frame_builder.set_capture_screenshot_finished(
-            true,
-            width,
-            height,
-            capture_preview(&rgba, width, height),
+        self.with_last_screenshot_pixels(
+            "there is no saved screenshot to copy",
+            |_, frame_builder, decoded| {
+                let copied = decoded.and_then(|(_, (width, height, rgba))| {
+                    if !ui::clipboard_copy_image(width as usize, height as usize, &rgba) {
+                        return Err("the clipboard refused image data".to_string());
+                    }
+                    frame_builder.set_capture_screenshot_finished(
+                        true,
+                        width,
+                        height,
+                        capture_preview(&rgba, width, height),
+                    );
+                    Ok(CaptureOutcome::Copied { width, height })
+                });
+                copied.unwrap_or_else(CaptureOutcome::Failed)
+            },
         );
-        Ok(CaptureOutcome::Copied { width, height })
     }
 
     /// The pixels a screenshot of `intent` holds — straight RGBA with its
@@ -1299,14 +1558,21 @@ impl CaptureExecutor {
         Ok((render_capture_rgba(&mut renderer, &composed), width, height))
     }
 
+    /// Take the screenshot `intent` asks for. The pixels are read back now;
+    /// a file is encoded and written on the capture worker, and its receipt
+    /// lands on a later frame (`None` here).
     fn execute_screenshot(
         &mut self,
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
         intent: &CaptureIntent,
-    ) -> Result<CaptureOutcome, String> {
-        let (rgba, width, height) =
-            Self::render_screenshot(frame_builder, clean_screen_scene, intent)?;
+        receipt: ScreenshotReceipt,
+    ) -> Option<CaptureOutcome> {
+        let rendered = Self::render_screenshot(frame_builder, clean_screen_scene, intent);
+        let (rgba, width, height) = match rendered {
+            Ok(rendered) => rendered,
+            Err(error) => return receipt.failed(error),
+        };
         let preview = capture_preview(&rgba, width, height);
         match intent.destination {
             CaptureDestination::Clipboard => {
@@ -1314,33 +1580,161 @@ impl CaptureExecutor {
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
                     play_shutter(frame_builder);
-                    Ok(CaptureOutcome::Copied { width, height })
+                    Some(CaptureOutcome::Copied { width, height })
                 } else {
-                    Err("the clipboard refused image data".into())
+                    receipt.failed("the clipboard refused image data".into())
                 }
             }
             CaptureDestination::File | CaptureDestination::FileAndClipboard => {
-                let path = next_screenshot_path(self.sequence)?;
+                let path = match next_screenshot_path(self.sequence) {
+                    Ok(path) => path,
+                    Err(error) => return receipt.failed(error),
+                };
                 self.sequence = self.sequence.saturating_add(1);
-                write_png(&path, width, height, &rgba)?;
-                self.last_screenshot = Some(path.clone());
-                // The saved file is the durable result; a clipboard that
-                // refuses the pixels leaves it in place, so it is logged
-                // rather than failing the capture.
-                if intent.destination == CaptureDestination::FileAndClipboard
-                    && !ui::clipboard_copy_image(width as usize, height as usize, &rgba)
-                {
-                    tracing::warn!(path = %path.display(), "screenshot saved but not copied");
-                }
-                frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                // The shutter answers the press now; the receipt waits for
+                // the file.
                 play_shutter(frame_builder);
-                Ok(CaptureOutcome::Saved(path))
+                let also_copy = intent.destination == CaptureDestination::FileAndClipboard;
+                self.write_screenshot(
+                    ScreenshotToWrite {
+                        path,
+                        width,
+                        height,
+                        rgba,
+                        preview,
+                    },
+                    also_copy,
+                    receipt,
+                );
+                None
             }
             CaptureDestination::FloatingWindow => {
-                Err("floating captures must be started as live mirrors".into())
+                receipt.failed("floating captures must be started as live mirrors".into())
             }
         }
     }
+
+    /// Encode and write `shot` on the capture worker. Once the file is
+    /// complete it becomes the last screenshot and `receipt` hears of it.
+    fn write_screenshot(
+        &mut self,
+        shot: ScreenshotToWrite,
+        also_copy: bool,
+        receipt: ScreenshotReceipt,
+    ) {
+        let last = self.last_screenshot.clone();
+        self.io.submit(move || {
+            let ScreenshotToWrite {
+                path,
+                width,
+                height,
+                rgba,
+                preview,
+            } = shot;
+            let written = write_png(&path, width, height, &rgba);
+            if written.is_ok() {
+                last.set(path.clone());
+            }
+            let announce = match receipt {
+                ScreenshotReceipt::PortalRequest(deliver) => {
+                    deliver(written.clone().map(|()| path.clone()));
+                    None
+                }
+                ScreenshotReceipt::Shell => Some(CaptureOutcome::Saved(path.clone())),
+                ScreenshotReceipt::PortalSelection => {
+                    Some(CaptureOutcome::PortalScreenshotSaved(path.clone()))
+                }
+            };
+            CaptureDone::new(move |_, frame_builder| match written {
+                Ok(()) => {
+                    // The saved file is the durable result; a clipboard that
+                    // refuses the pixels leaves it in place, so it is logged
+                    // rather than failing the capture.
+                    if also_copy
+                        && !ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                    {
+                        tracing::warn!(path = %path.display(), "screenshot saved but not copied");
+                    }
+                    frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                    announce
+                }
+                // A portal request heard its failure on the worker.
+                Err(error) => announce.map(|_| CaptureOutcome::Failed(error)),
+            })
+        });
+    }
+}
+
+/// A decoded screenshot: width, height and straight RGBA.
+type DecodedScreenshot = (u32, u32, Vec<u8>);
+
+/// The buffered "recent" seconds, handed to the capture worker to write.
+struct ReplayClip {
+    codec: media::StreamCodec,
+    width: u32,
+    height: u32,
+    audio_track_names: Vec<String>,
+    frames: Vec<std::sync::Arc<[u8]>>,
+    /// Per audio track, the PCM for the frames.
+    audio: Vec<Vec<u8>>,
+}
+
+impl ReplayClip {
+    /// Push every frame and its audio into a fresh muxer and finish the
+    /// file at `path`. Blocks on the disk and the muxer: worker only.
+    fn write(self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
+        }
+        let mut output = RecordingOutput::new(
+            path,
+            self.codec,
+            self.width,
+            self.height,
+            REPLAY_FPS,
+            self.audio_track_names,
+        );
+        for (frame_index, frame) in self.frames.iter().enumerate() {
+            output.write_access_unit(frame)?;
+            for (track_index, pcm) in self.audio.iter().enumerate() {
+                let start = frame_index.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
+                let end = start.saturating_add(AUDIO_BYTES_PER_VIDEO_FRAME);
+                let samples = pcm
+                    .get(start..end)
+                    .ok_or_else(|| "replay audio frame is incomplete".to_string())?;
+                output.write_pcm_audio(track_index, samples)?;
+            }
+        }
+        output.finish(path)
+    }
+}
+
+/// Drain the encoder's last frames into `output`, add the audio captured up
+/// to the stop, and finish the file at `path`. Blocks on the encoder and the
+/// muxer for up to 30 s each: worker only.
+fn finish_recording(
+    encoder: crate::network::encoder::VideoEncoder,
+    mut output: RecordingOutput,
+    path: &Path,
+    audio: &[(usize, Vec<u8>)],
+) -> Result<(), String> {
+    // The encoder may still hold the last frames; a failure to drain them
+    // must not cost the frames already written.
+    match encoder.finish() {
+        Ok(tail) => {
+            for unit in tail {
+                output.write_access_unit(&unit.data)?;
+            }
+        }
+        Err(error) => {
+            tracing::warn!("capture: recording ends without its last frames: {error}");
+        }
+    }
+    for (mux_index, bytes) in audio {
+        output.write_pcm_audio(*mux_index, bytes)?;
+    }
+    output.finish(path)
 }
 
 /// The shutter sound for a screenshot the person just took.
@@ -1609,7 +2003,7 @@ fn record_replay_frame(
             let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &unit.data);
             replay.video_bytes = replay.video_bytes.saturating_add(unit.data.len());
             replay.frames.push_back(BufferedReplayFrame {
-                access_unit: unit.data,
+                access_unit: std::sync::Arc::from(unit.data),
                 keyframe,
             });
         }
@@ -2362,10 +2756,14 @@ mod tests {
         }
         // Phase `screenshot_open_requires_a_finished_file_artifact`.
         {
-            let executor = CaptureExecutor::default();
+            let mut executor = CaptureExecutor::default();
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            executor.open_last_screenshot();
             assert_eq!(
-                executor.open_last_screenshot().unwrap_err(),
-                "there is no saved screenshot to open"
+                executor.finish_io_blocking(&mut frame_builder),
+                vec![CaptureOutcome::Failed(
+                    "there is no saved screenshot to open".into()
+                )]
             );
         }
         // Phase `pin_uses_finished_pixels_and_does_not_create_a_live_mirror`.
@@ -2376,18 +2774,17 @@ mod tests {
             write_png(&path, 2, 1, &pixels).unwrap();
 
             let mut executor = CaptureExecutor::default();
-            executor.last_screenshot = Some(path);
+            executor.last_screenshot.set(path);
             let mut frame_builder = FrameBuilder::new((800, 600));
             let spawn = Rect::new(280.0, 6.0, 326.0, 30.0);
-            let outcome = executor
-                .pin_last_screenshot(&mut frame_builder, &[spawn])
-                .unwrap();
+            executor.pin_last_screenshot(&[spawn]);
+            let outcome = executor.finish_io_blocking(&mut frame_builder);
 
             assert_eq!(
                 outcome,
-                CaptureOutcome::Pinned {
+                vec![CaptureOutcome::Pinned {
                     id: "pinned-capture:0".into()
-                }
+                }]
             );
             assert!(
                 executor.live_mirrors.is_empty(),
@@ -2416,6 +2813,208 @@ mod tests {
             assert_eq!(preview.pixels[18], [0, 150, 60, 255]);
             assert_eq!(preview.pixels[23], [150, 150, 160, 255]);
         }
+    }
+
+    /// Pinning the last screenshot decodes it on the capture worker: while
+    /// its bytes do not arrive, every frame returns without the pin, and the
+    /// pin lands on the first frame after they do.
+    #[test]
+    fn reading_the_last_screenshot_never_holds_a_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let finished = directory.path().join("finished.png");
+        write_png(&finished, 2, 1, &[18, 32, 64, 255, 240, 120, 30, 255]).unwrap();
+        let bytes = std::fs::read(&finished).unwrap();
+        let hydrating =
+            crate::shell::disk_sync_guard::blocking_source(directory.path(), "hydrating.png");
+
+        let mut executor = CaptureExecutor::default();
+        executor.last_screenshot.set(hydrating.clone());
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        executor.pin_last_screenshot(&[Rect::new(280.0, 6.0, 326.0, 30.0)]);
+        for _ in 0..3 {
+            let mut scene = frame_builder.paint();
+            let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
+            assert!(
+                outcomes.is_empty(),
+                "nothing to report while the read blocks"
+            );
+        }
+        assert!(
+            executor.io.is_busy(),
+            "the decode still waits for its bytes"
+        );
+
+        std::fs::write(&hydrating, bytes).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !executor.has_finished_io() {
+            assert!(Instant::now() < deadline, "the decode never finished");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut scene = frame_builder.paint();
+        let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
+        assert_eq!(
+            outcomes,
+            vec![CaptureOutcome::Pinned {
+                id: "pinned-capture:0".into()
+            }]
+        );
+        assert_eq!(frame_builder.host_mut().capture_mirror_count_for_tests(), 1);
+    }
+
+    /// "Save to this workspace's files" copies onto the workspace mount,
+    /// which may be a peer's: the copy runs on the capture worker. While
+    /// the worker is held up, frames return and nothing lands in the
+    /// workspace; once it runs, the copy is reported on a later frame.
+    #[test]
+    fn saving_a_screenshot_into_the_workspace_never_holds_a_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let shot = directory.path().join("Tilo Screenshot.png");
+        write_png(&shot, 2, 1, &[18, 32, 64, 255, 240, 120, 30, 255]).unwrap();
+        let workspace = directory.path().join("workspace");
+
+        let mut executor = CaptureExecutor::default();
+        executor.last_screenshot.set(shot.clone());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        executor.io.submit(move || {
+            let _ = held.recv();
+            CaptureDone::new(|_, _| None)
+        });
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        executor.send_last_screenshot(ScreenshotSendTarget::Workspace, workspace.clone());
+        for _ in 0..3 {
+            let mut scene = frame_builder.paint();
+            let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
+            assert!(
+                outcomes.is_empty(),
+                "nothing to report while the copy waits"
+            );
+        }
+        let landed = workspace
+            .join(crate::shell::screenshot_send::WORKSPACE_SCREENSHOTS_DIR)
+            .join("Tilo Screenshot.png");
+        assert!(
+            !landed.exists(),
+            "the copy did not run on the frame's thread"
+        );
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut outcomes = Vec::new();
+        while outcomes.is_empty() {
+            assert!(Instant::now() < deadline, "the copy never finished");
+            std::thread::sleep(Duration::from_millis(1));
+            let mut scene = frame_builder.paint();
+            outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
+        }
+        assert_eq!(
+            outcomes,
+            vec![CaptureOutcome::ScreenshotSent(Ok(
+                crate::shell::screenshot_send::SendReceipt::Saved(landed.clone())
+            ))]
+        );
+        assert_eq!(
+            std::fs::read(&landed).unwrap(),
+            std::fs::read(&shot).unwrap()
+        );
+    }
+
+    /// "Send…" to a device reads the screenshot on the capture worker, as
+    /// the copy into the workspace does: while the worker is held up,
+    /// frames return with nothing to offer. The outcome then carries what
+    /// the worker read, and the loop's offer reads no file: the screenshot
+    /// may be gone from disk by then and the offer still holds its bytes.
+    #[test]
+    fn sending_a_screenshot_to_a_device_never_reads_it_on_the_loop() {
+        struct Phone {
+            offered: Vec<Vec<u8>>,
+        }
+        impl crate::shell::screenshot_send::ScreenshotSendBridge for Phone {
+            fn devices(&self) -> Vec<ui::widget::ScreenshotSendDevice> {
+                vec![ui::widget::ScreenshotSendDevice {
+                    id: "device-phone".into(),
+                    label: "Ada's phone".into(),
+                }]
+            }
+            fn offer_to_device(
+                &mut self,
+                id: &str,
+                screenshot: crate::shell::device_fabric_runtime::PreparedNearbyDrop,
+            ) -> Result<(), String> {
+                if id != "device-phone" {
+                    return Err(format!("offered to {id}"));
+                }
+                let crate::shell::device_fabric_runtime::PreparedNearbyDrop::Inline {
+                    bytes, ..
+                } = screenshot
+                else {
+                    return Err("a small screenshot is offered inline".into());
+                };
+                self.offered.push(bytes);
+                Ok(())
+            }
+            fn save_to_workspace(&mut self, _path: &std::path::Path) -> Result<PathBuf, String> {
+                Err("a device send never saves to the workspace".into())
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let shot = directory.path().join("Tilo Screenshot.png");
+        write_png(&shot, 2, 1, &[18, 32, 64, 255, 240, 120, 30, 255]).unwrap();
+        let bytes = std::fs::read(&shot).unwrap();
+
+        let mut executor = CaptureExecutor::default();
+        executor.last_screenshot.set(shot.clone());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        executor.io.submit(move || {
+            let _ = held.recv();
+            CaptureDone::new(|_, _| None)
+        });
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        executor.send_last_screenshot(
+            ScreenshotSendTarget::Device("device-phone".into()),
+            directory.path().join("workspace"),
+        );
+        for _ in 0..3 {
+            let mut scene = frame_builder.paint();
+            let (outcomes, _) = executor.execute_ready(&mut frame_builder, &mut scene);
+            assert!(outcomes.is_empty(), "nothing to offer while the read waits");
+        }
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut outcomes = Vec::new();
+        while outcomes.is_empty() {
+            assert!(Instant::now() < deadline, "the read never finished");
+            std::thread::sleep(Duration::from_millis(1));
+            let mut scene = frame_builder.paint();
+            outcomes = executor.execute_ready(&mut frame_builder, &mut scene).0;
+        }
+        let [CaptureOutcome::ScreenshotSendRequested { device, screenshot }] = outcomes.as_slice()
+        else {
+            panic!("a device send is handed to the loop: {outcomes:?}");
+        };
+        assert_eq!(device, "device-phone");
+
+        std::fs::remove_file(&shot).unwrap();
+        let mut phone = Phone {
+            offered: Vec::new(),
+        };
+        let receipt =
+            crate::shell::screenshot_send::offer(device, screenshot.take(), &mut phone).unwrap();
+        assert_eq!(
+            receipt,
+            crate::shell::screenshot_send::SendReceipt::Offered {
+                device: "Ada's phone".into()
+            }
+        );
+        assert_eq!(
+            phone.offered,
+            vec![bytes],
+            "the worker's read is what is offered"
+        );
     }
 
     #[test]
@@ -2804,7 +3403,7 @@ mod tests {
         {
             let mut frames: VecDeque<_> = (0..REPLAY_FRAMES + 17)
                 .map(|index| BufferedReplayFrame {
-                    access_unit: vec![index as u8],
+                    access_unit: std::sync::Arc::from(vec![index as u8]),
                     keyframe: index % REPLAY_KEYFRAME_INTERVAL as usize == 0,
                 })
                 .collect();

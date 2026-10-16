@@ -4812,8 +4812,15 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
     let forks = ["wayland-backend", "rustls-native-certs"];
     // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
-    let git_forks = ["accesskit", "atspi", "rustypipe"];
+    let git_forks = ["accesskit", "atspi"];
+    // A fork only an engine library's graph uses (rustypipe, which Music and
+    // Tube load from the YouTube engine) is not the SDK's and stays out.
+    let engine_forks = ["rustypipe"];
     let pinned_as_workspace = |patches: &toml::Table| {
+        for name in engine_forks {
+            assert!(workspace_patches.contains_key(name), "{name}");
+            assert!(!patches.contains_key(name), "{name}");
+        }
         for name in git_forks {
             assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
             assert!(

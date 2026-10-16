@@ -145,6 +145,18 @@ pub enum PdfEffect {
         #[param("1-based page")]
         page: usize,
     },
+    /// Read text
+    ///
+    /// Answers with the text of the PDF's pages as its file holds them,
+    /// page by page, at most 50 pages at a time: read on from the `next` an
+    /// answer gives. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadText {
+        #[param("The first page to read, 1-based; the first page when omitted")]
+        from_page: Option<usize>,
+        #[param("The last page to read, 1-based; 50 pages on when omitted")]
+        to_page: Option<usize>,
+    },
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.
@@ -364,6 +376,7 @@ pub fn add_comment_action(
 }
 
 /// Replace a comment's text with plain `body`.
+#[cfg(test)]
 pub fn set_comment_body_action(id: &str, body: &str) -> Invoke<PdfMarkup> {
     let paths = comment(id);
     group(&[
@@ -411,6 +424,7 @@ pub fn set_comment_resolved_action(id: &str, resolved: bool) -> Invoke<PdfMarkup
     edit(&comment(id).resolved.set(resolved))
 }
 
+#[cfg(test)]
 pub fn add_reply_action(comment_id: &str, body: &str) -> Invoke<PdfMarkup> {
     add_reply_action_with_id(comment_id, &crate::model::Reply::new_id(), body)
 }
@@ -464,6 +478,7 @@ pub fn move_page_plan_action(id: &str, after_id: Option<&str>) -> Invoke<PdfMark
 }
 
 /// Turn page occurrence `id` to `degrees` clockwise.
+#[cfg(test)]
 pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
     edit(
         &PdfMarkup::paths()

@@ -598,68 +598,6 @@ impl AgentWork {
         })
     }
 
-    /// This record as an agent reports it.
-    #[must_use]
-    pub fn to_update(&self) -> crate::record::WorkUpdate {
-        let (state, app, did, about) = match &self.state {
-            AgentWorkState::Taken => ("taken", None, None, None),
-            AgentWorkState::Waiting { app } => ("waiting", Some(app.clone()), None, None),
-            AgentWorkState::Doing { did, about } => {
-                ("doing", None, Some(did.clone()), Some(about.clone()))
-            }
-            AgentWorkState::Done { did } => ("done", None, Some(did.clone()), None),
-            AgentWorkState::Refused => ("refused", None, None, None),
-            AgentWorkState::ProviderFinished { outcome } => {
-                use crate::agent_stream::AgentFinish;
-                let state = match outcome {
-                    AgentFinish::Complete => "provider_complete",
-                    AgentFinish::Truncated => "provider_truncated",
-                    AgentFinish::Refused => "provider_refused",
-                    AgentFinish::Cancelled => "provider_cancelled",
-                    AgentFinish::Failed => "provider_failed",
-                };
-                (state, None, None, None)
-            }
-        };
-        crate::record::WorkUpdate {
-            state: state.into(),
-            app,
-            did,
-            about,
-            route: self.reasoning.as_ref().map(|reasoning| {
-                match reasoning.route {
-                    AgentRoute::Model => "model",
-                    AgentRoute::Floor => "floor",
-                }
-                .to_owned()
-            }),
-            why: self
-                .reasoning
-                .as_ref()
-                .map(|reasoning| reasoning.why.clone()),
-            trace: self
-                .trace
-                .iter()
-                .map(|step| {
-                    let (outcome, why) = match &step.outcome {
-                        AgentStepOutcome::Asked => ("asked", None),
-                        AgentStepOutcome::Applied => ("applied", None),
-                        AgentStepOutcome::NoChange => ("no_change", None),
-                        AgentStepOutcome::Refused { why } => ("refused", Some(why.clone())),
-                    };
-                    crate::record::StepUpdate {
-                        id: step.id.clone(),
-                        sequence: step.sequence,
-                        resource: step.resource.clone(),
-                        label: step.label.clone(),
-                        outcome: outcome.into(),
-                        why,
-                    }
-                })
-                .collect(),
-        }
-    }
-
     /// Its state, reasoning and trace.
     #[must_use]
     pub fn into_parts(self) -> (AgentWorkState, Option<AgentReasoning>, Vec<AgentStep>) {

@@ -43,6 +43,14 @@ pub struct Manifest {
     /// kind listed here; a manifest without the block declares none.
     #[serde(default, skip_serializing_if = "Resources::is_empty")]
     pub resources: Resources,
+    /// `[[offers]]` — actions the app offers while it is not running. The
+    /// action catalogue lists them for an installed app that has not
+    /// published its own actions in a workspace yet, and invoking one starts
+    /// the app and delivers the invocation once it publishes the action.
+    /// The running app's published action is what admits it; a manifest
+    /// without the table offers nothing until the app runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<OfferedAction>,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -1118,6 +1126,78 @@ impl Resources {
     }
 }
 
+/// One `[[offers]]` entry: an action the app publishes at a stable address,
+/// offered while the app is not running.
+///
+/// ```toml
+/// [[offers]]
+/// resource = "calendar.calendar"
+/// action = "show-tasks"
+/// label = "Show tasks"
+/// kind = "read"
+/// operation = "view"
+/// ```
+///
+/// Only actions without parameters are declared here: the running app
+/// publishes the full typed contract, and that is what admits an invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfferedAction {
+    /// The resource the app publishes the action on, exactly as it
+    /// publishes it (`calendar.calendar`).
+    pub resource: String,
+    /// The kind of that resource; the resource itself when unset.
+    #[serde(
+        default,
+        rename = "resource-kind",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_kind: Option<String>,
+    /// The action's id on that resource (`show-tasks`).
+    pub action: String,
+    /// What a person reads in the catalogue.
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// What the action is able to do; grants are given by kind.
+    #[serde(default)]
+    pub kind: OfferKind,
+    /// How the action runs: a document change, an effect, or a view change.
+    #[serde(default)]
+    pub operation: OfferOperation,
+    /// Whether a person confirms the action before it runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confirm: bool,
+}
+
+impl OfferedAction {
+    /// The kind of the resource the action is on.
+    #[must_use]
+    pub fn resource_kind(&self) -> &str {
+        self.resource_kind.as_deref().unwrap_or(&self.resource)
+    }
+}
+
+/// What an offered action is able to do: read, change only the document, or
+/// reach outside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OfferKind {
+    Read,
+    #[default]
+    Undoable,
+    Outside,
+}
+
+/// How an offered action runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OfferOperation {
+    Document,
+    #[default]
+    Effect,
+    View,
+}
+
 /// `[providers]` — normalized resources an app can open, or codec MIME scope
 /// for `kind = "format-provider"`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1337,6 +1417,69 @@ mode = "off"
         assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
         let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
         assert_eq!(recovered.resources, declared.resources);
+    }
+
+    #[test]
+    fn offered_actions_survive_the_signed_manifest_round_trip() {
+        let bare = r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#;
+        // A manifest from before the table offers nothing and encodes, so
+        // signs, exactly as it did.
+        let undeclared = Manifest::from_toml_str(bare).unwrap();
+        assert!(undeclared.offers.is_empty());
+        assert!(!undeclared.to_toml_string().unwrap().contains("offers"));
+
+        let declared = Manifest::from_toml_str(&format!(
+            "{bare}\n[[offers]]\nresource = \"example.list\"\naction = \"show-done\"\n\
+             label = \"Show done\"\nkind = \"read\"\noperation = \"view\"\n\
+             [[offers]]\nresource = \"example.list\"\nresource-kind = \"example.todo\"\n\
+             action = \"clear-done\"\nlabel = \"Clear done\"\nconfirm = true\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            declared.offers,
+            [
+                OfferedAction {
+                    resource: "example.list".into(),
+                    resource_kind: None,
+                    action: "show-done".into(),
+                    label: "Show done".into(),
+                    description: None,
+                    kind: OfferKind::Read,
+                    operation: OfferOperation::View,
+                    confirm: false,
+                },
+                OfferedAction {
+                    resource: "example.list".into(),
+                    resource_kind: Some("example.todo".into()),
+                    action: "clear-done".into(),
+                    label: "Clear done".into(),
+                    description: None,
+                    kind: OfferKind::Undoable,
+                    operation: OfferOperation::Effect,
+                    confirm: true,
+                },
+            ]
+        );
+        assert_eq!(declared.offers[0].resource_kind(), "example.list");
+        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+        assert_eq!(recovered.offers, declared.offers);
     }
 }
 

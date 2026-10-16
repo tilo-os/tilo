@@ -986,7 +986,7 @@ window-switcher-description = Windows in this workspace, most recently used firs
 window-switcher-app-title = Switch windows of this app
 window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
 window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
+window-switcher-caption-paged = { $position } of { $count }
 
 # Workspace wheel
 a11y-shell-wheel = Workspace wheel
@@ -1010,7 +1010,6 @@ overview-presence-you-and-one = You and { $name } are here
 overview-presence-you-and-many = You and { $count } others are here
 overview-presence-one = { $name } is here
 overview-presence-many = { $count } people are here
-overview-collaborators-here = { $count } collaborators are here
 
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo

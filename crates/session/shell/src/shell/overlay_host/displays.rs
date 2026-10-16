@@ -29,10 +29,14 @@ use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
 /// What a display that doesn't touch the desktop's top edge keeps along its
-/// own top edge: its top bar and the tiled layout's top rhythm (the same
-/// spacing step the workspace column puts under the full bar).
+/// own top edge: its top bar and the margin the workspace column puts under
+/// the full bar.
 fn own_top_band() -> f64 {
-    f64::from(TOPBAR_HEIGHT_PX) + f64::from(ui::tokens::Spacing::BASE.s3)
+    let top = match crate::shell::WORK_AREA {
+        tilo_desktop::composition::WorkArea::Flush { top, .. } => top,
+        tilo_desktop::composition::WorkArea::Framed => 0.0,
+    };
+    f64::from(TOPBAR_HEIGHT_PX) + f64::from(top)
 }
 
 /// The outputs that are displays of their own, in the backend's order: the
@@ -333,10 +337,19 @@ impl ShellOverlayHost {
             .iter()
             .filter_map(|id| {
                 let o = self.outputs.iter().find(|o| o.id == *id)?;
-                let leading = Some(o.id) == primary && self.sidebar.is_some();
-                // A display below the desktop's top edge draws its own bar
-                // along its top; the windows start beneath it.
-                let band = if o.y > top + 0.5 { own_top_band() } else { 0.0 };
+                let leading_display = Some(o.id) == primary;
+                let leading = leading_display && self.sidebar.is_some();
+                // Every display but the primary draws its own bar along its
+                // top, and so does the primary below the desktop's top
+                // edge; the windows start beneath it. Taken from the
+                // display, not the column, so a fullscreen that collapses
+                // the primary's bar leaves the other displays' windows
+                // where they were.
+                let band = if !leading_display || o.y > top + 0.5 {
+                    own_top_band()
+                } else {
+                    0.0
+                };
                 let gutter = if leading { wheel } else { 0.0 };
                 Some(StripLane {
                     output: o.id,
@@ -436,11 +449,18 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
+        let screens: Vec<Rect> = distinct_outputs(&self.outputs)
+            .into_iter()
+            .map(OutputGeometry::rect)
+            .collect();
         let presenting = self.focused_output();
         let beside_rail = presenting
             .as_ref()
             .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(backdrop) = surface.backdrop_mut() {
+                backdrop.set_displays(&screens);
+            }
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
             }
@@ -459,6 +479,17 @@ impl ShellOverlayHost {
                 bars.set_displays(&others);
             }
         }
+    }
+
+    /// The rectangles the desktop's wallpaper is fitted to, one per display.
+    #[cfg(test)]
+    pub(crate) fn wallpaper_displays(&self) -> Vec<Rect> {
+        self.content
+            .as_any()
+            .and_then(|content| content.downcast_ref::<tilo_desktop::composition::DesktopSurface>())
+            .and_then(tilo_desktop::composition::DesktopSurface::backdrop)
+            .map(tilo_desktop::backdrop::DesktopBackdrop::display_rects)
+            .unwrap_or_default()
     }
 
     /// Where each top bar is drawn: the full bar (flagged `true`) and every

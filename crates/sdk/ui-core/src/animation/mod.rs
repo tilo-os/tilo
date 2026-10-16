@@ -1,6 +1,7 @@
 //! Shared motion system. One curve set (`Curve`), one wall-clock driver
 //! (`Animated`), one interruptible open/close driver (`Transition`), and
-//! one stateful velocity-carrying `Spring` for interactive drag.
+//! one stateful velocity-carrying `Spring` for interactive drag, and one
+//! `IdleFade` for chrome that shows on activity and fades once it is quiet.
 //!
 //! Fire-and-forget animations (fades, spawns, snaps) use `Animated` /
 //! `Transition` — they are wall-clock parametric, so a dropped frame skips
@@ -8,7 +9,9 @@
 //! across inputs (the workspace wheel) use `Spring`, fed the real frame dt.
 
 pub mod animated;
+pub mod idle_fade;
 pub mod spring;
 
 pub use animated::{Animated, Curve, Lerp, Transition, ease_out};
+pub use idle_fade::{CHROME_FADE, IdleFade};
 pub use spring::Spring;

@@ -342,8 +342,10 @@ app_manifests = "apps/*/tilo-app.toml"
 features = [
   "music/audio", "music/live", "music/runtime-engine", "video-player/decode",
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
-  "mail/live", "disks/live", "video-editor/decode",
-  "video-editor/gst", "typst-editor/runtime-engine",
+  "tube/runtime-engine", "mail/live", "disks/live", "video-editor/decode",
+  "video-editor/gst", "typst-editor/runtime-engine", "canvas/runtime-engine",
+  "mail/runtime-engine", "settings/runtime-engine", "calendar/runtime-engine",
+  "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
 ]
 layer = "direct"
 files = [

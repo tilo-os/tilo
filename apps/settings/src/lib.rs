@@ -64,6 +64,7 @@ mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;
 pub mod categories;
+pub(crate) mod channel;
 pub mod resource;
 pub mod row;
 pub mod scenarios;
@@ -99,3 +100,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 #[cfg(test)]
 mod cpu_profile;
+#[cfg(test)]
+mod scroll_tests;
+#[cfg(test)]
+mod ui_thread_tests;

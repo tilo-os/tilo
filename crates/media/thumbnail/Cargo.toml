@@ -20,12 +20,6 @@ description = "Shared thumbnail generation and content-addressed caching for fil
 name = "thumbnail"
 path = "src/lib.rs"
 
-# The thumbnails package's compute entrypoint: thumbnails a staged batch on
-# whichever of a person's devices a compute job was placed on.
-[[bin]]
-name = "thumbnail-batch"
-path = "src/bin/thumbnail_batch.rs"
-
 [features]
 default = []
 # PDF first-page rasterisation through tilo-pdf (the sandboxed PDF engine);
@@ -37,7 +31,7 @@ pdf = ["dep:tilo-pdf"]
 video = ["dep:media", "media/decode"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Crash-safe replacement of on-disk thumbnails.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.

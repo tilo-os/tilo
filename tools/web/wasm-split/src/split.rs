@@ -63,9 +63,22 @@ struct SplitParts {
 }
 
 /// Memory one split module's parse and emission takes, per byte of the
-/// bindgened module it is parsed from: about 4 measured on a 170 MB module,
-/// with the bodies it does not keep left out, and some headroom.
+/// bindgened module it is parsed from, with the bodies it does not keep left
+/// out: about 4.2 measured on the development desktop bundle (a 621 MB
+/// module: 15.3 GiB at most emitting one at a time, 36.1 GiB nine at a
+/// time), and some headroom.
 const COPY_BYTES_PER_INPUT_BYTE: u64 = 8;
+
+/// The most memory the split modules' parses may hold at once, however much
+/// more is free. Bounded only by free memory, the splitter filled whatever
+/// memory a node or a job's reservation left: sdk-web held up to 125 GiB for
+/// one minute of a run that otherwise holds 1-13 GiB, and CI reserves a
+/// job's peak for each of its runs, so every later run waited for a node
+/// with that much free. Within this budget that bundle emits three modules
+/// at a time in about two minutes (nine took 75 s, one 380 s); the
+/// whole-program parse before it holds about 15 GiB regardless.
+/// `WASM_SPLIT_THREADS` sets the count instead.
+const EMIT_MEMORY_BUDGET: u64 = 16 << 30;
 
 /// The least code a group of functions the same split modules share needs
 /// to be a chunk of its own; smaller groups share one chunk, so a module
@@ -195,11 +208,15 @@ impl<'a> Splitter<'a> {
         // many at once as there is memory for.
         let copy_bytes = (self.bindgened.len() as u64).saturating_mul(COPY_BYTES_PER_INPUT_BYTE);
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
-        let threads = available_memory()
-            .map_or(cores, |free| {
-                usize::try_from(free / copy_bytes.max(1)).unwrap_or(cores)
-            })
+        let memory =
+            available_memory().map_or(EMIT_MEMORY_BUDGET, |free| free.min(EMIT_MEMORY_BUDGET));
+        let threads = std::env::var("WASM_SPLIT_THREADS")
+            .ok()
+            .and_then(|threads| threads.parse::<usize>().ok())
+            .unwrap_or_else(|| usize::try_from(memory / copy_bytes.max(1)).unwrap_or(cores))
             .clamp(1, cores);
+        let count = chunk_parts.len() + module_parts.len();
+        let started = std::time::Instant::now();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -217,6 +234,10 @@ impl<'a> Splitter<'a> {
                 .collect::<Result<Vec<SplitModule>>>();
             (chunks, modules)
         });
+        eprintln!(
+            "wasm-split: emitted {count} modules, {threads} at a time, in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
 
         Ok(OutputModules {
             modules: modules?,

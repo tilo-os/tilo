@@ -145,7 +145,7 @@ class NextestPolicyTests(unittest.TestCase):
         # A pull request is tested on top of main with its own workflow file;
         # a filterset copied into that file names packages main may have
         # renamed, and nextest rejects a package() that matches nothing.
-        for name in ("check.yml", "ci-nightly.yml"):
+        for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
             workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
             self.assertNotRegex(workflow, r"(?m)^\s*(GOLDEN|PUSH_ONLY|QUARANTINE)_FILTER:", name)
             self.assertIn("python3 tools/ci/nextest_filters.py >> \"$GITHUB_ENV\"", workflow, name)

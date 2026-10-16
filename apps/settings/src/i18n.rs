@@ -7,20 +7,22 @@
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-/// Provider and model-control terminology is owned by the shared panel catalogue.
+/// Native Settings copy takes precedence; shared provider copy fills missing keys.
 pub fn t(key: &str) -> String {
-    if key.starts_with("agent-") || key == "settings-read-error" {
+    let local = CATALOG.t(key);
+    if local == key {
         provider_settings_ui::i18n::t(key)
     } else {
-        CATALOG.t(key)
+        local
     }
 }
 
 pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    if key.starts_with("agent-") || key == "settings-read-error" {
+    let local = CATALOG.t_args(key, args);
+    if local == key {
         provider_settings_ui::i18n::t_args(key, args)
     } else {
-        CATALOG.t_args(key, args)
+        local
     }
 }
 
@@ -58,6 +60,21 @@ mod tests {
             .collect();
         vars.sort_unstable();
         vars
+    }
+
+    #[test]
+    fn native_agent_copy_precedes_shared_fallback() {
+        assert_eq!(t("agent-vertex-title"), CATALOG.t("agent-vertex-title"));
+        assert_ne!(t("agent-vertex-title"), "agent-vertex-title");
+        assert_eq!(
+            t("agent-sign-in-custody"),
+            provider_settings_ui::i18n::t("agent-sign-in-custody")
+        );
+        let args = [("error", "diagnostic".into())];
+        assert_eq!(
+            t_args("agent-sign-in-forget-err", &args),
+            CATALOG.t_args("agent-sign-in-forget-err", &args)
+        );
     }
 
     #[test]

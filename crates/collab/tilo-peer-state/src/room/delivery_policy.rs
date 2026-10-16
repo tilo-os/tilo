@@ -74,7 +74,9 @@ fn encode<T: Serialize>(value: &T, work: &mut Collections) -> Result<Vec<u8>, Er
 trait Decode {
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
 }
+#[cfg(test)]
 struct LegacyDecode;
+#[cfg(test)]
 impl Decode for LegacyDecode {
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         serde_json::from_slice(bytes).map_err(|_| Error::Unavailable)
@@ -267,6 +269,7 @@ where
     }
     Ok(*value.finalize().as_bytes())
 }
+#[cfg(test)]
 pub(crate) fn legacy<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,
     meta: Metadata<'a, I, J>,

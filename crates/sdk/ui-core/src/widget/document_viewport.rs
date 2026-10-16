@@ -12,7 +12,6 @@
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
-use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 
 use std::collections::HashMap;
@@ -47,10 +46,6 @@ pub const PAN_SLOP: f64 = 4.0;
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 /// Inset (screen px) of the scrollbar from the viewport edge.
 const SCROLLBAR_INSET: f64 = 3.0;
-/// Largest per-frame `dt` (seconds) honoured by drag inertia bookkeeping;
-/// the viewport itself has no easing, but the field is clamped for parity
-/// with the animated widgets in case a future smooth-zoom is added.
-const MAX_FRAME_DT: f64 = 0.1;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64`
 /// matrix multiply-add with no overflow trap, so it cannot panic regardless
@@ -112,10 +107,6 @@ pub struct ViewportState {
     /// In-progress drag-to-pan, if any. Records the screen point + scroll
     /// offsets captured at press so motion maps 1:1.
     pan: Option<PanAnchor>,
-    /// Wall-clock anchor of the last reduced frame; clamped delta is
-    /// available to hosts that layer their own motion on top. Optional so
-    /// the first frame doesn't see a huge delta.
-    last_tick: Option<Instant>,
     /// Shared vertical-bar interaction model (thumb drag + track paging +
     /// hover). See [`crate::widget::scrollbar`]. Pressing the thumb drags
     /// it directly rather than pan-grabbing the content beneath it.
@@ -162,7 +153,6 @@ impl ViewportState {
             align_x: SmallContentAlign::Center,
             align_y: SmallContentAlign::Start,
             pan: None,
-            last_tick: None,
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
         }
@@ -610,19 +600,6 @@ impl ViewportState {
             },
             _ => false,
         }
-    }
-
-    /// Record a frame tick and return the clamped seconds since the last
-    /// call. The viewport has no easing of its own, but exposing the clamped
-    /// delta lets a host layer smooth-scroll / kinetic motion on top without
-    /// re-deriving the clock. The first call returns `0.0`.
-    pub fn frame_dt(&mut self) -> f64 {
-        let now = crate::time::now();
-        let dt = self.last_tick.map_or(0.0, |t| {
-            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
-        });
-        self.last_tick = Some(now);
-        dt
     }
 
     // ---- scrollbar geometry -----------------------------------------
@@ -1327,17 +1304,9 @@ mod tests {
             );
         }
 
-        fn frame_dt_first_call_is_zero_then_positive() {
-            let mut v = kernel();
-            assert_eq!(v.frame_dt(), 0.0, "first frame has no delta");
-            std::thread::sleep(crate::time::Duration::from_millis(2));
-            assert!(v.frame_dt() > 0.0, "subsequent frame has a positive delta");
-        }
-
         retained_layout_keeps_the_active_theme_for_child_layout();
         default_gutter_and_scrollbar_thickness_equal_the_spacing_tokens();
         gutter_follows_the_theme_unless_a_host_pinned_it();
-        frame_dt_first_call_is_zero_then_positive();
     }
 
     /// Build a kernel with a 1000×1400 content in an 800×600 viewport at the

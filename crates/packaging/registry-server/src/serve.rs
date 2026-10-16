@@ -52,13 +52,14 @@ use hyper::{Method, Request, Response, StatusCode, header};
 use tracing::warn;
 
 use registry_types::{
-    ChannelAuthorization, EntryAction, EntryChangeRequest, RegistryEntry, RegistryHandshake,
-    SignedModerationMutation, VerifyError, verify_change_request,
+    EntryAction, EntryChangeRequest, RegistryEntry, RegistryHandshake, SignedModerationMutation,
+    VerifyError, verify_change_request,
 };
 
 use crate::applications::{
     self, ApplicationFailure, ApplicationStatus, NetworkProofs, ProofSource, StoredApplication,
 };
+use crate::catalogue::{Catalogue, FullSnapshot, Published};
 use crate::moderation::{ModerationError, ModerationService};
 use crate::moderation_api::{ModerationApiError, ModerationApiService};
 use crate::storage::{ServerIdentity, Storage, StorageError};
@@ -74,6 +75,7 @@ pub struct AppState {
 
 struct AppStateInner {
     storage: Storage,
+    catalogue: Catalogue,
     moderation: ModerationService,
     moderation_api: ModerationApiService,
     identity: ServerIdentity,
@@ -140,6 +142,7 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 storage,
+                catalogue: Catalogue::default(),
                 moderation,
                 moderation_api,
                 identity,
@@ -157,6 +160,12 @@ impl AppState {
             .iter()
             .any(|allowed| allowed == origin)
             .then(|| origin.to_string())
+    }
+
+    /// How many times the published catalogue has been read and verified:
+    /// once per published revision, however many clients ask for it.
+    pub fn catalogue_loads(&self) -> u64 {
+        self.inner.catalogue.loads()
     }
 
     /// Owner's own view of the identity.
@@ -191,10 +200,9 @@ pub async fn handle(
         (Method::GET, "/registry") => handle_get_registry(&state),
         (Method::GET, "/entries") => {
             let format = SnapshotFormat::requested(req.uri().query());
-            read_file(&state, move |state| {
-                handle_get_entries(state, format, if_none_match.as_deref())
-            })
-            .await
+            published(&state)
+                .await
+                .map(|published| handle_get_entries(&published, format, if_none_match.as_deref()))
         }
         (Method::GET, p) if p.starts_with("/indexes/") => {
             let name = p.trim_start_matches("/indexes/").to_owned();
@@ -209,8 +217,10 @@ pub async fn handle(
             read_file(&state, move |state| handle_get_pending(state, &id, &read)).await
         }
         (Method::GET, p) if p.starts_with("/entries/") => {
-            let id = p.trim_start_matches("/entries/").to_owned();
-            read_file(&state, move |state| handle_get_entry(state, &id)).await
+            let id = p.trim_start_matches("/entries/");
+            published(&state)
+                .await
+                .map(|published| handle_get_entry(&published, id))
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         (Method::GET, p) if p.starts_with("/blobs/") => {
@@ -572,54 +582,57 @@ impl SnapshotFormat {
     }
 }
 
+/// The catalogue of the revision on disk, read and verified only when it is
+/// a new one.
+async fn published(state: &AppState) -> Result<Arc<Published>, HandlerError> {
+    state
+        .inner
+        .catalogue
+        .current(&state.inner.storage, &state.identity().owner_pubkey_hex)
+        .await
+        .map_err(HandlerError::Storage)
+}
+
 fn handle_get_entries(
-    state: &AppState,
+    published: &Published,
     format: SnapshotFormat,
     if_none_match: Option<&str>,
-) -> Result<Response<Full<Bytes>>, HandlerError> {
-    let snapshot = state
-        .inner
-        .storage
-        .load_snapshot()
-        .map_err(HandlerError::Storage)?;
+) -> Response<Full<Bytes>> {
+    let now = tilo_clock::unix_now();
     if format == SnapshotFormat::Compact
-        && let Some(full) = &snapshot
-        && let Some(compact) = state
-            .inner
-            .storage
-            .load_compact_snapshot()
-            .map_err(HandlerError::Storage)?
-        && compact_is_current(state, &compact, full)
+        && let Some(compact) = &published.compact
+        && compact.fresh_at(now)
+        && matches!(&published.full, FullSnapshot::Verified { encoded, .. } if encoded.fresh_at(now))
     {
-        let etag = registry_types::compact_snapshot_hash(&compact).ok();
-        return Ok(revalidated_json(&compact, etag, if_none_match));
+        return revalidated_json(compact, if_none_match);
     }
-    match snapshot {
-        Some(snapshot) if snapshot_is_current(state, &snapshot) => {
-            // Clients revalidate on every visit; the snapshot hash names the
-            // exact signed bytes, so an unchanged catalogue costs a 304.
-            let etag = registry_types::snapshot_hash(&snapshot).ok();
-            Ok(revalidated_json(&snapshot, etag, if_none_match))
+    match &published.full {
+        // Clients revalidate on every visit; the snapshot hash names the
+        // exact signed bytes, so an unchanged catalogue costs a 304.
+        FullSnapshot::Verified { encoded, .. } if encoded.fresh_at(now) => {
+            revalidated_json(encoded, if_none_match)
         }
-        Some(_) => Ok(text_response(
+        FullSnapshot::Verified { .. } | FullSnapshot::Refused => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "published registry snapshot failed verification or expired",
-        )),
-        None => Ok(text_response(
+        ),
+        FullSnapshot::Missing => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "no owner-signed snapshot has been published",
-        )),
+        ),
     }
 }
 
 /// `body` as JSON with `ETag: "<hash>"`, or an empty `304` when the client
 /// already holds it.
-fn revalidated_json<T: serde::Serialize>(
-    body: &T,
-    hash: Option<String>,
+fn revalidated_json(
+    encoded: &crate::catalogue::Encoded,
     if_none_match: Option<&str>,
 ) -> Response<Full<Bytes>> {
-    let etag = hash.and_then(|hash| header::HeaderValue::from_str(&format!("\"{hash}\"")).ok());
+    let etag = encoded
+        .etag
+        .as_ref()
+        .and_then(|hash| header::HeaderValue::from_str(&format!("\"{hash}\"")).ok());
     let fresh = etag.as_ref().is_some_and(|etag| {
         if_none_match.is_some_and(|candidates| {
             candidates
@@ -630,7 +643,7 @@ fn revalidated_json<T: serde::Serialize>(
     let mut response = if fresh {
         empty_response(StatusCode::NOT_MODIFIED)
     } else {
-        json_response(StatusCode::OK, body)
+        json_bytes_response(StatusCode::OK, encoded.body.clone())
     };
     let headers = response.headers_mut();
     headers.insert(
@@ -643,50 +656,23 @@ fn revalidated_json<T: serde::Serialize>(
     response
 }
 
-/// A compact snapshot is served only while it verifies and is the form of
-/// the current full snapshot; otherwise the full one is served instead.
-fn compact_is_current(
-    state: &AppState,
-    compact: &registry_types::CompactRegistrySnapshot,
-    full: &registry_types::SignedRegistrySnapshot,
-) -> bool {
+fn handle_get_entry(published: &Published, package_id: &str) -> Response<Full<Bytes>> {
     let now = tilo_clock::unix_now();
-    if registry_types::verify_compact_snapshot(compact, &state.identity().owner_pubkey_hex, now)
-        .is_err()
-        || registry_types::snapshot_hash(full).ok().as_deref()
-            != Some(compact.snapshot_hash_hex.as_str())
-    {
-        return false;
-    }
-    channel_is_active(state, compact.channel_authorization.as_ref())
-}
-
-fn handle_get_entry(
-    state: &AppState,
-    package_id: &str,
-) -> Result<Response<Full<Bytes>>, HandlerError> {
-    match state
-        .inner
-        .storage
-        .load_snapshot()
-        .map_err(HandlerError::Storage)?
-    {
-        Some(snapshot)
-            if snapshot_is_current(state, &snapshot)
-                && snapshot
-                    .entries
-                    .iter()
-                    .any(|entry| entry.package_id == package_id) =>
+    match &published.full {
+        FullSnapshot::Verified { encoded, packages }
+            if encoded.fresh_at(now) && packages.contains(package_id) =>
         {
             // Return the complete signed object: a detached row would discard
             // the owner's authorization and inclusion proof.
-            Ok(json_response(StatusCode::OK, &snapshot))
+            json_bytes_response(StatusCode::OK, encoded.body.clone())
         }
-        Some(_) => Ok(text_response(StatusCode::NOT_FOUND, "no such entry")),
-        None => Ok(text_response(
+        FullSnapshot::Verified { .. } | FullSnapshot::Refused => {
+            text_response(StatusCode::NOT_FOUND, "no such entry")
+        }
+        FullSnapshot::Missing => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "no owner-signed snapshot has been published",
-        )),
+        ),
     }
 }
 
@@ -759,28 +745,6 @@ fn handle_get_pending(
         Some(pending) => json_response(StatusCode::OK, &pending.change),
         None => text_response(StatusCode::NOT_FOUND, "no pending entry of yours"),
     })
-}
-
-fn snapshot_is_current(
-    state: &AppState,
-    snapshot: &registry_types::SignedRegistrySnapshot,
-) -> bool {
-    let now = tilo_clock::unix_now();
-    if registry_types::verify_snapshot(snapshot, &state.identity().owner_pubkey_hex, now).is_err() {
-        return false;
-    }
-    channel_is_active(state, snapshot.channel_authorization.as_ref())
-}
-
-fn channel_is_active(state: &AppState, authorization: Option<&ChannelAuthorization>) -> bool {
-    match authorization {
-        Some(authorization) => state
-            .inner
-            .storage
-            .load_channel_authorization()
-            .is_ok_and(|active| active.as_ref() == Some(authorization)),
-        None => true,
-    }
 }
 
 async fn handle_post_entries(
@@ -1199,17 +1163,21 @@ fn empty_response(code: StatusCode) -> Response<Full<Bytes>> {
     response
 }
 
+fn json_response<T: serde::Serialize>(code: StatusCode, body: &T) -> Response<Full<Bytes>> {
+    let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
+    json_bytes_response(code, Bytes::from(bytes))
+}
+
 #[allow(
     clippy::expect_used,
     reason = "the status is an already-validated `StatusCode` and the header is a hardcoded \
               constant, so the builder cannot actually fail here"
 )]
-fn json_response<T: serde::Serialize>(code: StatusCode, body: &T) -> Response<Full<Bytes>> {
-    let bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
+fn json_bytes_response(code: StatusCode, body: Bytes) -> Response<Full<Bytes>> {
     Response::builder()
         .status(code)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(bytes)))
+        .body(Full::new(body))
         .expect("build JSON response")
 }
 

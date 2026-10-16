@@ -103,6 +103,13 @@ pub enum MailEffect {
     /// inspect a message never sends a read receipt.
     #[effect(view, row)]
     Inspect { message: String },
+    /// Read message
+    ///
+    /// Answers with what a loaded message says: who sent it to whom, its
+    /// subject, when, its text and its attachments' names. Changes nothing,
+    /// and marks it read for no one.
+    #[effect(row, kind = "read", returns, idempotent)]
+    ReadMessage { message: String },
     /// Reply
     #[effect(view, row)]
     Reply { message: String },
@@ -592,6 +599,7 @@ fn with_message_views(resource: Resource, id: &str) -> Resource {
             "Open message",
         ))
         .with_action(MailEffect::Inspect { message: message() }.bound())
+        .with_action(MailEffect::ReadMessage { message: message() }.bound())
         .with_action(MailEffect::Reply { message: message() }.bound())
         .with_action(MailEffect::ReplyAll { message: message() }.bound())
         .with_action(MailEffect::Forward { message: message() }.bound())

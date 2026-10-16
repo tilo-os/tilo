@@ -365,7 +365,7 @@ existing retained checkpoints/tails and must leave history unchanged.
 
 **Superseded (2026-10-14).** `tilo.coffee` is no longer Cloud's CloudFront
 distribution: it serves the web entry image built from this repository
-(`.forgejo/workflows/web-entry.yml`, `crates/browser/tilo-browser-runtime/container/`).
+(t's `image-web-entry` chain, `crates/browser/tilo-browser-runtime/container/`).
 Its `/version.json` names the content version and source revision; the entry
 pages import one `v/<version>/` directory whose files match that version's
 `build.json` hashes, and everything under `v/` is immutable. `/qos-runtime/`

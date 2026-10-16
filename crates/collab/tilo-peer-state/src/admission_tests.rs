@@ -440,7 +440,8 @@ pub(crate) fn add_editor(
         crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
             .unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, authority, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, authority, now)
             .unwrap()
     );
     (cert, root.verifying_key().to_bytes())
@@ -553,12 +554,14 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
 
     assert!(
-        peer.admit_invited_member(&redemption, &other_owner_device, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &other_owner_device, now)
             .is_err(),
         "only the pinned authority device may mutate governance"
     );
     assert!(
-        peer.admit_invited_member(&redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -567,7 +570,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .role,
         collab_types::Role::Editor
     );
-    let access = peer.governed_access(now).unwrap();
+    let access = peer.governance().governed_access(now).unwrap();
     assert!(
         access
             .member_devices
@@ -590,6 +593,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
@@ -622,11 +626,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     )
     .unwrap();
     assert!(
-        peer.admit_invited_member(&second_redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap(),
         "a later invite for the same device must not overwrite the first receipt"
@@ -643,11 +649,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
@@ -689,6 +697,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         restored
+            .governance_mut()
             .admit_invited_member(&replay_redemption, &authority_key, now)
             .unwrap_err()
             .contains("already redeemed"),
@@ -736,6 +745,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         restored
+            .governance_mut()
             .set_member_role(
                 guest_cert.user_public_key,
                 MemberRole::Viewer,
@@ -752,6 +762,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         collab_types::Role::Viewer
     );
     restored
+        .governance()
         .membership_challenge(
             7,
             &guest_cert,
@@ -763,6 +774,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         .unwrap();
     assert!(
         restored
+            .governance_mut()
             .remove_member(guest_cert.user_public_key, &authority_key, now)
             .unwrap()
     );
@@ -773,6 +785,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert_eq!(
         restored
+            .governance()
             .membership_challenge(
                 7,
                 &guest_cert,
@@ -786,10 +799,11 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
-    let access = restored.governed_access(now).unwrap();
+    let access = restored.governance().governed_access(now).unwrap();
     assert!(
         !access
             .member_devices
@@ -802,6 +816,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         restored
+            .governance_mut()
             .remove_member(peer.authority().user_public_key, &authority_key, now)
             .is_err(),
         "the owner cannot be removed through member governance"
@@ -843,7 +858,8 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     )
     .unwrap();
     assert!(
-        peer.install_workspace_delegation(delegation.clone(), &authority_key, now)
+        peer.governance_mut()
+            .install_workspace_delegation(delegation.clone(), &authority_key, now)
             .unwrap()
     );
 
@@ -896,7 +912,8 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     let redemption =
         verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &host_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &host_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -972,11 +989,13 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     let mut left = base.clone();
     let mut right = base.clone();
     assert!(
-        left.admit_invited_member(&first, &authority_key, now)
+        left.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
     assert!(
         right
+            .governance_mut()
             .admit_invited_member(&second, &authority_key, now)
             .unwrap()
     );
@@ -1065,7 +1084,8 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         &authority_key,
     )
     .unwrap();
-    base.install_workspace_delegation(delegation.clone(), &authority_key, now)
+    base.governance_mut()
+        .install_workspace_delegation(delegation.clone(), &authority_key, now)
         .unwrap();
 
     let guest_root = SigningKey::from_bytes(&[81; 32]);
@@ -1120,9 +1140,11 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
     let mut left = base.clone();
     let mut right = base.clone();
-    left.admit_invited_member(&redemption_a, &authority_key, now)
+    left.governance_mut()
+        .admit_invited_member(&redemption_a, &authority_key, now)
         .unwrap();
     right
+        .governance_mut()
         .admit_invited_member(&redemption_b, &delegate_key, now)
         .unwrap();
 
@@ -1162,6 +1184,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     for (redemption, issuer) in [(&replay_a, &authority_key), (&replay_b, &delegate_key)] {
         assert!(
             restored
+                .governance_mut()
                 .admit_invited_member(redemption, issuer, now)
                 .unwrap_err()
                 .contains("already redeemed")
@@ -1901,140 +1924,6 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_changes() {
-    use automerge::ReadDoc;
-    for delivered in [false, true] {
-        let (mut governor, a, b, bc, now) = seeded();
-        let mut client = StatePeer::new(
-            governor.room(),
-            governor.authority().clone(),
-            vec![bc.clone()],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        for msg in governor.bootstrap_messages(&a, now).unwrap() {
-            client
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    msg,
-                    now,
-                )
-                .unwrap();
-        }
-        let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
-        doc.set_actor(automerge::ActorId::from(
-            b.verifying_key().to_bytes().to_vec(),
-        ));
-        let before = doc.get_heads();
-        let text = doc
-            .put_object(ROOT, "text", automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&text, 0, 0, "saved once").unwrap();
-        doc.commit_edit("fixture", "fixture");
-        let original = client
-            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-            .unwrap();
-        if delivered {
-            governor
-                .receive_from(
-                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                    original.clone(),
-                    now,
-                )
-                .unwrap();
-        }
-        let later = now + Duration::from_secs(301);
-        let mut client = StatePeer::restore(
-            &client.durable().unwrap(),
-            governor.room(),
-            governor.authority().clone(),
-            vec![bc],
-            RevocationList::new(),
-            later,
-        )
-        .unwrap();
-        let old_bytes = postcard::to_allocvec(&original).unwrap();
-        let mut outbox = vec![original.clone()];
-        assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 1);
-        // A reload alone cannot authorize re-signing or turn persistence into sync.
-        assert_eq!(client.reconcile_outbox(&outbox, &b, later).unwrap(), outbox);
-        for msg in governor.bootstrap_messages(&a, later).unwrap() {
-            client
-                .receive_from(
-                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                    msg,
-                    later,
-                )
-                .unwrap();
-        }
-        outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-        if !delivered {
-            assert_eq!(outbox.len(), 2);
-            assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
-            let (
-                NeighbourMsg::AppDocument { envelope: old, .. },
-                NeighbourMsg::AppDocument { envelope: new, .. },
-            ) = (&outbox[0], &outbox[1])
-            else {
-                panic!()
-            };
-            assert_eq!(old.payload, new.payload);
-            assert_eq!(new.seq, old.seq + 1);
-            assert_eq!(old.timestamp, now);
-            assert_eq!(new.timestamp, later);
-            assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 0);
-            governor
-                .receive_from(
-                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                    outbox[1].clone(),
-                    later,
-                )
-                .unwrap();
-            assert!(
-                governor
-                    .receive_from(
-                        TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                        outbox[1].clone(),
-                        later
-                    )
-                    .unwrap()
-                    .duplicate
-            );
-            assert!(
-                governor
-                    .receive_from(
-                        TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                        original,
-                        later
-                    )
-                    .is_err()
-            );
-            for msg in governor.bootstrap_messages(&a, later).unwrap() {
-                client
-                    .receive_from(
-                        TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                        msg,
-                        later,
-                    )
-                    .unwrap();
-            }
-            outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-        }
-        assert!(outbox.is_empty());
-        assert_eq!(client.rows(), governor.rows());
-        let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
-        let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
-        assert_eq!(final_doc.text(text).unwrap(), "saved once");
-        assert_eq!(client.outbox_status(&outbox, later).pending, 0);
-    }
-}
-
-#[test]
 fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
     let (peer, _, _, bc, now) = seeded();
     let mut bytes = peer.durable().unwrap();
@@ -2052,106 +1941,6 @@ fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
     .unwrap();
     assert!(error.contains("unsupported durable admission version"));
     assert_eq!(bytes, unchanged);
-}
-
-#[test]
-fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
-    use automerge::ReadDoc;
-    let (mut governor, a, b, bc, now) = seeded();
-    let mut client = StatePeer::new(
-        governor.room(),
-        governor.authority().clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in governor.bootstrap_messages(&a, now).unwrap() {
-        client
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
-                now,
-            )
-            .unwrap();
-    }
-    let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        b.verifying_key().to_bytes().to_vec(),
-    ));
-    let before = doc.get_heads();
-    let text = doc
-        .put_object(ROOT, "text", automerge::ObjType::Text)
-        .unwrap();
-    doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit_edit("fixture", "fixture");
-    let first = client
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-        .unwrap();
-    let before = doc.get_heads();
-    doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit_edit("fixture", "fixture");
-    let second = client
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-        .unwrap();
-    let outcome = governor
-        .receive_from(
-            TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-            second.clone(),
-            now,
-        )
-        .unwrap();
-    assert!(!outcome.changed);
-    let later = now + Duration::from_secs(301);
-    for message in governor.bootstrap_messages(&a, later).unwrap() {
-        client
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
-                later,
-            )
-            .unwrap();
-    }
-    assert!(
-        !client.covers(&first),
-        "higher author floor cannot acknowledge a missing causal change"
-    );
-    assert!(
-        !client.covers(&second),
-        "missing dependencies are not materialized checkpoint coverage"
-    );
-    let outbox = client
-        .reconcile_outbox(&[first, second], &b, later)
-        .unwrap();
-    assert_eq!(outbox.len(), 4);
-    for message in &outbox[2..] {
-        governor
-            .receive_from(
-                TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
-                message.clone(),
-                later,
-            )
-            .unwrap();
-    }
-    for message in governor.bootstrap_messages(&a, later).unwrap() {
-        client
-            .receive_from(
-                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
-                message,
-                later,
-            )
-            .unwrap();
-    }
-    assert!(
-        client
-            .reconcile_outbox(&outbox, &b, later)
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(client.rows(), governor.rows());
-    let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
-    let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
-    assert_eq!(final_doc.text(text).unwrap(), "one two");
 }
 
 #[test]
@@ -2201,101 +1990,6 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
         receiver.document_heads(app, record),
         Some(document.base_heads())
     );
-}
-
-#[test]
-fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry() {
-    use automerge::ReadDoc;
-    let (mut governor, a, b, bc, now) = seeded();
-    let origin = TransportOrigin::RelayDelta(a.verifying_key().to_bytes());
-    let browser_origin = TransportOrigin::RelayDelta(b.verifying_key().to_bytes());
-    let mut client = StatePeer::new(
-        governor.room(),
-        governor.authority().clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in governor.bootstrap_messages(&a, now).unwrap() {
-        client.receive_from(origin, message, now).unwrap();
-    }
-    let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        b.verifying_key().to_bytes().to_vec(),
-    ));
-    let before = doc.get_heads();
-    let text = doc
-        .put_object(ROOT, "text", automerge::ObjType::Text)
-        .unwrap();
-    doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit_edit("fixture", "fixture");
-    let first = client
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
-        .unwrap();
-    let recent = now + Duration::from_secs(290);
-    let before = doc.get_heads();
-    doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit_edit("fixture", "fixture");
-    let second = client
-        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, recent)
-        .unwrap();
-    let original_first = postcard::to_allocvec(&first).unwrap();
-    let original_second = postcard::to_allocvec(&second).unwrap();
-    let reconnect = now + Duration::from_secs(301);
-    for message in governor.bootstrap_messages(&a, reconnect).unwrap() {
-        client.receive_from(origin, message, reconnect).unwrap();
-    }
-    let mut outbox = client
-        .reconcile_outbox(&[first, second.clone()], &b, reconnect)
-        .unwrap();
-    assert_eq!(outbox.len(), 3);
-    assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), original_first);
-    assert_eq!(postcard::to_allocvec(&outbox[1]).unwrap(), original_second);
-    // Execute the exact production publication filter/order and sent-byte guard.
-    // Native emits fresh covered checkpoints only after an app changes, just as
-    // the real fixture loop does. No manual reconnect or time advance occurs.
-    let mut published = std::collections::BTreeSet::new();
-    let mut delivered_sequences = vec![];
-    for _ in 0..4 {
-        let batch = crate::outbox::publication_batch(&outbox, reconnect)
-            .cloned()
-            .collect::<Vec<_>>();
-        for message in batch {
-            if !published.insert(postcard::to_allocvec(&message).unwrap()) {
-                continue;
-            }
-            if let NeighbourMsg::AppDocument { envelope, .. } = &message {
-                delivered_sequences.push(envelope.seq);
-            }
-            let outcome = governor
-                .receive_from(browser_origin, message, reconnect)
-                .unwrap();
-            if outcome.changed {
-                for checkpoint in governor.bootstrap_messages(&a, reconnect).unwrap() {
-                    client.receive_from(origin, checkpoint, reconnect).unwrap();
-                    outbox = client.reconcile_outbox(&outbox, &b, reconnect).unwrap();
-                }
-            }
-        }
-        if outbox.is_empty() {
-            break;
-        }
-    }
-    assert!(
-        crate::outbox::fresh(&second, reconnect),
-        "dependent must still be fresh throughout recovery"
-    );
-    assert!(
-        outbox.is_empty(),
-        "fresh dependent must be renewed after predecessor overtakes its sequence, without waiting for expiry"
-    );
-    assert_eq!(delivered_sequences, vec![2, 3, 4]);
-    assert_eq!(client.rows(), governor.rows());
-    let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
-    let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
-    assert_eq!(final_doc.text(text).unwrap(), "one two");
-    assert_eq!(client.outbox_status(&outbox, reconnect).pending, 0);
 }
 
 #[test]
@@ -3174,33 +2868,39 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
     let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
     assert!(
-        peer.admit_invited_member(&first, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
     let owner = hex::encode(peer.authority().user_public_key);
     assert!(
-        peer.ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
+        peer.governance_mut()
+            .ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
             .unwrap()
     );
     assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
     assert!(
         !peer
+            .governance()
             .governed_access(now)
             .unwrap()
             .member_user_roots
             .contains(&guest_cert.user_public_key)
     );
     assert!(
-        peer.admit_invited_member(&unused, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
             .is_err(),
         "an invitation issued before the ban does not let them back"
     );
     assert!(
-        peer.unban_member(guest_cert.user_public_key, &authority_key, now)
+        peer.governance_mut()
+            .unban_member(guest_cert.user_public_key, &authority_key, now)
             .unwrap()
     );
     assert!(
-        peer.admit_invited_member(&unused, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
             .unwrap()
     );
     assert_eq!(

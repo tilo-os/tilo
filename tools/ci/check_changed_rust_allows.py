@@ -122,7 +122,7 @@ def changed_rust_files(root: Path, revision_range: str) -> list[Path]:
             "diff",
             "--name-only",
             "-z",
-            "--diff-filter=ACMRTUXB",
+            "--diff-filter=ACMR",
             revision_range,
             "--",
             "*.rs",
@@ -131,10 +131,30 @@ def changed_rust_files(root: Path, revision_range: str) -> list[Path]:
         ],
         cwd=root,
     )
+    # The comparison ends at HEAD, but the audit reads the working tree. A file
+    # changed since the base may have been deleted in the index or worktree.
+    # Trust Git's deletion status, not existence checks: unexpected read failures
+    # (including files disappearing after this snapshot) must still fail closed.
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=no"],
+        cwd=root,
+    )
+    deleted: set[bytes] = set()
+    records = iter(status.split(b"\0"))
+    for record in records:
+        if not record:
+            continue
+        flags, path = record[:2], record[3:]
+        if b"D" in flags:
+            deleted.add(path)
+        if b"R" in flags or b"C" in flags:
+            original = next(records)  # Original follows the destination with -z.
+            if b"R" in flags:
+                deleted.add(original)
     return [
         Path(value.decode("utf-8", errors="surrogateescape"))
         for value in output.split(b"\0")
-        if value
+        if value and value not in deleted
     ]
 
 

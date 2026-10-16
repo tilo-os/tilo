@@ -9,10 +9,11 @@
 //! the window's thread, and carries no credential.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use runtime_fs::cloud::{CloudClient, CloudMount, CloudRequest};
+
+use crate::channel::{Receiver, TryRecvError};
 
 /// How often an open Settings window asks the service again.
 const REFRESH: Duration = Duration::from_secs(10);
@@ -84,15 +85,16 @@ impl CloudMounts {
         }
         let due = self.next.is_none_or(|next| ui::time::now() >= next);
         if let (true, Some(socket)) = (due, self.socket.clone()) {
-            let (answer, listing) = std::sync::mpsc::channel();
-            let started = std::thread::Builder::new()
-                .name("settings-cloud-mounts".into())
-                .spawn(move || {
+            let (answer, listing) = crate::channel::channel();
+            let started = crate::device_read::thread(
+                "settings-cloud-mounts",
+                Box::new(move || {
                     let mounts = CloudClient::connect(&socket)
                         .and_then(|mut client| client.mounts())
                         .ok();
                     let _ = answer.send(mounts);
-                });
+                }),
+            );
             if started.is_ok() {
                 self.listing = Some(listing);
             } else {

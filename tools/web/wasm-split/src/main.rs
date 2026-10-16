@@ -38,6 +38,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 fn main() -> Result<()> {
+    let started = std::time::Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let [flag, bindgened, out] = args.as_slice() {
         if flag == "--unsplit" {
@@ -118,10 +119,11 @@ fn main() -> Result<()> {
         serde_json::to_string_pretty(&manifest)? + "\n",
     )?;
     eprintln!(
-        "wasm-split: start module {} bytes, {} modules, {} shared",
+        "wasm-split: start module {} bytes, {} modules, {} shared, in {:.1} s",
         outputs.main.bytes.len(),
         outputs.modules.len(),
-        outputs.chunks.len()
+        outputs.chunks.len(),
+        started.elapsed().as_secs_f64()
     );
     Ok(())
 }

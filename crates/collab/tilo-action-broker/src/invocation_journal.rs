@@ -379,11 +379,16 @@ impl Loaded {
     }
 
     fn replay(&mut self, entry: Entry) -> Result<(), String> {
-        if !matches!(entry.version, 1..=6) || entry.version < self.snapshot.version {
-            return Err("invocation journal entry downgrades the writer floor".into());
+        if !matches!(entry.version, 1..=6) {
+            return Err("invocation journal entry version unsupported".into());
         }
-        check_record(&entry.record, entry.version, self.snapshot.host)?;
-        self.snapshot.version = entry.version;
+        // The floor only rises. Earlier writers stamped every entry after an
+        // effect preparation 5, even above a native task's floor of 6; such an
+        // entry is replayed under the raised floor, which every row must still
+        // satisfy, so a store they left behind reopens instead of refusing.
+        let floor = self.snapshot.version.max(entry.version);
+        check_record(&entry.record, floor, self.snapshot.host)?;
+        self.snapshot.version = floor;
         self.entries = self.entries.saturating_add(1);
         let Some(&at) = self.index.by_invocation.get(&entry.record.key.invocation) else {
             return self

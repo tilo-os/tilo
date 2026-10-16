@@ -871,10 +871,6 @@ fn power_mode(on: bool) -> zwlr_output_power_v1::Mode {
     }
 }
 
-fn lock(pending: &Mutex<PendingConfiguration>) -> std::sync::MutexGuard<'_, PendingConfiguration> {
-    pending.lock_recover()
-}
-
 impl GlobalDispatch<ZwlrOutputManagerV1, ()> for State {
     fn bind(
         state: &mut Self,
@@ -977,7 +973,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         let already_used = |configuration: &ZwlrOutputConfigurationV1| {
             configuration.post_error(
                 Error::AlreadyUsed,
@@ -1110,7 +1106,7 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_head_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         if pending.used {
             return;
         }

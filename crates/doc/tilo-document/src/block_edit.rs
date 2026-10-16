@@ -36,11 +36,17 @@ pub enum BlockKind {
     Checklist,
     Quote,
     Code,
+    /// The callouts: a quote set apart as a GitHub alert.
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
 }
 
 impl BlockKind {
     /// The names the declared actions take, in the order they are offered.
-    pub const NAMES: [&'static str; 7] = [
+    pub const NAMES: [&'static str; 12] = [
         "paragraph",
         "heading",
         "bullet",
@@ -48,6 +54,11 @@ impl BlockKind {
         "checklist",
         "quote",
         "code",
+        "note",
+        "tip",
+        "important",
+        "warning",
+        "caution",
     ];
 
     /// The kind named `name`.
@@ -61,6 +72,11 @@ impl BlockKind {
             "checklist" | "todo" | "task" => Self::Checklist,
             "quote" => Self::Quote,
             "code" => Self::Code,
+            "note" | "info" => Self::Note,
+            "tip" => Self::Tip,
+            "important" => Self::Important,
+            "warning" | "warn" => Self::Warning,
+            "caution" | "danger" => Self::Caution,
             _ => return None,
         })
     }
@@ -116,6 +132,11 @@ impl BlockShape {
             BlockKind::Checklist => Shape::Checklist(indent, self.done.unwrap_or(false)),
             BlockKind::Quote => Shape::Quote,
             BlockKind::Code => Shape::Code(self.lang.clone().filter(|lang| !lang.is_empty())),
+            BlockKind::Note => Shape::Callout("note"),
+            BlockKind::Tip => Shape::Callout("tip"),
+            BlockKind::Important => Shape::Callout("important"),
+            BlockKind::Warning => Shape::Callout("warning"),
+            BlockKind::Caution => Shape::Callout("caution"),
         })
     }
 }
@@ -170,6 +191,37 @@ fn after_of(placement: &Placement, order: &[String]) -> Result<Option<String>, S
     }
 }
 
+/// Why characters `start..end` of `block` cannot be replaced with `text`.
+fn check_range(
+    doc: &AutoCommit,
+    c: &Containers,
+    order: &[String],
+    block: &str,
+    (start, end): (usize, usize),
+    text: &str,
+) -> Result<(), String> {
+    let id = block_id(order, block)?;
+    text_in_limits(text)?;
+    if text.contains(['\n', '\r']) {
+        return Err(
+            "the text replaces characters inside one block, so it holds no line break; insert-markdown adds blocks"
+                .to_owned(),
+        );
+    }
+    let Some(view) = view_of(doc, c, &id).filter(|view| Shape::of_view(view).is_some()) else {
+        return Err(format!(
+            "block `{block}` is not a text block (a table or image)"
+        ));
+    };
+    let len = view.text.chars().count();
+    if start > end || end > len {
+        return Err(format!(
+            "characters {start}..{end} are not in block `{block}`, which holds {len}"
+        ));
+    }
+    Ok(())
+}
+
 /// Why `action` cannot apply to the document, before anything is written.
 ///
 /// # Errors
@@ -214,6 +266,13 @@ pub(crate) fn check(
                 )),
             }
         }
+        RichTextAction::ReplaceBlockRange {
+            block,
+            start,
+            end,
+            text,
+            ..
+        } => check_range(doc, c, &order, block, (*start, *end), text),
         RichTextAction::SetBlockShape { block, shape } => {
             let id = block_id(&order, block)?;
             shape.shape()?;
@@ -262,6 +321,59 @@ pub(crate) fn check(
         }
         _ => Ok(()),
     }
+}
+
+/// Replace characters `start..end` of block `id` with `text` (inline
+/// Markdown when `markdown`, outside a code block), and what was typed in.
+/// Marks outside the range stay; inside it, the dialect marks are the ones
+/// the Markdown says, and written text takes none from its neighbours.
+fn replace_range(
+    dm: &mut DocMut<'_>,
+    id: &str,
+    (start, end): (usize, usize),
+    text: &str,
+    markdown: bool,
+) -> Option<Written> {
+    let view = view_of(dm.doc, dm.c, id)?;
+    let shape = Shape::of_view(&view)?;
+    let len = view.text.chars().count();
+    let start = start.min(len);
+    let end = end.clamp(start, len);
+    let inline = markdown && !shape.is_code();
+    let (text, marks) = if inline {
+        parse_inline(text)
+    } else {
+        (text.to_owned(), Vec::new())
+    };
+    let del = end.saturating_sub(start);
+    if del == 0 && text.is_empty() {
+        return None;
+    }
+    dm.splice_text(id, start, isize::try_from(del).unwrap_or(isize::MAX), &text);
+    if !inline || text.is_empty() {
+        return (!text.is_empty()).then(|| Written::body(id.to_owned(), start, &text));
+    }
+    let after = start.saturating_add(text.chars().count());
+    // A mark that touched the replaced range may have stretched over what
+    // was just written; the Markdown alone says what covers it.
+    for name in DIALECT_MARKS {
+        let touched = view.marks.iter().any(|mark| {
+            mark.name == name && dialect_mark(mark) && mark.start <= end && mark.end >= start
+        });
+        if touched {
+            dm.remove_mark(id, start, after, name);
+        }
+    }
+    for mark in marks.iter().filter(|mark| dialect_mark(mark)) {
+        dm.add_mark(
+            id,
+            start.saturating_add(mark.start),
+            start.saturating_add(mark.end).min(after),
+            &mark.name,
+            mark_scalar(&mark.value),
+        );
+    }
+    Some(Written::body(id.to_owned(), start, &text))
 }
 
 /// The text `new` is to `old`, as one splice: characters kept at the start
@@ -894,6 +1006,20 @@ pub(crate) fn apply(dm: &mut DocMut<'_>, action: &RichTextAction) -> Vec<Written
             }
             if *markdown && !shape.is_code() {
                 set_dialect_marks(dm, &id, &marks);
+            }
+        }
+        RichTextAction::ReplaceBlockRange {
+            block,
+            start,
+            end,
+            text,
+            markdown,
+        } => {
+            let Ok(id) = block_id(&order, block) else {
+                return written;
+            };
+            if let Some(range) = replace_range(dm, &id, (*start, *end), text, *markdown) {
+                written.push(range);
             }
         }
         RichTextAction::SetBlockShape { block, shape } => {

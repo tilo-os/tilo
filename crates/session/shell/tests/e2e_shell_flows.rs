@@ -52,9 +52,9 @@ use ui::synthetic_input::{
 };
 
 use crate::support::host::{Layout, dispatch, dispatch_in, lay_out};
-use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
 use tilo_lock::MutexRecover as _;
+use ui::offscreen::OffscreenRenderer;
 
 /// Where explicit golden-update candidates are written for review.
 fn goldens_dir() -> PathBuf {
@@ -99,14 +99,6 @@ fn screenshots_dir() -> PathBuf {
         PathBuf::from,
     );
     root.join("tilo-screenshots")
-}
-
-/// `None` when no wgpu adapter is available (catch_unwind-guarded).
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
 }
 
 /// `taffy` intentionally outlives each event so re-renders after mutation
@@ -221,7 +213,7 @@ fn e2e_open_close_overview() {
     let tree = WorkspaceTree::bootstrap_demo();
 
     let theme = Theme::dark();
-    let mut offscreen = try_new_renderer(W_U32, H_U32)
+    let mut offscreen = OffscreenRenderer::try_new(W_U32, H_U32)
         .expect("overview pixel oracle requires an offscreen adapter");
     let out_dir = screenshots_dir();
 
@@ -330,7 +322,7 @@ fn e2e_launch_failure_notifications_visual_review() {
         (1280_u32, 720_u32, 1280.0_f32, 720.0_f32),
         (1600, 900, 1600.0, 900.0),
     ] {
-        let Some(mut renderer) = try_new_renderer(width, height) else {
+        let Some(mut renderer) = OffscreenRenderer::try_new(width, height).ok() else {
             eprintln!("offscreen: no wgpu adapter — launch notification review skipped");
             return;
         };
@@ -556,7 +548,7 @@ fn e2e_tab_drag_reorder() {
     let mut scene = Scene::new();
     group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    let mut renderer_opt = try_new_renderer(960, 540);
+    let mut renderer_opt = OffscreenRenderer::try_new(960, 540).ok();
     let out_dir = screenshots_dir();
     render_frame_to(
         &mut group,
@@ -954,7 +946,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let tree = WorkspaceTree::bootstrap_demo();
             let theme = Theme::dark();
 
-            let mut renderer_opt = try_new_renderer(W_U32, H_U32);
+            let mut renderer_opt = OffscreenRenderer::try_new(W_U32, H_U32).ok();
             let out_dir = screenshots_dir();
 
             let mut h = Harness::new(&tree);
@@ -1192,7 +1184,7 @@ fn e2e_maximized_tile_floating_controls() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    let mut renderer_opt = try_new_renderer(960, 540);
+    let mut renderer_opt = OffscreenRenderer::try_new(960, 540).ok();
     let out_dir = screenshots_dir();
     assert_maximized_tile_golden(
         &mut group,

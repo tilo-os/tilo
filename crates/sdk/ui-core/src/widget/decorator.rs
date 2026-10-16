@@ -253,6 +253,17 @@ decorator_trait! {
         fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
             None
         }
+
+        /// The decorator's own node without its children. Not forwarded: a
+        /// decorator that rewrites `accessibility` would otherwise answer
+        /// with its inner widget's root. One that only adds children may
+        /// forward to its inner widget's root itself.
+        fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+            Decorator::accessibility(self).map(|mut node| {
+                node.children.clear();
+                node
+            })
+        }
     }
 
     /// Every decorator is a widget: each method is the decorator's own, which
@@ -313,6 +324,10 @@ decorator_trait! {
         fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
             Decorator::accessibility_shared(self)
         }
+
+        fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+            Decorator::accessibility_root(self)
+        }
     }
 
     ref {
@@ -369,6 +384,7 @@ decorator_trait! {
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;

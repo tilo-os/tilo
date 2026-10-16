@@ -417,11 +417,6 @@ impl<K> crate::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The host visits the admitted child after this boundary. A view
-        // owns no declarations of its own and must not publish them twice.
-        Vec::new()
-    }
     fn document_action_result(
         &self,
         doc: &AutoCommit,

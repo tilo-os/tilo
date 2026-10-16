@@ -344,3 +344,207 @@ fn an_agent_is_never_shown_the_decisions_on_its_own_admission() {
         ));
     }
 }
+
+/// What `t` and Claude Code look like at the door: both reach it through the
+/// same relay executable, so only their own names and pids tell them apart.
+fn relayed(client: &str, pid: u32) -> ClientFacts {
+    ClientFacts {
+        client: client.into(),
+        version: None,
+        pid,
+        exe: Some(PathBuf::from("/usr/bin/tilo-runtime-mcp")),
+        host_app: None,
+    }
+}
+
+/// The prompt for `client`, by what it shows the person.
+fn prompt_for(chrome: &Chrome, client: &str) -> uuid::Uuid {
+    let state = chrome.borrow();
+    let prompts: Vec<_> = state
+        .pending_grants
+        .iter()
+        .filter(|pending| pending.app_id.starts_with(&format!("{client} (")))
+        .map(|pending| pending.id)
+        .collect();
+    assert_eq!(prompts.len(), 1, "{:?}", state.pending_grants);
+    prompts[0]
+}
+
+/// Two clients wait at once. Each prompt is its own request with its own
+/// identity and its own reply: the answer to one admits exactly that one, a
+/// repeated, stale, unknown or out-of-turn answer admits nobody, and the
+/// other client stays waiting until its own prompt is answered.
+#[test]
+fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt() {
+    let chrome = chrome_with_room();
+    let (sender, mut consent) = channel(None, None);
+    let mut t = ask(&sender, relayed("t", 100));
+    let mut claude = ask(&sender, relayed("claude-code", 200));
+    consent.pump(&chrome);
+    assert_eq!(consent.waiting(), 2);
+    let t_prompt = prompt_for(&chrome, "t");
+    let claude_prompt = prompt_for(&chrome, "claude-code");
+    assert_ne!(t_prompt, claude_prompt);
+    {
+        let state = chrome.borrow();
+        let shown: Vec<_> = state
+            .pending_grants
+            .iter()
+            .map(|pending| {
+                (
+                    pending.app_id.clone(),
+                    crate::shell::overlay_host::prompt_label(&pending.request),
+                )
+            })
+            .collect();
+        // Each prompt names its own client, its pid and the agent it becomes.
+        assert!(
+            shown[0].0.contains("pid 100") && shown[0].1.contains("agent t"),
+            "{shown:?}"
+        );
+        assert!(
+            shown[1].0.contains("pid 200") && shown[1].1.contains("agent claude-code"),
+            "{shown:?}"
+        );
+    }
+
+    // Out of turn: Claude Code's prompt is not the one on screen, so its
+    // decision is refused and decides nothing.
+    assert!(
+        answer_pending_prompt_as(
+            &mut chrome.borrow_mut(),
+            claude_prompt,
+            PromptChoice::Allow,
+            None
+        )
+        .is_err()
+    );
+    // An answer to no prompt at all decides nothing either.
+    assert!(
+        answer_pending_prompt_as(
+            &mut chrome.borrow_mut(),
+            uuid::Uuid::new_v4(),
+            PromptChoice::Allow,
+            None
+        )
+        .is_err()
+    );
+    consent.pump(&chrome);
+    assert!(t.try_recv().is_err() && claude.try_recv().is_err());
+    assert!(agent_members(&chrome).is_empty());
+
+    // The person allows `t`, the prompt on screen.
+    answer_pending_prompt_as(
+        &mut chrome.borrow_mut(),
+        t_prompt,
+        PromptChoice::Allow,
+        None,
+    )
+    .expect("t's prompt is on screen");
+    consent.pump(&chrome);
+    assert_eq!(
+        t.try_recv().unwrap(),
+        Consent::Admit {
+            room: room(&chrome),
+            agent: "t".into()
+        }
+    );
+    assert!(
+        matches!(
+            claude.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "Claude Code was decided by t's answer"
+    );
+    assert_eq!(agent_members(&chrome), ["t"]);
+    assert_eq!(consent.waiting(), 1);
+
+    // The same answer again, now that Claude Code's prompt is on screen,
+    // is stale and admits nobody.
+    assert_eq!(front_id(&chrome), claude_prompt);
+    for choice in [PromptChoice::Allow, PromptChoice::Session] {
+        assert!(
+            answer_pending_prompt_as(&mut chrome.borrow_mut(), t_prompt, choice, None).is_err(),
+            "a repeated answer was taken"
+        );
+    }
+    consent.pump(&chrome);
+    assert!(claude.try_recv().is_err());
+    assert_eq!(agent_members(&chrome), ["t"]);
+
+    // Claude Code is decided only by its own prompt.
+    answer_pending_prompt_as(
+        &mut chrome.borrow_mut(),
+        claude_prompt,
+        PromptChoice::Deny,
+        None,
+    )
+    .expect("Claude Code's prompt is on screen");
+    consent.pump(&chrome);
+    assert!(matches!(claude.try_recv(), Ok(Consent::Refuse(_))));
+    assert_eq!(agent_members(&chrome), ["t"]);
+    assert_eq!(consent.waiting(), 0);
+    assert!(chrome.borrow().pending_grants.is_empty());
+}
+
+/// The person's click goes to the prompt on screen, which names its client.
+/// When that client leaves between the prompt appearing and the click being
+/// handled, the click is dropped: it never falls through to the next client
+/// in the queue, whose prompt the person has not seen.
+#[test]
+fn a_click_admits_only_the_client_its_prompt_names_and_never_the_next_one() {
+    use ui::synthetic_input::{cursor_moved, mouse_press};
+    use ui::testing::dispatch;
+    let chrome = chrome_with_room();
+    let (sender, mut consent) = channel(None, None);
+    let mut host =
+        crate::shell::overlay_host::ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
+            .with_chrome(chrome.clone());
+    let click_allow = |host: &mut crate::shell::overlay_host::ShellOverlayHost| -> String {
+        let prompt = host
+            .permission_prompt_mut_for_tests()
+            .expect("a prompt is on screen");
+        prompt.set_rect(vello::kurbo::Rect::new(0.0, 0.0, 600.0, 80.0));
+        let center = prompt.allow_rect().center();
+        dispatch(prompt, &cursor_moved(center.x, center.y));
+        dispatch(prompt, &mouse_press());
+        assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
+        prompt.app_id.clone()
+    };
+
+    // `t` asks first, Claude Code right behind it.
+    let t = ask(&sender, relayed("t", 100));
+    let mut claude = ask(&sender, relayed("claude-code", 200));
+    consent.pump(&chrome);
+    host.tick_permission_prompt_for_tests();
+
+    // The person sees and clicks `t`'s prompt, but `t` leaves before the
+    // click is handled.
+    let clicked = click_allow(&mut host);
+    assert!(clicked.starts_with("t ("), "{clicked}");
+    drop(t);
+    consent.pump(&chrome);
+    host.tick_permission_prompt_for_tests();
+    consent.pump(&chrome);
+    assert!(
+        matches!(
+            claude.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "the click on t's prompt decided Claude Code"
+    );
+    assert!(agent_members(&chrome).is_empty());
+
+    // Claude Code's own prompt is now on screen, naming it, and only a
+    // click on it admits it.
+    host.tick_permission_prompt_for_tests();
+    let clicked = click_allow(&mut host);
+    assert!(clicked.starts_with("claude-code ("), "{clicked}");
+    host.tick_permission_prompt_for_tests();
+    consent.pump(&chrome);
+    assert!(matches!(
+        claude.try_recv(),
+        Ok(Consent::Admit { agent, .. }) if agent == "claude-code"
+    ));
+    assert_eq!(agent_members(&chrome), ["claude-code"]);
+}

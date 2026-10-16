@@ -376,6 +376,7 @@ mod tests {
             route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
             status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
             resource: None,
+            subject: None,
             created_at: 4_000,
             updated_at: 4_000,
             audit: Vec::new(),

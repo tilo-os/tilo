@@ -5,10 +5,9 @@ use zeroize::Zeroizing;
 
 pub const HOTSPOT_PROFILE: &str = "Tilo Hotspot";
 
-// Status queries stay at the shared fast deadline. A requested scan and a
-// connection activation are different operations; bound the native client's
-// advertised wait plus a small process-retirement margin.
-const WIFI_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+// Status queries stay at the shared fast deadline. A connection activation is
+// a different operation; bound the native client's advertised wait plus a
+// small process-retirement margin.
 const WIFI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 // Six independently-meaningful named flags, not a bitset in disguise — each is read and
@@ -449,8 +448,16 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
     }
 }
 
-/// Scan + list visible Wi-Fi networks via `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device
-/// wifi list`. `-t` (terse) prints one row per line, fields separated by `:`.
+/// The Wi-Fi networks in range, as `NetworkManager` last saw them: `nmcli -t -f
+/// IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan no`. `-t` (terse) prints one row
+/// per line, fields separated by `:`.
+///
+/// This is a read and never waits for the radio. `NetworkManager` keeps its access-point list
+/// current with its own periodic scans; asking `nmcli` to rescan first (`--rescan yes`, or
+/// `auto` with a list older than 30 s) makes the read wait for a full hardware scan, which
+/// takes over 13 s on some adapters and ignores `--wait`. The connected network and the
+/// status every caller derives from this list must not depend on that. A deliberate "look
+/// again" is [`scan_wifi`] first.
 ///
 /// # Errors
 ///
@@ -459,11 +466,22 @@ pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     list_wifi_networks_via("nmcli", &[])
 }
 
+/// Scan for Wi-Fi networks: ask `NetworkManager` over D-Bus to scan with every Wi-Fi device
+/// and return once each scan has finished, so a [`list_wifi_networks`] that follows lists
+/// what the radio sees now. A scan takes as long as the hardware needs, so call this from a
+/// worker, and only for a person's explicit request to look again.
+///
+/// # Errors
+///
+/// Returns why the scan could not run: no Wi-Fi device, radio off, `NetworkManager`
+/// unreachable or refusing.
+pub fn scan_wifi() -> Result<(), String> {
+    crate::block_on(async { tilo_nm::scan_wifi().await.map_err(|e| e.to_string()) })
+}
+
 fn list_wifi_networks_via(cli: &str, prefix: &[&str]) -> Result<Vec<WifiNetworkInfo>, String> {
     let mut args = prefix.to_vec();
     args.extend_from_slice(&[
-        "--wait",
-        "10",
         "-t",
         "-f",
         "IN-USE,SSID,SIGNAL,SECURITY",
@@ -471,9 +489,9 @@ fn list_wifi_networks_via(cli: &str, prefix: &[&str]) -> Result<Vec<WifiNetworkI
         "wifi",
         "list",
         "--rescan",
-        "yes",
+        "no",
     ]);
-    let out = run_capture_within(cli, &args, WIFI_SCAN_TIMEOUT)?;
+    let out = run_capture(cli, &args)?;
     Ok(parse_nmcli_wifi_list(&out))
 }
 
@@ -2319,33 +2337,21 @@ mod wifi_deadline_tests {
     use super::*;
 
     #[test]
-    fn scan_transport_allows_the_real_cold_scan_to_finish() {
+    fn listing_networks_reads_the_known_list_without_waiting_for_a_rescan() {
+        // `--rescan yes` made every read wait for a full hardware scan (13.6 s on the
+        // reporting laptop's adapter, past any status deadline), so Settings showed
+        // "Can't read network status: nmcli timed out" while the network worked.
         let dir = tempfile::tempdir().unwrap();
-        let script = tilo_test_env::script(
-            dir.path().join("scan"),
-            "sleep 3\nprintf ':Fixture network:70:--\\n'\n",
-        )
-        .unwrap();
-        let argv = script.exec_argv();
-        let networks =
-            list_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
-                .expect("a cold scan beyond the fast-status deadline must reach its result");
-        assert_eq!(networks.len(), 1);
-        assert_eq!(networks[0].ssid, "Fixture network");
-        assert_eq!(networks[0].signal, 3);
-        assert!(!networks[0].secure);
-    }
-
-    #[test]
-    fn scan_requests_fresh_results_with_a_bounded_native_wait() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = tilo_test_env::script(dir.path().join("scan-args"),
-            "test \"$*\" = '--wait 10 -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan yes' || exit 44\nprintf ':Fixture network:70:--\\n'\n").unwrap();
+        let script = tilo_test_env::script(dir.path().join("list-args"),
+            "test \"$*\" = '-t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan no' || exit 44\nprintf '*:Fixture network:70:WPA2\\n'\n").unwrap();
         let argv = script.exec_argv();
         let networks =
             list_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
                 .unwrap();
         assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].ssid, "Fixture network");
+        assert!(networks[0].connected);
+        assert_eq!(networks[0].signal, 3);
     }
 
     #[test]

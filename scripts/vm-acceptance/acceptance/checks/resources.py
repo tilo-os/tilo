@@ -690,7 +690,13 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
             check=False))
     ctx.facts["apps_closed_after_open"] = closed
     ctx.facts["apps_failed_to_open"] = failed
-    return [app for app in groups if app not in closed]
+    opened = [app for app in groups if app not in closed]
+    ctx.facts["apps_open_for_memory"] = opened
+    if failed or closed:
+        problems = [f"{app}: {why}" for app, why in failed.items()]
+        problems.extend(f"{app}: closed on its own after opening" for app in closed)
+        raise core.Unobservable("could not establish the app workload: " + "; ".join(problems))
+    return opened
 
 
 def software_renderer(ctx) -> bool:
@@ -837,6 +843,15 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"], "R02")
+    # What still asks for frames as the idle window ended, with geometry the
+    # trace's labels leave out, and each window's frame state (presented,
+    # last frame, size against its tile).
+    try:
+        motion = {"animating": (ctx.vm.state().get("chrome") or {}).get("animating"),
+                  "windows": ctx.vm.foreign_frames()}
+    except VmError as e:
+        motion = {"error": str(e)}
+    ctx.write("R02-motion.json", json.dumps(motion, indent=1))
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     # Seconds from opening Terminal to its shell running: the window opened after it.
     m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
@@ -881,7 +896,9 @@ def _record_memory(ctx, m: dict) -> None:
 
 @check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
-    opened = ctx.facts.get("apps_open_for_memory") or _open_several(ctx)
+    opened = ctx.facts.get("apps_open_for_memory", [])
+    if set(opened) != set(FOUR_APPS):
+        opened = _open_several(ctx)
     m = memory(ctx, opened)
     res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
                        top=m["procs"][:15], guest_mem_mb=m["guest_mem_mb"])

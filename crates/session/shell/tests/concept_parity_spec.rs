@@ -1111,7 +1111,10 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
         for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
             assert!(
-                tree.note_peer_present(room, peer, name),
+                tree.admit_collaborator_in_room(
+                    room,
+                    tilo_desktop_model::Collaborator::new(name, name).with_session(peer)
+                ),
                 "{name} arriving must change the roster"
             );
         }

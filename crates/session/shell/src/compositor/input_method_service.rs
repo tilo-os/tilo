@@ -470,10 +470,27 @@ fn is_descendant_of(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     false
 }
 
+/// The catalogue the keyboard is resolved through: the cached one while it
+/// still reads the stores `current` names, so the image's system registry is
+/// parsed and checked once per session instead of on every refresh (the
+/// user's registry is re-read on every lookup either way). Stores that moved
+/// replace it.
+fn session_catalog(
+    cache: &mut Option<package_store::Catalog>,
+    current: package_store::Catalog,
+) -> &package_store::Catalog {
+    if cache.as_ref().is_some_and(|cached| cached != &current) {
+        *cache = None;
+    }
+    cache.get_or_insert(current)
+}
+
 /// The installed on-screen keyboard package, if it is a graphical service in
 /// its signed manifest.
-fn installed_osk() -> Result<crate::shell::launcher::InstalledApp, String> {
-    let app = crate::shell::launcher::installed_app(PACKAGE_ID)
+fn installed_osk(
+    catalog: &package_store::Catalog,
+) -> Result<crate::shell::launcher::InstalledApp, String> {
+    let app = crate::shell::launcher::installed_app(catalog, PACKAGE_ID)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("{PACKAGE_ID} is not installed"))?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
@@ -518,6 +535,10 @@ pub struct InputMethodServices {
     osk_installed: bool,
     /// The input hardware facts, followed by [`Self::follow_input`].
     osk_input: OskInput,
+    /// The image's installed rows are immutable for this session. Reuse
+    /// their checked catalogue while reading the user's registry afresh on
+    /// every invalidation, including an on-screen keyboard update.
+    installed_catalog: Option<package_store::Catalog>,
     installed_epoch: u64,
     installed_checked: Instant,
 }
@@ -573,6 +594,7 @@ impl InputMethodServices {
             osk_preference: OnScreenKeyboard::default(),
             osk_installed: false,
             osk_input: OskInput::default(),
+            installed_catalog: None,
             installed_epoch: crate::shell::launcher::installed_apps_epoch(),
             installed_checked: Instant::now(),
         }
@@ -655,7 +677,14 @@ impl InputMethodServices {
 
     fn refresh_installed(&mut self, state: &mut State) {
         let read_epoch = crate::shell::launcher::installed_apps_epoch();
-        let installed = match installed_osk() {
+        let installed = match package_store::Catalog::from_env() {
+            Ok(current) => installed_osk(session_catalog(&mut self.installed_catalog, current)),
+            Err(error) => {
+                self.installed_catalog = None;
+                Err(error.to_string())
+            }
+        };
+        let installed = match installed {
             Ok(app) => Some(app),
             Err(error) => {
                 tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
@@ -852,6 +881,60 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn refreshes_read_the_image_registry_once_and_follow_moved_stores() {
+        let directory = tempfile::tempdir().unwrap();
+        let system_dir = directory.path().join("system");
+        std::fs::create_dir_all(&system_dir).unwrap();
+        let registry = system_dir.join(package_store::layout::REGISTRY_FILE);
+        std::fs::write(
+            &registry,
+            format!(
+                "[[entry]]\nid = '{PACKAGE_ID}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                system_dir.join("osk").display().to_string(),
+                system_dir.join("osk/manifest.toml").display().to_string()
+            ),
+        )
+        .unwrap();
+        let catalog_at = |user: &str| {
+            package_store::Catalog::at(
+                directory.path().join(user),
+                Some(package_store::SystemStore {
+                    data_dir: system_dir.clone(),
+                    payload_dir: system_dir.clone(),
+                    interfaces: None,
+                }),
+            )
+        };
+        let system_ids = |catalog: &package_store::Catalog| {
+            catalog
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(|row| row.system)
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        let mut cache = None;
+        assert_eq!(
+            system_ids(session_catalog(&mut cache, catalog_at("user"))),
+            [PACKAGE_ID]
+        );
+        // The image is immutable for the session: a later refresh through
+        // a freshly located, equal catalogue must not read it again.
+        std::fs::remove_file(&registry).unwrap();
+        assert_eq!(
+            system_ids(session_catalog(&mut cache, catalog_at("user"))),
+            [PACKAGE_ID],
+            "an unchanged store reuses the checked system rows"
+        );
+        // Stores that moved are new stores: their rows are read afresh.
+        assert!(
+            system_ids(session_catalog(&mut cache, catalog_at("other-user"))).is_empty(),
+            "a moved store must not answer from the old catalogue"
+        );
     }
 
     #[test]

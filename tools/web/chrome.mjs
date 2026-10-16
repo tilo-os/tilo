@@ -194,6 +194,8 @@ export async function launch({args = []} = {}) {
 
   return {
     tab,
+    /** Recent browser-process diagnostics, including GPU-process failures. */
+    diagnostics: () => shutdownLines(),
     /** A fresh browser context: storage, cookies and Web Locks of its own, as
      * another person's browser profile would have. Resolves to its id. */
     context: async () => (await send('Target.createBrowserContext', {disposeOnDetach: true})).result.browserContextId,

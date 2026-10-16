@@ -390,6 +390,29 @@ fn review_pair(book: &mut [Contact]) {
 /// Framework app: the contacts widget is the surface over [`Contacts`].
 pub struct ContactsShell;
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-contact-directory-engine VALUE` (the value is ignored) runs the
+/// contact directory's self-check. It needs `runtime-engine`, the release
+/// build, where that code is in `libtilo_contact_directory_engine.so`; the
+/// check proves Contacts loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-contact-directory-engine",
+    run: probe_contact_directory_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    let report = tilo_contact_directory_engine::self_check()?;
+    println!("contacts --probe-contact-directory-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    Err("the contact directory's engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for ContactsShell {
     type Resource = Contacts;
     const ID: &'static str = "so.tilo.contacts";
@@ -397,6 +420,10 @@ impl ResourceApp for ContactsShell {
     const ICON: Option<&'static str> = Some("contacts");
     const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
     const ARGUMENTS: usize = 1;
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::account_editor::CATALOG)

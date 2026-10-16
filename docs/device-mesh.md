@@ -172,6 +172,26 @@ however slow the uplink. None of this is the worker's word or grants anything: e
 still proves possession or fetches, and a hint gone wrong (an evicted copy)
 costs one fetched run, which unlearns it.
 
+The opposite hint goes stale too: a worker seen fetching everything over a
+slow link would otherwise never be tried again, even once its replica holds
+the photos. Each job kept local on that estimate is credited with what it
+would have saved had the worker held its inputs (the local run less the round
+trip). Once `REPROBE_AFTER_MS` (10 minutes) has passed and that credit covers
+the worst case of trying (every byte moves), the next such job is placed on
+the worker anyway: `compute.place` answers it with `"reprobe": true`, the
+`reprobing_held_inputs` reason and the estimate it overrode. The job shows
+what the worker holds like any other. One that finds nothing held doubles the
+wait and the credit the next try needs, at most `MAX_REPROBE_BACKOFF` (6)
+times; one that finds anything held resets it. So a try costs at most what
+staying local already forwent, and a worker that still holds nothing is tried
+ever less often. On the thumbnail model (12 new 10.75 MB photos a minute, a
+507 ms local run, 30 ms away): at the 38 MB/s loopback rate a worker whose
+replica synced 45 minutes in is tried at minutes 11, 32 and 73 and takes
+every batch from then on; over the phone's 1 MB/s uplink the first try waits
+for 270 kept batches. A worker that never holds them is tried 20 times in a
+week at 38 MB/s (58 s of fetching against 80 minutes forgone) and 5 times
+over 1 MB/s (643 s against the same 80 minutes), ever further apart.
+
 ### Offloadable actions
 
 An action whose contract declares `offload` (`tilo_actions::Offload`: a signed
@@ -222,6 +242,23 @@ other, then asks the device's route (`HostServices::action_offload`,
   weighs next time.
 
 Content named twice is one input on both paths, as a worker stages it.
+
+A session that owns its profile's content store — the standalone runtime
+(`tilo_runtime::standalone`) and the shell's compositor-free runtime host —
+hands its broker the route `tilo_runtime::offload::action_offload` builds. It
+is configured by the device's home-peer registry (`peers/home-peers.json`
+beside the collaboration identity, or `TILO_HOME_PEERS_PATH`): the person's
+registered relay that retains the session's room shard
+(`tilo_relay_protocol::room_workspace_id`, as every relay binding derives it)
+places its compute (`tilo_relay::offload::home_relay`). With no such relay, or
+with `TILO_ACTION_OFFLOAD=off`, there is no route and the door behaves exactly
+as before. With one, `DeviceOffload` returns the route at once and connects in
+the background — a relay session subscribed to the room's workspace for
+placement and a compute session pinned to the relay's device key, over the
+store the apps' blob socket serves — answering `RunHere` with why until it is
+up and for good if the relay refuses this device or does not answer within
+`START_TIMEOUT`. The desktop compositor's apps keep their media in the
+filesystem daemon's store, which this route does not reach yet.
 
 ## Integration seams
 
@@ -357,6 +394,18 @@ authorization.
   until it answers, then reports back. Without such a device the action
   fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
   Waking is device administration and needs no optional continuity switch.
+- **An app asking another of the person's devices.** `actions invoke --device`
+  is fire-and-forget; an app that needs the answer (Settings reading each
+  device's storage summary) invokes the host's `tilo.own-device` provider,
+  action `identity.device/invoke`, with `{device, app, resource, action, arguments}`.
+  The broker admits it only for the person at this device and, from an app,
+  only for that app's own actions; agents, bots, Shortcut steps and remote
+  callers are refused. The shell sends it only to a device that is enrolled,
+  authenticated to it under the person's own root, unexpired and unrevoked,
+  as an ordinary invocation of `application:<shared room>:<app>` under the
+  same invocation id, and follows it there by long-poll; the other device
+  decides it for the device its transport authenticated. Its outcome becomes
+  the local invocation's. No new frame exists for it.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.

@@ -93,7 +93,9 @@ pub enum BluetoothEffect {
 }
 
 /// Answer `effect` on a worker: `BlueZ` may take seconds. What it reports
-/// becomes the pane's notice, and the devices are read again.
+/// becomes the pane's notice, and the devices are read again off the UI
+/// thread: the answer comes when the change ran, and the new reading lands
+/// at a later sync.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: BluetoothEffect,
@@ -124,14 +126,16 @@ pub(crate) fn answer(
         return Err(t("settings-bluetooth-device-gone"));
     }
     let name = name.unwrap_or_default();
-    Ok(cx.thread(
-        move |_| carry_out(control.as_ref(), &effect, &name),
+    Ok(crate::device_read::job(
+        cx,
+        move || carry_out(control.as_ref(), &effect, &name),
         |app: &mut SettingsApp, outcome: Result<String, String>, _| {
             let model = app.bluetooth().model();
             let mut model = model.borrow_mut();
             model.pairing = None;
             model.notice = Some(outcome.clone().unwrap_or_else(|error| error));
-            model.refresh();
+            model.changed = true;
+            model.read_again();
             outcome.map(|_| Effected::done())
         },
     ))
@@ -317,42 +321,55 @@ pub trait BluetoothControl: Send + Sync {
 pub struct RealBluetooth;
 impl BluetoothControl for RealBluetooth {
     fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::devices()
     }
     fn powered(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::is_powered()
     }
     fn scanning(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::is_scanning()
     }
     fn set_powered(&self, on: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::set_powered(on)
     }
     fn start_scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::start_scan()
     }
     fn stop_scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::stop_scan()
     }
     fn pair(&self, path: &str) -> Result<PairOutcome, String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::pair(path)
     }
     fn cancel_pairing(&self, path: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::cancel_pairing(path)
     }
     fn connect(&self, path: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::connect(path)
     }
     fn disconnect(&self, path: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::disconnect(path)
     }
     fn set_trusted(&self, path: &str, v: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::set_trusted(path, v)
     }
     fn set_alias(&self, path: &str, alias: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::set_alias(path, alias)
     }
     fn forget(&self, path: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::bluez::forget(path)
     }
 }
@@ -537,13 +554,21 @@ fn adapter_absent(cx: &PaneCx) -> bool {
     cx.radios().now().is_some_and(|radios| !radios.bluetooth)
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent state of the adapter or its reads, never a parameter"
+)]
 pub struct BluetoothModel {
     cx: PaneCx,
     control: Arc<dyn BluetoothControl>,
     /// Whether the device had an adapter when the model last looked.
     adapter: Option<bool>,
-    /// The adapter, read again off the UI thread once one is plugged in.
+    /// The adapter, read again off the UI thread once one is plugged in
+    /// or a change ran.
     reread: crate::device_read::DeviceRead<AdapterRead>,
+    /// A change ran while [`Self::reread`] was on its way, so that read may
+    /// not show it: the adapter is read once more when it lands.
+    reread_again: bool,
     devices: Vec<DeviceInfo>,
     powered: bool,
     scanning: bool,
@@ -579,6 +604,7 @@ impl BluetoothModel {
             control,
             adapter,
             reread: crate::device_read::DeviceRead::default(),
+            reread_again: false,
             devices: Vec::new(),
             powered: false,
             scanning: false,
@@ -616,12 +642,40 @@ impl BluetoothModel {
                 }
             }
         }
+        self.adopt_reread();
+        if self.reread_again && self.reread.is_finished() {
+            self.reread_again = false;
+            self.read_again();
+        }
+    }
+
+    /// Take in the read [`Self::reread`] made, once it has landed.
+    fn adopt_reread(&mut self) {
         if self.reread.is_finished()
             && let Some(read) = self.reread.take()
         {
             // A failure is kept on the model and shown in place of the adapter.
             let _ = self.adopt(read);
             self.changed = true;
+        }
+    }
+
+    /// Read the adapter again off the UI thread, as a change it took left
+    /// it; the reading lands at a later sync, which its landing wakes. A
+    /// read already on its way may predate the change, so the adapter is
+    /// read once more after it.
+    fn read_again(&mut self) {
+        if !self.reread.is_finished() {
+            self.reread_again = true;
+            return;
+        }
+        // Finished stays finished until the next start: a read that landed
+        // is taken in here, so the start below is not refused for it.
+        self.adopt_reread();
+        let control = Arc::clone(&self.control);
+        if !self.reread.start(move || read_adapter_of(control.as_ref())) {
+            // A host that runs no background work reads here.
+            self.refresh();
         }
     }
 
@@ -894,6 +948,7 @@ struct SampleBluetooth;
 
 impl BluetoothControl for SampleBluetooth {
     fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+        crate::device_read::off_ui_thread();
         Ok(vec![
             DeviceInfo {
                 path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01".into(),
@@ -920,39 +975,51 @@ impl BluetoothControl for SampleBluetooth {
         ])
     }
     fn powered(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         Ok(true)
     }
     fn scanning(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         Ok(false)
     }
     fn set_powered(&self, _: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn start_scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn stop_scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn pair(&self, _: &str) -> Result<PairOutcome, String> {
+        crate::device_read::off_ui_thread();
         Ok(PairOutcome::PairedAndConnected)
     }
     fn cancel_pairing(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn connect(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn disconnect(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn set_trusted(&self, _: &str, _: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn set_alias(&self, _: &str, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn forget(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -1266,6 +1333,135 @@ mod tests {
         assert!(
             text.iter().any(|line| line.contains("Headphones")),
             "{text:#?}"
+        );
+    }
+
+    /// An adapter whose reads do not answer until they are let go (or ten
+    /// seconds pass), as a wedged `BlueZ`; changes it takes at once. Once
+    /// let go it knows a radio on the porch.
+    struct StalledAdapter(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledAdapter {
+        fn wait(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err("BlueZ never answered".into());
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            Ok(())
+        }
+    }
+
+    impl BluetoothControl for StalledAdapter {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            self.wait()?;
+            Ok(vec![DeviceInfo {
+                path: "/org/bluez/hci0/dev_SPEAKER".into(),
+                name: "Porch Radio".into(),
+                ..dev()
+            }])
+        }
+        fn powered(&self) -> Result<bool, String> {
+            self.wait().map(|()| false)
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            self.wait().map(|()| false)
+        }
+        fn set_powered(&self, _: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn pair(&self, _: &str) -> Result<PairOutcome, String> {
+            crate::device_read::off_ui_thread();
+            Ok(PairOutcome::PairedAndConnected)
+        }
+        fn cancel_pairing(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn connect(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn disconnect(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn set_trusted(&self, _: &str, _: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn set_alias(&self, _: &str, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn forget(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+    }
+
+    /// A change is answered and the window keeps drawing while `BlueZ`
+    /// takes its time to be read again: the adapter is re-read off the UI
+    /// thread, and the reading lands once it returns.
+    #[test]
+    fn a_stalled_adapter_never_holds_the_window() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Bluetooth);
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.bluetooth().model().borrow_mut().control = Arc::new(StalledAdapter(stalled));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        app.effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+            on: false,
+        }))
+        .expect("the radio is switched off");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on BlueZ"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("settings-bluetooth-off")), "{frame}");
+        assert!(
+            frame.contains("Headphones"),
+            "the last reading is shown: {frame}"
+        );
+        assert!(!frame.contains("Porch Radio"), "{frame}");
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Porch Radio"))),
+            "the devices read again are shown"
         );
     }
 

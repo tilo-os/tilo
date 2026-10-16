@@ -69,15 +69,37 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793. Linking the
 # runtime with section garbage collection and without the proc-macro crates'
 # exports takes it lower again (Release / apps 97422, before the Spotify
-# engine: aarch64 152438520 bytes, x86_64 167700968).
+# engine: aarch64 152438520 bytes, x86_64 167700968). Keeping the model
+# gateway's daemon (its provider clients, on-device model service and rten)
+# out of the runtime, then the main commits after it, left main's runtime at
+# x86_64 156364744 bytes, 5435392 dirtied per process, 6625 symbol
+# relocations; aarch64 141824904, 5218304, 6659 (Release / apps 119198, at
+# 1067088ee0). Canvas's painting engines (libtilo_paint_engine.so) and the
+# YouTube client of Music and Tube (libtilo_youtube_engine.so, rustypipe with
+# QuickJS) then moved into engine libraries, 18 crates (Release / apps
+# 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
+# relocations; aarch64 137517640, 4935680, 6470. The two engines are
+# 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
+# Moving account custody, the contact directory and the time-zone database
+# into their own engines leaves 148084128 / 134312888 bytes in the runtime,
+# with 4100096 / 3887104 bytes dirtied per process (x86_64 / aarch64).
+# Native app-build checks also exercise the engine probes and loader traces;
+# the budgets below adopt their suggested one-percent headroom.
+
+# The apps of apps_without_media that use an engine library
+# (crates/runtime/engines/), by library: they load it at exec. Release / apps
+# fails when one of those apps loads any other engine.
+[engine_users]
+"libtilo_timezone_engine.so" = ["clocks"]
+
 [runtime.x86_64]
-bytes = 160366592
-relocation_bytes = 327680
-relocated_bytes = 5636096
-symbol_relocations = 8896
+bytes = 149618688
+relocation_bytes = 262144
+relocated_bytes = 4194304
+symbol_relocations = 6528
 
 [runtime.aarch64]
-bytes = 145162240
-relocation_bytes = 327680
-relocated_bytes = 5373952
-symbol_relocations = 8896
+bytes = 135659520
+relocation_bytes = 262144
+relocated_bytes = 3932160
+symbol_relocations = 6592

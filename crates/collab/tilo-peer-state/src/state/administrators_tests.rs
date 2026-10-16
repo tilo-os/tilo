@@ -27,7 +27,8 @@ fn governs(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> usize {
 const EVERY: usize = governance::ALL.len();
 
 fn is_administrator(peer: &StatePeer, user: [u8; 32], now: SystemTime) -> bool {
-    peer.governed_members(now)
+    peer.governance()
+        .governed_members(now)
         .unwrap()
         .iter()
         .any(|member| member.user_public_key == user && member.administrator)
@@ -39,14 +40,19 @@ fn an_administrator_governs_and_an_editor_does_not() {
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     assert_eq!(governs(&peer, editor.device_public_key, now), 0);
 
-    assert!(peer.set_member_administrator(user, &host_key, now).unwrap());
+    assert!(
+        peer.governance_mut()
+            .set_member_administrator(user, &host_key, now)
+            .unwrap()
+    );
     assert!(is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
     let held = peer.permissions(editor.device_public_key, now).unwrap();
     assert_eq!(held.policy.role_of(&held.person), Some(Role::Editor));
 
     // Setting a role takes the standing back with the grant.
-    peer.set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+    peer.governance_mut()
+        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
         .unwrap();
     assert!(!is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), 0);
@@ -69,7 +75,8 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
         owner.clone(),
     );
     assert!(roles::is_legacy_administrator_grant(peer.room(), &legacy));
-    peer.put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
+    peer.governance_mut()
+        .put_governed_grants(std::slice::from_ref(&legacy), &host_key, now)
         .unwrap();
     assert!(is_administrator(&peer, user, now));
     assert_eq!(
@@ -78,7 +85,11 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
         "the Editor's Deny outranks the grant where it sits"
     );
 
-    assert!(peer.reconcile_administrator_grants(&host_key, now).unwrap());
+    assert!(
+        peer.governance_mut()
+            .reconcile_administrator_grants(&host_key, now)
+            .unwrap()
+    );
     assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
     assert!(is_administrator(&peer, user, now));
     let held = peer.permissions(editor.device_public_key, now).unwrap();
@@ -92,7 +103,12 @@ fn an_administrator_grant_on_the_rooms_resource_is_rewritten_once() {
         rewritten,
         [&roles::administrator_grant(peer.room(), &person, owner)]
     );
-    assert!(!peer.reconcile_administrator_grants(&host_key, now).unwrap());
+    assert!(
+        !peer
+            .governance_mut()
+            .reconcile_administrator_grants(&host_key, now)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -100,5 +116,10 @@ fn reconciling_a_room_without_old_grants_writes_nothing_and_needs_no_writer() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let stranger = SigningKey::from_bytes(&[77; 32]);
-    assert!(!peer.reconcile_administrator_grants(&stranger, now).unwrap());
+    assert!(
+        !peer
+            .governance_mut()
+            .reconcile_administrator_grants(&stranger, now)
+            .unwrap()
+    );
 }

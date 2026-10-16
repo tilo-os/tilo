@@ -12,6 +12,9 @@ use rig_core::providers::{anthropic, openai};
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 
 #[cfg(test)]
+#[path = "google_rig_tests.rs"]
+mod google_tests;
+#[cfg(test)]
 #[path = "provider_conformance_tests.rs"]
 mod provider_conformance_tests;
 #[cfg(test)]
@@ -119,6 +122,7 @@ struct GatewayHttp {
     retry_refusals: bool,
     stream_end: StreamEnd,
     authenticated: bool,
+    profile_headers: Vec<(&'static str, reqwest::header::HeaderValue)>,
     budget: Duration,
     /// Exact legacy body, after gateway policy. Neutral requests use Rig's
     /// encoding instead; both take the same provider decoder and transport.
@@ -133,6 +137,9 @@ impl GatewayHttp {
         let (mut head, bytes) = request.into_parts();
         if !self.authenticated {
             head.headers.remove(reqwest::header::AUTHORIZATION);
+        }
+        for (name, value) in &self.profile_headers {
+            head.headers.insert(*name, value.clone());
         }
         let body = self
             .body
@@ -449,6 +456,7 @@ pub(super) async fn legacy(
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        profile_headers: Vec::new(),
     };
     let original = transport.unary_body.clone();
     execute(transport, secret, request, streaming)
@@ -468,12 +476,51 @@ pub(super) async fn legacy(
 }
 
 async fn execute(
-    transport: GatewayHttp,
+    mut transport: GatewayHttp,
     secret: Option<&str>,
-    request: CompletionRequest,
+    mut request: CompletionRequest,
     streaming: Option<(Emit<'_>, &mut PlanTiming, bool)>,
 ) -> Result<CompletionResponse, ProviderFailure> {
+    let invalid_headers = || {
+        let mut failure = stream_failure("provider transport failed");
+        failure.model_error = ModelError::new(neutral::ErrorKind::InvalidRequest);
+        failure.outcome_unknown = false;
+        failure
+    };
+    let headers = provider_transform::profile_headers(&transport.profile, secret)
+        .map_err(|_| invalid_headers())?;
+    transport.profile_headers = headers
+        .into_iter()
+        .map(|header| {
+            let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
+                .map_err(|_| invalid_headers())?;
+            value.set_sensitive(header.secret);
+            Ok((header.name, value))
+        })
+        .collect::<Result<_, ProviderFailure>>()?;
     let budget = transport.budget;
+    // Neutral history keeps the opaque extension, not Rig's provider origin.
+    // Bind only these native call items to the selected Chat codec, which
+    // rebuilds ids, names and arguments while replaying the extra fields.
+    if transport.profile.protocol == ProviderProtocol::OpenAiCompatible {
+        for turn in &mut request.chat_history {
+            if let message::Message::Assistant(turn) = turn
+                && turn.content.iter().any(|block| {
+                    matches!(block, message::AssistantContent::ToolCall(_))
+                        && block
+                            .native_item()
+                            .and_then(|item| item.get("extra_content"))
+                            .is_some()
+                })
+            {
+                turn.origin = Some(message::Origin::new(
+                    "openai.chat",
+                    openai::PROVIDER_NAME,
+                    transport.model.clone(),
+                ));
+            }
+        }
+    }
     let result = async {
         let model = transport.model.clone();
         match transport.profile.protocol {
@@ -614,6 +661,7 @@ pub(super) async fn host_complete(
             failure: Arc::default(),
             status: Arc::default(),
             unary_body: Arc::default(),
+            profile_headers: Vec::new(),
         },
         secret,
         request,
@@ -682,9 +730,12 @@ pub(super) fn neutral_request(
                     if calls.insert(call.id.clone(), tool_name.clone()).is_some() {
                         return Err(ModelError::new(neutral::ErrorKind::InvalidRequest));
                     }
-                    assistant.push(message::AssistantContent::tool_call(
-                        call.id, tool_name, call.input,
-                    ));
+                    let mut block =
+                        message::AssistantContent::tool_call(call.id, tool_name, call.input);
+                    if let Some(extra) = call.extra_content {
+                        block = block.with_native(serde_json::json!({"extra_content": extra}));
+                    }
+                    assistant.push(block);
                 }
                 (neutral::Role::Tool, neutral::Content::ToolResult(tool)) => {
                     let tool_name = calls
@@ -773,6 +824,12 @@ pub(super) fn neutral_response(
                 content.push(neutral::Content::ToolCall(neutral::ToolCall {
                     id: call.id.to_string(),
                     name: call.function.name.to_string(),
+                    extra_content: call
+                        .native
+                        .as_ref()
+                        .and_then(|native| native.item.get("extra_content"))
+                        .filter(|extra| extra.is_object())
+                        .cloned(),
                     input: serde_json::Value::Object(call.function.arguments),
                 }));
             }
@@ -845,6 +902,7 @@ pub(super) async fn complete(
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        profile_headers: Vec::new(),
     };
     let result = execute(
         transport,

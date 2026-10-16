@@ -68,6 +68,124 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_browser_recipe_and_native_acceptance(self):
+        binary = '/usr/lib64/chromium-browser/chromium-browser'
+        builder = (ROOT / 'os/Containerfile.builder').read_text()
+        self.assertIn(f'ENV CHROME={binary}\n', builder)
+        recipe = builder.split(f'ENV CHROME={binary}\nRUN ', 1)[1].split('\n\n', 1)[0]
+        # Execute the production recipe with only package installation and cache
+        # cleanup stubbed. A missing or broken browser must fail the image build.
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            browser = work / 'browser'
+            stubs = 'dnf() { printf "%s\\n" "$*" >> "$RECEIPT"; }; rm() { :; };\n'
+            for state in ('working', 'broken', 'missing'):
+                with self.subTest(state=state):
+                    browser.write_text('#!/bin/sh\nexit ' + ('0' if state == 'working' else '1') + '\n')
+                    browser.chmod(0o755)
+                    if state == 'missing':
+                        browser.unlink()
+                    receipt = work / 'receipt'
+                    receipt.unlink(missing_ok=True)
+                    result = subprocess.run(['bash', '-e', '-c', stubs + recipe],
+                                            env={**os.environ, 'CHROME': str(browser),
+                                                 'RECEIPT': str(receipt)},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, state == 'working', result.stderr)
+                    self.assertIn('install -y --setopt=install_weak_deps=False chromium',
+                                  receipt.read_text().splitlines())
+        cold = workflow_job(BUILD, 'cache-cold')
+        script = step_script(cold, 'Verify the native browser test runtime')
+        self.assertIn(f'test "$CHROME" = {binary}', script)
+        self.assertIn("import {launch} from './tools/web/chrome.mjs'", script)
+        self.assertIn("assert.equal(await tab.evaluate('6 * 7'), 42)", script)
+        self.assertIn('await browser.close()', script)
+        self.assertNotIn('continue-on-error', step_block(cold, 'Verify the native browser test runtime'))
+        self.assertIn("needs.cache-cold.result == 'success'", workflow_job(BUILD, 'accept-builder'))
+
+    def test_native_wrapper_exports_browser_outside_home_and_keeps_overrides(self):
+        wrapper = ROOT / 'tools/ci/t-nextest.sh'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'tools/ci').mkdir(parents=True)
+            script = root / 'tools/ci/t-nextest.sh'
+            script.write_text(wrapper.read_text())
+            (root / 'tools/ci/package_features.py').write_text(
+                (ROOT / 'tools/ci/package_features.py').read_text())
+            # Stand in only for the downstream environment/command. The real
+            # wrapper must pass the browser through to the test invocation.
+            (root / 'tools/test-env.sh').write_text('printf "%s\\n" "${CHROME-unset}"\n')
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            uname = bin_dir / 'uname'
+            uname.write_text('#!/bin/sh\nprintf "%s\\n" "$PLATFORM"\n')
+            uname.chmod(0o755)
+            for platform, override in ((platform, override)
+                                       for platform in ('Linux', 'Darwin', 'FreeBSD')
+                                       for override in (None, '', '/custom/verified-browser')):
+                with self.subTest(platform=platform, override=override):
+                    env = {key: value for key, value in os.environ.items() if key != 'CHROME'}
+                    env.update(PATH=f'{bin_dir}:{env["PATH"]}', PLATFORM=platform)
+                    if override is not None:
+                        env['CHROME'] = override
+                    result = subprocess.run(['bash', str(script), 'cargo', 'nextest', 'run',
+                                             '-p', 'tilo-agent-participant', '-E', 'test(browser)'],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = (override or '/usr/lib64/chromium-browser/chromium-browser'
+                                if platform == 'Linux' else
+                                'unset' if override is None else override)
+                    self.assertEqual(result.stdout.strip(), expected)
+
+    def test_browser_regressions_gate_native_receipts_and_shared_aliases(self):
+        cold = workflow_job(BUILD, 'cache-cold')
+        name = 'Run native browser regressions'
+        script = step_script(cold, name)
+        block = step_block(cold, name)
+        self.assertNotIn('continue-on-error', block)
+        self.assertNotIn('        if:', block)
+        self.assertIn('matrix: ${{ fromJSON(needs.images.outputs.matrix) }}', cold)
+        self.assertIn('image: ${{ matrix.image }}', cold)
+        self.assertLess(cold.index('- name: Populate a new remote cache namespace'),
+                        cold.index(f'- name: {name}'))
+        self.assertLess(cold.index(f'- name: {name}'),
+                        cold.index('- name: Retain only successful cold acceptance'))
+        self.assertIn('needs: [images, cache-cold]', workflow_job(BUILD, 'cache-warm'))
+        acceptance = workflow_job(BUILD, 'accept-builder')
+        for phase in ('cache-cold', 'cache-warm'):
+            self.assertIn(f"needs.{phase}.result == 'success'", acceptance)
+        self.assertIn("needs.accept-builder.result == 'success'",
+                      workflow_job(BUILD, 'promote-builder'))
+        for binary in ('end_to_end', 'passkey_root', 'node_workspace', 'voice_browsers'):
+            self.assertIn(f'binary({binary})', script)
+            self.assertIn(f'--test {binary}', script)
+            self.assertTrue((ROOT / f'crates/browser/tilo-browser-peer/tests/{binary}.rs').is_file())
+        participant = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
+        for test in ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
+                     'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
+                     'the_creator_and_a_joined_page_both_see_every_task_live'):
+            self.assertIn(f'test(={test})', script)
+            self.assertIn(f'async fn {test}()', participant)
+        # Execute the actual workflow shell, intercepting only the expensive
+        # wrapper. Neither a peer failure nor a participant failure may pass.
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'tools/ci').mkdir(parents=True)
+            (work / 'tools/ci/t-nextest.sh').write_text(
+                'printf "%s\\n" "$*" >> calls\n'
+                '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
+            for failure in ('none', 'tilo-browser-peer', 'tilo-agent-participant'):
+                with self.subTest(failure=failure):
+                    (work / 'calls').unlink(missing_ok=True)
+                    result = subprocess.run(['bash', '-c', script], cwd=work,
+                                            env={**os.environ, 'FAIL_PACKAGE': failure},
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                    calls = (work / 'calls').read_text().splitlines()
+                    self.assertEqual(len(calls), 1 if failure == 'tilo-browser-peer' else 2)
+                    for call in calls:
+                        self.assertIn('cargo nextest run --locked --profile ci --no-tests=fail', call)
+
     def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()
         block = builder.split('ARG JSIGN_VERSION=', 1)[1].split('\nRUN ', 1)[1].split('\n\n', 1)[0]

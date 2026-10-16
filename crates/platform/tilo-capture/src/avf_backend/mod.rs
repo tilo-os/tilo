@@ -21,7 +21,7 @@ pub(crate) use video::camera;
 pub(crate) use video::screen;
 
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
@@ -103,14 +103,10 @@ impl<T> Default for Shared<T> {
 
 type Slot<T> = Arc<Mutex<Shared<T>>>;
 
-fn lock<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
-    slot.lock_recover()
-}
-
 /// A later state replaces an earlier one, except that [`CaptureState::Live`]
 /// never replaces anything.
 fn settle<T>(slot: &Slot<T>, state: CaptureState) {
-    let mut shared = lock(slot);
+    let mut shared = slot.lock_recover();
     if state == CaptureState::Live {
         shared.state.get_or_insert(state);
     } else {
@@ -119,7 +115,10 @@ fn settle<T>(slot: &Slot<T>, state: CaptureState) {
 }
 
 fn state<T>(slot: &Slot<T>) -> CaptureState {
-    lock(slot).state.clone().unwrap_or(CaptureState::Starting)
+    slot.lock_recover()
+        .state
+        .clone()
+        .unwrap_or(CaptureState::Starting)
 }
 
 fn media(kind: DeviceKind) -> Option<&'static AVMediaType> {
@@ -272,7 +271,7 @@ impl Capture {
 
 /// Start `session` unless its capture was dropped meanwhile.
 fn start<T>(session: &AVCaptureSession, stopped: &Mutex<bool>, slot: &Slot<T>) {
-    let stopped = lock(stopped);
+    let stopped = stopped.lock_recover();
     if *stopped {
         return;
     }
@@ -294,7 +293,7 @@ fn start<T>(session: &AVCaptureSession, stopped: &Mutex<bool>, slot: &Slot<T>) {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        let mut stopped = lock(&self.stopped);
+        let mut stopped = self.stopped.lock_recover();
         *stopped = true;
         // SAFETY: stopping a session is allowed in any state.
         unsafe { self.session.stopRunning() };

@@ -247,7 +247,7 @@ impl NamespaceScan {
     pub fn due(&mut self, namespace: &Mutex<Namespace>) -> Vec<ContentConflict> {
         let mut stats = ConflictPassStats::default();
         let generation = {
-            let ns = lock(namespace);
+            let ns = namespace.lock_recover();
             let held = Instant::now();
             let generation = ns.merge_generation();
             drop(ns);
@@ -264,7 +264,7 @@ impl NamespaceScan {
         let mut found = Found::default();
         let mut after: Option<String> = None;
         loop {
-            let ns = lock(namespace);
+            let ns = namespace.lock_recover();
             let held = Instant::now();
             #[cfg(test)]
             if after.is_none() {
@@ -304,10 +304,6 @@ impl NamespaceScan {
     pub fn scans(&self) -> u64 {
         self.scans
     }
-}
-
-fn lock(namespace: &Mutex<Namespace>) -> std::sync::MutexGuard<'_, Namespace> {
-    namespace.lock_recover()
 }
 
 fn push_copy(
@@ -530,7 +526,7 @@ mod tests {
         assert_eq!(first.lock_holds, 2 + nodes / SCAN_STEP_NODES);
 
         // Idle passes, and a local edit, examine nothing.
-        lock(&a).set_content(doc, Some(&h(10)), 10, 5);
+        a.lock_recover().set_content(doc, Some(&h(10)), 10, 5);
         for _ in 0..3 {
             assert!(scan.due(&a).is_empty());
             let idle = scan.last_pass();
@@ -541,20 +537,20 @@ mod tests {
         // B edited `doc` meanwhile; its edit arrives.
         let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
         b.set_content(bino, Some(&h(20)), 20, 5);
-        lock(&a).merge_doc(&mut b).unwrap();
+        a.lock_recover().merge_doc(&mut b).unwrap();
         let due = scan.due(&a);
         assert_eq!(scan.scans(), 2);
         assert_eq!(due.len(), 1);
-        assert_eq!(summary(&due), summary(&detect(&lock(&a))));
+        assert_eq!(summary(&due), summary(&detect(&a.lock_recover())));
 
         // Not materialised yet: the loop asks for another scan.
         scan.rescan();
         assert_eq!(summary(&scan.due(&a)), summary(&due));
         assert_eq!(scan.scans(), 3);
-        assert!(!materialize(&mut lock(&a), &due[0], 10, 6).is_empty());
+        assert!(!materialize(&mut a.lock_recover(), &due[0], 10, 6).is_empty());
         assert!(scan.due(&a).is_empty());
         assert_eq!(scan.scans(), 3, "a materialised copy is no merge");
-        assert!(detect(&lock(&a)).is_empty(), "exactly one copy");
+        assert!(detect(&a.lock_recover()).is_empty(), "exactly one copy");
     }
 
     /// A scan in steps, with the lock released between them, finds what

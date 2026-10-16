@@ -241,6 +241,11 @@ pub struct SetDesc {
     staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
     replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
     item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+    /// The stored keys whose presence may differ between a set and
+    /// `before`, a set of the same type, in key order, once each: the keys
+    /// of the chunks the two do not share. `None` for values of another
+    /// type.
+    differing: for<'a> fn(&'a dyn Any, &'a dyn Any) -> Option<Vec<&'a str>>,
 }
 
 /// The [`SetDesc`] of `Set<T>`.
@@ -263,6 +268,13 @@ impl<T: Model> SetOf<T> {
         ),
         replace: crate::table::replace_of::<Set<T>>,
         item_staged: (crate::table::empty_of::<T>, crate::table::unwrap_of::<T>),
+        differing: |value, before| {
+            let (now, was) = (
+                value.downcast_ref::<Set<T>>()?,
+                before.downcast_ref::<Set<T>>()?,
+            );
+            Some(now.elements.differing_keys(&was.elements))
+        },
     };
 
     pub const TABLE: ModelTable = ModelTable::of_set(&Self::DESC, T::CHECKS);
@@ -383,8 +395,56 @@ pub static SET_OPS: ModelOps = ModelOps {
         }
         Ok(())
     },
-    stores_as: |_, _, _| false,
-    store_changed: |table, value, _, doc, slot, _| (SET_OPS.store)(table, value, doc, slot),
+    // The same elements: as many, and the same under every key of a chunk
+    // the two do not share (one they share holds the same keys).
+    stores_as: |table, value, before| {
+        let Some(set) = table.set() else {
+            return false;
+        };
+        let (Some(now), Some(was)) = ((set.elements)(value), (set.elements)(before)) else {
+            return false;
+        };
+        now.count() == was.count()
+            && (set.differing)(value, before).is_some_and(|keys| {
+                keys.into_iter()
+                    .all(|key| now.value(key).is_some() == was.value(key).is_some())
+            })
+    },
+    store_changed: |table, value, before, doc, slot, dirty| {
+        let set = sets(table)?;
+        let now = (set.elements)(value).ok_or_else(crate::table::mismatch)?;
+        let Some(differing) = (set.differing)(value, before) else {
+            return (SET_OPS.store)(table, value, doc, slot);
+        };
+        // A slot holding no map yet is written whole, as is a map someone
+        // else changed otherwise than key by key.
+        let Some((Value::Object(ObjType::Map), map)) = slot.current(doc)? else {
+            return (SET_OPS.store)(table, value, doc, slot);
+        };
+        let touched = dirty.under(&map);
+        if touched.is_all() {
+            return (SET_OPS.store)(table, value, doc, slot);
+        }
+        // Under any other key the map holds what `before` holds, as a store
+        // left it, and so does this set: storing writes nothing there.
+        let mut keys = differing;
+        keys.extend(touched.keys());
+        keys.sort_unstable();
+        keys.dedup();
+        // What `store` writes: the stale keys deleted, then the missing
+        // ones put, both in key order.
+        for key in &keys {
+            if now.value(key).is_none() && doc.get(&map, *key)?.is_some() {
+                doc.delete(&map, *key)?;
+            }
+        }
+        for key in &keys {
+            if now.value(key).is_some() && doc.get(&map, *key)?.is_none() {
+                doc.put(&map, *key, true)?;
+            }
+        }
+        Ok(())
+    },
     refresh: |table, target, doc, value, id, delta| {
         let set = sets(table)?;
         let touched = delta.under(id);
@@ -441,26 +501,37 @@ pub static SET_OPS: ModelOps = ModelOps {
         let (Some(was), Some(now)) = ((set.elements)(before), (set.elements)(after)) else {
             return;
         };
-        was.each(&mut |key, value| {
+        let edit = |op| crate::Edit::new(path.to_vec(), op);
+        // An element `before` holds and `after` does not: removed.
+        let removed = |key: &str, value: &dyn Any, out: &mut Vec<crate::Edit<()>>| {
             if now.value(key).is_none() {
-                out.push(crate::Edit::new(
-                    path.to_vec(),
-                    EditOp::Remove {
-                        value: (set.item.ops.to_json)(set.item, value),
-                    },
-                ));
+                let value = (set.item.ops.to_json)(set.item, value);
+                out.push(edit(EditOp::Remove { value }));
             }
-        });
-        now.each(&mut |key, value| {
+        };
+        // One `after` holds and `before` does not: added.
+        let added = |key: &str, value: &dyn Any, out: &mut Vec<crate::Edit<()>>| {
             if was.value(key).is_none() {
-                out.push(crate::Edit::new(
-                    path.to_vec(),
-                    EditOp::Insert {
-                        value: (set.item.ops.to_json)(set.item, value),
-                    },
-                ));
+                let value = (set.item.ops.to_json)(set.item, value);
+                out.push(edit(EditOp::Insert { value }));
             }
-        });
+        };
+        // Under any other key both hold the same element: no edit.
+        if let Some(keys) = (set.differing)(after, before) {
+            for key in &keys {
+                if let Some(value) = was.value(key) {
+                    removed(key, value, out);
+                }
+            }
+            for key in &keys {
+                if let Some(value) = now.value(key) {
+                    added(key, value, out);
+                }
+            }
+        } else {
+            was.each(&mut |key, value| removed(key, value, out));
+            now.each(&mut |key, value| added(key, value, out));
+        }
     },
     collect_text: |table, value, out| {
         if let Some(set) = table.set()
@@ -872,6 +943,18 @@ impl<T> Grid<T> {
         self.columns.remove(column).is_some()
     }
 
+    /// The non-empty cells of `rows` (in key order), as [`Self::cells`]
+    /// lists them.
+    fn cells_in<'a>(&'a self, rows: &'a [&'a str]) -> impl Iterator<Item = (Id, Id, &'a T)> {
+        rows.iter().flat_map(move |row| {
+            self.cells.get(row).into_iter().flat_map(move |cells| {
+                cells.iter().map(move |(column, value)| {
+                    (Id::from_raw(*row), Id::from_raw(column.clone()), value)
+                })
+            })
+        })
+    }
+
     /// Every non-empty cell: row, column, value.
     pub fn cells(&self) -> impl Iterator<Item = (Id, Id, &T)> {
         self.cells.iter().flat_map(|(row, cells)| {
@@ -987,7 +1070,10 @@ impl<T: Model> Model for Grid<T> {
                 }));
             }
         }
-        for (row, column, value) in after.cells() {
+        // Rows of cells in a chunk both grids share hold the same cells: only
+        // the others are compared, in the order of all of them.
+        let rows = after.cells.differing_keys(&self.cells);
+        for (row, column, value) in after.cells_in(&rows) {
             match self.cell(&row, &column) {
                 Some(before) => {
                     let mut at = path.to_vec();
@@ -1001,7 +1087,7 @@ impl<T: Model> Model for Grid<T> {
                 })),
             }
         }
-        for (row, column, _) in self.cells() {
+        for (row, column, _) in self.cells_in(&rows) {
             if after.rows.contains(&row)
                 && after.columns.contains(&column)
                 && after.cell(&row, &column).is_none()
@@ -1118,20 +1204,28 @@ impl<T: Model> Model for Grid<T> {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
-    /// The same rows, columns and cells, each storing as before.
+    /// The same rows, columns and cells, each storing as before. Rows of
+    /// cells in a chunk both grids share are the same rows, and are not
+    /// compared.
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.rows.stores_as(&before.rows)
             && self.columns.stores_as(&before.columns)
             && self.cells.len() == before.cells.len()
-            && self.cells.iter().all(|(row, cells)| {
-                before.cells.get(row).is_some_and(|was| {
-                    cells.len() == was.len()
-                        && cells.iter().all(|(column, value)| {
-                            was.get(column).is_some_and(|was| value.stores_as(was))
-                        })
+            && self
+                .cells
+                .differing_keys(&before.cells)
+                .into_iter()
+                .all(|row| match (self.cells.get(row), before.cells.get(row)) {
+                    (Some(cells), Some(was)) => {
+                        cells.len() == was.len()
+                            && cells.iter().all(|(column, value)| {
+                                was.get(column).is_some_and(|was| value.stores_as(was))
+                            })
+                    }
+                    (None, None) => true,
+                    _ => false,
                 })
-            })
     }
     /// What [`store`](Model::store) writes, from `before` instead of the
     /// document: rows and columns as their collections write them, then the
@@ -1154,12 +1248,28 @@ impl<T: Model> Model for Grid<T> {
         if replaced || touched.is_all() {
             return self.store_cells(doc, &cells);
         }
-        // What the map may hold that this grid does not: the cells it held
-        // before and any key someone else wrote, in the map's key order.
-        let mut candidates: std::collections::BTreeSet<String> = before
-            .cells()
-            .map(|(row, column, _)| cell_key(row.as_str(), column.as_str()))
+        // Rows of cells in a chunk both grids share are the same rows, held
+        // as a store left them: only the other rows, and the rows of cells
+        // someone else wrote, are visited.
+        let mut rows: std::collections::BTreeSet<&str> = self
+            .cells
+            .differing_keys(&before.cells)
+            .into_iter()
             .collect();
+        rows.extend(
+            touched
+                .keys()
+                .filter_map(|key| Some(key.split_once('/')?.0)),
+        );
+        // What the map may hold that this grid does not: the cells those
+        // rows held before and any key someone else wrote, in the map's key
+        // order.
+        let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for row in &rows {
+            if let Some(was) = before.cells.get(row) {
+                candidates.extend(was.iter().map(|(column, _)| cell_key(row, column)));
+            }
+        }
         candidates.extend(touched.keys().map(str::to_owned));
         for key in candidates {
             let held = key.split_once('/').is_some_and(|(row, column)| {
@@ -1171,15 +1281,22 @@ impl<T: Model> Model for Grid<T> {
                 doc.delete(&cells, key.as_str())?;
             }
         }
-        for (row, column, value) in self.cells() {
-            let key = cell_key(row.as_str(), column.as_str());
-            let slot = Slot::Key(&cells, &key);
-            match (touched.key(&key), before.cell(&row, &column)) {
-                (crate::delta::Touch::Untouched, Some(was)) if value.stores_as(was) => {}
-                (crate::delta::Touch::Untouched | crate::delta::Touch::Below, Some(was)) => {
-                    value.store_changed(was, doc, slot, dirty).located(&key)?;
+        // Then the cells of those rows, in the order `store` writes them.
+        for row in rows {
+            let Some(held) = self.cells.get(row) else {
+                continue;
+            };
+            for (column, value) in held.iter() {
+                let key = cell_key(row, column);
+                let slot = Slot::Key(&cells, &key);
+                let was = before.cells.get(row).and_then(|was| was.get(column));
+                match (touched.key(&key), was) {
+                    (crate::delta::Touch::Untouched, Some(was)) if value.stores_as(was) => {}
+                    (crate::delta::Touch::Untouched | crate::delta::Touch::Below, Some(was)) => {
+                        value.store_changed(was, doc, slot, dirty).located(&key)?;
+                    }
+                    _ => value.store(doc, slot).located(&key)?,
                 }
-                _ => value.store(doc, slot).located(&key)?,
             }
         }
         Ok(())

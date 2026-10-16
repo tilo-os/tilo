@@ -1800,7 +1800,8 @@ impl FeedsApp {
 
     /// A refresh of every feed partway through: some done, some updated,
     /// one failed.
-    pub fn force_refresh_in_progress(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn force_refresh_in_progress(&self) {
         let mut core = self.core.borrow_mut();
         let total = core.store.feeds.len();
         let done = total.div_ceil(2).saturating_sub(1);

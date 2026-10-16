@@ -7,6 +7,14 @@ license.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the contact directory through its engine library in the runtime
+# bundle (libtilo_contact_directory_engine.so,
+# crates/runtime/engines/contact-directory) instead of the runtime. The
+# release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links tilo-contact-directory statically,
+# because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -16,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

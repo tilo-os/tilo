@@ -188,6 +188,14 @@ impl RemoteSeats {
         }
     }
 
+    /// Whether [`Self::local_key_transition`] would let the physical
+    /// keyboard's release of `keycode` reach apps now: it holds the key and
+    /// no one else does.
+    pub fn local_release_reaches_apps(&self, keycode: u32) -> bool {
+        self.local_pressed_keys.contains(&keycode)
+            && self.key_holders.get(&keycode).copied() == Some(1)
+    }
+
     /// Retire every key owned by the physical keyboard. Returned transitions
     /// are the final shared-seat releases; a trusted seat reset may ignore
     /// that list when it rebuilds the complete Smithay XKB state itself.

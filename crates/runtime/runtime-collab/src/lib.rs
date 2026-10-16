@@ -1127,6 +1127,25 @@ impl ChannelHandle {
         Ok(reply.get()?.get_change())
     }
 
+    /// Wait until what a Nearby Send snapshot would show this connection
+    /// may have changed since `after` (0 at first, then what the previous
+    /// call returned), and return the value to wait from next. The answer
+    /// names nothing: the caller asks for a fresh snapshot through
+    /// [`Self::nearby_transfer_command`]. The call stays pending, without
+    /// traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when this route may not use Nearby Send,
+    /// the host has none (an older broker answers unimplemented), or the
+    /// broker is unavailable.
+    pub async fn nearby_transfer_changed(&self, after: u64) -> Result<u64, NotAvailable> {
+        let mut request = self.inner.nearby_transfer_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
+    }
+
     /// This application's live activity: what it shows outside its windows
     /// and the controls pressed on it. The broker binds the capability to
     /// this channel's certified app.
@@ -2498,6 +2517,11 @@ pub struct TaskRunEnvelope {
     /// Private full instruction. Older senders omit it and use `title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+    /// What the request is about, when the person asked about a selection:
+    /// the resource and exactly what was selected in it. The subject of the
+    /// request only, never the run's authority. Older senders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<tilo_actions::SelectionSubject>,
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,

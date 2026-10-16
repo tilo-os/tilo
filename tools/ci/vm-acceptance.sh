@@ -23,19 +23,29 @@ report=${CARGO_TARGET_DIR:-/target}/vm-acceptance/report
 run_user=acceptance
 behind_warn=20
 
+# The node's own Fedora: the tools the run needs come from dnf.
+dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
+  libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
+  ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
+  e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
+  shadow-utils util-linux bash-devel readline-devel git curl python3 rustup gcc
+command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
+python3 -c 'import PIL'
+# Rust as rust-toolchain.toml pins it, kept with the build directory.
+# Its own homes: the session user builds with them too.
+export RUSTUP_HOME=${CARGO_TARGET_DIR:-/target}/rustup
+export CARGO_HOME=${CARGO_TARGET_DIR:-/target}/cargo-home
+export PATH=$CARGO_HOME/bin:$PATH
+command -v rustup >/dev/null 2>&1 && [[ -x $CARGO_HOME/bin/cargo ]] \
+  || rustup-init -y --no-modify-path --default-toolchain none --profile minimal >/dev/null
+cargo --version
+
 ./os/dev/assert-native-arch.sh "$arch"
 python3 os/dev/probe-kvm.py "$arch" || {
   echo 'this node cannot create a KVM VM; the acceptance suite never runs under TCG' >&2
   exit 1
 }
 
-dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
-  libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
-  ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
-  e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
-  shadow-utils util-linux bash-devel readline-devel git curl cargo
-command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
-python3 -c 'import PIL'
 
 rm -rf "$work" "$report"
 mkdir -p "$work" "$report"
@@ -159,7 +169,7 @@ install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
 echo 'max_core = 0' | install -m 0644 -o "$run_user" -g "$run_user" /dev/stdin "/home/$run_user/.config/libvirt/qemu.conf"
 mkdir -p "$src/target/dev-runs"
 chown -R "$run_user:" "$work" "$report"
-[[ -z ${CARGO_HOME:-} ]] || chown -R "$run_user:" "$CARGO_HOME"
+chown -R "$run_user:" "$CARGO_HOME" "$RUSTUP_HOME"
 keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' \
   | grep -vx CARGO_TARGET_DIR | paste -sd, -)
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
