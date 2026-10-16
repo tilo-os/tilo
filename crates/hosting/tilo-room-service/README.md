@@ -259,17 +259,15 @@ assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
 `room-service` pointer; deployments pin the digest. Build and test it from your tree with
 `t test image-room-service`.
 
-Production pins this image and the web entry together, from one main
-commit, in the infra repository. `tools/release/cloud_promotion.py` plans
-that change: `plan` picks the newest main commit with both images (or
-`--revision`, or two `--receipt` files), checks each digest's revision label
-and platform in the registry and prints the exact manifest diff and pull
-request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
-the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
-reports which revision each service runs and how far main is ahead. The
-`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
-every Monday and the promotion on a manual run. Promotions are batched: each
-web entry deploy makes open tabs offer a reload.
+Deployments pin this image and the web entry together, from one stable
+commit, in a GitOps repository. t's `cloud-deploy` check does that whenever
+stable moves (`tools/release/cloud_deploy.py`): the deploy target in that
+repository lists the services, their manifests and the URL each reports its
+build at (this service's `/mode`), and `rollout`, which keeps it a dry run
+until it is true. It commits the new digests, waits until each moved service
+reports its build and stays healthy, and otherwise commits the previous
+digests back. `python3 tools/release/cloud_deploy.py plan --infra <checkout>
+--config <target>` prints the change for a checkout (`--apply` makes it).
 
 Locally, `dev/run.py` runs the persistent room as production does: this
 service in persistent mode with its child relay, and the web entry laid out

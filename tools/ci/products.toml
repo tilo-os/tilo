@@ -37,7 +37,7 @@ test = ["bash crates/hosting/tilo-room-service/container/test-image.sh {out}/ima
 inputs = ["crates/hosting/tilo-room-service/container/test-image.sh"]
 cost = "minutes"
 
-# Stable's receipt is what cloud-promotion promotes.
+# Stable's receipt is what cloud-deploy deploys.
 [product.publish]
 pointers = { room-service = "{dir}/receipt.json" }
 
@@ -77,7 +77,7 @@ outputs = ["{dir}/release/receipt-extra.json"]
 cache = false
 cost = "minutes"
 
-# Stable's receipt is what cloud-promotion promotes.
+# Stable's receipt is what cloud-deploy deploys.
 [product.publish]
 pointers = { web-entry = "{dir}/receipt.json" }
 
