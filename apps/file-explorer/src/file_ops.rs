@@ -367,7 +367,12 @@ fn compensate(change: &Change) -> Result<Change, String> {
                         .ok_or_else(|| format!("{} has no name", from.display()))?;
                     fileops::rename(Path::new(to), &name.to_string_lossy())?
                 }
-                (Some(origin), _) => fileops::move_into(Path::new(to), origin)?,
+                (Some(origin), _) => {
+                    let name = from
+                        .file_name()
+                        .ok_or_else(|| format!("{} has no name", from.display()))?;
+                    fileops::move_into_named(Path::new(to), origin, name)?
+                }
                 (None, _) => return Err(format!("{} has no folder", from.display())),
             };
             Ok(Change::Moved {
@@ -560,6 +565,41 @@ mod tests {
             0o644
         );
         assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
+    }
+
+    #[test]
+    fn undo_move_restores_original_name_after_destination_collision() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("report.txt");
+        let destination = root.path().join("archive");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(&source, b"moved report").unwrap();
+        std::fs::write(destination.join("report.txt"), b"existing report").unwrap();
+        let moved = execute(
+            &FileOp::Move {
+                paths: vec![text(&source)],
+                folder: text(&destination),
+                create: false,
+            },
+            None,
+        );
+        done(&moved);
+        let suffixed = destination.join("report 2.txt");
+        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+        let revert = FileOp::Revert { op: "move".into() };
+        let undone = execute(&revert, Some(done(&moved)));
+        done(&undone);
+        assert_eq!(std::fs::read(&source).unwrap(), b"moved report");
+        assert!(!root.path().join("report 2.txt").exists());
+        assert!(!suffixed.exists());
+        let redone = execute(&revert, Some(done(&undone)));
+        done(&redone);
+        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination.join("report.txt")).unwrap(),
+            b"existing report"
+        );
     }
 
     /// A move stops at the first failure and records what it moved before.
