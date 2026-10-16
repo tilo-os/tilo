@@ -84,6 +84,8 @@ pub enum Head {
     Invoke {
         action: ActionKey,
         resource: Selector,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        appearance: Option<Binding>,
     },
     If {
         cond: Condition,
@@ -120,11 +122,12 @@ impl Head {
                 action,
                 resource,
                 args,
-                ..
+                appearance,
             } => (
                 Self::Invoke {
                     action: action.clone(),
                     resource: resource.clone(),
+                    appearance: appearance.clone(),
                 },
                 args.clone(),
                 Vec::new(),
@@ -180,11 +183,15 @@ impl Head {
         mut block: impl FnMut(&str) -> Vec<Step>,
     ) -> StepKind {
         match self {
-            Self::Invoke { action, resource } => StepKind::Invoke {
+            Self::Invoke {
+                action,
+                resource,
+                appearance,
+            } => StepKind::Invoke {
                 action,
                 resource,
                 args,
-                appearance: None,
+                appearance,
             },
             Self::If { cond } => StepKind::If {
                 cond,
