@@ -547,6 +547,19 @@ impl OpenAiModel {
     }
 }
 
+/// Keep the host CLI's plain-string contract without changing typed provider errors.
+fn cli_model_error(error: &tilo_model_gateway::host_backend::protocol::ModelError) -> String {
+    use tilo_model_gateway::host_backend::protocol::ErrorKind;
+    if error.kind == ErrorKind::CreditsExhausted {
+        format!(
+            "{}: check your provider's credit or subscription, or choose another model.",
+            openai::OUT_OF_CREDITS
+        )
+    } else {
+        error.to_string()
+    }
+}
+
 impl PlanModel for OpenAiModel {
     fn choose(
         &mut self,
@@ -558,7 +571,7 @@ impl PlanModel for OpenAiModel {
         if self.client.is_none() {
             self.client = Some(
                 tilo_model_gateway::host_backend::CompletionClient::new()
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| cli_model_error(&error))?,
             );
         }
         let client = self.client.as_mut().ok_or("no model transport")?;
@@ -598,7 +611,7 @@ impl PlanModel for OpenAiModel {
                     &key,
                     deadline,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| cli_model_error(&error))?;
             let calls = conversation
                 .validate_response(&response)
                 .map_err(|error| error.to_string())?;
@@ -917,6 +930,24 @@ mod tests {
         )
     }
 
+    /// `OpenAI` permits text content as either a string or typed text blocks.
+    fn message_text(message: &serde_json::Value, role: &str) -> String {
+        assert_eq!(message["role"], role);
+        let content = &message["content"];
+        if let Some(text) = content.as_str() {
+            return text.to_owned();
+        }
+        content
+            .as_array()
+            .expect("text content must be a string or text blocks")
+            .iter()
+            .map(|block| {
+                assert_eq!(block["type"], "text");
+                block["text"].as_str().expect("text block").to_owned()
+            })
+            .collect()
+    }
+
     /// The published operations come with the task, so a task they answer
     /// is planned in ONE request — no listing or describing turn first.
     #[test]
@@ -930,10 +961,10 @@ mod tests {
         let requests: Vec<(String, String)> = sent.try_iter().collect();
         assert_eq!(requests.len(), 1, "one model turn");
         let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
-        let task = first["messages"][1]["content"].as_str().unwrap();
+        let task = message_text(&first["messages"][1], "user");
         assert!(task.contains(&offer), "{task}");
         assert!(task.contains("open notes then add a note"), "{task}");
-        let system = first["messages"][0]["content"].as_str().unwrap();
+        let system = message_text(&first["messages"][0], "system");
         assert!(!system.contains("before planning"), "{system}");
     }
 
@@ -1123,6 +1154,39 @@ mod tests {
             .unwrap_err();
         assert!(error.starts_with(openai::OUT_OF_CREDITS), "{error}");
         assert_eq!(sent.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn typed_credit_failure_maps_to_cli_without_retry_or_provider_text() {
+        use tilo_model_gateway::host_backend::protocol::{ErrorKind, ModelError};
+
+        let expected = cli_model_error(&ModelError::new(ErrorKind::CreditsExhausted));
+        assert!(expected.starts_with(openai::OUT_OF_CREDITS), "{expected}");
+        assert!(expected.contains("choose another model"), "{expected}");
+        // Classification comes from the machine code, not the provider's prose.
+        let (url, sent) = endpoint(vec![http(
+            "402 Payment Required",
+            r#"{"error":"private upstream detail","code":"insufficient_credit"}"#,
+        )]);
+        let error = OpenAiModel::new(
+            &url,
+            CLOUD_MODEL,
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::CloudMetered,
+        )
+        .choose("add a note", &open_notes(), MOST_STEPS)
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(!error.contains("private upstream detail"));
+        assert_eq!(
+            sent.try_iter().count(),
+            1,
+            "credit failures are not retried"
+        );
+
+        let other = ModelError::new(ErrorKind::Authentication);
+        assert_eq!(cli_model_error(&other), other.to_string());
     }
 
     #[test]

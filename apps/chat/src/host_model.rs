@@ -311,8 +311,23 @@ impl ChatApp {
                 attempt.events.borrow_mut().push(event);
             }
         }
-        for event in attempt.events.borrow_mut().drain(..) {
+        let pending = std::mem::take(&mut *attempt.events.borrow_mut());
+        for event in pending {
             attempt.state.apply(&event);
+            // StreamState retains absent final prose for interrupted responses.
+            // A successful, empty final must not certify stale partial prose.
+            if let StreamEvent::Finished { response } = &event
+                && attempt.state.status == StreamStatus::Completed
+                && !response.message.content.iter().any(
+                    |block| matches!(block, ui::models::Content::Text { text } if !text.is_empty()),
+                )
+            {
+                attempt.state.text.clear();
+            }
+            if !attempt.bound_output() {
+                attempt.future = None;
+                break;
+            }
         }
         let (changed, events) = attempt.publish();
         for event in events {
@@ -333,17 +348,65 @@ impl ChatApp {
     }
 }
 
+// AgentStream's aggregate reasoning and terminal-detail limits. Its text limit
+// is shared with record; reasoning currently has no exported limit constant.
+const MAX_REASONING_BYTES: usize = 256 * 1024;
+const MAX_DETAIL_BYTES: usize = 16 * 1024;
+
+fn utf8_prefix(value: &str, limit: usize) -> &str {
+    let mut end = value.len().min(limit);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.get(..end).unwrap_or_default()
+}
+
 impl Attempt {
+    /// Validate before emitting any ordered record actions. A rejected delta
+    /// would otherwise leave a sequence gap that also rejects the terminal.
+    fn bound_output(&mut self) -> bool {
+        if !self.state.text.starts_with(&self.published_text)
+            || !self.state.reasoning.starts_with(&self.published_reasoning)
+        {
+            self.state.text.clone_from(&self.published_text);
+            self.state.reasoning.clone_from(&self.published_reasoning);
+            self.state.status = StreamStatus::Failed;
+            self.state.error = Some(ui::models::ModelError {
+                kind: ui::models::ErrorKind::InvalidResponse,
+                message:
+                    "Provider final changed previously published output; partial output retained"
+                        .into(),
+            });
+            return false;
+        }
+        if self.state.text.len() > crate::record::MAX_MESSAGE_TEXT_BYTES
+            || self.state.reasoning.len() > MAX_REASONING_BYTES
+        {
+            self.state.text =
+                utf8_prefix(&self.state.text, crate::record::MAX_MESSAGE_TEXT_BYTES).into();
+            self.state.reasoning = utf8_prefix(&self.state.reasoning, MAX_REASONING_BYTES).into();
+            self.state.status = StreamStatus::Truncated;
+            self.state.error = Some(ui::models::ModelError {
+                kind: ui::models::ErrorKind::Truncated,
+                message: "Output exceeded the reply presentation limit; partial output retained"
+                    .into(),
+            });
+            return false;
+        }
+        true
+    }
+
     fn publish(&mut self) -> (bool, Vec<AgentStreamEvent>) {
         let mut events = Vec::new();
         for (value, published, reasoning) in [
             (&self.state.text, &mut self.published_text, false),
             (&self.state.reasoning, &mut self.published_reasoning, true),
         ] {
-            if let Some(delta) = value
+            while let Some(suffix) = value
                 .strip_prefix(published.as_str())
                 .filter(|delta| !delta.is_empty())
             {
+                let delta = utf8_prefix(suffix, crate::record::MAX_MESSAGE_TEXT_BYTES);
                 self.sequence += 1;
                 let event = if reasoning {
                     AgentOutput::ReasoningDelta { text: delta.into() }
@@ -355,7 +418,7 @@ impl Attempt {
                     sequence: self.sequence,
                     event,
                 });
-                published.clone_from(value);
+                published.push_str(delta);
             }
         }
         if self.state.status != StreamStatus::Streaming {
@@ -377,7 +440,10 @@ impl Attempt {
             events.push(AgentStreamEvent {
                 run: self.reply.clone(),
                 sequence: self.sequence,
-                event: AgentOutput::Finished { outcome, detail },
+                event: AgentOutput::Finished {
+                    outcome,
+                    detail: utf8_prefix(&detail, MAX_DETAIL_BYTES).into(),
+                },
             });
             self.terminal_published = true;
         }
