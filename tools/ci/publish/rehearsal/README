@@ -1,0 +1,4 @@
+This image is the release rehearsal of Tilo's publishing chain (docs/publishing-on-t.md,
+"Rehearsing a release"). It carries nothing but this file. Its `sha-<commit>` tags were signed
+with the release key and published exactly as a release is, to prove the chain works; nothing
+deploys it.
