@@ -1173,6 +1173,64 @@ fn an_ai_step_never_reads_a_secret() {
 }
 
 #[test]
+fn secret_variables_cannot_be_rendered_or_sent_to_ai() {
+    for last in [
+        Step::new(
+            "sum",
+            StepKind::Ai {
+                transform: AiTransform::Summarise,
+                input: Binding::Var("copy".into()),
+            },
+        ),
+        invoke(
+            "send",
+            MAIL,
+            Selector::Fixed("mail.outbox:main".into()),
+            "send",
+            &[("body", Binding::Template("Token: {{var.copy}}".into()))],
+        ),
+    ] {
+        let host = FakeHost::new();
+        let mut leak = shortcut(
+            "leak",
+            vec![
+                Step::new(
+                    "token",
+                    StepKind::Ask {
+                        param: ActionParam::required("token", ParamType::Secret, "API token"),
+                    },
+                ),
+                Step::new(
+                    "copy",
+                    StepKind::SetVar {
+                        name: "copy".into(),
+                        value: Binding::step("token", ""),
+                    },
+                ),
+                last,
+            ],
+        );
+        leak.grant.extend([app_rule(AGENT_APP_ID), app_rule(MAIL)]);
+        let report = run_with(
+            &host,
+            &Hooks {
+                answer: Some(json!("s3cret")),
+                ..Hooks::default()
+            },
+            &leak,
+            RunId::new(),
+            RunMode::Interactive,
+        );
+        assert!(
+            matches!(failure(&report), Some((_, StepFailure::Binding { reason })) if reason.contains("secret")),
+            "{report:?}"
+        );
+        assert!(host.started().is_empty());
+        assert!(!serde_json::to_string(&report).unwrap().contains("s3cret"));
+    }
+}
+
+#[test]
 fn an_unattended_run_cannot_ask() {
     let host = FakeHost::new();
     let asking = shortcut(
