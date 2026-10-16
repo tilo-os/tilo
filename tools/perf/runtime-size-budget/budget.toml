@@ -80,6 +80,11 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
 # relocations; aarch64 137517640, 4935680, 6470. The two engines are
 # 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
+# Moving account custody, the contact directory and the time-zone database
+# into their own engines leaves 148084128 / 134312888 bytes in the runtime,
+# with 4100096 / 3887104 bytes dirtied per process (x86_64 / aarch64).
+# Native app-build checks also exercise the engine probes and loader traces;
+# the budgets below adopt their suggested one-percent headroom.
 
 # The apps of apps_without_media that use an engine library
 # (crates/runtime/engines/), by library: they load it at exec. Release / apps
@@ -88,13 +93,13 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 "libtilo_timezone_engine.so" = ["clocks"]
 
 [runtime.x86_64]
-bytes = 153223168
+bytes = 149618688
 relocation_bytes = 262144
-relocated_bytes = 5242880
+relocated_bytes = 4194304
 symbol_relocations = 6528
 
 [runtime.aarch64]
-bytes = 138936320
+bytes = 135659520
 relocation_bytes = 262144
-relocated_bytes = 5046272
+relocated_bytes = 3932160
 symbol_relocations = 6592
