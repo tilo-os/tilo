@@ -242,6 +242,7 @@ fn move_into(
 /// Pack `paths` into a new zip archive called `name`, or a free name like
 /// it, in `folder`.
 fn compress(paths: &[String], folder: &Path, name: &str) -> Result<Change, String> {
+    let name = fileops::leaf_name(name)?;
     let archive = fileops::unique_destination(folder, name)?;
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     crate::archive::create_zip(&paths, &archive)
@@ -281,6 +282,7 @@ fn write_file(
     if !folder.is_dir() {
         return Err(format!("{} is not a folder", folder.display()));
     }
+    let name = fileops::leaf_name(name)?;
     let bytes = crate::documents::bytes_for(name, content)?;
     let path = folder.join(name);
     match std::fs::symlink_metadata(&path) {
@@ -585,6 +587,52 @@ mod tests {
             Some(outcome.result().as_slice()),
         ));
         assert!(root.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn write_and_compress_reject_names_that_address_other_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("chosen");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("nested")).unwrap();
+        let source = folder.join("source.txt");
+        std::fs::write(&source, b"source").unwrap();
+        for name in [
+            "../escaped.txt".to_owned(),
+            "nested/escaped.txt".to_owned(),
+            text(&root.path().join("absolute.txt")),
+            ".".to_owned(),
+            "..".to_owned(),
+        ] {
+            let write = execute(
+                &FileOp::Write {
+                    folder: text(&folder),
+                    name: name.clone(),
+                    text: "new contents".into(),
+                    replace: false,
+                },
+                None,
+            );
+            assert!(!write.is_done(), "write accepted {name}: {write:?}");
+            assert!(write.result().is_empty());
+            let compressed = execute(
+                &FileOp::Compress {
+                    paths: vec![text(&source)],
+                    folder: text(&folder),
+                    name: name.clone(),
+                },
+                None,
+            );
+            assert!(
+                !compressed.is_done(),
+                "compress accepted {name}: {compressed:?}"
+            );
+            assert!(compressed.result().is_empty());
+        }
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(folder.join("nested")).unwrap().count(), 0);
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
     }
 
     /// Writing and compressing each record the new file, and
