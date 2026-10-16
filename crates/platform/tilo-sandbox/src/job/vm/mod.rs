@@ -406,8 +406,19 @@ fn job_file(spec: &VmSpec) -> String {
             );
         }
     }
+    // The program by its path in the image, looked up in the step's own `PATH`: a busybox
+    // built to prefer its applets would otherwise run its own `sh` or `bash` for a bare name.
     // busybox's `env` takes its options, then `NAME=value` words, then the command.
-    f.push_str("}\nt_command() {\n\texec env -i --");
+    let path = spec
+        .env
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "PATH")
+        .map_or(super::spec::DEFAULT_PATH.as_bytes(), |(_, v)| v.as_bytes());
+    let _ = writeln!(f, "}}\nT_PATH={}", quote(path));
+    f.push_str("t_command() {\n\tprogram=$(t_which ");
+    f.push_str(&spec.argv.first().map_or_else(String::new, |a| q(a)));
+    f.push_str(") || exit 127\n\texec env -i --");
     for (k, v) in &spec.env {
         let mut kv = k.as_bytes().to_vec();
         kv.push(b'=');
@@ -415,7 +426,8 @@ fn job_file(spec: &VmSpec) -> String {
         f.push(' ');
         f.push_str(&quote(&kv));
     }
-    for a in &spec.argv {
+    f.push_str(" \"$program\"");
+    for a in spec.argv.iter().skip(1) {
         f.push(' ');
         f.push_str(&q(a));
     }
@@ -676,11 +688,12 @@ mod tests {
         assert!(f.contains("\tt_mount 0 'it'\\''s' '/a b' ro\n"), "{f}");
         assert!(
             f.contains(
-                "exec env -i -- 'X=a b' 'PATH=/usr/bin' 'bash' '-c' 'echo '\\''hi'\\'' $X'\n"
+                "program=$(t_which 'bash') || exit 127\n\texec env -i -- 'X=a b' 'PATH=/usr/bin' \"$program\" '-c' 'echo '\\''hi'\\'' $X'\n"
             ),
             "{f}"
         );
         assert!(f.contains("\tt_output '/target/out/*'\n"), "{f}");
+        assert!(f.contains("T_PATH='/usr/bin'\n"), "{f}");
     }
 
     #[test]
