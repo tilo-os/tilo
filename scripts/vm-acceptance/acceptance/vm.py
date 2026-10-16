@@ -39,8 +39,19 @@ def first_json(text: str):
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if line.lstrip().startswith(("{", "[")):
-            # CLI receipts can surround a complete, pretty-printed JSON document.
-            return json.JSONDecoder().raw_decode("\n".join(lines[index:]).lstrip())[0]
+            # CLI receipts and bracket-prefixed progress lines can surround a
+            # complete, pretty-printed JSON document. A log line is not a response.
+            try:
+                return json.JSONDecoder().raw_decode("\n".join(lines[index:]).lstrip())[0]
+            except json.JSONDecodeError:
+                # Only a complete bracketed progress line may be skipped. Once a
+                # document begins, never mistake one of its nested values for it.
+                stripped = line.strip()
+                if (stripped.startswith("[") and stripped.endswith("]")
+                        and stripped[1:2].isalpha()
+                        and not any(char in stripped[1:-1] for char in '[]{}"')):
+                    continue
+                break
     raise VmError(f"no JSON in output: {text[:400]!r}")
 
 

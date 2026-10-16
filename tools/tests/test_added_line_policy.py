@@ -1,13 +1,17 @@
+import io
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/policy"))
 
-from added_line_policy import SECRET_PATTERNS, added_line_issues, added_lines  # noqa: E402
+from added_line_policy import (  # noqa: E402
+    SECRET_PATTERNS, added_line_issues, added_lines, object_reader, scan_all,
+)
 
 # Built from parts so this file passes the scan it exercises.
 SAMPLES = {
@@ -72,6 +76,39 @@ class AddedLineIssuesTests(unittest.TestCase):
         # A merge: a line from either parent is not added by the merge.
         self.assertEqual(added_lines(b"left\nright\nboth\n", [b"left\n", b"right\n"]), [(3, "both")])
         self.assertEqual(added_lines(b"binary\0" + CONFLICT.encode(), []), [])
+
+
+class ObjectReaderTests(unittest.TestCase):
+    def process(self, response, returncode=0):
+        process = MagicMock()
+        process.__enter__.return_value = process
+        process.stdin = io.BytesIO()
+        process.stdout = io.BytesIO(response)
+        process.wait.return_value = returncode
+        return process
+
+    def test_failed_responses_cannot_pass_a_full_scan(self):
+        for response, returncode in (
+            (b"abc blob 20\nclean\n", 0),
+            (b"abc blob 5\nclean", 0),
+            (b"abc blob 5\nclean!", 0),
+            (b"abc blob -1\n", 0),
+            (b"abc blob 5\nclean\n", 1),
+        ):
+            with self.subTest(response=response, returncode=returncode):
+                process = self.process(response, returncode)
+                with patch("added_line_policy.subprocess.Popen", return_value=process), \
+                     patch("added_line_policy.git", return_value=b"100644 abc 0\tnotes.md\0"):
+                    with self.assertRaises(ValueError):
+                        scan_all(ROOT, secrets_only=False)
+
+    def test_missing_parent_and_non_blob_remain_optional(self):
+        process = self.process(b"HEAD:absent missing\nabc tree 0\n\nabc blob 5\nclean\n")
+        with patch("added_line_policy.subprocess.Popen", return_value=process):
+            with object_reader(ROOT) as read:
+                self.assertIsNone(read("HEAD:absent"))
+                self.assertIsNone(read("abc"))
+                self.assertEqual(read("abc"), b"clean")
 
 
 class StagedScanTests(unittest.TestCase):

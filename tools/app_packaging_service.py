@@ -12,7 +12,7 @@ import urllib.request
 import app_packaging_coordinator as core
 import app_packaging_product as product
 from accept_app_artifacts import FinalArtifactAcceptance
-from assemble_verified_apps import MAX_BYTES, ReadOnlyAPI
+from assemble_verified_apps import MAX_BYTES, ReadOnlyAPI, download_destination
 import app_channel_manifest as channel
 import canonical_verifier_bundle as bundle
 
@@ -68,9 +68,8 @@ class Transport:
             product.require(response.geturl() == request.full_url, 'API redirect rejected')
             length = response.headers.get('Content-Length')
             product.require(length is None or (length.isdigit() and int(length) <= maximum), 'API response exceeds bound')
-            target = output.open('xb') if output else None
             chunks, size = [], 0
-            try:
+            with download_destination(output) as target:
                 while True:
                     product.require(time.monotonic() < deadline, 'API request deadline exceeded')
                     try:
@@ -87,9 +86,6 @@ class Transport:
                         chunks.append(data)
                 product.require(length is None or size == int(length), 'API response truncated')
                 return None if target else b''.join(chunks)
-            finally:
-                if target:
-                    target.close()
 
 
 class ManagedProduct(product.ProductForgejo):

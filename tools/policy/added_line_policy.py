@@ -119,14 +119,19 @@ def object_reader(root: Path):
             if len(header) != 3:
                 raise ValueError("cannot read " + name)
             size = int(header[2])
+            if size < 0:
+                raise ValueError("invalid object size: " + name)
             data = process.stdout.read(size)
-            process.stdout.read(1)
+            if len(data) != size or process.stdout.read(1) != b"\n":
+                raise ValueError("incomplete object: " + name)
             return data if header[1] == b"blob" else None
         try:
             yield read
         finally:
             process.stdin.close()
             process.stdout.close()
+        if process.wait() != 0:
+            raise ValueError("Git object reader failed")
 
 
 def staged_parents(root: Path) -> list[str]:
