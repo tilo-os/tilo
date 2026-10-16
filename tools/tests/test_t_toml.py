@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +20,14 @@ class TTomlTests(unittest.TestCase):
         text = (ROOT / "t.toml").read_text(encoding="utf-8")
         expected = t_toml.render(text, t_toml.generated(t_toml.suites.load(ROOT)))
         self.assertEqual(text, expected, "run python3 tools/ci/t_toml.py write")
+
+    def test_policy_has_git_and_private_writable_sources(self):
+        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
+        policy = next(check for check in config["check"] if check["name"] == "policy")
+        self.assertTrue(policy["git"])
+        self.assertTrue(policy["writable_sources"])
+        self.assertEqual(policy["run"], "bash tools/policy/run.sh")
+        self.assertEqual(policy["inputs"], ["**"])
 
     def test_rendering_replaces_marked_blocks_and_requires_each(self):
         blocks = {"a": "x = 1\n"}

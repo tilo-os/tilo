@@ -31,7 +31,10 @@ class ExampleScenariosTest(unittest.TestCase):
             executable.write_text("#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ['CALLS'],'a') as f: f.write(json.dumps(['scenario',*sys.argv[1:]])+'\\n')\nsys.exit(int(sys.argv[-1]==os.environ['FAIL_APP']))\n")
             executable.chmod(0o755)
             calls = root / "calls.jsonl"
-            environment = os.environ | {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(calls), "FAIL_APP": failed}
+            # The driver must use this fixture's fake executable, not a warm
+            # server build inherited through Cargo's target-directory setting.
+            environment = {key: value for key, value in os.environ.items() if key != "CARGO_TARGET_DIR"}
+            environment.update({"PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(calls), "FAIL_APP": failed})
             result = subprocess.run(["bash", str(script), *selected], env=environment, capture_output=True, text=True)
             records = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
             return result, records
