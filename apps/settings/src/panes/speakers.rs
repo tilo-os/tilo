@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
 
 use taffy::{NodeId, TaffyTree};
 use ui::collaboration::{
@@ -30,6 +29,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::channel::{Receiver, Sender, channel};
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};

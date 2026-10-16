@@ -766,16 +766,16 @@ pub struct DisplayModel {
     host_state: Option<settings_store::display_control::DisplayReply>,
     host_poll_deadline: Option<Instant>,
     host_probe: Option<
-        std::sync::mpsc::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
+        crate::channel::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
     >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
-    hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
+    hardware_probe: Option<crate::channel::Receiver<HardwareProbe>>,
     /// Why the panel brightness could not be read; the slider is then not
     /// offered at a made-up level.
     brightness_error: Option<String>,
-    brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
-    brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
+    brightness_tx: Option<crate::channel::Sender<f32>>,
+    brightness_result_rx: Option<crate::channel::Receiver<Result<f32, String>>>,
     pending_brightness: Option<f32>,
     /// What the last change, or the compositor's answer to it, said.
     notice: Option<String>,
@@ -885,7 +885,7 @@ impl DisplayModel {
     /// This device's displays; brightness is probed and set off the UI
     /// thread.
     fn of_device(cx: PaneCx) -> Self {
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let (probe_tx, probe_rx) = crate::channel::channel();
         let brightness_error = std::thread::Builder::new()
             .name("settings-display-probe".into())
             .spawn(move || {
@@ -898,8 +898,8 @@ impl DisplayModel {
             .map(|error| format!("the brightness probe could not start: {error}"));
         let control: Arc<dyn BrightnessControl> =
             Arc::new(SystemBrightness(dispatcher_or_real(None)));
-        let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let (brightness_tx, brightness_rx) = crate::channel::channel::<f32>();
+        let (result_tx, result_rx) = crate::channel::channel();
         let worker = Arc::clone(&control);
         std::thread::Builder::new()
             .name("settings-brightness-apply".into())
@@ -1768,8 +1768,8 @@ impl DisplayModel {
                     self.hardware_probe = None;
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.hardware_probe = None,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Disconnected) => self.hardware_probe = None,
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         if let Some(result) = self
@@ -1807,10 +1807,10 @@ impl DisplayModel {
                     self.notice = Some(error);
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.host_probe = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         if self.host_probe.is_none()
@@ -1831,7 +1831,7 @@ impl DisplayModel {
                     )
                 })
         {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let (sender, receiver) = crate::channel::sync_channel(1);
             self.host_probe = Some(receiver);
             let wake = ui::WakeHandle::new();
             std::thread::spawn(move || {
@@ -3314,7 +3314,7 @@ mod tests {
     #[test]
     fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
         let mut model = model(vec![panel()]);
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let (probe_tx, probe_rx) = crate::channel::channel();
         model.hardware_probe = Some(probe_rx);
         probe_tx
             .send((Err("no backlight device".into()), false))
@@ -3329,7 +3329,7 @@ mod tests {
         );
 
         let mut model = self::model(vec![panel()]);
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let (probe_tx, probe_rx) = crate::channel::channel();
         model.hardware_probe = Some(probe_rx);
         probe_tx.send((Ok(0.8), true)).unwrap();
         assert!(model.poll());

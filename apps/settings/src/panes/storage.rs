@@ -223,8 +223,8 @@ pub struct StorageModel {
     sync_snapshot: Option<SyncStorageSnapshot>,
     sync_message: Option<String>,
     sync_busy: bool,
-    sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
-    snapshot_result: Option<std::sync::mpsc::Receiver<SyncRead>>,
+    sync_result: Option<crate::channel::Receiver<Result<EvictionReport, String>>>,
+    snapshot_result: Option<crate::channel::Receiver<SyncRead>>,
     /// The daemon's cache policy, once asked; `None` while unknown.
     cache_policy: Option<CachePolicy>,
     /// The policy being read, or changed by the effect named.
@@ -238,7 +238,7 @@ pub struct StorageModel {
     /// it ends.
     residency_job: Option<(
         &'static str,
-        std::sync::mpsc::Receiver<Result<String, String>>,
+        crate::channel::Receiver<Result<String, String>>,
     )>,
     /// Asked for this device's summary, answered once the next read ends.
     summary_waiting: bool,
@@ -345,7 +345,7 @@ impl StorageModel {
         if let Some(others) = self.others.as_mut() {
             others.refresh();
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::channel::channel();
         std::thread::spawn(move || {
             let _ = sender.send(SyncRead::now());
         });
@@ -365,7 +365,7 @@ impl StorageModel {
         effect: Option<&'static str>,
         change: impl FnOnce(&mut CachePolicy) -> Result<(), String> + Send + 'static,
     ) {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::channel::channel();
         let read_only = effect.is_none();
         std::thread::spawn(move || {
             let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
@@ -499,7 +499,7 @@ impl StorageModel {
                 .fail(id, t("settings-storage-accounting-unavailable"));
             return;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::channel::channel();
         std::thread::spawn(move || {
             let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                 .and_then(|mut client| job(&mut client))
@@ -546,7 +546,7 @@ impl StorageModel {
             && let Some(snapshot) = &self.sync_snapshot
         {
             let selected = reclaimable_selections(snapshot);
-            let (sender, receiver) = std::sync::mpsc::channel();
+            let (sender, receiver) = crate::channel::channel();
             std::thread::spawn(move || {
                 let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                     .and_then(|mut client| client.evict(selected))
@@ -834,7 +834,7 @@ impl PaneModel for StorageModel {
                     self.snapshot_result = None;
                     self.take_read(read);
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.sync_snapshot = None;
                     self.snapshot_result = None;
                     self.sync_message = Some(t("settings-storage-service-ended"));
@@ -846,7 +846,7 @@ impl PaneModel for StorageModel {
                         );
                     }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         if let Some(receiver) = &self.sync_result {
@@ -895,7 +895,7 @@ impl PaneModel for StorageModel {
                     self.replies
                         .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.sync_message = Some(t("settings-storage-request-ended"));
@@ -904,7 +904,7 @@ impl PaneModel for StorageModel {
                         Err(t("settings-storage-service-ended")),
                     );
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         let policy_changed = self.poll_policy();
@@ -932,7 +932,7 @@ impl PaneModel for StorageModel {
 /// The daemon's answer about its cache policy, for the effect that asked.
 struct PolicyAnswer {
     effect: Option<&'static str>,
-    receiver: std::sync::mpsc::Receiver<Result<CachePolicy, String>>,
+    receiver: crate::channel::Receiver<Result<CachePolicy, String>>,
 }
 
 impl StorageModel {
@@ -943,8 +943,8 @@ impl StorageModel {
         };
         let result = match answer.receiver.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            Err(crate::channel::TryRecvError::Empty) => return false,
+            Err(crate::channel::TryRecvError::Disconnected) => {
                 Err(t("settings-storage-service-ended"))
             }
         };
@@ -982,8 +982,8 @@ impl StorageModel {
         let id = *id;
         let result = match receiver.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            Err(crate::channel::TryRecvError::Empty) => return false,
+            Err(crate::channel::TryRecvError::Disconnected) => {
                 Err(t("settings-storage-service-ended"))
             }
         };

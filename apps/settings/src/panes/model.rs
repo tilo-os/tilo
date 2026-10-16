@@ -39,8 +39,12 @@ pub trait PaneModel: 'static {
 pub type Shared<M> = Rc<RefCell<M>>;
 
 /// The pane showing a [`PaneModel`].
-pub struct ModelPane<M: PaneModel> {
-    model: Shared<M>,
+///
+/// It holds its model as `dyn PaneModel`, not as a type parameter: a generic
+/// pane would compile its whole widget implementation once per area, all of
+/// it shipped in the Settings tapp.
+pub struct ModelPane {
+    model: Rc<RefCell<dyn PaneModel>>,
     composed: ui::widget::Composed,
     composition_dirty: bool,
     catalog_revision: u64,
@@ -48,8 +52,8 @@ pub struct ModelPane<M: PaneModel> {
     drawn_rect: Rect,
 }
 
-impl<M: PaneModel> ModelPane<M> {
-    pub fn new(model: Shared<M>) -> Self {
+impl ModelPane {
+    pub fn new<M: PaneModel>(model: Shared<M>) -> Self {
         Self {
             model,
             composed: ui::widget::Composed::default(),
@@ -61,7 +65,7 @@ impl<M: PaneModel> ModelPane<M> {
     }
 }
 
-impl<M: PaneModel> Widget for ModelPane<M> {
+impl Widget for ModelPane {
     ui::forward_to_composed!(composed);
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
