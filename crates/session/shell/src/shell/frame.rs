@@ -7693,6 +7693,190 @@ mod tests {
         assert_eq!(focused.value(), Some("G3-B"));
     }
 
+    /// Two displays side by side, the primary first, and two strips: the
+    /// axis tree's, its groups alternating between the displays, and one
+    /// below with group 2001 on the primary and 2002 on the second. Returns
+    /// the builder, both strips and the first strip's groups.
+    fn two_display_two_strip_desktop() -> (
+        FrameBuilder,
+        crate::shell::state::StripId,
+        crate::shell::state::StripId,
+        Vec<crate::shell::state::GroupId>,
+    ) {
+        use crate::shell::overlay_host::OutputGeometry;
+        use crate::shell::state::{FreshId as _, Strip, StripId};
+        let (mut tree, strip, groups, _) = axis_a11y_tree();
+        // A second strip below, with a window on each display.
+        let below = StripId::new();
+        let mut below_groups = tree.desktop.workspaces[0].strips[0].window_groups[..2].to_vec();
+        for (index, group) in below_groups.iter_mut().enumerate() {
+            let offset = u64::try_from(index).unwrap_or(0);
+            group.id = 2001_u64.saturating_add(offset);
+            for tab in &mut group.tabs {
+                tab.id = tab.id.saturating_add(1000);
+            }
+            group.active_tab = group.tabs[0].id;
+        }
+        let below_ids: Vec<u64> = below_groups.iter().map(|group| group.id).collect();
+        tree.desktop.workspaces[0].strips.push(Strip {
+            id: below,
+            name: "Below".into(),
+            window_groups: below_groups,
+        });
+        let mut fb = FrameBuilder::with_tree(tree, (2944, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1024.0, 640.0).with_id(1),
+        ]);
+        fb.with_chrome(|chrome| {
+            let mut tree = chrome.tree_mut();
+            let workspaces = tree.desktop.workspaces.clone();
+            for (index, group) in groups.iter().chain(&below_ids).enumerate() {
+                let display = if *group >= 2001 {
+                    u32::from(*group == 2002)
+                } else {
+                    u32::from(index % 2 == 1)
+                };
+                tree.desktop
+                    .outputs
+                    .move_group(&workspaces, *group, display);
+            }
+            tree.desktop.outputs.set_focused(0);
+        });
+        (fb, strip, below, groups)
+    }
+
+    /// Paint 120 frames on a pinned clock a frame interval apart, so every
+    /// rect read afterwards is a settled layout, not a frame of motion.
+    fn settle_on_pinned_clock(fb: &mut FrameBuilder, at: &mut ui::time::Instant) {
+        for _ in 0..120 {
+            *at = at.checked_add(ui::time::Duration::from_millis(16)).unwrap();
+            ui::time::testing::with_monotonic_time(*at, || {
+                let _ = fb.paint_settled();
+            });
+        }
+    }
+
+    /// Where `group` of the strip `row` is laid out.
+    fn row_group_rect(
+        fb: &mut FrameBuilder,
+        row: crate::shell::state::StripId,
+        group: u64,
+    ) -> Rect {
+        fb.host_mut()
+            .group_row_mut_for_tests(row)
+            .expect("live row")
+            .groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .expect("group in the row")
+            .get_rect()
+    }
+
+    /// Whether the second display's compact top bar is shown.
+    fn compact_bar_shown(fb: &FrameBuilder) -> bool {
+        fb.widget_registry()
+            .keys()
+            .any(|key| key.ends_with("topbar_compact[1]"))
+    }
+
+    /// On a desktop spread across two displays a fullscreen covers its own
+    /// display only. The other display keeps its windows where they were
+    /// and its own chrome: the wheel and the full top bar on the primary,
+    /// the compact bar on the second.
+    #[test]
+    fn a_fullscreen_covers_its_own_display_and_leaves_the_other_alone() {
+        let (mut fb, strip, below, groups) = two_display_two_strip_desktop();
+        let mut at = ui::time::now();
+        let mut settle = |fb: &mut FrameBuilder| settle_on_pinned_clock(fb, &mut at);
+        let rect_of = |fb: &mut FrameBuilder, group: u64| {
+            row_group_rect(fb, if group >= 2001 { below } else { strip }, group)
+        };
+        settle(&mut fb);
+        assert!(compact_bar_shown(&fb), "the second display has its bar");
+        // groups[0] and 2001 live on the primary display, groups[1] and
+        // 2002 on the second.
+        for (covered, kept, kept_below, hidden_below, display) in [
+            (
+                groups[1],
+                groups[0],
+                2001,
+                2002,
+                Rect::new(1920.0, 0.0, 2944.0, 640.0),
+            ),
+            (
+                groups[0],
+                groups[1],
+                2002,
+                2001,
+                Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            ),
+        ] {
+            let on_primary = covered == groups[0];
+            let label = if on_primary { "primary" } else { "second" };
+            let before = rect_of(&mut fb, kept);
+            let before_below = rect_of(&mut fb, kept_below);
+            assert!(before.width() > 1.0, "{label}: the kept window is shown");
+            assert!(
+                before_below.width() > 1.0,
+                "{label}: the other strip's window is shown"
+            );
+            fb.with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(covered)));
+            fb.set_fullscreen(None);
+            settle(&mut fb);
+            let fullscreen = rect_of(&mut fb, covered);
+            assert!(
+                (fullscreen.x0 - display.x0).abs() < 0.5
+                    && (fullscreen.y0 - display.y0).abs() < 0.5
+                    && (fullscreen.width() - display.width()).abs() < 0.5
+                    && (fullscreen.height() - display.height()).abs() < 0.5,
+                "{label}: the fullscreen window covers its display {display:?}, not {fullscreen:?}"
+            );
+            assert_eq!(
+                rect_of(&mut fb, kept),
+                before,
+                "{label}: the other display keeps its window where it was"
+            );
+            assert_eq!(
+                rect_of(&mut fb, kept_below),
+                before_below,
+                "{label}: the other strip keeps its window on the other display"
+            );
+            assert!(
+                rect_of(&mut fb, hidden_below).width() <= 0.5,
+                "{label}: the other strip steps aside on the fullscreen's display"
+            );
+            let registry = fb.widget_registry();
+            assert_eq!(
+                rect_named(&registry, "SidebarWheelDisc").width() > 1.0,
+                !on_primary,
+                "{label}: the wheel steps aside only for a fullscreen on the primary"
+            );
+            assert_eq!(
+                rect_named(&registry, "TopBarChrome").height() > 10.0,
+                !on_primary,
+                "{label}: the full top bar steps aside only for a fullscreen on the primary"
+            );
+            assert_eq!(
+                compact_bar_shown(&fb),
+                on_primary,
+                "{label}: the compact bar steps aside only for a fullscreen on its display"
+            );
+            fb.with_chrome(|chrome| chrome.set_user_fullscreen_group(None));
+            settle(&mut fb);
+            assert_eq!(
+                rect_of(&mut fb, kept),
+                before,
+                "{label}: leaving fullscreen keeps the other display as it was"
+            );
+            assert!(compact_bar_shown(&fb), "{label}: the compact bar is back");
+            assert!(
+                rect_of(&mut fb, hidden_below).width() > 1.0,
+                "{label}: the other strip's window is back"
+            );
+        }
+    }
+
     #[test]
     fn axis_a11y_media_control_preserves_spatial_and_native_focus() {
         let (tree, strip, groups, tabs) = axis_a11y_tree();

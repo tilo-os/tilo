@@ -395,6 +395,10 @@ pub struct GroupRow {
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
+    /// Transient: the display another strip's fullscreen covers. This
+    /// strip's lane there collapses; its lanes on other displays stay. A
+    /// row with no lanes spans every display and collapses whole.
+    covered_output: Option<u32>,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an inter-group resize drag).
     group_drag: Option<GroupDrag>,
@@ -1328,6 +1332,7 @@ impl GroupRow {
             promotion_keeps_gutter: false,
             promotion_keeps_controls: false,
             hidden: false,
+            covered_output: None,
             group_drag: None,
             touch_pan: None,
             group_reorder_target: None,
@@ -1581,6 +1586,25 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Collapse this strip's lane on display `output`, which another
+    /// strip's fullscreen covers, and keep its lanes on the other displays;
+    /// `None` shows every lane again.
+    pub fn set_covered_output(&mut self, output: Option<u32>) {
+        if self.covered_output != output {
+            self.covered_output = output;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The lane collapsed under another strip's fullscreen, if this row
+    /// has one on the covered display.
+    fn covered_lane(&self) -> Option<usize> {
+        let output = self.covered_output?;
+        self.lanes
+            .iter()
+            .position(|lane| lane.spec.output == output)
     }
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
@@ -3949,11 +3973,14 @@ impl Widget for GroupRow {
         // viewport and `draw` clips to it. `flex_shrink: 1.0` was tried
         // and rejected — it silently shrinks siblings on every spawn,
         // violating the infinite-strip invariant.
+        let covered_lane = self.covered_lane();
         for (i, &node) in group_nodes.iter().enumerate() {
             let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.flex_shrink = 0.0;
             let lane = lane_of.get(i).copied().unwrap_or(0);
-            if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
+            if covered_lane == Some(lane) {
+                style.display = Display::None;
+            } else if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
                 if i == max_i {
                     // `maximized` already carries this grow style from
                     // `WindowGroup::build_layout`; a fullscreen-promoted
@@ -4000,7 +4027,8 @@ impl Widget for GroupRow {
         // A strip owning no part of the current fullscreen surface
         // collapses away entirely, so the promoted group in another strip
         // is the only thing painted.
-        let row_display = if self.hidden {
+        let row_display = if self.hidden || (self.covered_output.is_some() && self.lanes.is_empty())
+        {
             Display::None
         } else {
             Display::Flex
@@ -4050,7 +4078,8 @@ impl Widget for GroupRow {
                 let hn = h.build_layout(taffy, theme, node_map);
                 self.handle_node_ids.push(hn);
                 let same_lane = lane_of.get(i.saturating_add(1)).copied() == Some(lane);
-                let collapsed = maximized_in.get(lane).copied().flatten().is_some();
+                let collapsed = maximized_in.get(lane).copied().flatten().is_some()
+                    || covered_lane == Some(lane);
                 if same_lane && !collapsed {
                     if let Some(run) = lane_children.get_mut(lane) {
                         run.push(hn);
@@ -4829,7 +4858,14 @@ impl GroupRow {
         // closing a gap rather than having always had one.
         let now = crate::time::now();
         let fade_alpha = self.sibling_fade.value(now);
-        let fade_hero = self.fade_hero;
+        // Only the hero's own run fades: on a strip spread across displays
+        // the others keep their windows.
+        let fade_hero = self.fade_hero.filter(|&hero| {
+            self.groups
+                .iter()
+                .position(|group| group.id == hero)
+                .is_some_and(|i| in_run.get(i).copied().unwrap_or(false))
+        });
         for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
                 continue;
