@@ -1449,12 +1449,12 @@ impl PhotosApp {
     /// `ImageViewer` exposes no direct query for this either, so it is derived
     /// in `visible_image_rect` from the same "contain fit, then zoom and
     /// pan" transform `ImageViewer::draw` applies — using only the widget's
-    /// already-public `zoom()` / `pan()` / rect, and this app's own knowledge
-    /// of the original image's pixel size.
+    /// already-public `zoom()` / `pan()` / rect, and the rendered image's
+    /// pixel size, after the current crop and rotation.
     pub fn visible_rect(&self) -> Rect01 {
-        match (self.viewer.as_ref(), self.original.as_ref()) {
-            (Some(v), Some((_, original))) => {
-                visible_image_rect(v, f64::from(original.w), f64::from(original.h))
+        match (self.viewer.as_ref(), self.rendered.as_ref()) {
+            (Some(v), Some(rendered)) => {
+                visible_image_rect(v, f64::from(rendered.rgba.w), f64::from(rendered.rgba.h))
                     .unwrap_or(Rect01::FULL)
             }
             _ => Rect01::FULL,
