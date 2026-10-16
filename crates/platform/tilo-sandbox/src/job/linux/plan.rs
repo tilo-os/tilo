@@ -7,7 +7,7 @@
 //! only reads them and makes system calls.
 
 use std::ffi::{CString, OsStr};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -43,6 +43,11 @@ pub enum Op {
         set: u64,
         recursive: bool,
     },
+    /// Attach an idmapped tree the worker made ([`Plan::trees`], by index).
+    Attach {
+        tree: usize,
+        dst: CString,
+    },
 }
 
 impl Op {
@@ -50,7 +55,7 @@ impl Op {
     pub fn fatal(&self) -> bool {
         matches!(
             self,
-            Op::Mount { .. } | Op::SetAttr { .. } | Op::Symlink { .. }
+            Op::Mount { .. } | Op::SetAttr { .. } | Op::Symlink { .. } | Op::Attach { .. }
         )
     }
 
@@ -72,6 +77,7 @@ impl Op {
                 None => format!("binding {}", inside(dst)),
             },
             Op::SetAttr { path, .. } => format!("making {} read-only", inside(path)),
+            Op::Attach { dst, .. } => format!("binding {} (idmapped)", inside(dst)),
         }
     }
 }
@@ -91,6 +97,12 @@ pub struct Plan {
     pub stage_old: CString,
     pub stage_new: CString,
     pub ops: Vec<Op>,
+    /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
+    pub trees: Vec<OwnedFd>,
+    /// The job's ids in its own namespace, which the init takes on before
+    /// it builds the root: with a block of host ids, the init starts as
+    /// the worker's uid, which the job's namespace doesn't map.
+    pub become_ids: Option<(u32, u32)>,
     pub new_root: CString,
     pub hostname: CString,
     pub cwd: CString,
@@ -151,14 +163,22 @@ fn normal(p: &Path, what: &str) -> Result<PathBuf, SpawnError> {
     Ok(out)
 }
 
-/// The host path a source names, resolved (symlinks followed), as the old
-/// root shows it.
-fn source(p: &Path) -> Result<(CString, std::fs::Metadata), SpawnError> {
+/// The host path a source names, resolved (symlinks followed).
+fn source(p: &Path) -> Result<(PathBuf, std::fs::Metadata), SpawnError> {
     let real = std::fs::canonicalize(p)
         .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;
     let meta = std::fs::metadata(&real)
         .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;
-    Ok((under(OLD, &real)?, meta))
+    Ok((real, meta))
+}
+
+/// Whether a bind must be idmapped for the job to use it: a writable one
+/// must (the job could not write the owner's files otherwise); a read-only
+/// one is bound as it is when its filesystem can't be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Idmap {
+    Required,
+    IfPossible,
 }
 
 struct Builder {
@@ -169,6 +189,12 @@ struct Builder {
     root_writable: bool,
     /// Landlock rules, in order; `/` (read) first.
     rules: Vec<Rule>,
+    /// With a block of host ids: the user namespace binds are idmapped
+    /// with, and the trees made so far.
+    userns: Option<OwnedFd>,
+    trees: Vec<OwnedFd>,
+    /// Overlays mounted so far, for their layers' staging directories.
+    overlays: usize,
 }
 
 impl Builder {
@@ -199,13 +225,56 @@ impl Builder {
         Ok(())
     }
 
-    fn bind(&mut self, src: CString, inside: &Path, file: bool) -> Result<(), SpawnError> {
+    fn bind(
+        &mut self,
+        real: &Path,
+        inside: &Path,
+        file: bool,
+        idmap: Idmap,
+    ) -> Result<(), SpawnError> {
         self.point(inside, file)?;
+        let dst = under(NEW, inside)?;
+        self.bind_at(real, dst, libc::MS_BIND | libc::MS_REC, idmap)
+    }
+
+    /// Bind the host path `real` at `dst` (a path in the staging root):
+    /// idmapped where the job has host ids of its own, plainly otherwise.
+    fn bind_at(
+        &mut self,
+        real: &Path,
+        dst: CString,
+        flags: libc::c_ulong,
+        idmap: Idmap,
+    ) -> Result<(), SpawnError> {
+        if let Some(userns) = &self.userns {
+            match super::idmap::tree(real, userns.as_fd()) {
+                Ok(tree) => {
+                    self.ops.push(Op::Attach {
+                        tree: self.trees.len(),
+                        dst,
+                    });
+                    self.trees.push(tree);
+                    return Ok(());
+                }
+                Err(e) if idmap == Idmap::Required => {
+                    return Err(SpawnError::Setup(format!(
+                        "idmapping {} for the job's own ids: {e}{}",
+                        real.display(),
+                        if e.raw_os_error() == Some(libc::EINVAL) {
+                            " (its filesystem can't be idmapped)"
+                        } else {
+                            ""
+                        }
+                    )));
+                }
+                Err(_) => {}
+            }
+        }
         self.ops.push(Op::Mount {
-            src: Some(src),
-            dst: under(NEW, inside)?,
+            src: Some(under(OLD, real)?),
+            dst,
             fstype: None,
-            flags: libc::MS_BIND | libc::MS_REC,
+            flags,
             data: None,
         });
         Ok(())
@@ -262,13 +331,12 @@ impl Builder {
                         dir.display()
                     )));
                 }
-                self.ops.push(Op::Mount {
-                    src: Some(src),
-                    dst: under(NEW, new)?,
-                    fstype: None,
-                    flags: libc::MS_BIND | libc::MS_REC,
-                    data: None,
-                });
+                self.bind_at(
+                    &src,
+                    under(NEW, new)?,
+                    libc::MS_BIND | libc::MS_REC,
+                    Idmap::IfPossible,
+                )?;
                 // Read-only before anything is mounted on it: the job never
                 // writes into a shared image, not even a mount point.
                 self.attr(new, RO, false)?;
@@ -283,7 +351,7 @@ impl Builder {
                 });
                 for top in ["/usr", "/etc"] {
                     let (src, _) = source(Path::new(top))?;
-                    self.bind(src, Path::new(top), false)?;
+                    self.bind(&src, Path::new(top), false, Idmap::IfPossible)?;
                     self.attr(Path::new(top), RO, true)?;
                 }
                 for name in HOST_LINKS {
@@ -292,7 +360,7 @@ impl Builder {
                 for p in extra {
                     let inside = normal(p, "extra root path")?;
                     let (src, meta) = source(p)?;
-                    self.bind(src, &inside, !meta.is_dir())?;
+                    self.bind(&src, &inside, !meta.is_dir(), Idmap::IfPossible)?;
                     self.attr(&inside, RO, true)?;
                 }
             }
@@ -315,7 +383,7 @@ impl Builder {
             }
             Ok(m) if m.is_dir() => {
                 let (src, _) = source(&host)?;
-                self.bind(src, &host, false)?;
+                self.bind(&src, &host, false, Idmap::IfPossible)?;
                 self.attr(&host, RO, true)?;
             }
             _ => {}
@@ -347,15 +415,12 @@ impl Builder {
             if std::fs::metadata(&d).is_err() {
                 continue;
             }
-            let src = under(OLD, &d)?;
             self.point(&inside, true)?;
-            self.ops.push(Op::Mount {
-                src: Some(src),
-                dst: under(NEW, &inside)?,
-                fstype: None,
-                flags: libc::MS_BIND,
-                data: None,
-            });
+            // Idmapped where the device's filesystem allows (a container's
+            // tmpfs /dev does, devtmpfs doesn't): its owner's access then
+            // stays the job's, as for a device of mode 0660.
+            let dst = under(NEW, &inside)?;
+            self.bind_at(&d, dst, libc::MS_BIND, Idmap::IfPossible)?;
         }
         for (link, target) in [
             ("fd", "/proc/self/fd"),
@@ -396,7 +461,7 @@ impl Builder {
             )?,
             Tmp::Dir(dir) => {
                 let (src, _) = source(dir)?;
-                self.bind(src, tmp, false)?;
+                self.bind(&src, tmp, false, Idmap::Required)?;
                 self.attr(tmp, RW, true)?;
             }
         }
@@ -429,12 +494,12 @@ impl Builder {
         match &m.kind {
             MountKind::ReadOnly(p) => {
                 let (src, meta) = source(p)?;
-                self.bind(src, &inside, !meta.is_dir())?;
+                self.bind(&src, &inside, !meta.is_dir(), Idmap::IfPossible)?;
                 self.attr(&inside, RO, true)?;
             }
             MountKind::ReadWrite(p) => {
                 let (src, meta) = source(p)?;
-                self.bind(src, &inside, !meta.is_dir())?;
+                self.bind(&src, &inside, !meta.is_dir(), Idmap::Required)?;
                 self.attr(&inside, RW, true)?;
                 self.writable(&inside, meta.is_dir())?;
             }
@@ -448,7 +513,11 @@ impl Builder {
                 self.writable(&inside, true)?;
             }
             MountKind::Overlay { lower, upper, work } => {
-                let opts = overlay_options(lower, upper, work)?;
+                let opts = if self.userns.is_some() {
+                    self.idmapped_layers(lower, upper, work)?
+                } else {
+                    overlay_options(lower, upper, work)?
+                };
                 self.fs(
                     "overlay",
                     &inside,
@@ -459,6 +528,71 @@ impl Builder {
             }
         }
         Ok(())
+    }
+}
+
+impl Builder {
+    /// An overlay's layers as idmapped mounts in the staging root, and its
+    /// `-o` options naming them: overlayfs creates what the job writes with
+    /// the job's ids, which only an idmapped upper layer stores as the
+    /// owner's. The upper and work directories must share a mount, so their
+    /// common parent is the one idmapped.
+    fn idmapped_layers(
+        &mut self,
+        lower: &Path,
+        upper: &Path,
+        work: &Path,
+    ) -> Result<String, SpawnError> {
+        use std::fmt::Write as _;
+        let real = |p: &Path| {
+            std::fs::canonicalize(p)
+                .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))
+        };
+        let (lower, upper, work) = (real(lower)?, real(upper)?, real(work)?);
+        let mut common = upper.clone();
+        while !work.starts_with(&common) {
+            if !common.pop() {
+                break;
+            }
+        }
+        let beneath = |p: &Path| {
+            p.strip_prefix(&common)
+                .map(Path::to_path_buf)
+                .unwrap_or_default()
+        };
+        let at = PathBuf::from(format!("/layers/{}", self.overlays));
+        self.overlays = self.overlays.saturating_add(1);
+        let (lower_at, upper_at) = (at.join("lower"), at.join("upper"));
+        for dir in [Path::new("/layers"), &at, &lower_at, &upper_at] {
+            self.ops.push(Op::Mkdir(path_c(dir)?));
+        }
+        self.bind_at(
+            &lower,
+            path_c(&lower_at)?,
+            libc::MS_BIND | libc::MS_REC,
+            Idmap::Required,
+        )?;
+        self.bind_at(
+            &common,
+            path_c(&upper_at)?,
+            libc::MS_BIND | libc::MS_REC,
+            Idmap::Required,
+        )?;
+        let mut opts = String::from("userxattr");
+        for (key, p) in [
+            ("lowerdir", lower_at),
+            ("upperdir", upper_at.join(beneath(&upper))),
+            ("workdir", upper_at.join(beneath(&work))),
+        ] {
+            let shown = p.display().to_string();
+            if shown.contains([',', ':', '\\']) {
+                return Err(SpawnError::Invalid(format!(
+                    "overlay path {shown} contains a comma, colon or backslash"
+                )));
+            }
+            let _ = write!(opts, ",{key}={shown}");
+        }
+        Ok(opts)
     }
 }
 
@@ -506,7 +640,19 @@ fn stage_dir() -> &'static str {
         .unwrap_or("/tmp")
 }
 
-fn filesystem(spec: &JobSpec) -> Result<(Vec<Op>, Vec<Rule>), SpawnError> {
+/// What [`filesystem`] makes: the operations, the Landlock rules and the
+/// idmapped trees the operations attach.
+type Filesystem = (Vec<Op>, Vec<Rule>, Vec<OwnedFd>);
+
+fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
+    let userns = match spec.ids.block {
+        Some(_) => Some(super::idmap::namespace(&spec.ids).map_err(|e| {
+            SpawnError::Setup(format!(
+                "a user namespace mapping the job's files to its own ids: {e}"
+            ))
+        })?),
+        None => None,
+    };
     let mut b = Builder {
         ops: Vec::new(),
         made: Vec::new(),
@@ -515,6 +661,9 @@ fn filesystem(spec: &JobSpec) -> Result<(Vec<Op>, Vec<Rule>), SpawnError> {
             path: path_c(Path::new("/"))?,
             access: sys::LL_READ,
         }],
+        userns,
+        trees: Vec::new(),
+        overlays: 0,
     };
     b.root(&spec.root)?;
     b.proc_and_dev(spec)?;
@@ -527,7 +676,7 @@ fn filesystem(spec: &JobSpec) -> Result<(Vec<Op>, Vec<Rule>), SpawnError> {
     if b.root_writable {
         b.attr(Path::new("/"), sys::MOUNT_ATTR_RDONLY, false)?;
     }
-    Ok((b.ops, b.rules))
+    Ok((b.ops, b.rules, b.trees))
 }
 
 fn candidates(spec: &JobSpec) -> Result<Vec<CString>, SpawnError> {
@@ -643,7 +792,19 @@ fn landlock_mode(spec: &JobSpec) -> Landlock {
 impl Plan {
     pub fn new(spec: &JobSpec) -> Result<Self, SpawnError> {
         let cwd = normal(&spec.cwd, "working directory")?;
-        let (ops, rules) = filesystem(spec)?;
+        let become_ids = match spec.ids.block {
+            Some(block) => {
+                if spec.ids.inside_uid >= block.count || spec.ids.inside_gid >= block.count {
+                    return Err(SpawnError::Invalid(format!(
+                        "the job's ids {}:{} are outside its block of {}",
+                        spec.ids.inside_uid, spec.ids.inside_gid, block.count
+                    )));
+                }
+                Some((spec.ids.inside_uid, spec.ids.inside_gid))
+            }
+            None => None,
+        };
+        let (ops, rules, trees) = filesystem(spec)?;
         let stage = stage_dir();
         let (arg_area, env_area) = areas();
         let cap_last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
@@ -655,6 +816,8 @@ impl Plan {
             stage_old: cstr(OLD.trim_start_matches('/').as_bytes(), OLD)?,
             stage_new: cstr(NEW.trim_start_matches('/').as_bytes(), NEW)?,
             ops,
+            trees,
+            become_ids,
             new_root: cstr(NEW.as_bytes(), NEW)?,
             hostname: cstr(spec.hostname.as_bytes(), "the hostname")?,
             cwd: path_c(&cwd)?,
