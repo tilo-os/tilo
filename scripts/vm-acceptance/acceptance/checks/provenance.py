@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from .. import session_unit
-from ..core import check, expect
+from ..core import Unobservable, check, expect
+from ..vm import VmError
 
 AREA = "provenance"
 
@@ -12,7 +13,10 @@ AREA = "provenance"
 def commit(ctx, res):
     p = ctx.facts.get("provenance") or {}
     res.metrics.update(p)
-    expect(p.get("record"), p.get("why", "no provenance record for this disk"))
+    if p.get("why"):
+        raise Unobservable(p["why"])
+    expect(p.get("record"), "no provenance record for this disk")
+    expect(p.get("booted_digest"), "no booted image digest")
     expect(not p.get("mismatch"), p.get("mismatch", ""))
     swap = p.get("swap")
     if not swap:
@@ -89,27 +93,29 @@ def services(ctx, res):
     # is the user manager's lifetime and can repeat image-bake history when
     # the journal is the source of truth for "did this boot loop?"
     failed_out = ctx.vm.exec(
-        "systemctl --user list-units --failed --plain --no-legend 2>/dev/null | awk '{print $1}'",
-        check=False)
-    failed = [l.strip() for l in failed_out.splitlines() if l.strip()]
-    journal = ctx.vm.exec("journalctl --user -b -o cat --no-pager 2>/dev/null", check=False)
-    journal_ok = ctx.vm.exec(
-        "journalctl --user -b -n 0 --quiet >/dev/null 2>&1; echo $?", check=False).strip() == "0"
-    if journal_ok:
+        "systemctl --user list-units --failed --plain --no-legend")
+    failed = [line.split()[0] for line in failed_out.splitlines() if line.strip()]
+    try:
+        journal = ctx.vm.exec("journalctl --user -b -o cat --no-pager")
+    except VmError as exc:
+        # Some images have no readable user journal. Keep the live-counter fallback,
+        # but every query must succeed before an empty result can mean healthy.
+        res.metrics["journal_error"] = str(exc)
+        nrestart_out = ctx.vm.exec(
+            "units=$(systemctl --user list-units --type=service --all --plain --no-legend 'tilo*') || exit $?; "
+            "for u in $(printf '%s\\n' \"$units\" | awk '{print $1}'); do "
+            "n=$(systemctl --user show -p NRestarts --value \"$u\") || exit $?; "
+            "echo R \"$u\" \"$n\"; done")
+        restarts = {}
+        for line in nrestart_out.splitlines():
+            parts = line.split()
+            if not (len(parts) == 3 and parts[0] == "R" and parts[2].isdigit()):
+                raise Unobservable(f"invalid NRestarts response: {line!r}")
+            restarts[parts[1]] = int(parts[2])
+        res.metrics["restart_source"] = "NRestarts (user journal unavailable)"
+    else:
         restarts = _this_boot_restarts(journal)
         res.metrics["restart_source"] = "journalctl --user -b"
-    else:
-        nrestart_out = ctx.vm.exec(
-            "for u in $(systemctl --user list-units --all --plain --no-legend 'tilo*' "
-            "2>/dev/null | awk '{print $1}'); do "
-            "echo R $u $(systemctl --user show -p NRestarts --value $u 2>/dev/null); done",
-            check=False)
-        restarts = {}
-        for l in nrestart_out.splitlines():
-            parts = l.split()
-            if parts[:1] == ["R"] and len(parts) == 3 and parts[2].isdigit():
-                restarts[parts[1]] = int(parts[2])
-        res.metrics["restart_source"] = "NRestarts (user journal unavailable)"
     looping = {u: n for u, n in restarts.items() if n >= 3}
     res.metrics.update(failed=failed, restarts={u: n for u, n in restarts.items() if n})
     fields = session_unit.show(ctx)

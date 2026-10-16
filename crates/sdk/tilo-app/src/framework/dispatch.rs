@@ -146,6 +146,12 @@ pub(crate) struct DispatchCore {
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
     kind: &'static str,
     label: &'static str,
+    /// For a resource nested in another ([`Dispatcher::child`]), the kind and
+    /// label of the record that holds it. Its edits apply as that record's
+    /// field edits, so history and the change's claim name that record's
+    /// kind: the app's surface describes no other, and every receiver holds
+    /// (and the signer refuses) a change claiming the nested kind.
+    applied_as: Option<(&'static str, &'static str)>,
     /// The readable name published by the resource host, shared with surfaces.
     resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
@@ -271,6 +277,7 @@ impl DispatchCore {
             past: false,
             continuable: Rc::default(),
             gesture: Rc::default(),
+            applied_as: None,
         }
     }
 
@@ -306,6 +313,7 @@ impl DispatchCore {
             past: self.past,
             continuable: Rc::default(),
             gesture: Rc::default(),
+            applied_as: None,
         }
     }
 
@@ -317,6 +325,7 @@ impl DispatchCore {
             resource_id: Rc::from(id),
             kind,
             label,
+            applied_as: self.applied_as.or(Some((self.kind, self.label))),
             resource_label: LocalState::new(label.to_owned()),
             ..self.clone()
         }
@@ -518,11 +527,25 @@ impl DispatchCore {
     /// The context of an action of this resource, attributed to whoever the
     /// edit is applied for.
     fn context(&self) -> ActionContext {
-        ActionContext::for_resource(
-            self.resource_id.as_ref(),
-            self.kind,
-            self.resource_label.get(),
-        )
+        match self.applied_as {
+            // As `ActionSpec::history_context` names an action a nested
+            // resource re-encodes: the enclosing kind, the nested resource
+            // kept as a facet.
+            Some((kind, label)) => {
+                let mut context =
+                    ActionContext::for_resource(self.resource_id.as_ref(), kind, label);
+                context.facets.push(tilo_actions::ActionFacet::new(
+                    tilo_actions::NESTED_RESOURCE_FACET,
+                    self.resource_label.get(),
+                ));
+                context
+            }
+            None => ActionContext::for_resource(
+                self.resource_id.as_ref(),
+                self.kind,
+                self.resource_label.get(),
+            ),
+        }
     }
 
     /// `context` named for this resource and its editor, in the step it

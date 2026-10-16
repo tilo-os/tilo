@@ -48,7 +48,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Envelope;
-use crate::auth::{Hello, HelloAck, HelloAck2};
+use crate::auth::{HelloAck, HelloAck2};
 
 /// Path prefix of every browser carrier route.
 pub const API_PREFIX: &str = "/peer/v1";
@@ -341,9 +341,6 @@ pub fn live_room(workspace_id: u64) -> String {
     hash.update(&workspace_id.to_le_bytes());
     hex::encode(hash.finalize().as_bytes())
 }
-
-/// The first request of a session.
-pub type SessionHello = Hello;
 
 /// Route a spectator of a public room takes a channel's content keys from,
 /// to open what the room's members sealed there. Only a device of the room's

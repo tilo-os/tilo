@@ -4324,7 +4324,7 @@ impl State {
 // `ShareRegistry::route_to`.
 //
 // Pointer drives the smithay `Seat<Self>` via `PointerHandle::motion`/
-// `button`, matching `network::wayland::WaylandServer::handle_input`.
+// `button`.
 //
 // Keyboard: `InputEvent::Key { keysym, pressed, modifiers }` fires
 // `KeyboardHandle::input`; the wire `keysym` is a raw keycode. Modifier

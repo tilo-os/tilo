@@ -3487,6 +3487,13 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
             .unwrap(),
         0
     );
+    let metrics = fixture.metrics.snapshot();
+    assert_eq!(metrics.subscribes, 2, "both subscribes are counted");
+    assert_eq!(
+        (metrics.replayed_pending, metrics.replayed_retained),
+        (25, 0),
+        "only the completed replay counts its frames, all from the pending queue"
+    );
 }
 
 #[tokio::test]
