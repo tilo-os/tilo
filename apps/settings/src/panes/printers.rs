@@ -8,7 +8,7 @@
 
 use std::cell::OnceCell;
 use std::rc::Rc;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use os_actions::printing::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState, Scanner,
@@ -19,6 +19,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Widget};
 
+use crate::channel;
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
@@ -408,8 +409,8 @@ pub struct PrintersModel {
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
     scanners: Vec<Scanner>,
-    refresh_rx: Option<mpsc::Receiver<PrinterSnapshot>>,
-    discover_rx: Option<mpsc::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
+    refresh_rx: Option<channel::Receiver<PrinterSnapshot>>,
+    discover_rx: Option<channel::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
     last_refresh: Instant,
     error: Option<String>,
     /// Why each list could not be read in the last refresh. A list that
@@ -459,7 +460,7 @@ impl PrintersModel {
             return;
         }
         let service = self.service.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         self.refresh_rx = Some(rx);
 
         if let Err(error) = std::thread::Builder::new()
@@ -486,7 +487,7 @@ impl PrintersModel {
             return;
         }
         let service = self.service.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         self.discover_rx = Some(rx);
 
         if let Err(error) = std::thread::Builder::new()

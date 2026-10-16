@@ -1151,7 +1151,7 @@ pub struct NetworkModel {
     /// False until the first snapshot arrives; until then the pane shows a
     /// pending view.
     loaded: bool,
-    snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
+    snapshot: Option<crate::channel::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
     /// The radios the kernel listed when the model last looked.
@@ -1378,7 +1378,7 @@ impl NetworkModel {
     /// Start reading a snapshot in the background; a newer read supersedes
     /// an older one still running.
     fn start_snapshot(&mut self) {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::channel::channel();
         let service = Arc::clone(&self.service);
         let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
@@ -3336,11 +3336,11 @@ impl NetworkModel {
                     self.snapshot = None;
                     let _ = self.adopt_snapshot(snapshot);
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.snapshot = None;
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         self.poll_picker();
@@ -3491,11 +3491,11 @@ mod tests {
     }
 
     struct SnapshotGate {
-        started: std::sync::mpsc::Sender<()>,
-        release: std::sync::mpsc::Receiver<()>,
+        started: crate::channel::Sender<()>,
+        release: crate::channel::Receiver<()>,
     }
 
-    struct ReleaseSnapshot(Option<std::sync::mpsc::Sender<()>>);
+    struct ReleaseSnapshot(Option<crate::channel::Sender<()>>);
 
     impl Drop for ReleaseSnapshot {
         fn drop(&mut self) {
@@ -3506,8 +3506,8 @@ mod tests {
     }
 
     fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> {
-        let (started, starts) = std::sync::mpsc::channel();
-        let (release, releases) = std::sync::mpsc::channel();
+        let (started, starts) = crate::channel::channel();
+        let (release, releases) = crate::channel::channel();
         let fake = Arc::new(FakeNetwork::default());
         *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
             started,
@@ -3551,7 +3551,7 @@ mod tests {
         use ui::headless::{Framed, viewport};
 
         let mut scope = ui::WakeScope::new();
-        let (woke, wakes) = std::sync::mpsc::channel();
+        let (woke, wakes) = crate::channel::channel();
         scope
             .bind(move |_| {
                 let _ = woke.send(());
@@ -3848,8 +3848,8 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         mount_network(&mut app, observed).unwrap();
         app.settle();
-        let (started, starts) = std::sync::mpsc::channel();
-        let (release, releases) = std::sync::mpsc::channel();
+        let (started, starts) = crate::channel::channel();
+        let (release, releases) = crate::channel::channel();
         *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
             started,
             release: releases,
