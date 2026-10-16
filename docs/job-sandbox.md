@@ -118,7 +118,7 @@ reports the median of 200 spawns of `/bin/true`. It fails above 100 ms.
 
 | Namespace | Why |
 |---|---|
-| user | the job is uid 0 *inside*, mapped to one uid outside (a single-uid map, `setgroups` denied); everything else on the host is `nobody` |
+| user | the job is uid 0 *inside*, mapped to one uid outside (a single-uid map, `setgroups` denied); everything else on the host is `nobody`. A [nesting job](#nesting-jobs-root-in-a-namespace-of-their-own) with a range also maps its subordinate ids |
 | mount | its own root; nothing it mounts or unmounts reaches the worker |
 | pid | sees only its own processes; `/proc/1` is the job's init, not the worker |
 | net | its own `lo`; servers it starts on `127.0.0.1` are invisible to other jobs and to the node; no route out unless egress is attached |
@@ -196,8 +196,99 @@ over its own network namespace, so `socket(AF_NETLINK, …)` with
 `setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
 kexec and modules stay refused too. Such a job runs without Landlock, which
 refuses every mount to a process it confines. t selects the profile per check
-with `nested_sandboxes`, and runs those checks as uid 1000 inside the job, so
-bubblewrap creates its namespaces as for any unprivileged user.
+with `nested_sandboxes`. Where the node has subordinate ids, the command runs
+as root in a namespace of its own, as described next; elsewhere t runs it as
+uid 1000 inside the job, so bubblewrap creates its namespaces as for any
+unprivileged user.
+
+### Nesting jobs: root in a namespace of their own
+
+A job with one mapped id is too thin for real tests and image builds. Image
+files read as the job's own id rather than root, so a check that trusts only a
+root-owned loader or `/usr` refuses them. The image has no account for the id,
+so `dbus-daemon` and `ssh` refuse to run. One id can't own the files of an
+image whose layers belong to several, and with `setgroups` denied, buildah's
+`RUN` steps fail to set supplementary groups.
+
+So a nesting job (`allow_nested_sandboxes`) with a range of subordinate ids
+(`IdMap::range`, 65536 of them from `/etc/subuid` and `/etc/subgid`) is laid
+out like a rootless container:
+
+```text
+job namespace (made by clone3)       0 → the worker's uid, 1..=65536 → the subordinate range
+ ├─ job init (pid 1)                 builds the root, mounts, attaches the network, as before
+ └─ the command's namespace          0 → 0, 1..=65536 → 1..=65536; the command is root here,
+                                     with every capability, in a mount namespace of its own
+```
+
+1. The worker writes the job namespace's maps: directly where it holds
+   `CAP_SETUID` and `CAP_SETGID` (a root worker with a range of its own), and
+   through `newuidmap` and `newgidmap` otherwise. `setgroups` is not denied:
+   the range's owner granted the ids.
+2. The init builds the root as for any job, then forks the command. The
+   command calls `unshare(CLONE_NEWUSER | CLONE_NEWNS)`. The init, still
+   holding its capabilities in the job's namespace, writes the command's maps,
+   then drops every capability of its own, marks itself non-dumpable and
+   releases the command, which drops the worker's supplementary groups and
+   runs.
+3. The image root is owned by the worker on the host, so it reads as root.
+   Files the host's real root owns (a host root's `/usr`) read as the overflow
+   uid, as in a systemd user service.
+
+Why the command's namespace is a new one beneath the job's, rather than
+capabilities in the job's own:
+
+- **Locked mounts.** The job's mount namespace belongs to the job's user
+  namespace. Capabilities there would let the command remount the image root
+  writable (the image directory is the worker's, shared by every job on the
+  node) or unmount `/proc` to uncover what is beneath. Copying a mount
+  namespace into a less privileged user namespace locks every mount the init
+  made, with its read-only, `nosuid` and `nodev` flags: the command can neither
+  make them writable nor unmount them.
+- **No power over the job's network.** The job's network namespace also
+  belongs to the job's user namespace. The command holds no `CAP_NET_ADMIN`
+  or `CAP_NET_RAW` there, so pasta's routes and the egress filter stay as the
+  worker set them. Network namespaces it creates are its own.
+- **Nothing new for the kernel.** A capless process allowed `unshare` already
+  gets every capability in a user namespace it creates. The command's
+  namespace adds only more ids. The argument-filtered seccomp profile still
+  applies to it and to everything it starts: netfilter and XFRM netlink,
+  `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`, `setns`,
+  kexec and modules stay refused, which is what keeps the nf_tables class of
+  exploits closed once a process holds `CAP_NET_ADMIN` somewhere.
+- **The init stays out of reach.** It is non-dumpable and holds no capability
+  once the command runs; ptracing or signalling it would take capabilities in
+  the job's namespace, which the command never has.
+
+What the range costs:
+
+- Every nesting job on a node shares the range, as every job already shares
+  the worker's uid. Ids alone give one job nothing over another: the PID
+  namespaces keep them from naming each other's processes, and each sees only
+  its own mounts. Directories t shares between checks read-write (caches) are
+  shared trust already.
+- The range must belong to no one else on the node. Subordinate ids from
+  `/etc/subuid` are reserved for that user by the system; a root worker can
+  use a range it owns outright.
+- `setgroups` is allowed in the job's namespace. Denying it protects files
+  that deny access to a group (a negative ACL) from a process that drops the
+  group. A nesting job sees only its own mounts, none of which uses groups
+  that way.
+- Files the command makes as another id (an image build's layers) belong to
+  the range on the host, and the worker can't remove them.
+  `job::remove_tree` removes them with a job that is root over the range.
+- Mapping through `newuidmap` and `newgidmap` costs two process starts, about
+  2 ms, for nesting jobs only.
+
+Every nesting job also gets a private `XDG_RUNTIME_DIR` (a `0700` tmpfs at
+`/run/user/<uid>`), which bus daemons and desktop tests expect. Any job whose
+command runs as an id its root's `/etc/passwd` or `/etc/group` lacks gets an
+entry there: copies with the entry added are bound read-only over the root's.
+
+What still needs a [micro-VM step](#micro-vm-steps): real root over the kernel's
+devices. Loop devices, `mknod` of real devices, kernel modules, `--privileged`
+containers and anything that writes `/sys` stay out of reach of a user
+namespace, however many ids it maps.
 
 **The privileged profile** (`CiProfile::Privileged`) keeps everything above
 except the namespace and mount rules. Checks that genuinely need real root
@@ -505,6 +596,12 @@ skipped. Limits tests also need a delegated cgroup; quota tests need
   daemons; quotas return `EDQUOT` where available;
 - seccomp: every refused call returns `EPERM` (`clone3`: `ENOSYS`), while
   threads, `fork` and `ptrace` of its own children work;
+- nested: with the caller's subordinate ids, the command is root over the
+  whole range, can `chown` to any of it and set supplementary groups, starts
+  sandboxes of its own, has a private `XDG_RUNTIME_DIR`, and still can't
+  remount the job's root, unmount its `/proc`, add a link to the job's network
+  or open netfilter and XFRM netlink; an id without an account gets one; a
+  job that may not nest keeps one id and no capability;
 - startup: the benchmark above;
 - vm: a micro-VM step loop-mounts a disk as root, returns its exit code and
   outputs, and leaves its copy-on-write sources unchanged on the host. It
