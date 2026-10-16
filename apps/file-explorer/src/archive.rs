@@ -379,12 +379,20 @@ fn extract_tar<R: Read>(reader: R, destination: &Path) -> io::Result<Vec<PathBuf
 /// Returns an error when an input cannot be read, the output cannot be
 /// created, or ZIP encoding and finalization fail.
 pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
-    let temporary = output.with_extension("zip.part");
+    let parent = output.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "archive has no parent folder")
+    })?;
+    // Reserve private scratch storage without truncating a neighbour or
+    // following a link left at a predictable .part name.
+    let temporary = parent.join(format!(".tilo-archive-{}", uuid::Uuid::new_v4()));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
     let mut cleanup = PartialArchive {
         path: &temporary,
         committed: false,
     };
-    let file = File::create(&temporary)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -401,7 +409,7 @@ pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
     }
     let result = zip.finish().map_err(io::Error::other).and_then(|file| {
         file.sync_all()?;
-        fs::rename(&temporary, output)
+        host_fs::rename_noreplace(&temporary, output)
     });
     if result.is_ok() {
         cleanup.committed = true;
@@ -446,6 +454,23 @@ fn add_zip_file<W: Write + Seek>(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn creating_zip_preserves_neighbours_and_occupied_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("notes.txt");
+        fs::write(&source, b"notes").unwrap();
+        let output = temp.path().join("bundle.zip");
+        let neighbour = temp.path().join("bundle.zip.part");
+        fs::write(&neighbour, b"unrelated draft").unwrap();
+        create_zip(std::slice::from_ref(&source), &output).unwrap();
+        assert_eq!(fs::read(&neighbour).unwrap(), b"unrelated draft");
+        let original = fs::read(&output).unwrap();
+        fs::write(&source, b"changed").unwrap();
+        assert!(create_zip(&[source], &output).is_err());
+        assert_eq!(fs::read(&output).unwrap(), original);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+    }
 
     /// Archive paths reject traversal and resolve root and nested locations, listings synthesise parents, and zips round-trip.
     #[test]
