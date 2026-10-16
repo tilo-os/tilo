@@ -14,7 +14,8 @@ name: Dev / host-desktop session VM
 # short-lived artifacts.
 #
 # Runner: runner-disk-100g, the Kata runners with KVM the legacy guest and
-# dev disk boots use. No GPU: Tilo renders with lavapipe onto virtio-gpu.
+# dev disk boots use. No GPU: Tilo renders with lavapipe onto two virtio-gpu
+# cards, each driving its own output.
 on:
   workflow_call:
     inputs:
@@ -159,6 +160,7 @@ jobs:
           set -euo pipefail
           dnf --setopt=retries=3 install -y \
             qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
+            qemu-device-display-virtio-gpu-pci \
             qemu-img openssh-clients xorriso python3 curl
           command -v qemu-system-x86_64 qemu-img ssh scp ssh-keygen xorriso >/dev/null
 

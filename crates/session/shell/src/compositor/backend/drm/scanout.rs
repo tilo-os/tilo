@@ -1304,82 +1304,51 @@ impl CardHandle {
         outputs
     }
 
-    /// Modeset one connector onto a crtc not in `used`; `None` (logged, not fatal) when no free crtc or the modeset failed, so other outputs keep working.
+    /// Modeset one connector onto a crtc not in `used`.
+    ///
+    /// # Errors
+    ///
+    /// Why the connector stays dark (no free crtc, a refused modeset), for
+    /// the caller's journal. It is local to this connector, so the other
+    /// outputs keep working.
     pub fn bring_up(
         &self,
         snapshot: &ConnectorSnapshot,
         used: &[crtc::Handle],
-    ) -> Option<ScanoutBuild> {
-        let res = self.card.resource_handles().ok()?;
-        let info = self.card.get_connector(snapshot.handle, false).ok()?;
-        let Some(crtc) = pick_crtc(&self.card, &res, &info, used) else {
-            tracing::warn!(
-                connector = snapshot.connector_id,
-                "DRM scanout: no free crtc for hot-plugged connector; skipping"
-            );
-            return None;
-        };
-        let card_dup = match self.card.try_clone() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("DRM scanout: {e}; cannot bring up connector");
-                return None;
-            }
-        };
-        match DrmScanout::from_card(
+    ) -> Result<ScanoutBuild, String> {
+        let res = self
+            .card
+            .resource_handles()
+            .map_err(|e| format!("resource handles: {e}"))?;
+        let info = self
+            .card
+            .get_connector(snapshot.handle, false)
+            .map_err(|e| format!("get connector: {e}"))?;
+        let crtc = pick_crtc(&self.card, &res, &info, used)
+            .ok_or_else(|| "no free crtc can drive this connector".to_owned())?;
+        let card_dup = self
+            .card
+            .try_clone()
+            .map_err(|e| format!("duplicating the card fd: {e}"))?;
+        let scanout = DrmScanout::from_card(
             card_dup,
             snapshot.handle,
             crtc,
             snapshot.mode,
             self.pci_bus_id.clone(),
-        ) {
-            Ok(scanout) => Some(ScanoutBuild {
-                device_id: self.device_id,
-                connector_id: snapshot.connector_id,
-                connector_name: snapshot.connector_name.clone(),
-                config_key: snapshot.config_key.clone(),
-                physical_mm: snapshot.physical_mm,
-                monitor: snapshot.monitor.clone(),
-                hdr_display: self.read_hdr_display_info(&snapshot.connector_name),
-                mode_intent: snapshot.mode_intent,
-                crtc,
-                scanout,
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    connector = snapshot.connector_id,
-                    "DRM scanout: modeset failed for connector: {e}; skipping"
-                );
-                None
-            }
-        }
-    }
-
-    /// Bring up every connected connector (startup path); hotplug uses [`Self::bring_up`] per connector instead so already-live displays aren't re-modeset (a visible flash).
-    pub fn bring_up_all(&self) -> Vec<ScanoutBuild> {
-        let connected = self.connected();
-        let set = settings_store::hardware::DisplaySet::of(connected.iter().map(|snapshot| {
-            settings_store::hardware::AttachedOutput {
-                connector: &snapshot.connector_name,
-                connector_label: &snapshot.connector_name,
-                monitor: snapshot.monitor.as_ref(),
-            }
-        }));
-        let config = settings_store::hardware::DisplayConfig::load_effective(&set);
-        let mut used: Vec<crtc::Handle> = Vec::new();
-        let mut builds = Vec::new();
-        for mut snapshot in connected {
-            let config_key = snapshot.connector_name.clone();
-            Self::apply_output_config(&mut snapshot, config_key, &config);
-            if !snapshot.enabled {
-                continue;
-            }
-            if let Some(b) = self.bring_up(&snapshot, &used) {
-                used.push(b.crtc);
-                builds.push(b);
-            }
-        }
-        builds
+        )?;
+        Ok(ScanoutBuild {
+            device_id: self.device_id,
+            connector_id: snapshot.connector_id,
+            connector_name: snapshot.connector_name.clone(),
+            config_key: snapshot.config_key.clone(),
+            physical_mm: snapshot.physical_mm,
+            monitor: snapshot.monitor.clone(),
+            hdr_display: self.read_hdr_display_info(&snapshot.connector_name),
+            mode_intent: snapshot.mode_intent,
+            crtc,
+            scanout,
+        })
     }
 }
 
@@ -1931,9 +1900,9 @@ impl DrmScanout {
         self.xrgb_damage_requested && self.xrgb_scanout_epoch.is_some() && !self.format.is_hdr()
     }
 
-    /// Open `card_path` and become DRM master; split from [`Self::new`] so a
-    /// [`CardHandle`] can open once and dup the fd per connector (libseat
-    /// refuses a second open).
+    /// Open `card_path` and become DRM master, once per card: a
+    /// [`CardHandle`] dups the fd per connector (libseat refuses a second
+    /// open).
     fn open_card<S: Session>(session: &mut S, card_path: &Path) -> Result<Card, String> {
         use smithay::backend::session::AsErrno;
         let fd = session
@@ -1962,51 +1931,9 @@ impl DrmScanout {
         Ok(card)
     }
 
-    /// Single-output convenience: opens `card_path`, picks the first connected connector + mode +
-    /// crtc, and brings it up. Returns `Err`, never panics; the runtime uses
-    /// [`CardHandle::bring_up_all`] instead, sharing `Self::from_card`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the card can't be opened, if `resource_handles` fails, if no connected
-    /// connector advertises a usable mode, if no crtc is available for the chosen connector, or
-    /// if the modeset/framebuffer setup in `Self::from_card` fails.
-    pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
-        let card = Self::open_card(session, card_path)?;
-        let res = card
-            .resource_handles()
-            .map_err(|e| format!("resource_handles: {e}"))?;
-
-        // First connected connector that advertises a mode.
-        let mut chosen: Option<(connector::Info, Mode)> = None;
-        for &ch in res.connectors() {
-            if let Ok(info) = card.get_connector(ch, true)
-                && info.state() == connector::State::Connected
-                && let Some(m) = pick_configured_mode(info.modes(), None)
-            {
-                chosen = Some((info, m));
-                break;
-            }
-        }
-        let (conn_info, mode) = chosen.ok_or("no connected connector with a usable mode")?;
-        let connector = conn_info.handle();
-
-        // Prefer the connector's current encoder/crtc; fall back to the first crtc (single-GPU/VM case).
-        let crtc = conn_info
-            .current_encoder()
-            .and_then(|e| card.get_encoder(e).ok())
-            .and_then(|e| e.crtc())
-            .or_else(|| res.crtcs().first().copied())
-            .ok_or("no crtc available for connector")?;
-
-        let pci_bus_id = card_pci_bus_id(&card);
-        Self::from_card(card, connector, crtc, mode, pci_bus_id)
-    }
-
     /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and set up the hardware
-    /// cursor — the bring-up tail shared by [`Self::new`] and
-    /// [`CardHandle::bring_up_all`]. `card` is an independent fd on the
-    /// single path, a dup on the multi-output path.
+    /// cursor — the tail of [`CardHandle::bring_up`]. `card` is a dup of the
+    /// card's session fd.
     fn from_card(
         card: Card,
         connector: connector::Handle,

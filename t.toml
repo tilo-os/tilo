@@ -2003,7 +2003,7 @@ needs = ["desktop-package-amd64"]
 run = """
 dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
   qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
-  qemu-img openssh-clients xorriso python3 curl
+  qemu-device-display-virtio-gpu-pci qemu-img openssh-clients xorriso python3 curl
 python3 os/dev/probe-kvm.py x86_64
 work=$(mktemp -d /var/tmp/host-session-e2e.XXXXXX)
 rpms=dist/ci-output/fedora-44-amd64

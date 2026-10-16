@@ -801,6 +801,38 @@ multi-workspace-per-output or workspace pinning: every display shows the same
 workspace, and each holds its own window groups, partitioned per device (see
 [`displays-and-infinite-workspaces.md`](displays-and-infinite-workspaces.md)).
 
+**Several GPUs.** A hybrid laptop's panel usually hangs off the integrated GPU
+while its HDMI or DisplayPort outputs are wired to the discrete one, so no
+single card can light every display. At startup the backend opens every KMS
+card on the seat (ranked by connected outputs, then a connected built-in
+panel: `backend::drm::devices`), probes all their connectors before choosing
+configuration keys (two cards may both have an `HDMI-A-1`), and brings up
+every enabled connector on its own card. A card that fails to open, or one
+without connected outputs, costs nothing to the others; a connectorless card
+stays held for a later hotplug. Only when no card lights anything does the
+backend fail (`DrmBackendError::NoScanout`), so the display manager takes the
+seat back instead of the session running behind its last framebuffer. The
+layout does not depend on which card is first: an unarranged set puts the
+built-in panel first and leftmost and makes it primary.
+
+Rendering happens once, on the renderer's GPU. An output on that GPU's card
+renders direct into its own GBM targets (above); an output on another card
+presents by readback: the frame is copied to the CPU and written into that
+card's dumb buffers, a card-local allocation every KMS driver can scan out.
+There is no cross-device DMA-BUF import, so no buffer placement or format
+negotiation between vendors can fail at flip time.
+
+Each attempt is journaled on the session log: every card tried
+(`tilo compositor: trying KMS scanout device ...`), every connector attempt
+(`DRM connector attempt card=... connector=... result=lit|disabled|failed`),
+and the topology driven, written whenever it changes
+(`DRM topology cards=N driven_cards=N outputs=N; card ... outputs=N; output
+ID CONNECTOR on CARD WxH@RATE at X,Y scale S`, `backend::drm::topology`).
+While another session holds the seat no card has DRM master, so hotplug
+edges then are left for re-activation (a VT switch back, waking from sleep),
+which probes every card again. The host-session VM test boots with two
+virtio-gpu cards and requires an output on each (`dist/session/README.md`).
+
 ## Sessions and seat acquisition (DRM mode)
 
 - `libseat` provides the session (TTY swap, DRM master) — works under `seatd`, `logind`, or `consolekit2`.
