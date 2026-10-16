@@ -1808,9 +1808,9 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9d
 needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
 outputs = ["/target/perf/compare/**"]
-# Publishing to the store needs a token that may write tilo-perf-results; this
-# server's config has none yet, so the run compares only. `secrets =
-# ["REGISTRY_TOKEN"]` publishes once it does.
+# TILO_PACKAGES_TOKEN (main only) may write tilo's generic packages, which is
+# where the results go.
+secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false
 on = ["schedule:15 1 * * *", "dispatch"]
@@ -1937,19 +1937,19 @@ status=0
 python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
   --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
   --run "t-${T_COMMIT:-tree}-vm" --summary "$TMPDIR/summary.md" || status=1
-if [[ $publish == true && -n ${REGISTRY_TOKEN:-} ]]; then
+if [[ $publish == true && -n ${TILO_PACKAGES_TOKEN:-} ]]; then
   manifest=$(mktemp)
   for file in "$TMPDIR"/publish/*/*.jsonl; do
     month=$(basename "$(dirname "$file")")
     printf '%s\t%s\n' "$file" "https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename "$file")"
   done > "$manifest"
-  TILO_PACKAGE_TOKEN=$REGISTRY_TOKEN bash tools/upload_immutable_packages.sh "$manifest" || status=1
+  TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN bash tools/upload_immutable_packages.sh "$manifest" || status=1
 fi
 cat "$TMPDIR/summary.md" 2>/dev/null || true
 exit "$status"
 """
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh"]
-# Compares only until the server has a token that may write the store (see perf-scheduled).
+secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false
 on = ["schedule:23 2 * * *"]
