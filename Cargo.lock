@@ -5284,7 +5284,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
- "ssh-agent-client",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -14950,14 +14949,6 @@ name = "sponge-cursor"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
-
-[[package]]
-name = "ssh-agent-client"
-version = "0.1.0"
-dependencies = [
- "russh",
- "workspace-hack",
-]
 
 [[package]]
 name = "ssh-cipher"

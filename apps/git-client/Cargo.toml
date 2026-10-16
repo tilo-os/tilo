@@ -39,7 +39,6 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
-ssh-agent-client = { path = "../../crates/system/ssh-agent-client" }
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 url.workspace = true
 rustls.workspace = true
