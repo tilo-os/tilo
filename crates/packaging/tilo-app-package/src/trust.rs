@@ -230,11 +230,10 @@ pub trait TrustFile: Default + Serialize + DeserializeOwned {
     /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
     /// TOML for this shape.
     fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Self::from_toml_str(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(TrustLoadError::Io(e.to_string())),
-        }
+        let Some(text) = read_optional_policy(path)? else {
+            return Ok(Self::default());
+        };
+        Self::from_toml_str(&text)
     }
 
     /// Atomic-rename-based save.
@@ -286,7 +285,16 @@ pub struct RevocationList {
     pub revoked: Vec<RevokedKey>,
 }
 
-impl TrustFile for RevocationList {}
+impl TrustFile for RevocationList {
+    /// Reject malformed keys rather than silently dropping a revocation.
+    fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
+        let list: Self = toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))?;
+        for entry in &list.revoked {
+            entry.pubkey_bytes()?;
+        }
+        Ok(list)
+    }
+}
 
 impl RevocationList {
     /// Test a raw pubkey against the revocation list; returns the matching `RevokedKey` if any.
@@ -299,6 +307,16 @@ impl RevocationList {
             }
         }
         None
+    }
+}
+
+/// Only absence means an empty policy. Metadata lookup failures must not
+/// disable revocations by pretending the file is absent.
+fn read_optional_policy(path: &Path) -> Result<Option<String>, TrustLoadError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(TrustLoadError::Io(format!("{}: {error}", path.display()))),
     }
 }
 
@@ -347,6 +365,58 @@ pub enum TrustLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_policy_files_are_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.toml");
+        assert_eq!(
+            TrustedAttestors::load(&path).unwrap(),
+            TrustedAttestors::default()
+        );
+        assert_eq!(
+            RevocationList::load(&path).unwrap(),
+            RevocationList::default()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn policy_lookup_errors_are_not_empty_policies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.toml");
+        // A symlink loop produces a metadata/read error even when run as root.
+        std::os::unix::fs::symlink("policy.toml", &path).unwrap();
+        for error in [
+            TrustedAttestors::load(&path).unwrap_err(),
+            RevocationList::load(&path).unwrap_err(),
+        ] {
+            assert!(matches!(error, TrustLoadError::Io(ref detail)
+                if detail.contains(path.to_str().unwrap())));
+        }
+    }
+
+    #[test]
+    fn malformed_revocation_keys_are_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revoked-keys.toml");
+        for key in ["not-hex".to_string(), "ab".repeat(31), "ab".repeat(33)] {
+            let text = format!("[[revoked]]\npubkey_hex = {key:?}\n");
+            std::fs::write(&path, &text).unwrap();
+            assert!(matches!(
+                RevocationList::load(&path),
+                Err(TrustLoadError::BadHex(_) | TrustLoadError::BadPubkeyLength { .. })
+            ));
+        }
+        let text = format!("[[revoked]]\npubkey_hex = {:?}\n", "ab".repeat(32));
+        std::fs::write(&path, text).unwrap();
+        assert!(
+            RevocationList::load(&path)
+                .unwrap()
+                .find(&[0xab; 32])
+                .is_some()
+        );
+    }
 
     #[test]
     fn attestation_scopes_parse_round_trip_and_match() {

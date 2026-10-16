@@ -350,7 +350,9 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
     for suite, by in sorted(manifest.covered.items()):
         if by not in gated and by not in required:
             problems.append(f"{suite}: covering suite {by} is not itself gated")
-        elif (root / by).is_file() and not re.search(
+        elif by not in tracked_set or not (root / by).is_file():
+            problems.append(f"{suite}: covering suite {by} is not a tracked file on disk")
+        elif not re.search(
                 rf"\b{re.escape(Path(suite).stem)}\b", (root / by).read_text(encoding="utf-8")):
             problems.append(f"{suite}: {by} does not reference it")
     classified = gated | required | set(manifest.covered) | set(manifest.unrequired)
@@ -392,8 +394,8 @@ def cargo_packages(root: Path, tracked: list[str]) -> dict[str, str]:
             continue
         try:
             package = tomllib.loads((root / path).read_text(encoding="utf-8")).get("package")
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-            continue
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"cannot audit Cargo package {path}: {error}") from error
         if isinstance(package, dict) and isinstance(package.get("name"), str):
             packages[path.rpartition("/")[0]] = package["name"]
     return packages
