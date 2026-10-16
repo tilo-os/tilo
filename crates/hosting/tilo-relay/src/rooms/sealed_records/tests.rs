@@ -109,6 +109,30 @@ impl SealingMember {
         member
     }
 
+    /// The same device taking part in another record of the same app, one
+    /// the governor holds no copy of yet: a new part of a chained record,
+    /// which a member starts sealed.
+    pub(crate) async fn part(&self, rooms: &Rooms, room: &str, record: &str) -> Self {
+        let route = tilo_browser_peer::DocumentRoute {
+            app_id: self.route.0.clone(),
+            cluster_id: room.into(),
+            record: record.into(),
+        };
+        let keys = rooms
+            .steward_endpoint_keys(&route, true)
+            .await
+            .unwrap()
+            .unwrap();
+        Self {
+            key: self.key.clone(),
+            keys,
+            route: (self.route.0.clone(), record.into()),
+            surface: self.surface,
+            seq: std::sync::atomic::AtomicU64::new(0),
+            document: std::sync::Mutex::new(automerge::AutoCommit::new()),
+        }
+    }
+
     /// Take in the record as the room reads it now.
     pub(crate) async fn catch_up(&self, rooms: &Rooms, room: &str) {
         let bytes = rooms
@@ -528,6 +552,36 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
         held.iter().skip(1).all(|op| op.encryption.is_some()),
         "past the record's cleartext start, the members' writes and their snapshot stay sealed"
     );
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// A chat kept as a chain of parts starts each part with a member's sealed
+/// write, under keys the node stewards. The node takes in every part as it
+/// starts, however many there are, and reads each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_follows_every_part_its_members_start_sealed() {
+    let Lounge {
+        _dir,
+        relay,
+        rooms,
+        room,
+        member,
+        ..
+    } = lounge().await;
+    for index in 0..40 {
+        let record = neighbour_wire::record_part(RECORD, index);
+        let part = member.part(&rooms, &room, &record).await;
+        for line in 0..3 {
+            set_title(&part, &rooms, &room, &format!("part {index} line {line}")).await;
+        }
+        let held = rooms.record_document(&room, APP, &record).await.unwrap();
+        assert_eq!(
+            held.as_deref().and_then(title).as_deref(),
+            Some(format!("part {index} line 2").as_str()),
+            "the node holds part {index}"
+        );
+    }
     drop(rooms);
     relay.shutdown().await;
 }
