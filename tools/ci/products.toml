@@ -536,9 +536,9 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs on a privileged node. Run when asked for until privileged
-checks have nodes again; T_INPUT_PROOF=prediction|retention|prediction-retention selects one
-proof once it can also be dispatched."""
+whose tests nest Podman, so it runs as root in a micro-VM step. Run when asked for;
+T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
+be dispatched."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -556,7 +556,9 @@ run = 'bash os/tests/development_signing_native.sh run /target/development-signi
 inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "16G"
 timeout_secs = 2700
 
 [[matrix]]
@@ -564,8 +566,9 @@ family = "env-tools"
 about = """
 The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
 os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
-throwaway key, in the CI builder run privileged on a privileged node. It proves the catalog
-builds; build-env-tools.yml still publishes it, sealed with the publisher identity."""
+throwaway key, as root in the CI builder in a micro-VM step (the build sandbox makes user
+namespaces and mounts overlays). It proves the catalog builds; build-env-tools.yml still
+publishes it, sealed with the publisher identity."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -579,11 +582,13 @@ cost = "heavy"
 
 [[matrix.check]]
 name = "env-tools-{arch}"
-run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-binaries-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 8
+memory = "16G"
 timeout_secs = 9000
 
 [[matrix]]
