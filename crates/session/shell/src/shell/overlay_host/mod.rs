@@ -5275,6 +5275,15 @@ impl ShellOverlayHost {
         // rebuilding while this still says `true` leaves the sidebar node at
         // `display:none`, with no later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
+        // On a desktop spread across displays a fullscreen covers its own
+        // display only: the rows of other strips step aside there and stay
+        // on every other display, beside that display's own chrome.
+        let covered = if owned && client_fullscreen {
+            fs_group.and_then(|group| self.fullscreen_display_of(group))
+        } else {
+            None
+        };
+        chrome.borrow_mut().set_fullscreen_display(covered);
         for (&strip, &row_ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
@@ -5288,11 +5297,41 @@ impl ShellOverlayHost {
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
+                    row.set_covered_output(None);
                 }
-                Some(_) if owned => row.set_fullscreen(None, true),
-                _ => row.set_fullscreen(None, single.is_some_and(|single| single != strip)),
+                Some(_) if owned => {
+                    row.set_fullscreen(None, covered.is_none());
+                    row.set_covered_output(covered.map(|display| display.output));
+                }
+                _ => {
+                    row.set_fullscreen(None, single.is_some_and(|single| single != strip));
+                    row.set_covered_output(None);
+                }
             }
         }
+    }
+
+    /// The display the fullscreen `group` covers, while the desktop is
+    /// spread across displays: the one the partition places it on.
+    fn fullscreen_display_of(
+        &self,
+        group: GroupId,
+    ) -> Option<crate::shell::chrome_state::FullscreenDisplay> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        let output = self
+            .chrome
+            .as_ref()?
+            .borrow()
+            .tree()
+            .desktop
+            .outputs
+            .display_of(group)?;
+        let primary = self
+            .primary_output()
+            .is_some_and(|primary| primary.id == output);
+        Some(crate::shell::chrome_state::FullscreenDisplay { output, primary })
     }
 
     /// Whether a client's fullscreen group is represented by a live retained
@@ -9539,7 +9578,7 @@ impl ShellOverlayHost {
     fn docked_wheel_pinned(&self) -> bool {
         self.chrome.as_ref().is_some_and(|chrome| {
             let state = chrome.borrow();
-            state.wheel_summon().is_some() || state.is_fullscreen()
+            state.wheel_summon().is_some() || state.presentation_covers_primary()
         })
     }
 
@@ -18529,8 +18568,16 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
         }
+        // On a desktop spread across displays a fullscreen takes its own
+        // display's whole rect (`fullscreen_lane_area`); the column keeps
+        // its spacing, so the other displays' windows stay where they were.
+        let expands_column = fullscreen
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().fullscreen_display().is_none());
         if let Some(surface) = self.desktop_surface_mut() {
-            surface.style_work_area(fullscreen);
+            surface.style_work_area(expands_column);
         }
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
@@ -18612,7 +18659,12 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
-        let covers_wheel = self.client_fullscreen_is_owned() || self.maximized_wheel_tucked();
+        let covers_wheel = (self.client_fullscreen_is_owned()
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().presentation_covers_primary()))
+            || self.maximized_wheel_tucked();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -18825,7 +18877,7 @@ impl Widget for ShellOverlayHost {
             // A promoted group is drawn unpanned, so the wheel beside it is too.
             let pinned = self.chrome.as_ref().is_some_and(|c| {
                 let st = c.borrow();
-                st.wheel_summon().is_some() || st.is_fullscreen()
+                st.wheel_summon().is_some() || st.presentation_covers_primary()
             });
             let anchor_x = if pinned {
                 self.rect.x0
