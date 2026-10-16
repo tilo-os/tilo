@@ -379,7 +379,7 @@ pub fn build_rows(
     if typed.is_empty() {
         return Vec::new();
     }
-    let current = display_url(current_uri);
+    let current = destination_key(current_uri);
     let mut seen_urls: Vec<String> = vec![current];
     let mut seen_queries: Vec<String> = vec![typed.to_lowercase()];
     let mut rows: Vec<Row> = Vec::new();
@@ -387,7 +387,7 @@ pub fn build_rows(
     let mut go = None;
     if looks_like_address(typed) {
         let url = address_target(typed);
-        seen_urls.push(display_url(&url));
+        seen_urls.push(destination_key(&url));
         go = Some(Row {
             kind: RowKind::Go,
             title: display_url(&url),
@@ -398,7 +398,7 @@ pub fn build_rows(
     }
     let mut pages: Vec<Row> = Vec::new();
     for found in history {
-        let key = display_url(&found.entry.url);
+        let key = destination_key(&found.entry.url);
         if seen_urls.contains(&key) {
             continue;
         }
@@ -443,8 +443,9 @@ pub fn build_rows(
 pub fn lead_with_address(rows: &mut Vec<Row>, address: &str) {
     let url = address_target(address);
     let shown = display_url(&url);
+    let key = destination_key(&url);
     rows.retain(|row| {
-        !matches!(row.kind, RowKind::Go | RowKind::History) || display_url(&row.url) != shown
+        !matches!(row.kind, RowKind::Go | RowKind::History) || destination_key(&row.url) != key
     });
     rows.insert(
         0,
@@ -457,6 +458,12 @@ pub fn lead_with_address(rows: &mut Vec<Row>, address: &str) {
         },
     );
     rows.truncate(MAX_ROWS);
+}
+
+// Display labels omit parts that can distinguish different destinations.
+// URL parsing normalizes host case and default ports without erasing them.
+fn destination_key(url: &str) -> String {
+    url::Url::parse(url).map_or_else(|_| url.to_owned(), Into::into)
 }
 
 /// The engine's answer to one query.
@@ -788,8 +795,33 @@ mod tests {
     fn current_page_is_not_offered_back() {
         let mut idx = index(&[entry("https://youtube.com/", "YouTube", 4, NOW)]);
         let hits = idx.search("you", 8, NOW);
-        let rows = build_rows("you", &hits, &[], "https://www.youtube.com", MAX_ROWS);
+        let rows = build_rows("you", &hits, &[], "https://YOUTUBE.com:443", MAX_ROWS);
         assert!(rows.iter().all(|r| r.kind != RowKind::History));
+    }
+
+    #[test]
+    fn distinct_destinations_survive_row_deduplication() {
+        let urls = [
+            "https://example.test/Report",
+            "http://example.test/Report",
+            "https://www.example.test/Report",
+            "https://example.test/Report/",
+        ];
+        let mut idx = index(&urls.map(|url| entry(url, "Report", 1, NOW)));
+        let hits = idx.search("report", 8, NOW);
+        let mut rows = build_rows("report", &hits, &[], "", MAX_ROWS);
+        for url in urls {
+            assert!(rows.iter().any(|row| row.url == url), "missing {url}");
+        }
+        lead_with_address(&mut rows, urls[0]);
+        for url in urls {
+            assert_eq!(rows.iter().filter(|row| row.url == url).count(), 1, "{url}");
+        }
+        let rows = build_rows("report", &hits, &[], urls[0], MAX_ROWS);
+        assert!(!rows.iter().any(|row| row.url == urls[0]));
+        for url in &urls[1..] {
+            assert!(rows.iter().any(|row| row.url == *url), "missing {url}");
+        }
     }
 
     #[test]
