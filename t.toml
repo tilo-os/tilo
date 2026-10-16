@@ -1428,6 +1428,21 @@ memory_gib = "22"
 # is checked on every head of main, the SDK and the apps, which take it over an hour, nightly.
 # None holds a secret.
 
+# The native UTM adapter belongs to the existing VM tool. Compile its macOS paths and
+# exercise command generation with fake runners; never control an installed VM here.
+[[check]]
+name = "vm-macos"
+requires = ["os=macos", "arch=arm64"]
+run = """
+set -eu
+cargo check --locked -p tilo-vm --all-targets
+cargo test --locked -p tilo-vm --lib hypervisor::tests::
+"""
+cargo_packages = ["tilo-vm"]
+cost = "minutes"
+on = ["main"]
+default = false
+
 [[check]]
 name = "runtime-macos"
 requires = ["os=macos", "arch=arm64"]

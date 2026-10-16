@@ -912,7 +912,7 @@ pub fn utm_import_template(
 const UTM_LEASES: &str = "/var/db/dhcpd_leases";
 
 /// The IPv4 address macOS leased the UTM VM `vm`, found by the MAC address of
-/// its first network interface (asked of UTM over AppleScript).
+/// its first network interface (asked of UTM over `AppleScript`).
 fn utm_leased_address(vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
     // A VM's configuration is a record: read it whole, then its first
     // interface's address.
@@ -940,7 +940,7 @@ fn utm_leased_address(vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
     leased_address(&leases, output.stdout.trim())
 }
 
-/// The `ip_address` of the newest lease in `leases` (dhcpd_leases' format)
+/// The `ip_address` of the newest lease in `leases` (`dhcpd_leases`' format)
 /// for hardware address `mac`. macOS drops leading zeros of each octet
 /// (`6a:1c:d:58:e4:14`), so octets compare as numbers.
 fn leased_address(leases: &str, mac: &str) -> Option<String> {
@@ -1591,6 +1591,71 @@ mod tests {
                 stderr: String::new(),
             },
         )
+    }
+
+    #[test]
+    fn utm_import_uses_native_scripting_with_escaped_inputs_and_requested_resources() {
+        let mut runner = fake("");
+        utm_import_template(
+            &mut runner,
+            ("Tilo Dev (\"test\")", "/images/a\\b\"c.qcow2"),
+            (8192, 4),
+        )
+        .unwrap();
+        assert_eq!(runner.0.len(), 1);
+        let command = &runner.0[0];
+        assert_eq!(command.program, "osascript");
+        assert_eq!(
+            command.args,
+            [
+                "-e",
+                r#"set diskFile to POSIX file "/images/a\\b\"c.qcow2""#,
+                "-e",
+                "tell application \"UTM\"",
+                "-e",
+                r#"make new virtual machine with properties {backend:qemu, configuration:{name:"Tilo Dev (\"test\")", architecture:"aarch64", memory:8192, cpu cores:4, hypervisor:true, uefi:true, drives:{{interface:virtio, source:diskFile}}}}"#,
+                "-e",
+                "end tell",
+            ]
+        );
+    }
+
+    #[test]
+    fn utm_import_reports_native_automation_refusal() {
+        let mut runner = fake("");
+        runner.1.success = false;
+        runner.1.stderr = "Not authorized to send Apple events to UTM".into();
+        let error = utm_import_template(
+            &mut runner,
+            ("Tilo Dev (test)", "/images/dev.qcow2"),
+            (UTM_MEMORY_MB, UTM_CPUS),
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::Unreachable { .. }));
+        assert!(error.to_string().contains(&runner.1.stderr));
+        assert!(runner.0[0].args[5].contains("memory:16384, cpu cores:8"));
+    }
+
+    #[test]
+    fn utm_explicit_ssh_does_not_query_the_hypervisor_or_host_leases() {
+        let entry = VmEntry {
+            ssh: Some("developer@192.0.2.4:2222".into()),
+            ..entry()
+        };
+        let mut runner = fake("");
+        let endpoint = Utm
+            .ssh_endpoint(
+                &Vm {
+                    name: "dev",
+                    entry: &entry,
+                },
+                &mut runner,
+            )
+            .unwrap();
+        assert_eq!(endpoint.user, "developer");
+        assert_eq!(endpoint.host, "192.0.2.4");
+        assert_eq!(endpoint.port, 2222);
+        assert!(runner.0.is_empty());
     }
 
     fn entry() -> VmEntry {

@@ -7,7 +7,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | Host | Adapter (default) | Humans watch it in | Builds | GPU in guest |
 |---|---|---|---|---|
 | Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
-| macOS arm64 | UTM (`utmctl`, Apple Virtualization) | UTM | VM only | none (llvmpipe) |
+| macOS arm64 | UTM (`utmctl`, QEMU on Apple's hypervisor) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 | any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
@@ -292,8 +292,9 @@ keys. For a shell or one command as root: `tilo-vm vm ssh [<name>] [-- <command>
 Windows); `tilo-vm vm list` prints its path. On UTM, `vm create --image
 <disk.qcow2>` (or the published disk) imports the disk once over UTM's
 AppleScript as the template VM `Tilo Dev (<name>)`, an aarch64 QEMU guest on
-Apple's hypervisor with UEFI, and clones it; macOS asks once whether the
-terminal may control UTM. `--template '<a UTM VM>'` clones one imported
+Apple's hypervisor with UEFI, and clones it. It defaults to 16 GiB of memory
+and 8 CPU cores; `--memory-mb` and `--cpus` override those import settings.
+macOS asks once whether the terminal may control UTM. `--template '<a UTM VM>'` clones one imported
 before. The VM's address comes from `utmctl ip-address` where the guest runs
 the QEMU guest agent, else from the lease macOS's DHCP server recorded for the
 VM's MAC address in `/var/db/dhcpd_leases` (UTM's shared network).
