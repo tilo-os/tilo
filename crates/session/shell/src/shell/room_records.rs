@@ -454,25 +454,11 @@ impl RoomRecords {
             .is_none_or(|s| s.lock().is_ok_and(|st| st.done))
     }
 
-    /// Load a scanned record without opening a [`ui::record::RecordStore`],
-    /// creating directories, touching actor state, or acquiring a writer lock.
-    /// The canonical path and size bound are revalidated on every read so a
-    /// stale or replaced scan result fails closed.
-    pub fn load_local_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        self.local_reader()?.load(id)
-    }
-
-    /// A witness of the bytes [`Self::load_local_record`] would read for
-    /// `id` now: the document's length and modification time, from one
-    /// `stat`. `None` when the record has no scanned location.
-    pub fn local_record_revision(&self, id: &RecordId) -> Option<u64> {
-        self.local_reader()?.revision(id)
-    }
-
-    /// What [`Self::load_local_record`] and [`Self::local_record_revision`]
-    /// read, as a handle another thread can read through: both touch the
-    /// disk, which the compositor loop must not wait for. `None` for an
-    /// in-memory instance.
+    /// The scanned record documents, as a handle another thread reads
+    /// through: [`LocalRecordReader::load`] loads one without opening a
+    /// [`ui::record::RecordStore`], and [`LocalRecordReader::revision`]
+    /// witnesses what it would read. Both touch the disk, which the
+    /// compositor loop must not wait for. `None` for an in-memory instance.
     pub(crate) fn local_reader(&self) -> Option<LocalRecordReader> {
         self.scan.clone().map(|scan| LocalRecordReader { scan })
     }
@@ -734,12 +720,18 @@ impl LocalRecordReader {
         scan.locations.get(id).cloned()
     }
 
-    /// [`RoomRecords::load_local_record`]: reads the disk.
+    /// Load scanned record `id` without opening a
+    /// [`ui::record::RecordStore`], creating directories, touching actor
+    /// state, or acquiring a writer lock. The canonical path and size bound
+    /// are revalidated on every read so a stale or replaced scan result
+    /// fails closed. Reads the disk: never on the compositor loop.
     pub(crate) fn load(&self, id: &RecordId) -> Option<AutoCommit> {
         read_validated_record_document(id, &self.location(id, true)?)
     }
 
-    /// [`RoomRecords::local_record_revision`]: one `stat`.
+    /// A witness of the bytes [`Self::load`] would read for `id` now: the
+    /// document's length and modification time, from one `stat`. `None`
+    /// when the record has no scanned location.
     pub(crate) fn revision(&self, id: &RecordId) -> Option<u64> {
         let location = self.location(id, false)?;
         let metadata = std::fs::metadata(&location.document).ok()?;
@@ -831,15 +823,6 @@ fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
         home,
         package_id: package_id.to_string(),
     })
-}
-
-impl crate::shell::workspace_history::PersistedRecordHistory for RoomRecords {
-    fn load_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        self.load_local_record(id)
-    }
-    fn revision(&self, id: &RecordId) -> Option<u64> {
-        self.local_record_revision(id)
-    }
 }
 
 /// What to call a record in a list. See [`KnownRecord::title`].
