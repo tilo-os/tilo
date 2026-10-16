@@ -667,7 +667,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group perf-tools"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
-inputs = [".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml", "apps/*/tilo-app.toml", "apps/settings/src/categories.rs", "crates/dev/room-load/src/**", "crates/dev/ui-examples/examples/dashboard_perf_bench.rs", "crates/hosting/tilo-relay/examples/legacy_stream_source.rs", "crates/hosting/tilo-relay/examples/relay_load/main.rs", "crates/session/shell/examples/redraw_bench.rs", "crates/session/shell/src/compositor/switch_latency.rs", "crates/session/shell/src/shell/search/providers/files.rs", "crates/system/fs/tests/performance_gate.rs", "dist/apps/app-collections.toml", "scripts/perf/**", "scripts/perf/agent_rtt_test.py", "scripts/perf/agent_task_test.py", "scripts/perf/browser_qualification.test.mjs", "scripts/perf/code_editor_effects_test.py", "scripts/perf/collect_code_editor_native_test.py", "scripts/perf/collect_file_explorer_native_test.py", "scripts/perf/collect_scratchpad_native_test.py", "scripts/perf/collect_settings_native_test.py", "scripts/perf/device_latency_bench_test.py", "scripts/perf/device_notes_latency_test.py", "scripts/perf/device_notes_trace_test.py", "scripts/perf/file_explorer_effects_test.py", "scripts/perf/input_latency_test.py", "scripts/perf/latency_bench_test.py", "scripts/perf/main_stages_test.py", "scripts/perf/native_app_capture_test.py", "scripts/perf/native_delivery_test.py", "scripts/perf/native_stream_qualification.test.mjs", "scripts/perf/physical_notes_latency_test.py", "scripts/perf/physical_notes_stages_test.py", "scripts/perf/presentation_feedback_test.py", "scripts/perf/render_bench_test.py", "scripts/perf/render_boundaries_test.py", "scripts/perf/runtime_benchmark_test.py", "scripts/perf/scratchpad_effects_test.py", "scripts/perf/settings_effects_test.py", "scripts/perf/word_processor_effects_test.py", "scripts/perf/worker_handoff_test.py", "tools/apps/app_release.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/perf/test_ab.py", "tools/perf/test_adapters.py", "tools/perf/test_compare.py", "tools/perf/test_image_size.py", "tools/perf/test_record.py", "tools/perf/test_room_capacity.py", "tools/perf/test_runtime_size_ratchet.py", "tools/perf/test_store.py", "tools/perf/test_tapp_size_ratchet.py", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
+inputs = [".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml", "apps/*/tilo-app.toml", "apps/settings/src/categories.rs", "crates/dev/room-load/src/**", "crates/dev/ui-examples/examples/dashboard_perf_bench.rs", "crates/hosting/tilo-relay/examples/legacy_stream_source.rs", "crates/hosting/tilo-relay/examples/relay_load/main.rs", "crates/session/shell/examples/redraw_bench.rs", "crates/session/shell/src/compositor/switch_latency.rs", "crates/session/shell/src/shell/search/providers/files.rs", "crates/system/fs/tests/performance_gate.rs", "dist/apps/app-collections.toml", "scripts/perf/**", "scripts/perf/agent_rtt_test.py", "scripts/perf/agent_task_test.py", "scripts/perf/browser_qualification.test.mjs", "scripts/perf/code_editor_effects_test.py", "scripts/perf/collect_code_editor_native_test.py", "scripts/perf/collect_file_explorer_native_test.py", "scripts/perf/collect_scratchpad_native_test.py", "scripts/perf/collect_settings_native_test.py", "scripts/perf/device_latency_bench_test.py", "scripts/perf/device_notes_latency_test.py", "scripts/perf/device_notes_trace_test.py", "scripts/perf/file_explorer_effects_test.py", "scripts/perf/input_latency_test.py", "scripts/perf/latency_bench_test.py", "scripts/perf/main_stages_test.py", "scripts/perf/native_app_capture_test.py", "scripts/perf/native_delivery_test.py", "scripts/perf/native_stream_qualification.test.mjs", "scripts/perf/physical_notes_latency_test.py", "scripts/perf/physical_notes_stages_test.py", "scripts/perf/presentation_feedback_test.py", "scripts/perf/render_bench_test.py", "scripts/perf/render_boundaries_test.py", "scripts/perf/resource_bench_test.py", "scripts/perf/runtime_benchmark_test.py", "scripts/perf/scratchpad_effects_test.py", "scripts/perf/settings_effects_test.py", "scripts/perf/word_processor_effects_test.py", "scripts/perf/worker_handoff_test.py", "tools/apps/app_release.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/perf/test_ab.py", "tools/perf/test_adapters.py", "tools/perf/test_compare.py", "tools/perf/test_image_size.py", "tools/perf/test_record.py", "tools/perf/test_room_capacity.py", "tools/perf/test_runtime_size_ratchet.py", "tools/perf/test_store.py", "tools/perf/test_tapp_size_ratchet.py", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
 
 [[check]]
 name = "suite-developer-scripts"
@@ -675,7 +675,15 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group developer-scripts"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
-inputs = ["scripts/agent-loop/**", "scripts/app-launch-sweep.py", "scripts/runtime-mcp-proof.py", "scripts/tests/**", "scripts/tests/test_agent_loop_usage.py", "scripts/tests/test_app_launch_sweep.py", "scripts/tests/test_runtime_mcp_proof.py", "scripts/tests/test_tilo_mcp_server.py", "scripts/tilo-mcp-server.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
+inputs = ["scripts/agent-loop/**", "scripts/app-launch-sweep.py", "scripts/headless-examples/**", "scripts/runtime-mcp-proof.py", "scripts/tests/**", "scripts/tests/test_agent_loop_usage.py", "scripts/tests/test_app_launch_sweep.py", "scripts/tests/test_headless_error_handling.py", "scripts/tests/test_runtime_mcp_proof.py", "scripts/tests/test_tilo_mcp_server.py", "scripts/tilo-mcp-server.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
+
+[[check]]
+name = "suite-vm-acceptance-tools"
+run = "python3 tools/ci/suites.py run --jobs 8 --group vm-acceptance-tools"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
+requires = ["arch=x86_64"]
+inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/tests/test_error_paths.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
 name = "suite-ux-bench"
@@ -2061,6 +2069,47 @@ outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["main"]
+
+# The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
+# as a release does, so the chain is proven on t without publishing anything anyone deploys.
+# Main publishes `dev-<commit>` when its inputs change; `t dispatch publish-release-rehearsal
+# --ref stable` signs it with the release key in KMS (identity token, AWS role), publishes
+# `sha-<commit>` with the signature and a receipt, and sets stable's `release-rehearsal` pointer.
+[[check]]
+name = "image-release-rehearsal"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/oci-build.sh tools/ci/publish/rehearsal tools/ci/publish/rehearsal/Containerfile /target/publish/release-rehearsal"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "tools/ci/publish/rehearsal/**"]
+outputs = ["/target/publish/release-rehearsal/image.oci.tar", "/target/publish/release-rehearsal/digest"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+memory = "2G"
+default = false
+
+[[check]]
+name = "sign-release-rehearsal"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-release-rehearsal"]
+outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/release-rehearsal/signature"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[check]]
+name = "publish-release-rehearsal"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal 'dev:dev-{commit}' 'release:sha-{commit}'"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-release-rehearsal"]
+optional_needs = ["sign-release-rehearsal"]
+outputs = ["/target/publish/release-rehearsal/receipt.json"]
+pointers = { release-rehearsal = "/target/publish/release-rehearsal/receipt.json" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["main", "dispatch"]
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-ci-images
