@@ -622,19 +622,6 @@ impl Event {
             .max(1)
     }
 
-    /// Resolve an occurrence start to an absolute UTC instant. Named-zone
-    /// recurrences retain their local clock time across DST; folds choose the
-    /// earlier instant and gaps advance to the first valid minute. Floating
-    /// events intentionally have no absolute interpretation.
-    pub fn occurrence_start_utc(&self, date: NaiveDate) -> Option<chrono::DateTime<chrono::Utc>> {
-        (self.timezone != "floating")
-            .then(|| {
-                crate::timezone::wall_to_utc(&self.timezone, date.and_time(self.start.time()))
-                    .map(|(instant, _)| instant)
-            })
-            .flatten()
-    }
-
     /// Whether this should be shown given the set of currently-hidden
     /// remote calendar ids. Local events (no `calendar_id`) are always visible;
     /// a synced event is hidden exactly when its source calendar is unchecked.
@@ -1373,23 +1360,6 @@ mod tests {
             assert_eq!(
                 event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
                 vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
-            );
-        }
-        // Case `named_zone_recurrence_keeps_wall_clock_time_across_dst`.
-        {
-            let mut event = sample_event(date(2026, 3, 22));
-            event.start = date(2026, 3, 22).and_hms_opt(9, 0, 0).unwrap();
-            event.end = date(2026, 3, 22).and_hms_opt(10, 0, 0).unwrap();
-            event.timezone = "Europe/Berlin".into();
-            let before = event.occurrence_start_utc(date(2026, 3, 22)).unwrap();
-            let after = event.occurrence_start_utc(date(2026, 3, 29)).unwrap();
-            assert_eq!(
-                before.naive_utc().time(),
-                NaiveTime::from_hms_opt(8, 0, 0).unwrap()
-            );
-            assert_eq!(
-                after.naive_utc().time(),
-                NaiveTime::from_hms_opt(7, 0, 0).unwrap()
             );
         }
         // Case `none_recurrence_is_single_day`.
