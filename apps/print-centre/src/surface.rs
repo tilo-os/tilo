@@ -1280,8 +1280,6 @@ impl PrintCentre {
     }
 
     fn open_dashboard(&mut self) {
-        self.scan.result = None;
-        self.scan.in_progress = false;
         self.rebuild_dashboard();
     }
 
@@ -1453,21 +1451,20 @@ impl PrintCentre {
         self.rebuild_dashboard();
     }
 
-    /// Start a new scanned document with the first scanner.
+    /// Return to the scanned document without discarding unsaved pages or
+    /// forgetting a scan that is still running.
     fn open_scan(&mut self) {
         self.notice = None;
-        self.scan.result = None;
-        self.scan.pages.clear();
-        self.scan.selected = 0;
-        self.scan.in_progress = false;
-        self.selected_scanner = self.snapshot.as_ref().and_then(|snapshot| {
-            snapshot
-                .scanners
-                .as_ref()
-                .ok()
-                .and_then(|scanners| scanners.first())
-                .map(|scanner| scanner.device.clone())
-        });
+        if self.selected_scanner.is_none() {
+            self.selected_scanner = self.snapshot.as_ref().and_then(|snapshot| {
+                snapshot
+                    .scanners
+                    .as_ref()
+                    .ok()
+                    .and_then(|scanners| scanners.first())
+                    .map(|scanner| scanner.device.clone())
+            });
+        }
         self.rebuild_scan_setup();
     }
 
@@ -2598,6 +2595,52 @@ mod tests {
             ocr_needs_refresh: false,
             ocr_in_progress: false,
         }
+    }
+
+    #[test]
+    fn returning_to_scanning_preserves_unsaved_edits_and_pending_work() {
+        let mut centre = PrintCentre::new();
+        centre.show(Some(&demo_snapshot()));
+        centre.open_scan();
+        centre.scan_finished(Ok(scanned_page(10)));
+        centre.scan_finished(Ok(scanned_page(20)));
+        centre.rotate_scan_page();
+        let edited = centre.scan.pages[1].png.clone();
+        let scanner = centre.selected_scanner.clone();
+
+        let navigations: [fn(&mut PrintCentre); 7] = [
+            PrintCentre::open_dashboard,
+            PrintCentre::open_queue,
+            PrintCentre::open_history,
+            PrintCentre::open_diagnostics,
+            PrintCentre::open_discovery,
+            |centre| centre.open_device("Studio_printer"),
+            PrintCentre::close_print_setup,
+        ];
+        for navigate in navigations {
+            navigate(&mut centre);
+            centre.open_scan();
+            assert_eq!(centre.scan.pages.len(), 2);
+            assert_eq!(centre.scan.selected, 1);
+            assert_eq!(centre.scan.result.as_ref().unwrap().png, edited);
+            assert_eq!(centre.selected_scanner, scanner);
+        }
+
+        centre.scan_another();
+        centre.scan.in_progress = true;
+        for navigate in navigations {
+            navigate(&mut centre);
+            centre.open_scan();
+            assert!(
+                centre.scan.in_progress,
+                "navigation must not allow a duplicate scan"
+            );
+            assert!(centre.scan.result.is_none());
+        }
+        centre.scan_finished(Ok(scanned_page(30)));
+        assert_eq!(centre.scan.pages.len(), 3);
+        assert_eq!(centre.scan.pages[1].png, edited);
+        assert_eq!(centre.scan.selected, 2);
     }
 
     #[test]
