@@ -68,6 +68,63 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_browser_recipe_and_native_acceptance(self):
+        binary = '/usr/lib64/chromium-browser/chromium-browser'
+        builder = (ROOT / 'os/Containerfile.builder').read_text()
+        self.assertIn(f'ENV CHROME={binary}\n', builder)
+        recipe = builder.split(f'ENV CHROME={binary}\nRUN ', 1)[1].split('\n\n', 1)[0]
+        # Execute the production recipe with only package installation and cache
+        # cleanup stubbed. A missing or broken browser must fail the image build.
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            browser = work / 'browser'
+            stubs = 'dnf() { printf "%s\\n" "$*" >> "$RECEIPT"; }; rm() { :; };\n'
+            for state in ('working', 'broken', 'missing'):
+                with self.subTest(state=state):
+                    browser.write_text('#!/bin/sh\nexit ' + ('0' if state == 'working' else '1') + '\n')
+                    browser.chmod(0o755)
+                    if state == 'missing':
+                        browser.unlink()
+                    receipt = work / 'receipt'
+                    receipt.unlink(missing_ok=True)
+                    result = subprocess.run(['bash', '-e', '-c', stubs + recipe],
+                                            env={**os.environ, 'CHROME': str(browser),
+                                                 'RECEIPT': str(receipt)},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, state == 'working', result.stderr)
+                    self.assertIn('install -y --setopt=install_weak_deps=False chromium',
+                                  receipt.read_text().splitlines())
+        cold = workflow_job(BUILD, 'cache-cold')
+        script = step_script(cold, 'Verify the native browser test runtime')
+        self.assertIn(f'test "$CHROME" = {binary}', script)
+        self.assertIn("import {launch} from './tools/web/chrome.mjs'", script)
+        self.assertIn("assert.equal(await tab.evaluate('6 * 7'), 42)", script)
+        self.assertIn('await browser.close()', script)
+        self.assertNotIn('continue-on-error', step_block(cold, 'Verify the native browser test runtime'))
+        self.assertIn("needs.cache-cold.result == 'success'", workflow_job(BUILD, 'accept-builder'))
+
+    def test_native_wrapper_exports_browser_outside_home_and_keeps_overrides(self):
+        wrapper = ROOT / 'tools/ci/t-nextest.sh'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'tools/ci').mkdir(parents=True)
+            script = root / 'tools/ci/t-nextest.sh'
+            script.write_text(wrapper.read_text())
+            # Stand in only for the downstream environment/command. The real
+            # wrapper must pass the browser through to the test invocation.
+            (root / 'tools/test-env.sh').write_text('printf "%s\\n" "$CHROME"\n')
+            for override in (None, '', '/custom/verified-browser'):
+                with self.subTest(override=override):
+                    env = {key: value for key, value in os.environ.items() if key != 'CHROME'}
+                    if override is not None:
+                        env['CHROME'] = override
+                    result = subprocess.run(['bash', str(script), 'cargo', 'nextest', 'run',
+                                             '-p', 'tilo-agent-participant', '-E', 'test(browser)'],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(),
+                                     override or '/usr/lib64/chromium-browser/chromium-browser')
+
     def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
         builder = (ROOT / 'os/Containerfile.builder').read_text()
         block = builder.split('ARG JSIGN_VERSION=', 1)[1].split('\nRUN ', 1)[1].split('\n\n', 1)[0]
