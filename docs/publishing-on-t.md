@@ -139,8 +139,17 @@ containerfile = "{dir}/context/Containerfile"
 # run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
 ```
 
-Tags may name `{commit}`, `{version}` (on `v<version>` tags) and `{rust}` (the channel
-`rust-toolchain.toml` pins).
+Tags may name `{commit}`, `{version}` (on `v<version>` tags), `{rust}` (the channel
+`rust-toolchain.toml` pins) and `{fingerprint}` (the published directory's `fingerprint` file). A
+tag written `once:<tag>` never moves: where it exists already, nothing is published.
+
+A product with `[product.provenance]` (`run`, `inputs`, `outputs`) gets a `provenance-<name>`
+check, no secrets, that writes `provenance.json` beside the index (or each image): the SLSA
+predicate, naming the image's digest as `expectedReleaseDigest` and the commit as `{commit}`.
+`sign-<name>` then also signs it as an in-toto attestation for that digest (`oci-attest.sh`,
+`cosign attest-blob` with the KMS key, in the transparency log, so the product needs `tlog`),
+and `oci-publish.sh` attaches it and checks it with `cosign verify-attestation`, as the
+consumers do.
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
@@ -248,6 +257,8 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
+| RPM snapshot | `image-rpms-x86_64`, `-aarch64`, `image-rpms` (their index), `provenance-rpms` (frozen-rpm-index/v1, the fingerprint) | `sign-rpms`: the index and both images, the index's provenance, with transparency log entries | | `publish-rpms`: `set-<fingerprint>` once, signed and attested |
+| kernel | `image-kernel-x86_64`, `-aarch64`, `kernel-acceptance-<arch>`, `provenance-kernel` (kernel-rpm/v1, binding the buildroot) | `sign-kernel`: both, with provenance and transparency log entries | | `publish-kernel`: `sha-<commit>-<arch>`, the `kernel` pointer; `pin-kernel` commits it to `os/kernel-snapshot.env` on main |
 | kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
 | CI builder | `image-ci-builder-x86_64`, `-aarch64`, `image-ci-builder` (their index); in each candidate `canary-ci-builder-cache-cold-<arch>`, `-cache-warm-<arch>` (t's compiler cache, written by one job and read back by another) | `sign-ci-builder`: the index and both images | `publish-ci-builder`: unsigned `dev-<commit>`, `dev-<commit>-<arch>` | `publish-ci-builder`: `<commit>`, `<rust channel>`, signed; `latest` stays with build-ci-builder.yml until the cutover |
 | release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |

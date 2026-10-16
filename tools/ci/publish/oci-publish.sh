@@ -14,7 +14,8 @@
 # signature as an optional need, pushes development tags from main and the signed release from
 # stable.
 # Tags may contain {commit}, replaced by T_COMMIT, on a release tag v<version> {version}, and
-# {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's).
+# {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's), and {fingerprint},
+# OUT/fingerprint (the RPM snapshot's package-set fingerprint).
 #
 # With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
 # of OUT's: a product whose release is derived from its build (products.toml's `release_build`)
@@ -27,6 +28,9 @@
 # DIR/REPOSITORY instead, without logging in, a signature is verified against the key the
 # dry-run signer wrote (OUT/dry-run.pub) or keys/cosign.pub, and the receipt is written as for
 # a real publication. T_REF and T_COMMIT say what the run pretends to publish for.
+#
+# An OUT/attestation.json beside the signature (oci-attest.sh: signed SLSA provenance) is
+# attached too, and verified on the published image as its consumers verify it.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 wanted=${1:?usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...}
@@ -122,8 +126,32 @@ fill() {
     [[ -n $rust ]] || die 'no channel in rust-toolchain.toml for {rust}'
     tag=${tag//\{rust\}/$rust}
   fi
+  if [[ $tag == *'{fingerprint}'* ]]; then
+    local fingerprint
+    fingerprint=$(cat "$out/fingerprint" 2>/dev/null) || die "{fingerprint} needs $out/fingerprint"
+    [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || die "not a fingerprint: $fingerprint"
+    tag=${tag//\{fingerprint\}/$fingerprint}
+  fi
   printf '%s' "$tag"
 }
+# A tag written `once:TAG` never moves: where TAG exists already, nothing is published and the
+# receipt names the image TAG holds. The RPM snapshot is published once per fingerprint, and a
+# rebuild of the same package set would otherwise replace what earlier OS builds verified.
+tags=()
+for tag; do
+  if [[ $tag == once:* ]]; then
+    tag=$(fill "${tag#once:}")
+    if skopeo inspect --raw --authfile "$auth" "$(target "$tag")" > "$scratch/held-manifest" 2>/dev/null; then
+      held=sha256:$(sha256sum < "$scratch/held-manifest" | cut -d' ' -f1)
+      printf '{"schemaVersion":3,"repository":"%s","digest":"%s","image":"%s@%s","tags":["%s"],"sourceRevision":"%s","reference":"%s","signed":false,"existing":true}\n' \
+        "$repository" "$held" "$repository" "$held" "$tag" "$T_COMMIT" "$T_REF" > "$out/receipt.json"
+      printf '%s:%s is published already, as %s@%s; publishing nothing\n' "$repository" "$tag" "$repository" "$held"
+      exit 0
+    fi
+  fi
+  tags+=("$tag")
+done
+set -- "${tags[@]}"
 first=$(fill "$1")
 copy "oci-archive:$out/image.oci.tar" "$(target "$first")"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
@@ -148,6 +176,27 @@ elif [[ -s $out/signature ]]; then
   else
     cosign attach signature --payload "$out/payload.json" --signature "$out/signature" "$repository@$digest"
     cosign verify --insecure-ignore-tlog=true --key "$verify_key" "$repository@$digest" >/dev/null
+  fi
+fi
+if [[ -s $out/attestation.json ]]; then
+  # The provenance oci-attest.sh signed: its statement must be about this image, and it is
+  # attached so `cosign verify-attestation` finds it on the published digest.
+  [[ -s $out/signature ]] || die 'an attestation is published only with its signature'
+  use_cosign
+  statement=$(sed -n 's/.*"payload":"\([A-Za-z0-9+\/=]*\)".*/\1/p' "$out/attestation.json" | base64 -d)
+  [[ $statement == *"\"sha256\":\"${digest#sha256:}\""* && $statement == *"\"expectedReleaseDigest\":\"$digest\""* ]] \
+    || die 'the attestation is not about this image'
+  if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    key=$repo_root/keys/cosign.pub
+    [[ -s $out/dry-run.pub ]] && key=$out/dry-run.pub
+    cosign verify-blob-attestation --insecure-ignore-tlog=true --check-claims=false --key "$key" \
+      --type slsaprovenance1 --signature "$out/attestation.json"
+  else
+    cosign attach attestation --attestation "$out/attestation.json" "$repository@$digest"
+    tlog=()
+    [[ ${TILO_SIGN_TLOG:-1} == 0 ]] && tlog=(--insecure-ignore-tlog=true)
+    cosign verify-attestation --key "$repo_root/keys/cosign.pub" --type slsaprovenance1 "${tlog[@]}" \
+      "$repository@$digest" >/dev/null
   fi
 fi
 tags="\"$first\""

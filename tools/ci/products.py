@@ -9,7 +9,9 @@ architecture where it is built natively (docs/publishing-on-t.md, "Products"):
   image-<name>          joins the architectures into one image index (`index = true`)
   <release_build.name>  derives the image a release publishes from the build's, on the release
                         references only, no secrets (`release_build`)
-  sign-<name>           signs the digest the build produced, on the release references only
+  provenance-<name>     writes the SLSA provenance predicate of each published image (optional)
+  sign-<name>           signs the digest the build produced, on the release references only,
+                        and with a provenance check its predicate as an attestation
   publish-<name>        pushes it: development tags from main, the signed release from stable
                         or release tags, in one check whose signature is an optional need
 
@@ -41,7 +43,7 @@ CREDENTIAL_REQUIRES = ["arch=any"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out", "dispatch", "dev_signed", "release_build", "children"}
+                "dir", "out", "dispatch", "dev_signed", "release_build", "children", "provenance"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -261,6 +263,8 @@ class Product:
             }))
         if self.release_build:
             out.append(check(self.derive_release()))
+        if "provenance" in self.data:
+            out.append(check(self.provenance()))
         # A product with no tags is built and tested only (its publication isn't on t yet).
         if self.release or self.data.get("dev_signed"):
             out.append(check(self.sign()))
@@ -336,9 +340,39 @@ class Product:
         return result
 
     @property
+    def attested(self) -> list[str]:
+        """The directories of the images whose provenance is attested: the index, or each image."""
+        return [f"{self.dir}/index"] if self.index else [self.out(arch) for arch in self.arches]
+
+    @property
     def builds(self) -> list[str]:
         """The checks whose outputs the trusted half reads."""
         return [*self.last, *([self.build_name(a) for a in self.arches] if self.children else [])]
+
+    def provenance(self) -> dict[str, Any]:
+        """The check writing <dir>/provenance.json for each published image: a SLSA predicate
+        naming the image's digest (`expectedReleaseDigest`) and the commit as `{commit}`, which
+        the signing check fills in. It reads only the builds' outputs and the tree."""
+        spec = fill(self.data["provenance"], self.values(self.arches[0]))
+        if not self.release:
+            raise ProductError(f"{self.name}: provenance without release tags")
+        # Its consumers verify the attestation as they verify the signature, with a log entry.
+        if not self.data.get("tlog"):
+            raise ProductError(f"{self.name}: provenance is entered in the transparency log, so needs tlog")
+        if set(spec) - {"run", "inputs", "image", "outputs"}:
+            raise ProductError(f"{self.name}: provenance takes run, inputs, outputs and image")
+        fields = {
+            "name": f"provenance-{self.name}",
+            "run": spec["run"],
+            "inputs": spec.get("inputs", []),
+            "needs": self.builds,
+            "outputs": [*(f"{d}/provenance.json" for d in self.attested), *spec.get("outputs", [])],
+            "requires": ["arch=any"],
+            "default": False,
+        }
+        if spec.get("image"):
+            fields["image"] = spec["image"]
+        return fields
 
     def sign(self) -> dict[str, Any]:
         # `dev_signed`: a product that publishes development candidates only signs them with the
@@ -360,13 +394,20 @@ class Product:
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
-        lines = [f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in signed]
+        attest = "provenance" in self.data
+        lines = []
+        for d, _ in signed:
+            lines.append(f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}")
+            if attest and d in self.attested:
+                lines.append(f"bash {PUBLISH}/oci-attest.sh {self.repository} {d}")
+                outputs.append(f"{d}/attestation.json")
         return {
             "name": f"sign-{self.name}",
             "image": self.defaults["skopeo"],
             "run": "\n".join(lines) + ("\n" if len(lines) > 1 else ""),
-            "inputs": SIGN_INPUTS,
-            "needs": [*([self.release_build["name"]] if self.release_build else self.builds), *self.gates],
+            "inputs": [*SIGN_INPUTS, *([f"{PUBLISH}/oci-attest.sh"] if attest else [])],
+            "needs": [*([self.release_build["name"]] if self.release_build else self.builds),
+                      *([f"provenance-{self.name}"] if attest else []), *self.gates],
             "outputs": outputs,
             "id_token": ["tilo-dev-signing" if dev else "sts.amazonaws.com"],
             "env": env,

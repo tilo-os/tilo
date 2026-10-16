@@ -252,11 +252,25 @@ cost = "minutes"
 family = "os-base"
 name = "rpms"
 about = """
-The frozen RPM snapshot's build half (tools/ci/publish/rpms-build.sh): every package the OS
-Containerfiles name, resolved, signature-checked and laid out as a repository image, natively
-per architecture. build-rpms.yml still signs and publishes the snapshot."""
+The frozen RPM snapshot (tools/ci/publish/rpms-build.sh): every package the OS Containerfiles
+name, resolved, signature-checked and laid out as a repository image, natively per
+architecture, joined into one index. Stable signs the index and both images, attests the
+index's SLSA provenance (frozen-rpm-index/v1: both package sets and the base, which
+os/dev/resolve-rpm-snapshot.sh and the OS build verify), both with a transparency log entry,
+and publishes it as `set-<fingerprint>` once: a fingerprint already published is never moved.
+Main publishes nothing, since the snapshot is signed; until the cutover build-rpms.yml
+publishes main's."""
 repository = "registry.tilo.so/tilo/rpms"
 arches = ["x86_64", "aarch64"]
+index = true
+children = true
+tlog = true
+release = ["once:set-{fingerprint}"]
+
+[product.provenance]
+run = "bash tools/ci/publish/rpms-provenance.sh {dir}"
+inputs = ["os/dev/rpm-snapshot-fingerprint.py", "os/dev/derive-rpm-package-set.py", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/layer-rpm-snapshot.py", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["{dir}/index/fingerprint", "{dir}/x86_64/fingerprint", "{dir}/aarch64/fingerprint"]
 
 [product.build]
 run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
@@ -297,13 +311,32 @@ pointers = { kernel-buildroot = "{dir}/pins.env" }
 family = "os-base"
 name = "kernel"
 about = """
-The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
-its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
-micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
-compiles the whole kernel. build-kernel.yml still signs, publishes and pins it."""
+The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
+natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
+checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
+(kernel-acceptance-<arch>). Stable
+signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
+commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
+`kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+nothing, since the OS build verifies the kernel's signature; until the cutover build-kernel.yml
+publishes and pins main's. No compiler cache reaches checks yet, so every build compiles the
+whole kernel."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
+release = ["sha-{commit}-{arch}"]
+tlog = true
+gates = ["kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
+after_publish = "bash tools/ci/publish/kernel.sh pins {dir}"
+
+[product.provenance]
+run = "bash tools/ci/publish/kernel.sh provenance {dir}"
+inputs = ["os/kernel-buildroot-snapshot.env"]
+
+[product.publish]
+inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c"]
+outputs = ["{dir}/pins.env"]
+pointers = { kernel = "{dir}/pins.env" }
 
 [product.build]
 run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
