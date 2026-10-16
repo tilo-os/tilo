@@ -61,7 +61,13 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(target.resource, target.action))
             .ok_or("the task action is no longer published in this workspace")?;
-        let arguments = match target.argument {
+        // An agent sends its arguments in the wire form every caller uses,
+        // JSON behind `ARGUMENTS_JSON_PREFIX`; a bare object is read the same.
+        let prefixed = target
+            .argument
+            .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
+        let json = prefixed.or(target.argument);
+        let arguments = match json {
             Some(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
                 .map_err(|_| "task action arguments are not a JSON object")?,
             None => serde_json::Map::new(),
@@ -78,12 +84,13 @@ impl CapnpBrokerState {
             .and_then(|control: &WorkspaceTaskControl| control.confirmation.clone())
             .filter(|held| held.id == id && held.run_epoch == binding.epoch);
         if let Some(held) = held {
-            return self.held_answer(&run, held, &arguments).await;
+            return self
+                .held_answer(&run, held, &arguments, prefixed.is_some())
+                .await;
         }
         let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
-        let contract_argument = target
-            .argument
-            .map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
+        let contract_argument =
+            json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
         let consequential = !matches!(
             descriptor
                 .contract
@@ -132,18 +139,26 @@ impl CapnpBrokerState {
     }
 
     /// What the person's answer `held` lets the child with `arguments` do.
+    /// The confirmed arguments keep the form the agent sent them in
+    /// (`prefixed` behind `ARGUMENTS_JSON_PREFIX`, else a bare object).
     async fn held_answer(
         &self,
         run: &PendingTaskRun,
         held: WorkspaceTaskConfirmation,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        prefixed: bool,
     ) -> Result<NativeGate, String> {
         match &held.state {
             WorkspaceTaskConfirmationState::Waiting => Err(awaiting(&held.draft)),
             WorkspaceTaskConfirmationState::Confirmed { edits, .. } => {
                 let edited = held.draft.apply_edits(arguments, edits)?;
+                let edited = serde_json::Value::Object(edited).to_string();
                 Ok(NativeGate::Confirmed {
-                    argument: serde_json::Value::Object(edited).to_string(),
+                    argument: if prefixed {
+                        format!("{}{edited}", tilo_actions::ARGUMENTS_JSON_PREFIX)
+                    } else {
+                        edited
+                    },
                     confirmation: held.id,
                 })
             }

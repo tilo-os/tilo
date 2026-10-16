@@ -72,6 +72,22 @@ async fn append(
     invocation: u128,
     text: &str,
 ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+    append_as(
+        channel,
+        run,
+        invocation,
+        serde_json::json!({ "text": text }).to_string(),
+    )
+    .await
+}
+
+/// [`append`] with `argument` exactly as the agent sends it.
+async fn append_as(
+    channel: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    invocation: u128,
+    argument: String,
+) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
     let mut request = channel.invoke_task_action_request();
     let mut p = request.get();
     p.set_run_id(run.run_id);
@@ -79,7 +95,7 @@ async fn append(
     p.set_peer_id(200);
     p.set_resource("notes:release");
     p.set_action("append");
-    p.set_argument(serde_json::json!({ "text": text }).to_string());
+    p.set_argument(argument);
     p.set_has_argument(true);
     p.set_invocation(uuid::Uuid::from_u128(invocation).to_string());
     let response = request.send().promise.await?;
@@ -241,6 +257,61 @@ async fn a_declined_action_tells_the_agent_why_and_never_runs() {
             assert!(declined.contains("Wrong document"), "{declined}");
             assert!(nothing_delivered(&stream).await);
             assert!(held(&f).is_none(), "the agent was told");
+            drop(f);
+        })
+        .await;
+}
+
+/// Agents send arguments in the wire form every caller uses, JSON behind
+/// `ARGUMENTS_JSON_PREFIX`: it asks first as a bare object does, and what the
+/// person confirmed reaches the application in that same form.
+#[tokio::test(flavor = "current_thread")]
+async fn arguments_in_the_agents_wire_form_ask_first_and_run_as_confirmed() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = append_target(&f).await;
+            ask_first_for_notes(&f);
+            let wire = || {
+                format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({ "text": "Draft line" })
+                )
+            };
+            let waiting = append_as(&agent, &run, 9300, wire()).await.unwrap_err();
+            assert!(
+                waiting
+                    .to_string()
+                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+                "{waiting}"
+            );
+            let asked = held(&f).expect("the run is paused at the draft");
+            assert_eq!(asked.draft.fields[0].value.line(), "Draft line");
+            answer(
+                &f,
+                &asked.id,
+                WorkspaceTaskConfirmationAnswer::Confirm {
+                    edits: vec![tilo_actions::DraftEdit {
+                        path: vec!["text".into()],
+                        text: "Reviewed line".into(),
+                    }],
+                },
+            );
+            append_as(&agent, &run, 9300, wire()).await.unwrap();
+            let delivered = stream.read_request().send().promise.await.unwrap();
+            let wire = delivered.get().unwrap();
+            let argument = wire.get_argument().unwrap().to_str().unwrap();
+            let argument: serde_json::Value = serde_json::from_str(
+                argument
+                    .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                    .expect("the confirmed arguments keep the agent's form"),
+            )
+            .unwrap();
+            assert_eq!(argument["text"], "Reviewed line");
             drop(f);
         })
         .await;
