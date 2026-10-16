@@ -864,7 +864,9 @@ impl Session {
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
         // A question is answered in the reply: nothing is implied of it.
-        let request = run.instruction().to_lowercase();
+        // Only the person's own words imply anything: the selection quoted
+        // as context and earlier answers in the conversation do not.
+        let request = run.request().to_lowercase();
         let question = asks_question(&request);
         if !question
             && request.contains("chat")
