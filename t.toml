@@ -2522,7 +2522,6 @@ run = "bash tools/apps/t-release.sh sign x86_64 /target/apps-release/x86_64 /tar
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
 needs = ["apps-build-x86_64"]
 outputs = ["/target/apps-release/x86_64/signed/**"]
-git = true
 requires = ["arch=x86_64"]
 cost = "minutes"
 on = ["stable"]
@@ -2544,7 +2543,6 @@ run = "bash tools/apps/t-release.sh sign aarch64 /target/apps-release/aarch64 /t
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
 needs = ["apps-build-aarch64"]
 outputs = ["/target/apps-release/aarch64/signed/**"]
-git = true
 requires = ["arch=arm64"]
 cost = "minutes"
 on = ["stable"]
@@ -2557,7 +2555,6 @@ inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**
 needs = ["sign-apps-x86_64", "sign-apps-aarch64"]
 outputs = ["/target/apps-release/channel/channel.json"]
 pointers = { app-collection = "/target/apps-release/channel/channel.json" }
-git = true
 requires = ["arch=x86_64"]
 writable_sources = true
 cost = "minutes"
@@ -2569,7 +2566,6 @@ name = "submit-apps"
 run = "bash tools/apps/t-release.sh submit /target/apps-release/x86_64/signed /target/apps-release/aarch64/signed"
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
 needs = ["sign-apps-x86_64", "sign-apps-aarch64", "publish-apps"]
-git = true
 requires = ["arch=x86_64"]
 writable_sources = true
 cost = "minutes"

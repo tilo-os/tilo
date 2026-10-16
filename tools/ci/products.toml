@@ -457,8 +457,8 @@ run = "bash tools/apps/t-release.sh sign {arch} /target/apps-release/{arch} /tar
 needs = ["apps-build-{arch}"]
 outputs = ["/target/apps-release/{arch}/signed/**"]
 requires = ["{node}"]
-# The release sequence is the commit's time.
-git = true
+# The release sequence is the commit's time, read without Git (t-release.sh commit_epoch): on
+# x86_64 a micro-VM step has no room for a Git disk beside its needs' outputs.
 secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 on = ["stable"]
 cost = "minutes"
@@ -471,9 +471,8 @@ outputs = ["/target/apps-release/channel/channel.json"]
 # The collections an OS build takes its apps from, per reference: `stable:app-collection`.
 pointers = { app-collection = "/target/apps-release/channel/channel.json" }
 requires = ["arch=x86_64"]
-# Assembles the collections under release/ and dist/app-collections/, and reads the commit's time.
+# Assembles the collections under release/ and dist/app-collections/.
 writable_sources = true
-git = true
 secrets = ["REGISTRY_TOKEN"]
 on = ["stable"]
 cost = "minutes"
@@ -484,7 +483,6 @@ run = "bash tools/apps/t-release.sh submit /target/apps-release/x86_64/signed /t
 needs = ["sign-apps-x86_64", "sign-apps-aarch64", "publish-apps"]
 requires = ["arch=x86_64"]
 writable_sources = true
-git = true
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 on = ["stable"]
 cost = "minutes"
