@@ -38,8 +38,6 @@ use crate::placement::ComputeRequirements;
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
-pub const MAX_COMPUTE_ARGUMENTS: usize = 64;
-pub const MAX_COMPUTE_ARGUMENT_BYTES: usize = 16 * 1024;
 pub const MAX_COMPUTE_INPUTS: usize = 64;
 pub const MAX_COMPUTE_CPU_TIME_MS: u64 = 5 * 60 * 1_000;
 pub const MAX_COMPUTE_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
