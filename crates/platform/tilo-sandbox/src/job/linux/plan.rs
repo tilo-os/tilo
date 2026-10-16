@@ -99,6 +99,9 @@ pub struct Plan {
     pub ops: Vec<Op>,
     /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
     pub trees: Vec<OwnedFd>,
+    /// Writable host paths bound without an idmap (their filesystem can't take one): the job,
+    /// as a user of its own, may not be able to write their owner's files.
+    pub unmapped: Vec<PathBuf>,
     /// The job's ids in its own namespace, which the init takes on before
     /// it builds the root: with a block of host ids, the init starts as
     /// the worker's uid, which the job's namespace doesn't map.
@@ -192,6 +195,9 @@ struct Builder {
     /// With a block of host ids: the user namespace binds are idmapped
     /// with, and the trees made so far.
     userns: Option<OwnedFd>,
+    /// The job's own host uid and gid, with a block.
+    job_ids: Option<(u32, u32)>,
+    unmapped: Vec<PathBuf>,
     trees: Vec<OwnedFd>,
     /// Overlays mounted so far, for their layers' staging directories.
     overlays: usize,
@@ -246,28 +252,34 @@ impl Builder {
         flags: libc::c_ulong,
         idmap: Idmap,
     ) -> Result<(), SpawnError> {
-        if let Some(userns) = &self.userns {
-            match super::idmap::tree(real, userns.as_fd()) {
-                Ok(tree) => {
-                    self.ops.push(Op::Attach {
-                        tree: self.trees.len(),
-                        dst,
-                    });
-                    self.trees.push(tree);
-                    return Ok(());
+        let socket = std::fs::metadata(real).is_ok_and(|m| {
+            use std::os::unix::fs::FileTypeExt as _;
+            m.file_type().is_socket()
+        });
+        if let (Some(userns), Some((uid, gid))) = (&self.userns, self.job_ids) {
+            if socket {
+                // A socket the caller made for this job (a VM step's passt): it becomes the
+                // job's, which connecting to it takes, wherever it lives. Never idmapped: it
+                // often sits on a filesystem that can't be (a container's /tmp).
+                if std::os::unix::fs::chown(real, Some(uid), Some(gid)).is_err()
+                    && idmap == Idmap::Required
+                {
+                    self.unmapped.push(real.to_path_buf());
                 }
-                Err(e) if idmap == Idmap::Required => {
-                    return Err(SpawnError::Setup(format!(
-                        "idmapping {} for the job's own ids: {e}{}",
-                        real.display(),
-                        if e.raw_os_error() == Some(libc::EINVAL) {
-                            " (its filesystem can't be idmapped)"
-                        } else {
-                            ""
-                        }
-                    )));
+            } else {
+                match super::idmap::tree(real, userns.as_fd()) {
+                    Ok(tree) => {
+                        self.ops.push(Op::Attach {
+                            tree: self.trees.len(),
+                            dst,
+                        });
+                        self.trees.push(tree);
+                        return Ok(());
+                    }
+                    // Bound as it is: the job still starts, and the caller says which.
+                    Err(_) if idmap == Idmap::Required => self.unmapped.push(real.to_path_buf()),
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
         }
         self.ops.push(Op::Mount {
@@ -642,7 +654,7 @@ fn stage_dir() -> &'static str {
 
 /// What [`filesystem`] makes: the operations, the Landlock rules and the
 /// idmapped trees the operations attach.
-type Filesystem = (Vec<Op>, Vec<Rule>, Vec<OwnedFd>);
+type Filesystem = (Vec<Op>, Vec<Rule>, Vec<OwnedFd>, Vec<PathBuf>);
 
 fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     let userns = match spec.ids.block {
@@ -662,6 +674,13 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
             access: sys::LL_READ,
         }],
         userns,
+        job_ids: spec.ids.block.and_then(|b| {
+            Some((
+                b.uid.checked_add(spec.ids.inside_uid)?,
+                b.gid.checked_add(spec.ids.inside_gid)?,
+            ))
+        }),
+        unmapped: Vec::new(),
         trees: Vec::new(),
         overlays: 0,
     };
@@ -676,7 +695,7 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
     if b.root_writable {
         b.attr(Path::new("/"), sys::MOUNT_ATTR_RDONLY, false)?;
     }
-    Ok((b.ops, b.rules, b.trees))
+    Ok((b.ops, b.rules, b.trees, b.unmapped))
 }
 
 fn candidates(spec: &JobSpec) -> Result<Vec<CString>, SpawnError> {
@@ -804,7 +823,7 @@ impl Plan {
             }
             None => None,
         };
-        let (ops, rules, trees) = filesystem(spec)?;
+        let (ops, rules, trees, unmapped) = filesystem(spec)?;
         let stage = stage_dir();
         let (arg_area, env_area) = areas();
         let cap_last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
@@ -817,6 +836,7 @@ impl Plan {
             stage_new: cstr(NEW.trim_start_matches('/').as_bytes(), NEW)?,
             ops,
             trees,
+            unmapped,
             become_ids,
             new_root: cstr(NEW.as_bytes(), NEW)?,
             hostname: cstr(spec.hostname.as_bytes(), "the hostname")?,

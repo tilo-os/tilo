@@ -237,9 +237,10 @@ impl IdMap {
 /// the job's own (`inside_uid`/`inside_gid`) and what the job creates is
 /// owned by `outside_uid`/`outside_gid` on the host, so the next job, with
 /// another block, finds them as its own too. Other owners read as `nobody`,
-/// as without a block. A writable path whose filesystem can't be idmapped
-/// fails the job; a read-only one (or a device) is bound as it is, its
-/// owners read as `nobody`.
+/// as without a block. A path whose filesystem can't be idmapped is bound as
+/// it is, its owners reading as `nobody`; a writable one is named by
+/// `Job::unmapped`. A socket is never idmapped: it becomes the job's user's
+/// (the caller makes it for this job), as connecting to it takes.
 ///
 /// Needs `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_ADMIN` in the initial user
 /// namespace (a root worker) and Linux 5.12 (`mount_setattr` with

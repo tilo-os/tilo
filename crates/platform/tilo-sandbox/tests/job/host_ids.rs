@@ -197,3 +197,59 @@ fn a_job_with_a_block_opens_its_output_pipe_by_path() {
         "{out}"
     );
 }
+
+#[test]
+fn a_job_with_a_block_connects_to_a_socket_made_for_it() {
+    needs_root!();
+    if !Path::new("/usr/bin/python3").exists() {
+        eprintln!("skipped: no python3 to connect with");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    // As passt makes its socket: by root, mode 0755 under the umask, so only its owner may
+    // connect.
+    let sock = dir.path().join("sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let accept = std::thread::spawn(move || {
+        use std::io::Write as _;
+        let (mut c, _) = listener.accept().unwrap();
+        c.write_all(b"hello\n").unwrap();
+    });
+    let (status, out) = run(|s| {
+        with_block(s);
+        s.mount(Mount::read_write(&sock, "/run/sock"));
+        shell(
+            s,
+            "python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/sock\"); print(s.recv(6).decode(), end=\"\")'",
+        );
+    });
+    accept.join().unwrap();
+    assert!(status.success() && out.contains("hello"), "{out}");
+}
+
+#[test]
+fn a_writable_path_that_cannot_be_idmapped_is_bound_and_named() {
+    needs_root!();
+    // devtmpfs takes no idmapped mounts.
+    let dir = Path::new("/dev").join(format!("job-ids-test-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("theirs"), "theirs\n").unwrap();
+    let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/cat", "/d/theirs"]);
+    with_block(&mut spec);
+    spec.mount(Mount::read_write(&dir, "/d"));
+    let (mut out_r, out_w) = pipe();
+    let started = Launch::new(&spec).stdout(out_w).spawn();
+    let result = started.map(|mut job| {
+        let unmapped = job.unmapped().to_vec();
+        let status = job.wait().unwrap();
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut out_r, &mut out).unwrap();
+        (unmapped, status, out)
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (unmapped, status, out) = result.expect("the job starts");
+    assert_eq!(unmapped, std::slice::from_ref(&dir));
+    assert!(status.success() && out == "theirs\n", "{out}");
+}
