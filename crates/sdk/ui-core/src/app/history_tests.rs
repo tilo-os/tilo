@@ -3798,13 +3798,14 @@ fn native_owned_committed_read_applies_over_an_unfinished_word() {
         .records
         .read_checked(&id, |doc| {
             assert_eq!(doc.pending_ops(), 0, "the word is a finished step");
-            doc.get_changes(&local_base)
+            doc.clone()
+                .get_changes(&local_base)
                 .into_iter()
                 .filter(|change| change.actor_id().to_bytes() != b"committed-peer")
                 .filter(|change| {
                     collab_types::ChangeClaim::of_change(
                         change.hash().0,
-                        change.message().map(String::as_str),
+                        change.message(),
                         Vec::new(),
                     )
                     .is_err()
