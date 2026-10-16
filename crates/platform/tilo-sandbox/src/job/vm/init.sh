@@ -145,6 +145,9 @@ ip link set lo up
 hostname "$T_HOSTNAME"
 grep -q localhost /etc/hosts 2>/dev/null || printf '127.0.0.1 localhost\n::1 localhost\n' >>/etc/hosts
 if [ "$T_NET" = 1 ]; then
+	# passt's MTU (Passt::start): the guest has no DHCP to learn it, and at 1500 an upload
+	# of tens of MiB through passt stalled for minutes.
+	ip link set eth0 mtu 65520 2>/dev/null || :
 	rm -f /etc/resolv.conf
 	echo "nameserver $T_DNS" >/etc/resolv.conf
 fi
