@@ -55,7 +55,7 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    release-relay.yml|release-registry-server.yml) continue ;;
+    release-relay.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
