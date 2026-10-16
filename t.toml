@@ -3435,8 +3435,9 @@ on = ["dispatch"]
 # The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
 # (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
 # resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
-# that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
-# by the digest it is published with, so the contracts the steps write name what is published.
+# that bundle alone, offline, into the RPMs and their contract; image-wine-paired merges the two
+# targets' RPMs into the pair the guest installs. Every image is an archive named by the digest
+# it is published with, so the contracts the steps write name what is published.
 [[check]]
 name = "wine-resolve-x86_64"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
@@ -3509,6 +3510,21 @@ outputs = ["/target/windows-compat/wine-source/**"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
+default = false
+
+[[check]]
+name = "image-wine-paired"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh pair /target/windows-compat/wine-paired"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-build-x86_64", "wine-build-i686"]
+outputs = ["/target/windows-compat/wine-paired/**"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "minutes"
+cpus = 2
+memory = "8G"
+timeout_secs = 3600
 default = false
 # END generated
 
