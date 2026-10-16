@@ -1,3 +1,7 @@
+//! A headless Wayland server for the sandbox tests: real clients connect to
+//! it over a socket, it relays their frames and windows as `WaylandEvent`s and
+//! takes `WaylandInput` to drive the seat.
+
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
     delegate_seat, delegate_shm, delegate_xdg_shell,
@@ -30,11 +34,11 @@ use smithay::{
         shell::{
             wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
             xdg::{
-                PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface,
-                XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
+                PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
             },
         },
-        shm::{ShmHandler, ShmState, with_buffer_contents},
+        shm::{ShmHandler, ShmState},
     },
 };
 use std::time::Instant;
@@ -45,25 +49,12 @@ pub enum WaylandEvent {
     Frame {
         surface_id: u32,
         app_id: String,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
     },
     NewWindow {
         surface_id: u32,
         app_id: String,
         suggested_width: Option<u32>,
         suggested_height: Option<u32>,
-    },
-    WindowGeometry {
-        surface_id: u32,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    },
-    WindowClosed {
-        surface_id: u32,
     },
 }
 
@@ -80,17 +71,10 @@ pub enum WaylandInput {
         button: u32,
         state: smithay::backend::input::ButtonState,
         surface_id: Option<u32>,
-        surface_width: f32,
-        surface_height: f32,
     },
     Key {
         key: u32,
         state: smithay::backend::input::KeyState,
-    },
-    Resize {
-        surface_id: u32,
-        width: u32,
-        height: u32,
     },
 }
 
@@ -103,7 +87,7 @@ pub struct WaylandServer {
     pub data_device_state: DataDeviceState,
     pub seat: Seat<Self>,
     pub space: Space<Window>,
-    pub output: Output,
+    pub _output: Output,
     pub start_time: Instant,
     pub serial_counter: u32,
     pub pointer_location: smithay::utils::Point<f64, smithay::utils::Logical>,
@@ -167,7 +151,7 @@ impl WaylandServer {
             data_device_state,
             seat,
             space: Space::default(),
-            output,
+            _output: output,
             start_time: Instant::now(),
             serial_counter: 0,
             pointer_location: (0.0, 0.0).into(),
@@ -202,14 +186,8 @@ impl WaylandServer {
                 button,
                 state,
                 surface_id,
-                ..
             } => self.handle_button_input(button, state, surface_id, time),
             WaylandInput::Key { key, state } => self.handle_key_input(key, state, time),
-            WaylandInput::Resize {
-                surface_id,
-                width,
-                height,
-            } => self.handle_resize_input(surface_id, width, height),
         }
     }
 
@@ -317,27 +295,6 @@ impl WaylandServer {
         });
     }
 
-    /// `WaylandInput::Resize` arm of [`Self::handle_input`], split out to
-    /// keep that dispatcher short. `width`/`height` come from the input
-    /// channel rather than the wire, but are still degraded (clamped) rather
-    /// than allowed to wrap into a negative configure size.
-    fn handle_resize_input(&self, surface_id: u32, width: u32, height: u32) {
-        if let Some(surface) = self.find_surface_by_id(surface_id)
-            && let Some(window) = self
-                .space
-                .elements()
-                .find(|w| w.wl_surface().as_deref() == Some(&surface))
-            && let Some(toplevel) = window.toplevel()
-        {
-            let w = i32::try_from(width).unwrap_or(i32::MAX);
-            let h = i32::try_from(height).unwrap_or(i32::MAX);
-            toplevel.with_pending_state(|state| {
-                state.size = Some((w, h).into());
-            });
-            toplevel.send_configure();
-        }
-    }
-
     fn find_surface_by_id(&self, target_id: u32) -> Option<WlSurface> {
         for window in self.space.elements() {
             if let Some(surface) = window.wl_surface()
@@ -406,40 +363,11 @@ impl CompositorHandler for WaylandServer {
         })
         .unwrap_or_else(|| "unknown".into());
 
-        with_states(surface, |states| {
-            let mut guard = states.cached_state.get::<SurfaceCachedState>();
-            if let Some(g) = guard.current().geometry {
-                let _ = tx.send(WaylandEvent::WindowGeometry {
-                    surface_id,
-                    x: g.loc.x,
-                    y: g.loc.y,
-                    width: g.size.w,
-                    height: g.size.h,
-                });
-            }
-        });
-
         let () = with_states(surface, |states| {
             let mut attrs = states.cached_state.get::<SurfaceAttributes>();
             let buffer = attrs.current().buffer.as_ref();
-            if let Some(smithay::wayland::compositor::BufferAssignment::NewBuffer(buffer)) = buffer
-            {
-                let app_id = app_id.clone();
-                let _ = with_buffer_contents(buffer, |ptr, len, data| {
-                    let mut pixels = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-                    for chunk in pixels.chunks_exact_mut(4) {
-                        chunk.swap(0, 2);
-                    }
-                    // The client declares its own SHM buffer dimensions; a negative
-                    // value degrades to 0 rather than sign-losing into a huge width.
-                    let _ = tx.send(WaylandEvent::Frame {
-                        surface_id,
-                        app_id,
-                        pixels,
-                        width: u32::try_from(data.width).unwrap_or(0),
-                        height: u32::try_from(data.height).unwrap_or(0),
-                    });
-                });
+            if let Some(smithay::wayland::compositor::BufferAssignment::NewBuffer(_)) = buffer {
+                let _ = tx.send(WaylandEvent::Frame { surface_id, app_id });
             }
         });
     }

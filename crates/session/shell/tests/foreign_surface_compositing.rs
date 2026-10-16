@@ -4,7 +4,6 @@
 //!
 //! ```text
 //!   tab_binding::adopt_toplevel        (what XdgShellHandler::new_toplevel calls)
-//!     → foreign::reconcile_foreign_tabs (what the native loop calls each tick)
 //!     → ChromeState::bump               (revision → strip resync)
 //!     → FrameBuilder::relayout          (splices the tab, publishes its rect)
 //!     → shell::to_ui_tile               (Foreign → ForeignSurfaceWidget)
@@ -126,7 +125,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         let surface_id = 0x5EED_0001;
         store().forget(surface_id);
 
-        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.client");
+        let mut fb = adopt_into_frame_builder(surface_id, "org.example.client");
         // Splice, pan and spawn fade must all finish before the published tab
         // rect is the one the client will be configured to.
         settle(&mut fb);
@@ -244,7 +243,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         let surface_id = 0x5EED_0007;
         store().forget(surface_id);
 
-        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.steady");
+        let mut fb = adopt_into_frame_builder(surface_id, "org.example.steady");
         settle(&mut fb);
         let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
 
@@ -562,26 +561,17 @@ fn create_fixture_tab_records(fb: &FrameBuilder) {
     }
 }
 
-/// A `FrameBuilder` whose rendered tree carries the foreign tab, reached
-/// the way the native compositor loop reaches it.
-fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, WorkspaceTree) {
-    let mut protocol_tree = WorkspaceTree::bootstrap_demo();
-    tab_binding::adopt_toplevel(&mut protocol_tree, surface_id, Some(app_id.to_string()));
-
+/// A `FrameBuilder` whose tree carries the foreign tab, adopted the way the
+/// compositor adopts a new toplevel.
+fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> FrameBuilder {
     let mut fb = FrameBuilder::new((W, H));
-    let mirrored = {
+    {
         let chrome = fb.chrome();
-        let mut rendered = chrome.tree_mut();
-        foreign::reconcile_foreign_tabs(&protocol_tree, &mut rendered)
-    };
-    assert!(
-        mirrored,
-        "the protocol-side adoption must mirror into the rendered tree"
-    );
-    // Focus the adopted client's group. `adopt_toplevel` does this on the
-    // protocol side, but here tree and focus are separate
-    // (`reconcile_foreign_tabs` mirrors tabs, not the focus pointer) — and
-    // without focus the scroll reconcile never pans the group into view.
+        let mut tree = chrome.tree_mut();
+        tab_binding::adopt_toplevel(&mut tree, surface_id, Some(app_id.to_string()));
+    }
+    // Focus the adopted client's group: without focus the scroll reconcile
+    // never pans the group into view.
     {
         let chrome = fb.chrome();
         let mut rendered = chrome.tree_mut();
@@ -601,13 +591,12 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
                 })
             })
             .map(|(strip_id, g)| (strip_id, g.id));
-        let (strip_id, group_id) =
-            focus.expect("the mirrored tree must hold the adopted client's group");
+        let (strip_id, group_id) = focus.expect("the tree must hold the adopted client's group");
         rendered.desktop.set_active_group(strip_id, group_id);
     }
     create_fixture_tab_records(&fb);
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
-    (fb, protocol_tree)
+    fb
 }
 
 /// The tile rect from the production accessor, cross-checked against the
@@ -638,7 +627,7 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let surface_id = 0x5EED_0002;
         store().forget(surface_id);
 
-        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.sized");
+        let mut fb = adopt_into_frame_builder(surface_id, "org.example.sized");
         let _ = frame(&mut fb);
 
         let first = store()
@@ -690,7 +679,7 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let surface_id = 0x5EED_0003;
         store().forget(surface_id);
 
-        let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.lifecycle");
+        let mut fb = adopt_into_frame_builder(surface_id, "org.example.lifecycle");
         settle(&mut fb);
         let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
         let rgba = solid(bw, bh, (0x22, 0xC0, 0x40));
@@ -735,23 +724,19 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         let surface_id = 0x5EED_0004;
         store().forget(surface_id);
 
-        let (mut fb, mut protocol) = adopt_into_frame_builder(surface_id, "org.example.transient");
+        let mut fb = adopt_into_frame_builder(surface_id, "org.example.transient");
         let _ = frame(&mut fb);
         assert!(
             fb.foreign_surface_rect(surface_id).is_some(),
             "the adopted client has a live tile"
         );
 
-        assert!(tab_binding::close_tab_for_destroyed_surface(
-            &mut protocol,
-            surface_id
-        ));
-        let mirrored = {
+        let closed = {
             let chrome = fb.chrome();
-            let mut rendered = chrome.tree_mut();
-            foreign::reconcile_foreign_tabs(&protocol, &mut rendered)
+            let mut tree = chrome.tree_mut();
+            tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
         };
-        assert!(mirrored, "the teardown must mirror across");
+        assert!(closed, "the teardown must close the tab");
         fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
         let _ = frame(&mut fb);
 

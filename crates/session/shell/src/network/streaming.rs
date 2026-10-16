@@ -9,11 +9,9 @@
 //! `InputEvent` is the wire vocabulary peer→owner input travels in; the
 //! owner drops it if read-only, else hands it to a [`RemoteInputSink`].
 
-use crate::network::encoder::{EncodeError, VideoEncoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Instant;
 
 /// Damage-aware encode throttle, living in the standalone
 /// [`tilo_callstream`] crate so surface streaming and the chat call app
@@ -246,51 +244,6 @@ impl ShareRegistry {
     }
 }
 
-/// Outcome of a single `encode_tick` call; `Encoded` carries every access
-/// unit the encoder finished, the rest are distinct no-bytes reasons for
-/// metrics (skipped vs. throttled).
-#[derive(Debug)]
-pub enum EncodeTickOutcome {
-    /// A frame was encoded; carries the finished units in order (possibly
-    /// none yet, or an earlier frame's late unit with this one).
-    Encoded(Vec<media::EncodedUnit>),
-    /// The throttle rejected this tick (last encode was less than the configured interval ago); no frame fetched.
-    Throttled,
-    /// The throttle was open but no new frame is staged — no commit since the previous take, or readback failed and emptied the tracker slot.
-    NoFrame,
-    /// The encoder rejected the frame (typically a buffer-size mismatch after a dimension change before reconfiguration).
-    EncodeFailed(EncodeError),
-}
-
-/// Drive one iteration of the owner-side damage-aware encode loop.
-/// `fetch_frame` bottoms out at
-/// [`crate::network::surface_tracker::SurfaceTracker::take_latest`] in
-/// production, a synthesised RGBA frame in tests. Not mutated until an
-/// encode succeeds, so callers swallowing [`EncodeTickOutcome::EncodeFailed`] don't poison the timestamp.
-pub fn encode_tick<F>(
-    encoder: &mut VideoEncoder,
-    throttle: &mut StreamingThrottle,
-    now: Instant,
-    fetch_frame: F,
-) -> EncodeTickOutcome
-where
-    F: FnOnce() -> Option<Vec<u8>>,
-{
-    if !throttle.should_encode(now) {
-        return EncodeTickOutcome::Throttled;
-    }
-    let Some(rgba) = fetch_frame() else {
-        return EncodeTickOutcome::NoFrame;
-    };
-    match encoder.encode(&rgba) {
-        Ok(units) => {
-            throttle.mark_encoded(now);
-            EncodeTickOutcome::Encoded(units)
-        }
-        Err(err) => EncodeTickOutcome::EncodeFailed(err),
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -316,7 +269,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
-    use std::time::Duration;
 
     /// Put `surface` on screen, focused, unobstructed, so the firewall's checks have something to answer from.
     #[cfg(target_os = "linux")]
@@ -393,12 +345,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn stream_payloads_round_trip_and_encoding_is_throttled() {
-        // Phase `input_event_serde_round_trips`.
+    fn input_events_round_trip_through_serde() {
         {
             let events = [
                 InputEvent::PointerMotion { x: 1.5, y: -3.25 },
@@ -423,135 +370,6 @@ mod tests {
                 let round: InputEvent = serde_json::from_slice(&bytes).expect("deserialize");
                 assert_eq!(round, ev);
             }
-        }
-        // Phase `shared_foreign_surface_round_trips_rgba`.
-        // Wires the production egress path through a
-        // [`crate::network::surface_tracker::SurfaceTracker`]: a deposited
-        // frame is drained via `take_latest`, H.264-decoded, and
-        // PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
-        // `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
-        {
-            use crate::network::surface_tracker::SurfaceTracker;
-            use media::StreamCodec;
-            use tilo_callstream::surface_decoder::VideoDecoder;
-
-            const W: u32 = 64;
-            const H: u32 = 64;
-            const SURFACE: SurfaceId = 314;
-
-            // Deterministic input — soft gradient so H.264 has a fair shot at the 35 dB floor.
-            let mut input = Vec::with_capacity((W * H * 4) as usize);
-            for y in 0..H {
-                for x in 0..W {
-                    input
-                        .push(u8::try_from(x.saturating_mul(255).saturating_div(W)).unwrap_or(255));
-                    input
-                        .push(u8::try_from(y.saturating_mul(255).saturating_div(H)).unwrap_or(255));
-                    input.push(0x80);
-                    input.push(0xFF);
-                }
-            }
-
-            // Inject the same way the compositor's commit handler would, minus the wayland plumbing.
-            let mut tracker = SurfaceTracker::new();
-            tracker.deposit_for_test(SURFACE, input.clone(), W, H);
-
-            // Production egress path — the streaming task wires exactly this shape.
-            // VP9, royalty-free software: no GPU and no Cisco binary needed.
-            let mut encoder = VideoEncoder::new(StreamCodec::Vp9, W, H, 30).expect("encoder");
-            let mut throttle = StreamingThrottle::new();
-            let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
-                tracker.take_latest(SURFACE).map(|frame| frame.rgba)
-            });
-            let units = match outcome {
-                EncodeTickOutcome::Encoded(units) => units,
-                other => panic!("expected Encoded, got {other:?}"),
-            };
-            let nalus = &units.first().expect("the first frame's unit").data;
-            assert!(!nalus.is_empty(), "encoder produced empty bitstream");
-
-            // Tracker slot was drained — a second tick must report NoFrame (no new commit since the take).
-            let outcome2 = encode_tick(
-                &mut encoder,
-                &mut throttle,
-                Instant::now() + Duration::from_millis(50),
-                || tracker.take_latest(SURFACE).map(|frame| frame.rgba),
-            );
-            assert!(
-                matches!(outcome2, EncodeTickOutcome::NoFrame),
-                "expected NoFrame, got {outcome2:?}"
-            );
-
-            // Decode + PSNR check against the same floor as the gradient test.
-            let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
-            let frame = decoder.decode(nalus).expect("decoder yields a frame");
-            assert_eq!(frame.width, W);
-            assert_eq!(frame.height, H);
-
-            let strip_alpha = |buf: &[u8]| -> Vec<u8> {
-                buf.chunks_exact(4)
-                    .flat_map(|c| [c[0], c[1], c[2]])
-                    .collect()
-            };
-            let orig_rgb = strip_alpha(&input);
-            let rgba = match &frame.pixels {
-                tilo_callstream::surface_decoder::DecodedPixels::Rgba8(b) => b,
-                other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
-                    panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
-                }
-            };
-            let decoded_rgb = strip_alpha(rgba);
-            // PSNR inlined so this test stays self-contained without re-exporting `encoder::tests::psnr`.
-            let mse: f64 = orig_rgb
-                .iter()
-                .zip(&decoded_rgb)
-                .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
-                .sum::<f64>()
-                / f64::from(u32::try_from(orig_rgb.len()).unwrap_or(u32::MAX));
-            let psnr = if mse == 0.0 {
-                f64::INFINITY
-            } else {
-                20.0 * 255.0_f64.log10() - 10.0 * mse.log10()
-            };
-            assert!(
-                psnr >= 35.0,
-                "shared-surface PSNR {psnr:.2} dB below 35 dB floor (v2 readback regression)"
-            );
-            eprintln!("shared-surface PSNR = {psnr:.3} dB");
-        }
-        // Phase `encode_tick_throttled_when_within_interval`.
-        {
-            use crate::network::surface_tracker::SurfaceTracker;
-
-            const W: u32 = 32;
-            const H: u32 = 32;
-            const SURFACE: SurfaceId = 1;
-            let frame = vec![0u8; (W * H * 4) as usize];
-
-            let mut tracker = SurfaceTracker::new();
-            tracker.deposit_for_test(SURFACE, frame.clone(), W, H);
-
-            let mut encoder =
-                VideoEncoder::new(media::StreamCodec::Vp9, W, H, 30).expect("encoder");
-            let mut throttle = StreamingThrottle::new();
-            let t0 = Instant::now();
-
-            let r1 = encode_tick(&mut encoder, &mut throttle, t0, || {
-                tracker.take_latest(SURFACE).map(|f| f.rgba)
-            });
-            assert!(matches!(r1, EncodeTickOutcome::Encoded(_)));
-
-            // Re-deposit immediately — a second tick at t0+1ms must not drain the tracker; the throttle short-circuits before `fetch_frame` runs.
-            tracker.deposit_for_test(SURFACE, frame, W, H);
-            let r2 = encode_tick(
-                &mut encoder,
-                &mut throttle,
-                t0 + Duration::from_millis(1),
-                || tracker.take_latest(SURFACE).map(|f| f.rgba),
-            );
-            assert!(matches!(r2, EncodeTickOutcome::Throttled));
-            // Tracker slot is still full — the throttle blocked `take_latest` from running.
-            assert!(!tracker.is_empty_for(SURFACE));
         }
     }
 

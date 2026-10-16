@@ -33,14 +33,11 @@
 //! `reaches_confined_apps` flag describes *direct* reachability only and must
 //! not be confused with the frontend's document export step.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::PortalCaller;
 use crate::shell::state::FsMode;
-
-/// Where the store appears inside a sandbox.
-pub const SANDBOX_DOC_DIR: &str = "/run/tilo/documents";
 
 /// The projected workspace tree — not part of the store, named here because the picker's default scope reaches it.
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
@@ -153,54 +150,10 @@ impl DocumentStore for HostPathStore {
     }
 }
 
-/// The per-app subdirectory name inside the store root.
-///
-/// Keyed by workspace and app, matching how the launcher partitions an
-/// app's writable directory by room — two rooms are two directories, and a document published in one isn't nameable from the other.
-pub fn caller_slug(caller: &PortalCaller) -> String {
-    format!(
-        "{}/{}",
-        caller.workspace_id.0,
-        sanitise_component(&caller.app_id)
-    )
-}
-
-/// An app id is untrusted input, so it may not become more than one path component.
-fn sanitise_component(raw: &str) -> String {
-    let mapped: String = raw
-        .trim()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if mapped.is_empty() || mapped.chars().all(|c| c == '.') {
-        return "unknown".to_string();
-    }
-    mapped
-}
-
-/// The file name a published document keeps.
-///
-/// The app sees the name the user picked, so "Open" then "Save"
-/// round-trips a sensible default filename. A path with no final
-/// component falls back to a fixed name rather than an empty one.
-pub fn doc_file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "document".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceId;
-    use std::path::Component;
 
     fn caller() -> PortalCaller {
         PortalCaller::new(WorkspaceId(7), "so.tilo.notes")
@@ -238,50 +191,6 @@ mod tests {
             for (got, want) in out.iter().zip(inputs.iter()) {
                 assert_eq!(&got.host_path, want);
             }
-        }
-        // Phase `a_published_document_keeps_the_name_the_user_picked`.
-        assert_eq!(doc_file_name(Path::new("/home/q/Report.odt")), "Report.odt");
-        assert_eq!(doc_file_name(Path::new("/")), "document");
-    }
-
-    #[test]
-    fn caller_slug_is_a_confined_two_component_path() {
-        // Phase `a_caller_slug_is_two_components_and_cannot_escape`.
-        for hostile in [
-            "../../etc/passwd",
-            "..",
-            ".",
-            "/etc/shadow",
-            "a/../../b",
-            "..\\..\\windows",
-        ] {
-            let c = PortalCaller::new(WorkspaceId(3), hostile);
-            let slug = caller_slug(&c);
-            let components: Vec<_> = Path::new(&slug).components().collect();
-            assert_eq!(
-                components.len(),
-                2,
-                "an app id must not add path components: {hostile:?} -> {slug}"
-            );
-            // The property that matters is that no *component* is a traversal, not
-            // that the string lacks the substring — a file legitimately named `.._.._etc_passwd` is one directory and escapes nothing.
-            assert!(
-                components.iter().all(|c| matches!(c, Component::Normal(_))),
-                "every component must be an ordinary name: {hostile:?} -> {slug} \
-                 ({components:?})"
-            );
-            // The composed path must also stay under the root it's joined to — what the components check is a proxy for.
-            let root = Path::new(SANDBOX_DOC_DIR);
-            assert!(
-                root.join(&slug).starts_with(root),
-                "{hostile:?} escaped the store root: {slug}"
-            );
-        }
-        // Phase `an_empty_app_id_still_yields_a_usable_component`.
-        {
-            let c = PortalCaller::new(WorkspaceId(1), "");
-            let slug = caller_slug(&c);
-            assert!(slug.ends_with("/unknown"), "{slug}");
         }
     }
 }
