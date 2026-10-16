@@ -1,0 +1,4 @@
+# The release rehearsal image (tools/ci/products.toml, release-rehearsal): one small file and
+# nothing to run, so rehearsing a release signs and publishes something no one deploys.
+FROM scratch
+COPY README /README
