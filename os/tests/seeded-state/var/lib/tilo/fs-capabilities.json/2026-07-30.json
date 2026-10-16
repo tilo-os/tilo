@@ -1,0 +1,11 @@
+[
+  {
+    "subject": { "Principal": { "Person": "local" } },
+    "scope": { "FsPath": "/" },
+    "effect": "Grant",
+    "verb": "Write",
+    "id": "local-session-workspace",
+    "expiry": "Never",
+    "granted_by": null
+  }
+]
