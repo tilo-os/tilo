@@ -1,0 +1,11 @@
+# Images t's checks run in that come from elsewhere, mirrored into registry.tilo.so because
+# upstream deletes the digests a pin names (quay.io rebuilds its version tags and collects the
+# manifests they replace). Checks pin the mirror (`image = "<mirror>@<digest>"`); the
+# mirror-images check copies each digest across, with digests preserved, while upstream still
+# serves it. To move one forward: copy the new digest here and into the pins, in one commit.
+#
+# mirror	upstream tag	digest
+registry.tilo.so/tilo/buildah	quay.io/buildah/stable:v1.43.4	sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c
+registry.tilo.so/tilo/skopeo	quay.io/skopeo/stable:v1.22.3	sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0
+registry.tilo.so/tilo/bun	docker.io/oven/bun:1.4.2-alpine	sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f
+registry.tilo.so/tilo/nginx-unprivileged	docker.io/nginxinc/nginx-unprivileged:1.29.8-alpine	sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
