@@ -1285,6 +1285,37 @@ impl ChromeState {
         self.fullscreen_presentation
     }
 
+    /// Whether a presented fullscreen window covers `display`, so that
+    /// display's chrome (its top bar and workspace switcher) steps aside.
+    /// `None` names the primary display, which carries the full top bar
+    /// and the wheel. A fullscreen window owns its own output only: across
+    /// several displays every other one keeps its chrome.
+    pub fn fullscreen_covers(&self, display: Option<u32>) -> bool {
+        self.fullscreen_group()
+            .filter(|_| self.is_fullscreen())
+            .is_some_and(|group| self.group_shown_on(group, display))
+    }
+
+    /// Whether `group` is shown on `display` (`None`: the primary). On a
+    /// desktop with one display every group is, as is a group whose
+    /// display the partition cannot name.
+    pub(crate) fn group_shown_on(&self, group: u64, display: Option<u32>) -> bool {
+        let facts = |partition: &crate::shell::state::OutputPartition| {
+            (
+                partition.displays.len(),
+                partition.primary(),
+                partition.display_of(group),
+            )
+        };
+        let (displays, primary, owner) = facts(&self.tree().desktop.outputs);
+        if displays < 2 {
+            return true;
+        }
+        display
+            .or(primary)
+            .is_none_or(|display| owner.is_none_or(|owner| owner == display))
+    }
+
     pub(crate) fn set_fullscreen_presentation(&mut self, presented: bool) {
         self.fullscreen_presentation = presented;
     }

@@ -5311,13 +5311,20 @@ impl ShellOverlayHost {
     }
 
     /// Whether a client's fullscreen group is represented by a live retained
-    /// row, so it covers the output and the wheel with it. A maximize does
-    /// not: the wheel says where you are.
-    fn client_fullscreen_is_owned(&self) -> bool {
+    /// row on the primary display, so it covers that output and the wheel
+    /// with it. A fullscreen window on another display leaves the wheel
+    /// where it is, and a maximize does not cover it: the wheel says where
+    /// you are.
+    fn fullscreen_covers_wheel(&self) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
-        let group = chrome.borrow().fullscreen_group();
+        let group = {
+            let state = chrome.borrow();
+            state
+                .fullscreen_group()
+                .filter(|&group| state.group_shown_on(group, None))
+        };
         group.is_some_and(|group| {
             self.group_row_ptrs.values().any(|&row| {
                 // SAFETY: same retained-row ownership contract as
@@ -5337,8 +5344,10 @@ impl ShellOverlayHost {
         {
             let st = chrome.borrow();
             if st.fullscreen_group().is_some()
-                || st.maximized_group().is_none()
                 || st.wheel_summon().is_some()
+                || !st
+                    .maximized_group()
+                    .is_some_and(|group| st.group_shown_on(group, None))
             {
                 return false;
             }
@@ -9621,7 +9630,7 @@ impl ShellOverlayHost {
     fn docked_wheel_pinned(&self) -> bool {
         self.chrome.as_ref().is_some_and(|chrome| {
             let state = chrome.borrow();
-            state.wheel_summon().is_some() || state.is_fullscreen()
+            state.wheel_summon().is_some() || state.fullscreen_covers(None)
         })
     }
 
@@ -18602,6 +18611,18 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
         }
+        // The column's margins give way only when the promoted group is on
+        // the primary display, whose full top bar collapses with them; a
+        // fullscreen window on another display takes that display's lane
+        // (`push_display_layout`) and leaves the primary's layout alone.
+        let fullscreen = fullscreen
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                let state = chrome.borrow();
+                state
+                    .fullscreen_group()
+                    .or_else(|| state.maximized_group())
+                    .is_some_and(|group| state.group_shown_on(group, None))
+            });
         if let Some(surface) = self.desktop_surface_mut() {
             surface.style_work_area(fullscreen);
         }
@@ -18685,7 +18706,7 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
-        let covers_wheel = self.client_fullscreen_is_owned() || self.maximized_wheel_tucked();
+        let covers_wheel = self.fullscreen_covers_wheel() || self.maximized_wheel_tucked();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -18898,7 +18919,7 @@ impl Widget for ShellOverlayHost {
             // A promoted group is drawn unpanned, so the wheel beside it is too.
             let pinned = self.chrome.as_ref().is_some_and(|c| {
                 let st = c.borrow();
-                st.wheel_summon().is_some() || st.is_fullscreen()
+                st.wheel_summon().is_some() || st.fullscreen_covers(None)
             });
             let anchor_x = if pinned {
                 self.rect.x0

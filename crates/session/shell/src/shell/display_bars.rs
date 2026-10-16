@@ -83,16 +83,15 @@ impl DisplayBars {
     pub fn bar_rects(&self) -> Vec<(u32, Rect)> {
         self.bars
             .iter()
-            .filter(|_| !self.suppressed())
+            .filter(|(id, _)| !self.suppressed(*id))
             .map(|(id, bar)| (*id, bar.bar_rect()))
             .collect()
     }
 
-    /// A client-requested fullscreen owns its output; the bars step aside
-    /// with the full bar.
-    fn suppressed(&self) -> bool {
-        let state = self.chrome.borrow();
-        state.fullscreen_group().is_some() && state.is_fullscreen()
+    /// A fullscreen window owns its output: the bar on that display steps
+    /// aside, and every other display keeps its own.
+    fn suppressed(&self, display: u32) -> bool {
+        self.chrome.borrow().fullscreen_covers(Some(display))
     }
 
     fn bar_under(&self, p: Point) -> Option<u32> {
@@ -156,18 +155,20 @@ impl Widget for DisplayBars {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.suppressed() {
-            return;
-        }
-        for (_, bar) in &mut self.bars {
+        let shown: Vec<bool> = self
+            .bars
+            .iter()
+            .map(|(id, _)| !self.suppressed(*id))
+            .collect();
+        for ((_, bar), shown) in self.bars.iter_mut().zip(shown) {
+            if !shown {
+                continue;
+            }
             bar.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.suppressed() {
-            return;
-        }
         let target = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
@@ -187,7 +188,7 @@ impl Widget for DisplayBars {
             } => self.pressed.take(),
             _ => None,
         };
-        let Some(target) = target else {
+        let Some(target) = target.filter(|id| !self.suppressed(*id)) else {
             return;
         };
         if let Some((_, bar)) = self.bars.iter_mut().find(|(id, _)| *id == target) {
@@ -216,12 +217,13 @@ impl Widget for DisplayBars {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        if self.bars.is_empty() || self.suppressed() {
+        if self.bars.iter().all(|(id, _)| self.suppressed(*id)) {
             return None;
         }
         let children: Vec<AccessNode> = self
             .bars
             .iter()
+            .filter(|(id, _)| !self.suppressed(*id))
             .filter_map(|(_, bar)| {
                 bar.accessibility()
                     .map(|node| node.with_bounds(bar.bar_rect()))

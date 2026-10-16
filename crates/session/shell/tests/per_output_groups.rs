@@ -823,6 +823,91 @@ fn every_display_has_a_top_bar() {
     }
 }
 
+/// The full bar's height, the wheel disc's width, and the displays that
+/// show a compact bar.
+fn chrome_shown(desk: &Desk) -> (f64, f64, Vec<u32>) {
+    let bars = desk.fb.host().top_bar_rects();
+    let full = bars
+        .iter()
+        .find(|b| b.2)
+        .map_or(0.0, |(_, rect, _)| rect.height());
+    let wheel = desk
+        .fb
+        .host()
+        .sidebar_rect_for_tests()
+        .map_or(0.0, |rect| rect.width());
+    let compact = bars.iter().filter(|b| !b.2).map(|b| b.0).collect();
+    (full, wheel, compact)
+}
+
+/// A fullscreen window owns its own display only: the top bar and the
+/// workspace switcher step aside there, and every other display keeps its
+/// bar, its wheel and its windows where they were.
+#[test]
+fn fullscreen_hides_the_switcher_only_on_its_own_display() {
+    for fixture in ["docked-laptop", "vertical-stack"] {
+        let mut desk = Desk::fixture(fixture);
+        let (full, wheel, compact) = chrome_shown(&desk);
+        assert!(full > 10.0 && wheel > 1.0, "{fixture}: chrome before");
+        assert_eq!(compact, vec![1], "{fixture}");
+        let primary_before: Vec<Rect> = ON_PRIMARY.iter().map(|id| desk.rect_of(*id)).collect();
+
+        // Fullscreen on the second display.
+        desk.fb.set_fullscreen(Some(ON_SECOND[0]));
+        desk.settle();
+        let (full, wheel, compact) = chrome_shown(&desk);
+        assert!(
+            full > 10.0,
+            "{fixture}: the primary keeps its full bar under another display's fullscreen"
+        );
+        assert!(
+            wheel > 1.0,
+            "{fixture}: the primary keeps its workspace switcher disc"
+        );
+        assert!(
+            compact.is_empty(),
+            "{fixture}: the fullscreen display's own bar steps aside: {compact:?}"
+        );
+        let shown = desk.rect_of(ON_SECOND[0]);
+        let second = desk.display(1);
+        assert!(
+            (shown.y0 - second.y0).abs() < 0.5 && (shown.height() - second.height()).abs() < 0.5,
+            "{fixture}: the fullscreen window covers its display: {shown:?} vs {second:?}"
+        );
+        // Where they were, give or take the strip's last sub-pixel of settling.
+        for (id, before) in ON_PRIMARY.iter().zip(&primary_before) {
+            let during = desk.rect_of(*id);
+            assert!(
+                (during.x0 - before.x0).abs() < 2.0
+                    && (during.y0 - before.y0).abs() < 0.5
+                    && (during.width() - before.width()).abs() < 0.5
+                    && (during.height() - before.height()).abs() < 0.5,
+                "{fixture}: the primary's window {id} stays where it was: {before:?} -> {during:?}"
+            );
+        }
+
+        // Fullscreen on the primary.
+        desk.fb.set_fullscreen(Some(ON_PRIMARY[0]));
+        desk.settle();
+        let (full, wheel, compact) = chrome_shown(&desk);
+        assert!(
+            full <= 0.5 && wheel <= 0.5,
+            "{fixture}: the primary's bar and wheel step aside: bar {full} wheel {wheel}"
+        );
+        assert_eq!(
+            compact,
+            vec![1],
+            "{fixture}: the other display keeps its workspace navigation"
+        );
+
+        desk.fb.set_fullscreen(None);
+        desk.settle();
+        let (full, wheel, compact) = chrome_shown(&desk);
+        assert!(full > 10.0 && wheel > 1.0, "{fixture}: chrome restores");
+        assert_eq!(compact, vec![1], "{fixture}");
+    }
+}
+
 #[test]
 fn the_state_dump_carries_the_partition() {
     let mut desk = Desk::fixture("docked-laptop");
