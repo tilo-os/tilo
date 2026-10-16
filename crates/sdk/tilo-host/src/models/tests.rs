@@ -36,9 +36,81 @@ fn error(models: &Models) -> ModelError {
     }
 }
 
+struct Administration;
+impl ProviderAdmin for Administration {
+    fn get_config(&self) -> agent_provider_config::management::AdminFuture<'_, ProviderSnapshot> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn set_config(
+        &self,
+        _: String,
+        _: agent_provider_config::ProviderConfig,
+    ) -> agent_provider_config::management::AdminFuture<'_, ProviderSnapshot> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn credential_status(
+        &self,
+        _: String,
+    ) -> agent_provider_config::management::AdminFuture<'_, CredentialStatus> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn set_api_key(
+        &self,
+        _: String,
+        _: String,
+    ) -> agent_provider_config::management::AdminFuture<'_, ()> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn remove_api_key(&self, _: String) -> agent_provider_config::management::AdminFuture<'_, ()> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn migrate_api_key(
+        &self,
+        _: String,
+        _: String,
+    ) -> agent_provider_config::management::AdminFuture<'_, ()> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+    fn remove_legacy_api_key(
+        &self,
+        _: String,
+    ) -> agent_provider_config::management::AdminFuture<'_, ()> {
+        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
+    }
+}
+
+#[test]
+fn administration_retains_only_its_own_host_authority() {
+    use std::sync::Arc;
+    let unavailable = ProviderAdministration::default();
+    let first = ProviderAdministration::new(Arc::new(Administration));
+    let retained = first.clone();
+    let second = ProviderAdministration::new(Arc::new(Administration));
+    assert!(!unavailable.is_available());
+    assert!(matches!(
+        unavailable.get(),
+        Err(ModelError {
+            kind: ErrorKind::Unavailable,
+            ..
+        })
+    ));
+    assert!(first.is_available());
+    assert!(Arc::ptr_eq(&first.get().unwrap(), &retained.get().unwrap()));
+    assert!(!Arc::ptr_eq(&first.get().unwrap(), &second.get().unwrap()));
+    drop(first);
+    assert!(retained.is_available());
+}
+
 #[cfg(not(feature = "native"))]
 #[test]
 fn launcher_is_explicitly_unavailable_without_platform_support() {
+    assert!(matches!(
+        ProviderAdministration::from_launcher(),
+        Err(ModelError {
+            kind: ErrorKind::Unavailable,
+            ..
+        })
+    ));
     let Err(error) = Models::from_launcher() else {
         panic!("unsupported hosts must not discover launcher model access");
     };

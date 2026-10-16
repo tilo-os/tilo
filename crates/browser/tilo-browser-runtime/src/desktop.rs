@@ -101,6 +101,7 @@ pub(crate) struct Inputs {
     pub author: String,
     pub permissions: Rc<RefCell<PermissionContext>>,
     pub models: ui::models::Models,
+    pub provider_admin: ui::models::ProviderAdministration,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -574,6 +575,13 @@ impl Tiles {
         }
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
+        // Only registered control panels receive the administration capability.
+        if crate::host_services::provider_admin_app(definition.app_id) {
+            crate::host_services::provide_provider_admin(
+                &mut context,
+                self.inputs.provider_admin.clone(),
+            )?;
+        }
         let destination = Rc::clone(&self.shared.images);
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
             Rc::new(move |max_dimension| {

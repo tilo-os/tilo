@@ -49,8 +49,16 @@ export interface MountOptions {
     /** Absolute HTTPS URL ending in /model/rpc. */
     endpoint: string;
     sessionToken: string;
-    profileId: string;
-    modelId: string;
+    /** Supply both selection fields, or omit both for the backend's user default. */
+    profileId?: string;
+    modelId?: string;
+  };
+  /** Explicit host-session grant for Model Providers or native Settings only; the backend still authorizes
+   * every operation. Never falls back to models.sessionToken. No provider keys.
+   */
+  providerManagement?: {
+    endpoint: string;
+    sessionToken: string;
   };
   onNavigation?: (controller: DesktopNavigationV1) => void;
   app?: Application;

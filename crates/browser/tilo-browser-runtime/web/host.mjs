@@ -119,6 +119,8 @@ export async function mountDesktop(target,options={}) {
   // Model credentials are mount-scoped bootstrap input, never a page global.
   // The WASM host binds the authenticated transport before each app factory.
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
+  // Administration is opt-in and never borrows the inference session token.
+  if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
   // The desktop offers Invite only when the page takes it.
   config.invite=typeof options.onInvite==='function';delete config.onInvite;

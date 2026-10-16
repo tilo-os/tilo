@@ -5,7 +5,24 @@
 //! render, a unit test and a live session resolve the same copy. The locale
 //! follows the usual POSIX variables and falls back per message to `en-US`.
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+
+/// Provider and model-control terminology is owned by the shared panel catalogue.
+pub fn t(key: &str) -> String {
+    if key.starts_with("agent-") || key == "settings-read-error" {
+        provider_settings_ui::i18n::t(key)
+    } else {
+        CATALOG.t(key)
+    }
+}
+
+pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    if key.starts_with("agent-") || key == "settings-read-error" {
+        provider_settings_ui::i18n::t_args(key, args)
+    } else {
+        CATALOG.t_args(key, args)
+    }
+}
 
 /// The English names of a `(label, value)` table, as an effect's or verb's
 /// choices.

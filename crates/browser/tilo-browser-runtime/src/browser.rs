@@ -109,6 +109,9 @@ struct Config {
     /// Authenticated model-service access for this mount only.
     #[serde(default)]
     models: Option<crate::host_services::ModelConfig>,
+    /// Explicit administration grant, independent of model inference.
+    #[serde(default)]
+    provider_management: Option<crate::host_services::ProviderManagementConfig>,
     /// The desktop's initial windows, one per application id; every
     /// registered application when absent.
     #[serde(default)]
@@ -158,6 +161,15 @@ struct Config {
 }
 
 impl Config {
+    fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
+        self.provider_management
+            .as_ref()
+            .map(crate::host_services::ProviderManagementConfig::connect)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(error)
+    }
+
     fn models(&self) -> Result<ui::models::Models, JsValue> {
         self.models
             .as_ref()
@@ -1018,6 +1030,7 @@ fn present_desktop(
             author: config.author(),
             permissions,
             models: config.models()?,
+            provider_admin: config.provider_admin()?,
         },
         dyn_store,
         config.apps.as_deref(),
@@ -1174,6 +1187,8 @@ fn present_component(
     }
     .map_err(error)?;
     context.provide_models(config.models()?);
+    crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
+        .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = Rc::clone(&loaders);
     let component = ui::ImageStore::with_host_factory_with_max_dimension(

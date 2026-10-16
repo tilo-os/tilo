@@ -7,24 +7,33 @@ use std::rc::Rc;
 #[path = "runtime_client_native.rs"]
 mod native;
 
-/// Capture the launcher's authenticated descriptor and deliberate model selection.
+/// Capture the launcher's authenticated descriptor and use the server default.
 /// Provider credentials and URLs remain within the gateway.
 ///
 /// # Errors
-/// Returns unavailable without a supported launcher, runtime or enabled selection.
+/// Returns unavailable without a supported launcher or app runtime. The server
+/// resolves an enabled default only when an inference starts.
 pub fn from_launcher() -> Result<Rc<dyn ModelBackend>, ModelError> {
     #[cfg(unix)]
     {
-        let config = agent_provider_config::ProviderConfig::load();
-        let profile = config
-            .active_profile()
-            .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
-        let model = profile
-            .default_model
-            .as_ref()
-            .filter(|id| profile.models.iter().any(|model| model.id == **id))
-            .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
-        from_launcher_selection(profile.id.clone(), model.clone())
+        native::default_from_transport(native::launcher_transport()?)
+    }
+    #[cfg(not(unix))]
+    {
+        Err(ModelError::new(ErrorKind::Unavailable))
+    }
+}
+
+/// Bind provider administration without requiring a model selection.
+/// The launcher capability and backend still enforce the manager role.
+///
+/// # Errors
+/// Returns unavailable without a launcher capability or app I/O runtime.
+pub fn provider_admin_from_launcher()
+-> Result<std::sync::Arc<dyn agent_provider_config::management::ProviderAdmin>, ModelError> {
+    #[cfg(unix)]
+    {
+        native::admin_from_transport(native::launcher_transport()?)
     }
     #[cfg(not(unix))]
     {
@@ -43,9 +52,7 @@ pub fn from_launcher_selection(
 ) -> Result<Rc<dyn ModelBackend>, ModelError> {
     #[cfg(unix)]
     {
-        let transport = crate::transport::FdTransport::from_launcher()
-            .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
-        native::from_transport(transport, profile_id, model_id)
+        native::from_transport(native::launcher_transport()?, profile_id, model_id)
     }
     #[cfg(not(unix))]
     {

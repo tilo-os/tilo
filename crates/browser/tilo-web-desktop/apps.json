@@ -107,6 +107,13 @@
       "module": "messages"
     },
     {
+      "id": "so.tilo.model-providers",
+      "name": "Model Providers",
+      "category": "System",
+      "version": "0.1.0",
+      "module": "model_providers"
+    },
+    {
       "id": "so.tilo.music",
       "name": "Music",
       "category": "Multimedia",

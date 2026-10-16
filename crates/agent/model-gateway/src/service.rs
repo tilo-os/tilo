@@ -320,6 +320,17 @@ async fn negotiate_cancellation(
     Ok(Some(selected))
 }
 
+fn management_mutation(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::SetProviderConfig { .. }
+            | Request::SetApiKey { .. }
+            | Request::RemoveApiKey { .. }
+            | Request::MigrateApiKey { .. }
+            | Request::RemoveLegacyApiKey { .. }
+    )
+}
+
 async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Client) {
     let Ok(Ok(handoff)) = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream)).await
     else {
@@ -377,6 +388,10 @@ async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Cl
             }
             continue;
         }
+        // Durable management work cannot be rolled back by dropping its future.
+        // Finish it before acknowledging Stop; an abandoned response is not a
+        // promise that the write was cancelled.
+        let committing = management_mutation(&request);
         let (events, mut queued) = tokio::sync::mpsc::channel::<Zeroizing<Vec<u8>>>(8);
         let handling = async {
             let mut emit = |event: &Response| {
@@ -395,7 +410,7 @@ async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Cl
                     incoming = received.recv() => {
                         let Some(incoming) = incoming else { return };
                         match incoming {
-                            Request::Cancel { id: cancel } if enabled && id == Some(cancel) => {
+                            Request::Cancel { id: cancel } if enabled && id == Some(cancel) && !committing => {
                                 break succeeded(Some(format!("cancelled:{cancel}")), None);
                             }
                             other => {
@@ -482,7 +497,7 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
     let handoff: Handoff =
         serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
     if handoff.protocol != 1
-        || (handoff.app_id != SETTINGS_APP
+        || (!crate::caller::provider_admin_app(&handoff.app_id)
             && handoff.app_id != AGENT_APP
             && handoff.app_id != CHAT_APP
             && handoff.app_id != PHOTOS_APP
@@ -533,7 +548,7 @@ pub(super) async fn handle_streaming(
                 .await
                 .map(|()| configured(true))
         }
-        request @ Request::Complete { .. }
+        request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
                 || (app_id == CHAT_APP && crate::caller::chat_completion(&request)) =>
         {
@@ -541,7 +556,12 @@ pub(super) async fn handle_streaming(
                 .await
                 .map_or_else(Response::failure, output);
         }
-        Request::Complete { .. } => return permission_denied(),
+        Request::Complete { .. } | Request::CompleteDefault { .. } => return permission_denied(),
+        Request::GetProviderConfig | Request::SetProviderConfig { .. }
+            if !crate::caller::provider_admin_app(app_id) =>
+        {
+            return permission_denied();
+        }
         Request::Plan {
             profile_id,
             model_id,
@@ -601,23 +621,29 @@ pub(super) async fn handle_streaming(
             Err("only Photos may request fixed local face clustering".into())
         }
         Request::SegmentSubject { image } if app_id == CANVAS_APP || app_id == PHOTOS_APP => {
-            #[cfg(feature = "local-models")]
-            {
-                blocking(move || subject::segment(&image)).await.map(output)
-            }
-            #[cfg(not(feature = "local-models"))]
-            {
-                let _ = image;
-                Err("on-device subject segmentation is unavailable in this gateway build".into())
-            }
+            segment_request(image).await.map(output)
         }
         Request::SegmentSubject { .. } => {
             Err("only Canvas and Photos may find a picture's subject".into())
         }
-        request if app_id == SETTINGS_APP => settings_request(request).await,
+        request if crate::caller::provider_admin_app(app_id) => settings_request(request).await,
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
+}
+
+fn segment_request(image: VisionImage) -> impl Future<Output = Result<String, String>> {
+    #[cfg(feature = "local-models")]
+    {
+        blocking(move || subject::segment(&image))
+    }
+    #[cfg(not(feature = "local-models"))]
+    {
+        drop(image);
+        std::future::ready(Err(
+            "on-device subject segmentation is unavailable in this gateway build".into(),
+        ))
+    }
 }
 
 /// Credential operations are reachable only after the Settings caller check.
@@ -626,6 +652,9 @@ async fn settings_request(request: Request) -> Result<Response, String> {
     let done = |()| succeeded(None, None);
     let configured = |configured| succeeded(None, Some(configured));
     match request {
+        request @ (Request::GetProviderConfig | Request::SetProviderConfig { .. }) => {
+            Ok(administration::configuration_request(request).await)
+        }
         Request::SecretStatus { profile_id } => blocking(move || secret_status(&profile_id))
             .await
             .map(configured),
@@ -640,13 +669,16 @@ async fn settings_request(request: Request) -> Result<Response, String> {
             profile_id,
             original_endpoint,
         } => blocking(move || {
+            let _serial = management_write()?;
             let profile = credential_profile(&profile_id)?;
             migrate_key_in(&ServiceCredentials::open(), &profile, &original_endpoint)
         })
         .await
         .map(done),
         Request::RemoveLegacyApiKey { profile_id } => blocking(move || {
+            let _serial = management_write()?;
             credential_profile(&profile_id)?;
+            PLAN_PROFILES.forget(&profile_id);
             ServiceCredentials::open()
                 .remove_legacy_agent_provider(&profile_id)
                 .map(|_| ())
@@ -673,17 +705,37 @@ async fn complete_request(
     request: Request,
     emit: Emit<'_>,
 ) -> Result<String, agent_provider_config::protocol::ModelError> {
-    let Request::Complete {
-        profile_id,
-        model_id,
-        request,
-        timeout_ms,
-        stream,
-    } = request
-    else {
-        return Err(agent_provider_config::protocol::ModelError::new(
-            agent_provider_config::protocol::ErrorKind::InvalidRequest,
-        ));
+    let (profile_id, model_id, request, timeout_ms, stream) = match request {
+        Request::Complete {
+            profile_id,
+            model_id,
+            request,
+            timeout_ms,
+            stream,
+        } => (profile_id, model_id, request, timeout_ms, stream),
+        Request::CompleteDefault {
+            request,
+            timeout_ms,
+            stream,
+        } => {
+            let (profile_id, model_id) = blocking_model(|| {
+                let config = ProviderConfig::load();
+                if !config.validation_errors().is_empty() {
+                    return Err(ModelError::new(ErrorKind::InvalidRequest));
+                }
+                let profile = config
+                    .active_profile()
+                    .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
+                let model = profile
+                    .default_model
+                    .as_ref()
+                    .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
+                Ok((profile.id.clone(), model.clone()))
+            })
+            .await?;
+            (profile_id, model_id, request, timeout_ms, stream)
+        }
+        _ => return Err(ModelError::new(ErrorKind::InvalidRequest)),
     };
     rig_adapter::complete(
         http,
@@ -737,6 +789,10 @@ where
 }
 
 use agent_provider_config::protocol::{ErrorKind, ModelError};
+#[path = "administration.rs"]
+mod administration;
+#[cfg(test)]
+use administration::provider_snapshot;
 
 fn permission_denied() -> Response {
     Response::failure(ModelError::new(ErrorKind::PermissionDenied))
@@ -958,10 +1014,35 @@ fn selection_configured(
 /// blocking-pool threads, so they are serialized.
 static VAULT_WRITES: Mutex<()> = Mutex::new(());
 
+// HTTP and descriptor gateways can be separate user services. Serialize their
+// description/credential transactions too, not only threads in one process.
+struct ManagementWrite {
+    _thread: std::sync::MutexGuard<'static, ()>,
+    _file: tilo_files::Lock,
+}
+
+fn management_write() -> Result<ManagementWrite, String> {
+    let thread = VAULT_WRITES.lock_recover();
+    let lock = || -> std::io::Result<tilo_files::Lock> {
+        let root =
+            accounts::config_root().ok_or_else(|| std::io::Error::other("no config root"))?;
+        fs::create_dir_all(&root)?;
+        let (dir, name) = tilo_files::file_at(&root.join("provider-administration.lock"))
+            .map_err(std::io::Error::other)?;
+        tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
+            .map_err(std::io::Error::other)
+    };
+    let file = lock().map_err(|_| "provider administration storage is unavailable".to_string())?;
+    Ok(ManagementWrite {
+        _thread: thread,
+        _file: file,
+    })
+}
+
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
+    let _serial = management_write()?;
     let profile = credential_profile(profile_id)?;
     let (reference, authorization) = credential_binding(&profile)?;
-    let _serial = VAULT_WRITES.lock_recover();
     let mut key = Zeroizing::new(api_key);
     if key.trim().is_empty() || key.len() > 16 * 1024 {
         return Err("API key is empty or too large".into());
@@ -977,9 +1058,9 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 }
 
 fn remove_key(profile_id: &str) -> Result<(), String> {
+    let _serial = management_write()?;
     let profile = credential_profile(profile_id)?;
     let (reference, authorization) = credential_binding(&profile)?;
-    let _serial = VAULT_WRITES.lock_recover();
     let result = ServiceCredentials::open()
         .remove(&reference, &authorization)
         .map(|_| ())
@@ -3367,3 +3448,7 @@ mod cancellation_tests;
 #[cfg(test)]
 #[path = "profile_tests.rs"]
 mod profile_tests;
+
+#[cfg(test)]
+#[path = "administration_tests.rs"]
+mod administration_tests;

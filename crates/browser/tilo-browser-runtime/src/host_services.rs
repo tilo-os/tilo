@@ -26,27 +26,69 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) struct ModelConfig {
     endpoint: String,
     session_token: String,
-    profile_id: String,
-    model_id: String,
+    profile_id: Option<String>,
+    model_id: Option<String>,
 }
 
 impl ModelConfig {
     pub(crate) fn connect(&self) -> Result<ui::models::Models, String> {
         use tilo_model_gateway::transport::{FetchTransport, ModelClient};
-        if self.session_token.trim().is_empty()
-            || self.profile_id.trim().is_empty()
-            || self.model_id.trim().is_empty()
-        {
-            return Err("model session and selection are required".into());
+        if self.session_token.trim().is_empty() {
+            return Err("model session is required".into());
         }
         let transport = FetchTransport::new(&self.endpoint, self.session_token.clone())?;
-        Ok(ui::models::Models::new(std::rc::Rc::new(ModelClient::new(
-            transport,
-            self.profile_id.clone(),
-            self.model_id.clone(),
-            std::time::Duration::from_secs(120),
-        ))))
+        let timeout = std::time::Duration::from_secs(120);
+        let client = match (&self.profile_id, &self.model_id) {
+            (None, None) => ModelClient::default_model(transport, timeout),
+            (Some(profile), Some(model))
+                if !profile.trim().is_empty() && !model.trim().is_empty() =>
+            {
+                ModelClient::new(transport, profile.clone(), model.clone(), timeout)
+            }
+            _ => return Err("profileId and modelId must be supplied together and nonempty".into()),
+        };
+        Ok(ui::models::Models::new(std::rc::Rc::new(client)))
     }
+}
+
+/// A separate, explicitly granted administration session. Never derived from models.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderManagementConfig {
+    endpoint: String,
+    session_token: String,
+}
+
+impl ProviderManagementConfig {
+    pub(crate) fn connect(&self) -> Result<ui::models::ProviderAdministration, String> {
+        use tilo_model_gateway::transport::{AdministrationClient, FetchTransport};
+        if self.session_token.trim().is_empty() {
+            return Err("provider management session is required".into());
+        }
+        let transport = FetchTransport::new(&self.endpoint, self.session_token.clone())?;
+        Ok(ui::models::ProviderAdministration::new(Arc::new(
+            AdministrationClient::new(transport),
+        )))
+    }
+}
+
+/// Only the exact registered control-panel identities may borrow administration.
+pub(crate) fn provider_admin_app(app_id: &str) -> bool {
+    matches!(app_id, "so.tilo.settings" | "so.tilo.model-providers")
+}
+
+/// Match trusted application metadata, not an arbitrary tab's label or requested alias.
+pub(crate) fn provide_provider_admin(
+    context: &mut ui::application::HostContext,
+    handle: ui::models::ProviderAdministration,
+) -> Result<(), String> {
+    if handle.is_available() && !provider_admin_app(context.app_id()) {
+        return Err(
+            "provider administration is only available to Settings or Model Providers".into(),
+        );
+    }
+    context.provide_provider_admin(handle);
+    Ok(())
 }
 
 use tilo_desktop_surface::{AppInbox, AppNotifier};

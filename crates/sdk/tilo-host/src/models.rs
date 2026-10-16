@@ -4,7 +4,51 @@
 //! binds its authenticated session to a backend before passing it to an app.
 use std::rc::Rc;
 
+pub use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 pub use agent_provider_config::protocol::*;
+
+/// Host-scoped authority to administer providers, independent of inference access.
+#[derive(Clone, Default)]
+pub struct ProviderAdministration(Option<std::sync::Arc<dyn ProviderAdmin>>);
+
+impl ProviderAdministration {
+    /// Bind a backend whose session the host has explicitly authorized.
+    pub fn new(backend: std::sync::Arc<dyn ProviderAdmin>) -> Self {
+        Self(Some(backend))
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Obtain this host's authority, never an ambient or another mount's session.
+    ///
+    /// # Errors
+    /// Returns unavailable when the host did not grant administration.
+    pub fn get(&self) -> Result<std::sync::Arc<dyn ProviderAdmin>, ModelError> {
+        self.0
+            .clone()
+            .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))
+    }
+
+    /// Capture the launcher's separately authorized administration capability.
+    ///
+    /// # Errors
+    /// Returns unavailable when launcher administration is unsupported or absent.
+    #[cfg(feature = "native")]
+    pub fn from_launcher() -> Result<Self, ModelError> {
+        tilo_model_gateway::runtime_client::provider_admin_from_launcher().map(Self::new)
+    }
+
+    /// Launcher access requires native host services.
+    ///
+    /// # Errors
+    /// Always returns unavailable; an embedding host may use [`Self::new`].
+    #[cfg(not(feature = "native"))]
+    pub fn from_launcher() -> Result<Self, ModelError> {
+        Err(ModelError::new(ErrorKind::Unavailable))
+    }
+}
 
 /// A cloneable model capability. Clones retain the originating host session;
 /// constructing another host does not replace it. Browser backends need not be Send.

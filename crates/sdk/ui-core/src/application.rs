@@ -99,6 +99,7 @@ pub struct HostContext {
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
     models: crate::models::Models,
+    provider_admin: crate::models::ProviderAdministration,
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
@@ -585,6 +586,7 @@ impl HostContext {
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
             models: crate::models::Models::default(),
+            provider_admin: crate::models::ProviderAdministration::default(),
             retirement: None,
             content: None,
             open_file: None,
@@ -778,6 +780,19 @@ impl HostContext {
         self.lend(models.clone());
         self.models = models;
     }
+    /// Loan separately authorized provider administration to this component only.
+    pub fn provide_provider_admin(&mut self, handle: crate::models::ProviderAdministration) {
+        self.lent
+            .retain(|service| !service.is::<crate::models::ProviderAdministration>());
+        self.lend(handle.clone());
+        self.provider_admin = handle;
+    }
+
+    /// This component's administration authority, unavailable unless explicitly loaned.
+    pub fn provider_admin(&self) -> crate::models::ProviderAdministration {
+        self.provider_admin.clone()
+    }
+
     /// Asynchronous model access, unavailable unless the host explicitly supplied it.
     pub fn models(&self) -> crate::models::Models {
         self.models.clone()
@@ -2553,7 +2568,23 @@ mod portable_tests {
         first.provide_models(crate::models::Models::new(Rc::new(Backend)));
         first.provide_models(crate::models::Models::new(Rc::new(Backend)));
         let mut second = prepare(42);
-        let loans = first.take_lent();
+        assert!(!first.provider_admin().is_available());
+        first.provide_provider_admin(crate::models::ProviderAdministration::default());
+        first.provide_provider_admin(crate::models::ProviderAdministration::default());
+        let mut loans = first.take_lent();
+        let admin = loans.remove(
+            loans
+                .iter()
+                .position(|loan| loan.is::<crate::models::ProviderAdministration>())
+                .unwrap(),
+        );
+        assert!(
+            !admin
+                .downcast::<crate::models::ProviderAdministration>()
+                .unwrap()
+                .is_available()
+        );
+        assert!(!second.provider_admin().is_available());
         assert_eq!(loans.len(), 1, "replacing a capability replaces its loan");
         let loaned = loans
             .into_iter()

@@ -371,6 +371,8 @@ pub enum ErrorKind {
     Authentication,
     PermissionDenied,
     InvalidRequest,
+    /// Provider descriptions changed since the administration snapshot.
+    Conflict,
     InvalidResponse,
     Unsupported,
     RateLimited,
@@ -406,6 +408,7 @@ impl ModelError {
             }
             ErrorKind::PermissionDenied => "Provider permission denied",
             ErrorKind::InvalidRequest => "Invalid model request",
+            ErrorKind::Conflict => "Provider settings changed; refresh before saving",
             ErrorKind::InvalidResponse => "Invalid model response",
             ErrorKind::Unsupported => "Model operation unsupported; update the gateway",
             ErrorKind::RateLimited => "Provider rate limit reached",
@@ -438,6 +441,8 @@ impl ModelError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Recovery {
+    /// Reload the authoritative snapshot; do not overwrite concurrent edits.
+    RefreshSettings,
     SignIn,
     AddCredits,
     WaitAndRetry,
@@ -452,6 +457,9 @@ pub enum Recovery {
 impl Recovery {
     pub fn guidance(self) -> &'static str {
         match self {
+            Self::RefreshSettings => {
+                "Refresh provider settings and review the current values before saving again."
+            }
             Self::SignIn => "Check the provider credential in Settings, then try again.",
             Self::AddCredits => "Add provider credits or select another funded provider.",
             Self::WaitAndRetry => {
@@ -476,6 +484,7 @@ impl Recovery {
 impl ModelError {
     pub fn recovery(&self) -> Recovery {
         match self.kind {
+            ErrorKind::Conflict => Recovery::RefreshSettings,
             ErrorKind::Authentication => Recovery::SignIn,
             ErrorKind::CreditsExhausted => Recovery::AddCredits,
             ErrorKind::RateLimited => Recovery::WaitAndRetry,
@@ -792,6 +801,7 @@ mod tests {
     #[test]
     fn recovery_is_actionable_without_automatic_action_replay() {
         for (kind, recovery) in [
+            (ErrorKind::Conflict, Recovery::RefreshSettings),
             (ErrorKind::Authentication, Recovery::SignIn),
             (ErrorKind::CreditsExhausted, Recovery::AddCredits),
             (ErrorKind::RateLimited, Recovery::WaitAndRetry),

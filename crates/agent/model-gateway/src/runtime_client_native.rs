@@ -4,6 +4,36 @@ use agent_provider_config::protocol::{
     CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest, StreamSink,
 };
 
+#[path = "runtime_admin_native.rs"]
+mod administration;
+pub(super) use administration::from_transport as admin_from_transport;
+
+pub(super) fn default_from_transport(
+    transport: FdTransport,
+) -> Result<std::rc::Rc<dyn ModelBackend>, ModelError> {
+    Ok(std::rc::Rc::new(NativeModels::new(
+        ModelClient::default_model(transport, std::time::Duration::from_secs(120)),
+    )?))
+}
+
+/// One inherited stream carries both model and administration capabilities.
+/// Clones share serialization and cancellation identities, not independent
+/// readers of duplicated descriptors.
+pub(super) fn launcher_transport() -> Result<FdTransport, ModelError> {
+    static TRANSPORT: std::sync::Mutex<Option<FdTransport>> = std::sync::Mutex::new(None);
+    let mut slot = TRANSPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(transport) = slot.as_ref() {
+        return Ok(transport.clone());
+    }
+    let transport =
+        FdTransport::from_launcher().map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
+    *slot = Some(transport.clone());
+    drop(slot);
+    Ok(transport)
+}
+
 pub(super) struct NativeModels {
     client: ModelClient<FdTransport>,
     runtime: tokio::runtime::Handle,
