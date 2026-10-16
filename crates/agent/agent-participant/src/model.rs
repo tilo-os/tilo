@@ -558,6 +558,7 @@ pub struct OpenAiModel {
     api_key: ApiKey,
     timeout: std::time::Duration,
     target: ApiTarget,
+    profile: crate::profile::Profile,
     /// One HTTP client for every call, so later turns reuse its pooled
     /// connection rather than resolving, connecting and handshaking again.
     /// Built by the first call, on the thread [`Self::post`] runs it on:
@@ -606,8 +607,17 @@ impl OpenAiModel {
             api_key,
             timeout,
             target,
+            profile: crate::profile::Profile::default(),
             client: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Opt-in provider hints. The target's existing field allowlist is
+    /// applied afterwards, so metered endpoints keep their closed contract.
+    #[must_use]
+    pub fn with_profile(mut self, profile: crate::profile::Profile) -> Self {
+        self.profile = profile;
+        self
     }
 
     /// POST `body` on a thread of its own: the blocking client may not run
@@ -749,13 +759,15 @@ impl PlanModel for OpenAiModel {
             serde_json::json!({ "role": "user", "content": task }),
         ];
         for turn in 0..12_u32 {
-            let body = self.target.shape(serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": self.model,
                 "messages": messages,
                 "tools": openai::functions(&tilo_agent::tools::definitions(most_steps)),
                 "tool_choice": "required",
                 "max_tokens": TURN_OUTPUT_TOKENS,
-            }));
+            });
+            self.profile.apply(&mut body);
+            let body = self.target.shape(body);
             let key = openai::turn_key(&run, turn, &body);
             let answer = self.post(&body, &key, deadline)?;
             let reply = openai::read_turn(&answer)?;
@@ -869,13 +881,11 @@ impl ModelChoice {
                 model,
                 api_key,
                 target,
-            } => Box::new(OpenAiModel::new(
-                base_url,
-                model,
-                api_key.clone(),
-                timeout,
-                *target,
-            )),
+            } => Box::new(
+                OpenAiModel::new(base_url, model, api_key.clone(), timeout, *target).with_profile(
+                    crate::profile::Profile::resolve(model, &|name| std::env::var(name).ok()),
+                ),
+            ),
             Self::Settings => match tilo_agent::providers::default_selection() {
                 Some(selection) => Box::new(GatewayModel::new(selection, timeout)),
                 None => Box::new(Unconfigured),
@@ -1014,7 +1024,11 @@ mod tests {
             ApiKey::Value("tilo-ai-token".into()),
             std::time::Duration::from_secs(30),
             ApiTarget::CloudMetered,
-        );
+        )
+        .with_profile(crate::profile::Profile::preset(
+            crate::profile::ModelClass::Small,
+            crate::profile::Goal::Fastest,
+        ));
         let answer = model
             .choose("open notes then add a note", &open_notes(), MOST_STEPS)
             .unwrap();
@@ -1029,6 +1043,12 @@ mod tests {
         };
         assert_eq!(key(&requests[0].0), key(&requests[1].0));
         assert_ne!(key(&requests[1].0), key(&requests[2].0));
+        assert_eq!(requests[0].1, requests[1].1, "retry the same shaped body");
+        for (_, body) in &requests {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(body.get("service_tier").is_none(), "{body}");
+            assert!(body.get("reasoning_effort").is_none(), "{body}");
+        }
         let second: serde_json::Value = serde_json::from_str(&requests[2].1).unwrap();
         assert_eq!(second["max_completion_tokens"], TURN_OUTPUT_TOKENS);
         assert_eq!(second["messages"][3]["role"], "tool");
@@ -1072,6 +1092,128 @@ mod tests {
         assert!(task.contains("open notes then add a note"), "{task}");
         let system = first["messages"][0]["content"].as_str().unwrap();
         assert!(!system.contains("before planning"), "{system}");
+    }
+
+    /// Environment settings are applied by the production planner factory.
+    /// Each case runs in its own process so parallel tests never share them.
+    #[test]
+    fn host_planner_resolves_environment_hints() {
+        const CHILD_ENDPOINT: &str = "TILO_PRESET_TEST_ENDPOINT";
+        if let Ok(url) = std::env::var(CHILD_ENDPOINT) {
+            let choice =
+                ModelChoice::parse(&format!("openai:{url}"), Some("mini"), ApiKey::None).unwrap();
+            let steps = choice
+                .planner()
+                .plan(
+                    "open notes",
+                    &PlanContext {
+                        open: Vec::new(),
+                        known: Vec::new(),
+                        apps: vec!["so.tilo.notes".into()],
+                    },
+                )
+                .unwrap();
+            assert!(matches!(steps[0].action, StepAction::Open));
+            return;
+        }
+        for (preset, tier, effort) in [
+            (Some("fastest"), Some("priority"), Some("low")),
+            (None, None, None),
+            (Some("invalid"), None, None),
+        ] {
+            let offer = open_notes().offers[0].id();
+            let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "model::tests::host_planner_resolves_environment_hints",
+                ])
+                .env(CHILD_ENDPOINT, url)
+                .env_remove(crate::profile::PRESET_ENV)
+                .env_remove(crate::profile::MODEL_CLASS_ENV)
+                .env_remove(crate::profile::SERVICE_TIER_ENV)
+                .env_remove(crate::profile::REASONING_EFFORT_ENV);
+            if let Some(preset) = preset {
+                child.env(crate::profile::PRESET_ENV, preset);
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let (_, body) = sent
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                body.get("service_tier").and_then(serde_json::Value::as_str),
+                tier
+            );
+            assert_eq!(
+                body.get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str),
+                effort
+            );
+            assert_eq!(sent.try_iter().count(), 0);
+        }
+    }
+
+    #[test]
+    fn preset_hints_reach_the_provider_without_changing_the_plan() {
+        let offer = open_notes().offers[0].id();
+        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        let profile = crate::profile::Profile::resolve("mini", &|name| {
+            (name == crate::profile::PRESET_ENV).then(|| "fastest".into())
+        });
+        let answer = standard(&url)
+            .with_profile(profile)
+            .choose("open notes", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        let requests: Vec<_> = sent.try_iter().collect();
+        assert_eq!(requests.len(), 1, "presets never duplicate requests");
+        let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(body["max_tokens"], TURN_OUTPUT_TOKENS);
+    }
+
+    #[test]
+    fn metered_targets_strip_preset_hints_before_sending() {
+        let offer = open_notes().offers[0].id();
+        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        let answer = OpenAiModel::new(
+            &url,
+            CLOUD_MODEL,
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::CloudMetered,
+        )
+        .with_profile(crate::profile::Profile::preset(
+            crate::profile::ModelClass::Small,
+            crate::profile::Goal::Fastest,
+        ))
+        .choose("open notes", &open_notes(), MOST_STEPS)
+        .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        let requests: Vec<_> = sent.try_iter().collect();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert!(body.get("service_tier").is_none(), "{body}");
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+        assert_eq!(body["max_completion_tokens"], TURN_OUTPUT_TOKENS);
+        assert!(requests[0].0.contains("idempotency-key: "));
+    }
+
+    #[test]
+    fn default_planners_send_no_optional_hints() {
+        let offer = open_notes().offers[0].id();
+        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        standard(&url)
+            .choose("open notes", &open_notes(), MOST_STEPS)
+            .unwrap();
+        let (_, body) = sent.recv().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(body.get("service_tier").is_none(), "{body}");
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
     }
 
     /// An id the conversation never showed is refused back to the model with
