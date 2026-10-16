@@ -1051,11 +1051,13 @@ impl MusicApp {
         // track before a queue has been materialised. Canonicalise that local
         // convenience state before it reaches the local audio boundary.
         if let Some(current) = self.pb.current.clone() {
-            if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
-                self.pb.queue_index = index;
-            } else {
-                self.pb.queue = vec![current];
-                self.pb.queue_index = 0;
+            if self.pb.queue.get(self.pb.queue_index) != Some(&current) {
+                if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
+                    self.pb.queue_index = index;
+                } else {
+                    self.pb.queue = vec![current];
+                    self.pb.queue_index = 0;
+                }
             }
             let duration = self.current_duration_ms();
             if duration > 0 {
@@ -2135,14 +2137,19 @@ impl MusicApp {
         if from >= n || to >= n || from == to {
             return;
         }
-        let current_id = self.pb.queue.get(self.pb.queue_index).cloned();
         let item = self.pb.queue.remove(from);
         self.pb.queue.insert(to, item);
-        if let Some(cur) = current_id
-            && let Some(pos) = self.pb.queue.iter().position(|t| *t == cur)
-        {
-            self.pb.queue_index = pos;
-        }
+        // Track the occurrence, not its song id: a queue can hold duplicates.
+        let current = self.pb.queue_index;
+        self.pb.queue_index = if current == from {
+            to
+        } else if from < current && current <= to {
+            current - 1
+        } else if to <= current && current < from {
+            current + 1
+        } else {
+            current
+        };
     }
 
     // --- name-prompt dialog (shared ModalDialog + real TextInput) --------

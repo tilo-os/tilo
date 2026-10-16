@@ -21,6 +21,34 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     (app, doc)
 }
 
+#[test]
+fn queue_reordering_preserves_the_current_duplicate_occurrence() {
+    // The two copies of g1 are distinct queue occurrences even though their
+    // metadata is identical. Moving any row must preserve the selected copy.
+    for (from, to, expected) in [(2, 1, 1), (1, 0, 2), (0, 2, 1), (2, 0, 0)] {
+        let (mut app, mut doc) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g1".into()];
+        app.pb.queue_index = 2;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.position_ms = 12_000;
+        app.playhead_ms = 12_000.0;
+        let heads = doc.get_heads();
+
+        app.dispatch(
+            Action::MoveQueueItem { from, to },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+
+        assert_eq!(app.pb.queue_index, expected, "move {from} to {to}");
+        assert_eq!(app.pb.queue[expected], "tk_g1");
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+        assert_eq!(app.pb.position_ms, 12_000);
+        assert_eq!(app.playhead_ms, 12_000.0);
+        assert_eq!(doc.get_heads(), heads, "queue edits stay device-local");
+    }
+}
+
 #[cfg(feature = "audio")]
 #[test]
 fn private_queue_metadata_restores_unsaved_songs_before_resume() {
