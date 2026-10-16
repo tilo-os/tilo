@@ -2265,6 +2265,26 @@ mod tests {
     }
 
     #[test]
+    fn with_no_channel_open_the_composer_takes_no_text() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_missing".into();
+        app.reload(&doc);
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "nowhere to go");
+        assert_eq!(app.composer_main.value(), "", "no channel, no draft");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        assert!(
+            !app.dispatched
+                .borrow()
+                .iter()
+                .map(|action| serde_json::to_value(action).unwrap())
+                .any(|action| action["action"] == "post"),
+            "nothing was posted"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
