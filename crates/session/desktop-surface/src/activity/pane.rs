@@ -266,6 +266,8 @@ enum TaskAction {
     Start,
     Complete,
     Cancel,
+    /// Show or hide the reviewed task's run counters.
+    Details,
 }
 
 impl TaskAction {
@@ -293,6 +295,7 @@ impl TaskAction {
             Self::Start => "activity-task-mark-started",
             Self::Complete => "activity-task-mark-done",
             Self::Cancel => "activity-task-cancel",
+            Self::Details => "activity-task-details",
         })
     }
 }
@@ -850,6 +853,8 @@ pub struct RoomActivityPane {
     tasks: Vec<WorkspaceTask>,
     task_source: Option<TaskListSource>,
     selected_task: Option<String>,
+    /// Whether the reviewed task shows its run counters and owner sample.
+    review_details: bool,
     task_rects: Vec<(String, Rect)>,
     new_task_rect: Option<Rect>,
     task_action_rects: Vec<(TaskAction, Rect)>,
@@ -1088,6 +1093,7 @@ impl RoomActivityPane {
             tasks: Vec::new(),
             task_source: None,
             selected_task: None,
+            review_details: false,
             task_rects: Vec::new(),
             new_task_rect: None,
             task_action_rects: Vec::new(),
@@ -4738,15 +4744,21 @@ impl RoomActivityPane {
                 true,
             );
         }
-        tr.draw_style(
-            scene,
-            &t("activity-task-queue"),
-            theme.tokens.colors.text_dim,
-            at(transform, x0 + 4.0, y + 8.0),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        y += 40.0;
+        let reviewed =
+            matches!(&self.task_review, Some(Ok(snapshot)) if snapshot.room == self.task_room);
+        // A reviewed task stands alone under its pager; the queue heading
+        // belongs to the list of cards.
+        if !reviewed || self.direction.is_some() {
+            tr.draw_style(
+                scene,
+                &t("activity-task-queue"),
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y + 8.0),
+                None,
+                &theme.text(TextRole::Label),
+            );
+            y += 40.0;
+        }
 
         if self.direction.is_some() {
             self.draw_direction(
@@ -4756,7 +4768,7 @@ impl RoomActivityPane {
             return;
         }
 
-        if matches!(&self.task_review,Some(Ok(snapshot)) if snapshot.room==self.task_room) {
+        if reviewed {
             self.draw_review_tasks(
                 &mut PaintCtx::new(scene, transform, tr, theme),
                 Rect::new(x0, y, x1, self.sheet.y1),
@@ -5580,22 +5592,28 @@ impl RoomActivityPane {
     }
 
     fn task_creator_label(&self, task: &WorkspaceTask) -> String {
-        let handle = automerge::ActorId::from(task.created_by.as_bytes()).to_hex_string();
+        self.person_label(&task.created_by)
+    }
+
+    /// A participant id as people read it: their name, "You", or a short
+    /// handle, never the raw key.
+    fn person_label(&self, id: &str) -> String {
+        let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         let authors = self.source.authors();
         if authors.is_registered(&handle) {
             return authors.resolve(&handle).name;
         }
-        if task.created_by == self.local_user() {
+        if id == self.local_user() {
             return t("workspace-settings-you");
         }
-        if task.created_by.len() == 64 && task.created_by.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return format!(
                 "{} · {}",
                 t("activity-unknown-collaborator"),
-                ui::history_source::short_id(&task.created_by),
+                ui::history_source::short_id(id),
             );
         }
-        participant_display_label(&task.created_by)
+        participant_display_label(id)
     }
 
     fn local_user(&self) -> String {
@@ -5757,6 +5775,10 @@ impl RoomActivityPane {
             self.apply_confirmation_action(action);
             return handled_outcome();
         }
+        if action == TaskAction::Details {
+            self.review_details = !self.review_details;
+            return handled_outcome();
+        }
         if action != TaskAction::OpenResource
             && (!self.host.mutations_available() || tree.document().pending_ops() > 0)
         {
@@ -5859,7 +5881,9 @@ impl RoomActivityPane {
         let mut description =
             task_accessibility_description(task, self.now(), &self.task_creator_label(task));
         if let Some((_, control)) = self.reviewed_control(&task.id) {
-            for line in task_review_view::task_run_evidence(control, self.now()) {
+            for line in task_review_view::task_run_evidence(control, self.now(), |id| {
+                (id != self.local_user()).then(|| self.person_label(id))
+            }) {
                 description.push('\n');
                 description.push_str(&line);
             }
@@ -5963,6 +5987,8 @@ impl RoomActivityPane {
             })
         {
             t("activity-task-retry-agent")
+        } else if action == TaskAction::Details && self.review_details {
+            t("activity-task-hide-details")
         } else {
             action.label()
         }
@@ -7001,10 +7027,10 @@ impl RoomActivityPane {
                 None,
                 t("activity-confirm-field-description"),
             ),
-            ActivityFocus::TaskAction(_) => control(
+            ActivityFocus::TaskAction(action) => control(
                 Role::Button,
                 false,
-                None,
+                (*action == TaskAction::Details).then_some(self.review_details),
                 t("a11y-shell-activity-task-action"),
             ),
             ActivityFocus::Lens(value) => control(
