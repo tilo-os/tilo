@@ -5,6 +5,7 @@ the dry-run mode (TILO_PUBLISH_DRY_RUN), so nothing reaches a registry or KMS.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -132,6 +133,23 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(products.ProductError, "children are an index's"):
             checks({"family": "f", "name": "x", "repository": "r", "dev": ["t"], "children": True,
                     "arches": ["x86_64", "aarch64"], "build": {"run": "b"}})
+
+    def test_provenance_is_written_without_secrets_and_attested_when_signing(self):
+        c = checks({"family": "f", "name": "k", "repository": "r/k", "release": ["sha-{commit}-{arch}"],
+                    "arches": ["x86_64", "aarch64"], "tlog": True, "build": {"run": "b {arch} {out}"},
+                    "provenance": {"run": "prov {dir}", "inputs": ["x"]}})
+        prov = c["provenance-k"]
+        self.assertEqual(prov["needs"], ["image-k-x86_64", "image-k-aarch64"])
+        self.assertEqual(prov["outputs"], ["/target/publish/k/x86_64/provenance.json",
+                                           "/target/publish/k/aarch64/provenance.json"])
+        self.assertNotIn("id_token", prov)
+        self.assertNotIn("on", prov)
+        self.assertIn("provenance-k", c["sign-k"]["needs"])
+        self.assertEqual(c["sign-k"]["run"].count("oci-attest.sh"), 2)
+        self.assertIn("/target/publish/k/aarch64/attestation.json", c["sign-k"]["outputs"])
+        with self.assertRaisesRegex(products.ProductError, "needs tlog"):
+            checks({"family": "f", "name": "k", "repository": "r/k", "release": ["t"],
+                    "build": {"run": "b"}, "provenance": {"run": "p"}})
 
     def test_per_architecture_publications_without_an_index(self):
         c = checks({"family": "f", "name": "p", "repository": "r/p", "release": ["sha-{commit}-{arch}"],
@@ -280,6 +298,18 @@ echo "cosign $*" >> "$FAKE_LOG"
 case $1 in
   generate-key-pair) : > cosign.key; echo pub > cosign.pub ;;
   sign-blob) prev=; for a; do [ "$prev" = --output-signature ] && echo sig > "$a"; prev=$a; done ;;
+  attest-blob) python3 - "$@" <<'PY'
+import base64, json, sys
+args = sys.argv[1:]
+value = lambda flag: args[args.index(flag) + 1]
+statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1",
+             "subject": [{"name": args[-1].rsplit("/", 1)[-1], "digest": {"sha256": value("--hash")}}],
+             "predicate": json.load(open(value("--predicate")))}
+payload = base64.b64encode(json.dumps(statement, separators=(",", ":")).encode()).decode()
+print(json.dumps({"payloadType": "application/vnd.in-toto+json", "payload": payload,
+                  "signatures": [{"keyid": "", "sig": "c2ln"}]}, separators=(",", ":")))
+PY
+  ;;
 esac
 '''
 
@@ -430,6 +460,46 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("release:{commit}", "release:{rust}", ref="stable")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], [COMMIT, channel])
+
+    def provenance(self, digest: str | None = None) -> None:
+        (self.out / "provenance.json").write_text(json.dumps({
+            "buildDefinition": {"internalParameters": {"expectedReleaseDigest": digest or self.digest},
+                                "resolvedDependencies": [{"uri": "git+ssh://code.tilo.so/tilo/tilo@{commit}"}]},
+            "runDetails": {"builder": {"id": "t"}}}))
+
+    def test_provenance_is_attested_for_the_build_and_attached(self):
+        self.provenance()
+        for script in ("oci-sign.sh", "oci-attest.sh"):
+            result = self.run_script(script, "r.example/img", str(self.out), ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((self.out / "attestation.json").read_text())
+        statement = json.loads(base64.b64decode(envelope["payload"]))
+        self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
+        self.assertIn(f"tilo@{COMMIT}", json.dumps(statement["predicate"]))
+        self.assertNotIn("awskms", self.log.read_text())
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+
+    def test_provenance_of_another_image_is_refused(self):
+        self.provenance("sha256:" + "1" * 64)
+        self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="stable")
+        self.assertIn("not for " + self.digest, result.stderr)
+        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="main")
+        self.assertIn("only releases are attested", result.stderr)
+
+    def test_once_tags_never_move(self):
+        self.signed()
+        (self.out / "fingerprint").write_text("ab" * 32 + "\n")
+        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["set-" + "ab" * 32])
+        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is published already", result.stdout)
+        self.assertTrue(self.receipt()["existing"])
+        self.assertEqual(self.receipt()["digest"], self.digest)
 
     def test_an_archive_that_is_not_the_build_is_refused(self):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")
