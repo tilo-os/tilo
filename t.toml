@@ -1878,7 +1878,8 @@ dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
   qemu-img openssh-clients xorriso python3 curl
 python3 os/dev/probe-kvm.py x86_64
 work=$(mktemp -d /var/tmp/host-session-e2e.XXXXXX)
-rpms=dist/ci-output/fedora-44-amd64
+# The lane leaves its output in /target, where a micro-VM step receives its needs' outputs.
+rpms=/target/desktop/amd64/fedora-44-amd64
 ls "$rpms"/*.rpm
 rm -rf target/host-session-e2e
 python3 dist/session/vm-e2e/run.py test --rpms "$rpms" --out target/host-session-e2e \
@@ -2628,9 +2629,9 @@ default = false
 # the OS desktop payload. The containers need a privileged node.
 [[check]]
 name = "desktop-package-amd64"
-run = "bash dist/ci/package-lane.sh amd64"
+run = "bash dist/ci/package-lane.sh amd64 && rm -rf /target/desktop/amd64 && mkdir -p /target/desktop && cp -a dist/ci-output /target/desktop/amd64"
 inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
-outputs = ["dist/ci-output/**"]
+outputs = ["dist/ci-output/**", "/target/desktop/amd64/**"]
 git = true
 requires = ["arch=x86_64"]
 privileged = true
@@ -2643,9 +2644,9 @@ default = false
 
 [[check]]
 name = "desktop-package-arm64"
-run = "bash dist/ci/package-lane.sh arm64"
+run = "bash dist/ci/package-lane.sh arm64 && rm -rf /target/desktop/arm64 && mkdir -p /target/desktop && cp -a dist/ci-output /target/desktop/arm64"
 inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
-outputs = ["dist/ci-output/**"]
+outputs = ["dist/ci-output/**", "/target/desktop/arm64/**"]
 git = true
 requires = ["arch=arm64"]
 privileged = true
@@ -2662,7 +2663,7 @@ default = false
 [[check]]
 name = "publish-desktop-payload"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
+run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json /target/desktop"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 needs = ["desktop-package-amd64", "desktop-package-arm64"]
 outputs = ["/target/publish/desktop/payload.json"]

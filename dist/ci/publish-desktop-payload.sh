@@ -3,7 +3,11 @@
 # tilo-desktop-os-<arch>.tar.gz) as immutable generic packages, and write the `desktop-payload`
 # pointer an OS build takes them from (t.toml: publish-desktop-payload).
 #
-#   dist/ci/publish-desktop-payload.sh POINTER
+#   dist/ci/publish-desktop-payload.sh POINTER [LANES]
+#
+# LANES holds the lanes' output directories (default dist/ci-output); on t the package lanes
+# leave theirs in /target/desktop/<arch>, the only place a micro-VM step receives its needs'
+# outputs.
 #
 # Runs only in trusted runs of stable (T_REF, T_COMMIT), with REGISTRY_TOKEN: a token that may
 # write generic packages. The pointer is JSON: {"schema": 1, "x86_64": {"url", "sha256"},
@@ -13,6 +17,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source tools/ci/publish/lib.sh
 
 pointer=${1:?usage: publish-desktop-payload.sh POINTER}
+lanes=${2:-dist/ci-output}
 [[ $(channel) == release ]] || die "the desktop payload is published from stable, not ${T_REF}"
 require_commit
 token=${REGISTRY_TOKEN:?the package token is not set: the check needs secrets = [\"REGISTRY_TOKEN\"]}
@@ -38,7 +43,7 @@ put_immutable() {
 
 shopt -s nullglob
 entries=()
-for bundle in dist/ci-output/fedora-44-*/tilo-desktop-os-*.tar.gz; do
+for bundle in "$lanes"/fedora-44-*/tilo-desktop-os-*.tar.gz "$lanes"/*/fedora-44-*/tilo-desktop-os-*.tar.gz; do
   arch=${bundle##*tilo-desktop-os-}
   arch=${arch%.tar.gz}
   (cd "$(dirname "$bundle")" && sha256sum --check --strict "${bundle##*/}.sha256")
@@ -47,7 +52,7 @@ for bundle in dist/ci-output/fedora-44-*/tilo-desktop-os-*.tar.gz; do
   put_immutable "$bundle.sha256" "$url.sha256"
   entries+=(--arg "url_$arch" "$url" --arg "sha256_$arch" "$(awk '{print $1}' "$bundle.sha256")")
 done
-(( ${#entries[@]} )) || die 'no desktop payload in dist/ci-output'
+(( ${#entries[@]} )) || die "no desktop payload in $lanes"
 mkdir -p "$(dirname "$pointer")"
 jq -n "${entries[@]}" --arg source "$T_COMMIT" '{schema: 1,
   x86_64: (if $ARGS.named.url_x86_64 then {url: $ARGS.named.url_x86_64, sha256: $ARGS.named.sha256_x86_64} else null end),

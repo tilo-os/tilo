@@ -497,9 +497,11 @@ each = [{ arch = "x86_64", deb = "amd64", node = "arch=x86_64" }, { arch = "aarc
 
 [[matrix.check]]
 name = "desktop-package-{deb}"
-run = "bash dist/ci/package-lane.sh {deb}"
+# The lanes' packages and payloads go to /target too: a micro-VM step that needs this one
+# (host-session-e2e, publish-desktop-payload) receives only what its needs left in /target.
+run = "bash dist/ci/package-lane.sh {deb} && rm -rf /target/desktop/{deb} && mkdir -p /target/desktop && cp -a dist/ci-output /target/desktop/{deb}"
 inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
-outputs = ["dist/ci-output/**"]
+outputs = ["dist/ci-output/**", "/target/desktop/{deb}/**"]
 requires = ["{node}"]
 privileged = true
 writable_sources = true
@@ -516,7 +518,7 @@ default = false
 [[matrix.check]]
 name = "publish-desktop-payload"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
+run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json /target/desktop"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 needs = ["desktop-package-amd64", "desktop-package-arm64"]
 outputs = ["/target/publish/desktop/payload.json"]
