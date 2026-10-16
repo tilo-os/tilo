@@ -53,6 +53,13 @@ impl Fleet {
         });
     }
 
+    /// Drop the cards of other devices `listed` (their keys) no longer
+    /// names; this device's stays.
+    pub fn keep_listed(&mut self, listed: &[String]) {
+        self.devices
+            .retain(|device| device.current || listed.contains(&device.key));
+    }
+
     pub fn devices(&self) -> &[DeviceResidency] {
         &self.devices
     }
@@ -220,6 +227,13 @@ mod tests {
                 .only_here_bytes,
             4,
             "the newer summary replaced the older"
+        );
+        fleet.keep_listed(&["c".to_owned()]);
+        let kept: Vec<_> = fleet.devices().iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(
+            kept,
+            ["a", "c"],
+            "a device the list no longer names loses its card; this one keeps its"
         );
     }
 }

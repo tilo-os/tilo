@@ -5,6 +5,7 @@ use super::{
     DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpKind, ReadDoc,
     Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
 };
+use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
 /// A channel key holder's renewal of a sealed write: the encryption and
 /// payload a renewal carries under the channel's current epoch, or a refusal.
@@ -81,79 +82,19 @@ impl StatePeer {
         })
     }
 
-    /// Historical exact custody only. This never grants current send/sign permission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the message is not a valid retained document of the
-    /// selected device.
-    pub fn lookup_retained_local_document(
-        &self,
-        message: &NeighbourMsg,
-        selected: [u8; 32],
-    ) -> Result<Option<DocumentAdmission>, AdmissionError> {
-        let local = self.local_document_parts(message, selected)?;
-        match self.core.exact_admissions.get(&local.admission.key) {
-            Some(id) if id == &local.admission.operation_id => Ok(Some(local.admission)),
-            Some(_) => Err(AdmissionError::ConflictingSequence),
-            None => Ok(None),
-        }
-    }
-
     fn retained_document(
         &self,
         message: &NeighbourMsg,
         selected: [u8; 32],
     ) -> Result<LocalDocument, String> {
         let local = self.local_document_parts(message, selected).map_err(err)?;
-        if self.core.exact_admissions.get(&local.admission.key)
-            != Some(&local.admission.operation_id)
+        let index = &self.core.exact_admissions;
+        if index.get(&local.admission.key) != Some(&local.admission.operation_id)
+            && !index.covers(&local.admission.key)
         {
             return Err("original publication has no exact retained admission".into());
         }
         Ok(local)
-    }
-
-    /// Only actual durable governor acknowledgement may retire retained bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message is not a retained document of the selected device.
-    pub fn retained_local_document_retired(
-        &self,
-        message: &NeighbourMsg,
-        selected: [u8; 32],
-    ) -> Result<bool, String> {
-        let local = self.retained_document(message, selected)?;
-        let covered = |receipt: &crate::durability::DurableReceipt| {
-            receipt
-                .coverage
-                .watermarks
-                .get(&hex::encode(selected))
-                .copied()
-                .unwrap_or(0)
-                >= local.admission.sequence()
-        };
-        // A sealed record has no cleartext checkpoint to compare here.
-        if local.mutation.is_none() {
-            return Ok(self
-                .durable_receipt(&local.route.app, &local.route.record)?
-                .is_some_and(|receipt| covered(&receipt)));
-        }
-        let Some((receipt, accepted)) =
-            self.durable_receipt_checkpoint(&local.route.app, &local.route.record)?
-        else {
-            return Ok(false);
-        };
-        if !covered(&receipt) {
-            return Ok(false);
-        }
-        let history = self.publication_history(&local)?;
-        let accepted = accepted.doc.committed_document();
-        Ok(history
-            .get_heads()
-            .iter()
-            .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
     }
 
     // A partial incremental's dependencies come only from this actually admitted
@@ -223,40 +164,6 @@ impl StatePeer {
             }))
     }
 
-    fn has_fresh_successor(
-        &self,
-        original: &LocalDocument,
-        outbox: &[NeighbourMsg],
-        selected: [u8; 32],
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let history = self.publication_history(original)?;
-        for message in outbox {
-            if !crate::outbox::fresh(message, now) {
-                continue;
-            }
-            let candidate = self.retained_document(message, selected)?;
-            if candidate.route != original.route
-                || candidate.admission.sequence() <= original.admission.sequence()
-                || !matches!(candidate.mutation, Some(DocumentMutation::Incremental(_)))
-                || self.checkpoint_sequence_covers(message)
-            {
-                continue;
-            }
-            let Some(successor) = self.recovery_publication_history(&candidate)? else {
-                continue;
-            };
-            if history
-                .get_heads()
-                .iter()
-                .all(|head| successor.get_change_meta_by_hash(head).is_some())
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     // A successor may rely only on changes the governor has acknowledged, not
     // missing ancestors held solely in our local document. Otherwise a fresh
     // dependent frame would indefinitely suppress recovery of its predecessor.
@@ -295,150 +202,6 @@ impl StatePeer {
                 return Err("recovery publication dependencies did not advance".into());
             }
         }
-    }
-
-    /// The returned prefix is identical to the input; only authorized successors append.
-    /// The outer owner must commit this candidate and the entire queue before send.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a queued message is not authentic retained custody or a successor
-    /// cannot be signed.
-    pub fn reconcile_local_outbox(
-        &mut self,
-        outbox: &[NeighbourMsg],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        publication_size(outbox)?;
-        let selected = key.verifying_key().to_bytes();
-        self.permissions(selected, now)?;
-        for original in outbox {
-            self.retained_document(original, selected)?;
-        }
-        let mut candidate = self.clone();
-        let mut retained = outbox.to_vec();
-        for original in outbox {
-            let local = candidate.retained_document(original, selected)?;
-            // A sealed write is renewed only through its key holder, by
-            // `renew_local_sealed`; it stays in custody until the governor's
-            // watermark covers it.
-            if local.mutation.is_none()
-                || candidate.retained_local_document_retired(original, selected)?
-            {
-                continue;
-            }
-            if matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
-                && crate::outbox::fresh(original, now)
-                && !candidate.checkpoint_sequence_covers(original)
-            {
-                continue;
-            }
-            if !candidate.fresh_local_recovery_checkpoint(&local.route, now)?
-                || candidate.has_fresh_successor(&local, &retained, selected, now)?
-            {
-                continue;
-            }
-            // Validate real history before signing. A Snapshot remains immutable;
-            // its complete native history is independently signed as an Incremental.
-            candidate.publication_history(&local)?;
-            let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
-                local.mutation
-            else {
-                continue;
-            };
-            if retained.len() == MAX_PUBLICATIONS {
-                return Err("local publication count limit".into());
-            }
-            let renewed = candidate.publish_incremental(
-                &local.route.app,
-                &local.route.record,
-                bytes,
-                key,
-                now,
-            )?;
-            candidate.retained_document(&renewed, selected)?;
-            retained.push(renewed);
-            publication_size(&retained)?;
-        }
-        *self = candidate;
-        Ok(retained)
-    }
-
-    /// Renew `original`, a sealed write of the selected device still in
-    /// custody, once it expired before the governor's watermark retired it.
-    /// `reseal` is the channel's key holder: it returns the payload to carry
-    /// under the channel's current epoch, or refuses. The renewal keeps the
-    /// original's artifact, attestation and class, is signed at `now` under
-    /// the author's next sequence, and is admitted as a new local sealed
-    /// write. `None` when `original` is not due; on an error nothing changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `original` is not authentic retained custody, the
-    /// device may no longer write, `reseal` refuses, or the renewal is not
-    /// admitted.
-    pub fn renew_local_sealed(
-        &mut self,
-        original: &NeighbourMsg,
-        reseal: &mut Reseal<'_>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Option<NeighbourMsg>, String> {
-        let selected = key.verifying_key().to_bytes();
-        let local = self.retained_document(original, selected)?;
-        if local.mutation.is_some()
-            || crate::outbox::fresh(original, now)
-            || self.retained_local_document_retired(original, selected)?
-        {
-            return Ok(None);
-        }
-        self.permissions(selected, now)?;
-        let NeighbourMsg::AppDocument { envelope, .. } = original else {
-            return Err("retained local publication requires AppDocument".into());
-        };
-        let (encryption, payload) = reseal(envelope)?;
-        if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
-            return Err("a renewal must stay on its write's channel".into());
-        }
-        let seq = self
-            .core
-            .documents
-            .get(&local.route)
-            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
-            .copied()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
-        let mut renewal = SignedOp::new_unsigned_with_encryption(
-            payload,
-            envelope.artifact,
-            envelope.author,
-            envelope.attestation_id,
-            envelope.kind,
-            now,
-            seq,
-            encryption,
-        )
-        .with_claims(envelope.claims.clone());
-        collab_types::sign_op(&mut renewal, key).map_err(err)?;
-        let mut candidate = self.clone();
-        candidate.admit_new_local_document(
-            &local.route.app,
-            &local.route.record,
-            renewal.clone(),
-            now,
-        )?;
-        let message = NeighbourMsg::AppDocument {
-            peer: peer_handle(&selected),
-            app_id: local.route.app,
-            cluster_id: candidate.core.room.clone(),
-            record_id: local.route.record,
-            envelope: Box::new(renewal),
-        };
-        candidate.retained_document(&message, selected)?;
-        *self = candidate;
-        Ok(Some(message))
     }
 
     fn validate_retained_history(&self, history: &StatePeer) -> Result<(), String> {
@@ -491,117 +254,169 @@ impl StatePeer {
                     >= *seq
             }))
     }
-
-    /// Actual retained peer history; missing original signatures are not reconstructed.
+}
+impl PeerOutbox<'_> {
+    /// Historical exact custody only. This never grants current send/sign permission.
     ///
     /// # Errors
     ///
-    /// Returns an error if `history` does not belong to this room or a publication cannot be
-    /// signed.
-    pub fn recover_local_history(
-        &mut self,
-        history: &StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        self.recover_local_history_with_outbox(history, &[], key, now)
+    /// Returns an [`AdmissionError`] if the message is not a valid retained document of the
+    /// selected device.
+    pub fn lookup_retained_local_document(
+        self,
+        message: &NeighbourMsg,
+        selected: [u8; 32],
+    ) -> Result<Option<DocumentAdmission>, AdmissionError> {
+        let local = self.peer.local_document_parts(message, selected)?;
+        match self.peer.core.exact_admissions.get(&local.admission.key) {
+            Some(id) if id == &local.admission.operation_id => Ok(Some(local.admission)),
+            Some(_) => Err(AdmissionError::ConflictingSequence),
+            // Folded into a compaction's snapshot: admitted.
+            None if self.peer.core.exact_admissions.covers(&local.admission.key) => {
+                Ok(Some(local.admission))
+            }
+            None => Ok(None),
+        }
     }
-
-    /// Recover only history not carried by a fresh exact publication in the actual queue.
-    /// Returns new publications only; the supplied queue remains immutable custody.
+    /// Only actual durable governor acknowledgement may retire retained bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error if `history` or `outbox` does not belong to this room or a
-    /// publication cannot be signed.
-    pub fn recover_local_history_with_outbox(
-        &mut self,
-        history: &StatePeer,
-        outbox: &[NeighbourMsg],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        publication_size(outbox)?;
-        self.validate_retained_history(history)?;
-        let selected = key.verifying_key().to_bytes();
-        self.permissions(selected, now)?;
-        for message in outbox {
-            self.retained_document(message, selected)?;
+    /// Returns an error if the message is not a retained document of the selected device.
+    pub fn retained_local_document_retired(
+        self,
+        message: &NeighbourMsg,
+        selected: [u8; 32],
+    ) -> Result<bool, String> {
+        let local = self.peer.retained_document(message, selected)?;
+        let covered = |receipt: &crate::durability::DurableReceipt| {
+            receipt
+                .coverage
+                .watermarks
+                .get(&hex::encode(selected))
+                .copied()
+                .unwrap_or(0)
+                >= local.admission.sequence()
+        };
+        // A sealed record has no cleartext checkpoint to compare here.
+        if local.mutation.is_none() {
+            return Ok(self
+                .peer
+                .durable_receipt(&local.route.app, &local.route.record)?
+                .is_some_and(|receipt| covered(&receipt)));
         }
-        let mut candidate = self.clone();
-        let mut retained = outbox.to_vec();
-        for (route, old) in &history.core.documents {
-            if candidate.retained_history_route_retired(route, old)? {
-                continue;
-            }
-            if !candidate.fresh_local_recovery_checkpoint(route, now)? {
-                return Err("retained history needs fresh genuine governor checkpoint".into());
-            }
-            let mut already_carried = false;
-            for message in &retained {
-                if !crate::outbox::fresh(message, now)
-                    || candidate.checkpoint_sequence_covers(message)
-                {
-                    continue;
-                }
-                let local = candidate.retained_document(message, selected)?;
-                if &local.route != route
-                    || local.admission.sequence()
-                        <= old
-                            .channel
-                            .last_seq_per_author
-                            .get(&Ed25519PublicKey::from_bytes(selected))
-                            .copied()
-                            .unwrap_or(0)
-                {
-                    continue;
-                }
-                let Some(successor) = candidate.recovery_publication_history(&local)? else {
-                    continue;
-                };
-                if old
-                    .doc
-                    .base_heads()
-                    .iter()
-                    .all(|head| successor.get_change_by_hash(head).is_some())
-                {
-                    already_carried = true;
-                    break;
-                }
-            }
-            if already_carried {
-                continue;
-            }
-            if retained.len() == MAX_PUBLICATIONS {
-                return Err("local publication count limit".into());
-            }
-            let bytes = old.doc.clone().save();
-            if bytes.len() > MAX_PUBLICATION_BYTES {
-                return Err("local publication byte limit".into());
-            }
-            let message =
-                candidate.publish_incremental(&route.app, &route.record, bytes, key, now)?;
-            candidate.retained_document(&message, selected)?;
-            retained.push(message);
-            publication_size(&retained)?;
+        let Some((receipt, accepted)) = self
+            .peer
+            .durable_receipt_checkpoint(&local.route.app, &local.route.record)?
+        else {
+            return Ok(false);
+        };
+        if !covered(&receipt) {
+            return Ok(false);
         }
-        *self = candidate;
-        Ok(retained.split_off(outbox.len()))
+        let history = self.peer.publication_history(&local)?;
+        let accepted = accepted.doc.committed_document();
+        Ok(history
+            .get_heads()
+            .iter()
+            .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
     }
-
     /// Compare retained real history with the admitted durable governor checkpoint.
+    /// A test oracle for the recovery projection.
     ///
     /// # Errors
     ///
     /// Returns an error if `history` does not belong to this room.
-    pub fn retained_local_history_retired(&self, history: &StatePeer) -> Result<bool, String> {
-        self.validate_retained_history(history)?;
+    #[cfg(test)]
+    pub fn retained_local_history_retired(self, history: &StatePeer) -> Result<bool, String> {
+        self.peer.validate_retained_history(history)?;
         for (route, old) in &history.core.documents {
-            if !self.retained_history_route_retired(route, old)? {
+            if !self.peer.retained_history_route_retired(route, old)? {
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+}
+impl PeerOutboxMut<'_> {
+    /// Renew `original`, a sealed write of the selected device still in
+    /// custody, once it expired before the governor's watermark retired it.
+    /// `reseal` is the channel's key holder: it returns the payload to carry
+    /// under the channel's current epoch, or refuses. The renewal keeps the
+    /// original's artifact, attestation and class, is signed at `now` under
+    /// the author's next sequence, and is admitted as a new local sealed
+    /// write. `None` when `original` is not due; on an error nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `original` is not authentic retained custody, the
+    /// device may no longer write, `reseal` refuses, or the renewal is not
+    /// admitted.
+    pub fn renew_local_sealed(
+        self,
+        original: &NeighbourMsg,
+        reseal: &mut Reseal<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Option<NeighbourMsg>, String> {
+        let selected = key.verifying_key().to_bytes();
+        let local = self.peer.retained_document(original, selected)?;
+        if local.mutation.is_some()
+            || crate::outbox::fresh(original, now)
+            || self
+                .peer
+                .outbox()
+                .retained_local_document_retired(original, selected)?
+        {
+            return Ok(None);
+        }
+        self.peer.permissions(selected, now)?;
+        let NeighbourMsg::AppDocument { envelope, .. } = original else {
+            return Err("retained local publication requires AppDocument".into());
+        };
+        let (encryption, payload) = reseal(envelope)?;
+        if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
+            return Err("a renewal must stay on its write's channel".into());
+        }
+        let seq = self
+            .peer
+            .core
+            .documents
+            .get(&local.route)
+            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("sequence exhausted")?;
+        let mut renewal = SignedOp::new_unsigned_with_encryption(
+            payload,
+            envelope.artifact,
+            envelope.author,
+            envelope.attestation_id,
+            envelope.kind,
+            now,
+            seq,
+            encryption,
+        )
+        .with_claims(envelope.claims.clone());
+        collab_types::sign_op(&mut renewal, key).map_err(err)?;
+        let mut candidate = self.peer.clone();
+        candidate.admit_new_local_document(
+            &local.route.app,
+            &local.route.record,
+            renewal.clone(),
+            now,
+        )?;
+        let message = NeighbourMsg::AppDocument {
+            peer: peer_handle(&selected),
+            app_id: local.route.app,
+            cluster_id: candidate.core.room.clone(),
+            record_id: local.route.record,
+            envelope: Box::new(renewal),
+        };
+        candidate.retained_document(&message, selected)?;
+        *self.peer = candidate;
+        Ok(Some(message))
     }
 }
 

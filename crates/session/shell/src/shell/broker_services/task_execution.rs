@@ -21,8 +21,11 @@ impl WorkspaceTaskExecution for NativeOwnerCommitService {
         let room_id = super::super::state::RoomId::parse(room).ok_or("invalid task room")?;
         let owner = &self.opened_owner("native task owner unavailable")?;
         owner.with_current(room_id, |view| {
-            view.peer()
-                .check_task_execution_actor(agent, None, std::time::SystemTime::now())?;
+            view.peer().workspace().check_task_execution_actor(
+                agent,
+                None,
+                std::time::SystemTime::now(),
+            )?;
             tilo_peer_state::workspace_task::snapshot(
                 view.peer()
                     .admitted_room()
@@ -91,7 +94,9 @@ impl WorkspaceTaskExecution for NativeOwnerCommitService {
         let owner = &self.opened_owner("native task owner unavailable")?;
         owner.with_current(room_id, |view| {
             let now = std::time::SystemTime::now();
-            view.peer().check_task_execution_actor(agent, None, now)?;
+            view.peer()
+                .workspace()
+                .check_task_execution_actor(agent, None, now)?;
             requirement.check(view.peer(), room, agent, now)
         })
     }

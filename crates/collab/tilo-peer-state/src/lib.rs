@@ -22,11 +22,13 @@ pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedAgent, GovernedDelegateRow, GovernedMember, InstalledBot, LocalRecoveryReservation,
     MemberAuthority, NativePublicationCut, PeerDeliveryPolicy, PeerDeliveryPolicyError,
-    PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, PlaintextChanges,
-    ReceiveOutcome, RecordReaders, Reseal, SealCheckpoint, SeedDocument, SeedState, StatePeer,
-    TransportOrigin, VerifiedSecurityMetadataOnly, committed_document_revision,
-    decide_with_surfaces, default_surfaces, peer_handle, seed_room,
+    PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, PeerGovernance,
+    PeerGovernanceMut, PeerLimits, PeerMediaCall, PeerMediaGovernance, PeerMediaGovernanceMut,
+    PeerMember, PeerOutbox, PeerOutboxMut, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome,
+    RecordReaders, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer,
+    TransportOrigin, committed_document_revision, decide_with_surfaces, default_surfaces,
+    peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;

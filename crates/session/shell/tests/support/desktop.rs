@@ -49,6 +49,16 @@ const POLL: Duration = Duration::from_millis(50);
 /// milliseconds; this only decides when a call that never answered is reported.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(10);
 
+/// How long the compositor may take to deliver the report of a stall: every
+/// thread's state and symbolized stack. It names the stall within
+/// [`HEARTBEAT_BUDGET`] but writes its answer only once the stacks are
+/// symbolized, and symbolizing a debug build's few dozen threads under the
+/// pressure variant's memory load has taken longer than ten seconds. A
+/// monitor that gave up sooner went quiet in the middle of a freeze, and the
+/// stalled call it left behind was reported as slow work on a loop that kept
+/// turning. Waiting here costs only a frozen run's time to fail.
+const STALL_REPORT_DEADLINE: Duration = Duration::from_secs(120);
+
 /// The compositor's identity seed: the same completed ceremony the other
 /// compositor fixtures start from, so the desktop opens instead of onboarding.
 const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
@@ -71,6 +81,24 @@ struct Watch {
     /// the main thread's stack: slow, reported, not a hang.
     jank: Mutex<Vec<String>>,
     stop: AtomicBool,
+    /// Ask for no heartbeats while set ([`Desktop::without_heartbeats`]).
+    hold: AtomicBool,
+    /// When the heartbeat the monitor is waiting on was asked for; `None`
+    /// between heartbeats. One outstanding past the budget is a stall whose
+    /// report is still being written.
+    outstanding: Mutex<Option<Instant>>,
+}
+
+impl Watch {
+    /// Whether a heartbeat has gone unacknowledged for longer than the
+    /// compositor takes to say it stalled.
+    fn overdue(&self) -> bool {
+        self.outstanding
+            .lock()
+            .ok()
+            .and_then(|asked| *asked)
+            .is_some_and(|asked| asked.elapsed() > HEARTBEAT_BUDGET.saturating_mul(2))
+    }
 }
 
 /// A started compositor.
@@ -84,6 +112,18 @@ pub struct Desktop {
     watch: Arc<Watch>,
     monitor: Option<std::thread::JoinHandle<()>>,
     last_call: Mutex<String>,
+}
+
+/// What a compositor left alone did over a window ([`Desktop::idle`]).
+pub struct Idle {
+    /// The share of one core the whole process used, threads that exited
+    /// in the window included.
+    pub share: f64,
+    /// The same window by thread name: CPU, wakeups and preemptions.
+    pub threads: tilo_test_env::idle::Wakeups,
+    /// What the compositor printed in the window (with `TILO_PAINT_STATS`,
+    /// what woke its loop and what it painted).
+    pub log: Vec<String>,
 }
 
 /// A Wayland client process and what it has written to stdout.
@@ -178,6 +218,9 @@ impl Desktop {
             .env("TILO_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
             .env("TILO_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             .env("RUST_LOG", "warn,tilo::shortcut=info,tilo::workspace=info")
+            // Every two seconds, what woke the main loop and what it painted:
+            // the idle check prints the lines from its window.
+            .env("TILO_PAINT_STATS", "1")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -233,8 +276,16 @@ impl Desktop {
     }
 
     /// Fail now if the main loop has stalled, with the report.
+    ///
+    /// A heartbeat already overdue is a stall whose report (every thread's
+    /// stack) the compositor is still writing: wait for it rather than carry
+    /// on as if the loop were turning.
     #[track_caller]
     pub fn check(&self) {
+        let asked = Instant::now();
+        while self.watch.overdue() && asked.elapsed() < STALL_REPORT_DEADLINE {
+            std::thread::sleep(POLL);
+        }
         let stall = self.watch.stall.lock().ok().and_then(|stall| stall.clone());
         if let Some(report) = stall {
             let last = self.last_call.lock().map(|c| c.clone()).unwrap_or_default();
@@ -325,9 +376,7 @@ impl Desktop {
             self.check();
             std::thread::sleep(POLL);
         }
-        let threads = self
-            .liveness_threads()
-            .unwrap_or_else(|e| format!("(no thread dump: {e})"));
+        let threads = self.thread_dump();
         panic!(
             "control call {op} did not answer within {deadline:?} although the main loop \
              kept acknowledging wakes (slowest {:?}): the call is slow, not the loop frozen.\n\
@@ -347,7 +396,7 @@ impl Desktop {
         let path = shell::compositor::liveness::socket_path(&self.control);
         let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(STALL_REPORT_DEADLINE))
             .map_err(|e| e.to_string())?;
         stream
             .write_all(b"{\"op\":\"threads\"}\n")
@@ -579,6 +628,35 @@ impl Desktop {
         }
     }
 
+    /// Send `request` on the control socket without waiting for a reply,
+    /// for a request whose answer is the compositor's fate, not a line.
+    pub fn send(&self, request: &Value) {
+        let mut stream = UnixStream::connect(&self.control).expect("connect to the control socket");
+        let mut line = serde_json::to_vec(request).expect("encode the request");
+        line.push(b'\n');
+        stream.write_all(&line).expect("write the request");
+        // Held open until the compositor is gone: closing it early would
+        // only race the request with a hang-up.
+        std::mem::forget(stream);
+    }
+
+    /// Wait up to `within` for the compositor to exit on its own; its exit
+    /// status, or `None` while it still runs.
+    pub fn wait_for_exit(&self, within: Duration) -> Option<std::process::ExitStatus> {
+        let started = Instant::now();
+        loop {
+            let exited = self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().flatten());
+            if exited.is_some() || started.elapsed() >= within {
+                return exited;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
     /// The last `n` lines the compositor wrote.
     pub fn recent_log(&self, n: usize) -> String {
         self.log
@@ -605,13 +683,38 @@ impl Desktop {
         ticks.saturating_mul(10)
     }
 
-    /// The share of one core the compositor used over `window` of doing nothing.
+    /// What the compositor did over `window` of doing nothing.
     #[track_caller]
-    pub fn idle_cpu_share(&self, window: Duration) -> f64 {
+    pub fn idle(&self, window: Duration) -> Idle {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        let threads_before = tilo_test_env::idle::sample_process(pid).unwrap_or_default();
+        let log_from = self.log.lock().map_or(0, |lines| lines.len());
+        let started = Instant::now();
         let before = self.compositor_cpu_ms();
         self.pause(window);
         let used = self.compositor_cpu_ms().saturating_sub(before);
-        f64::from(u32::try_from(used).unwrap_or(u32::MAX)) / (window.as_secs_f64() * 1000.0)
+        let elapsed = started.elapsed();
+        let threads_after = tilo_test_env::idle::sample_process(pid).unwrap_or_default();
+        Idle {
+            share: f64::from(u32::try_from(used).unwrap_or(u32::MAX))
+                / (window.as_secs_f64() * 1000.0),
+            threads: tilo_test_env::idle::Wakeups::between(threads_before, threads_after, elapsed),
+            log: self
+                .log
+                .lock()
+                .map(|lines| lines.get(log_from..).unwrap_or_default().to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Run `f` with the heartbeat monitor holding its pings, so only the
+    /// desktop itself wakes the main loop. A loop that stalled meanwhile is
+    /// reported by the first heartbeat after it.
+    pub fn without_heartbeats<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.watch.hold.store(true, Ordering::Relaxed);
+        let out = f();
+        self.watch.hold.store(false, Ordering::Relaxed);
+        out
     }
 
     /// Main-loop iterations that ran long while working, with stacks.
@@ -708,24 +811,25 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 }
                 return;
             };
-            let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
-            // The compositor answers within the budget, then spends up to two
-            // seconds collecting stacks; allow for both.
-            let _ = stream.set_read_timeout(Some(
-                HEARTBEAT_BUDGET.saturating_add(Duration::from_secs(10)),
-            ));
-            let Ok(mut writer) = stream.try_clone() else {
+            // The compositor answers within the budget, or names the stall
+            // then and answers once every thread's stack is symbolized.
+            let _ = stream
+                .set_read_timeout(Some(HEARTBEAT_BUDGET.saturating_add(STALL_REPORT_DEADLINE)));
+            let Ok(writer) = stream.try_clone() else {
                 return;
             };
-            let mut reader = BufReader::new(stream);
+            let mut liveness = Liveness {
+                writer,
+                reader: BufReader::new(stream),
+                watch: &watch,
+            };
             while !watch.stop.load(Ordering::Relaxed) {
-                let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
-                if writer.write_all(request.as_bytes()).is_err() {
-                    return;
+                if watch.hold.load(Ordering::Relaxed) {
+                    std::thread::sleep(POLL);
+                    continue;
                 }
                 let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    // The compositor went away; `check` reports its exit.
+                if !liveness.heartbeat(&mut line) {
                     return;
                 }
                 let mut answer = serde_json::from_str::<Answer>(&line);
@@ -758,12 +862,8 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     // a spin.
                     let mut waited = HEARTBEAT_BUDGET;
                     while waited < BUSY_LIMIT {
-                        let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
-                        if writer.write_all(request.as_bytes()).is_err() {
-                            return;
-                        }
                         line.clear();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        if !liveness.heartbeat(&mut line) {
                             return;
                         }
                         answer = serde_json::from_str::<Answer>(&line);
@@ -821,6 +921,58 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
         .expect("start the heartbeat monitor")
 }
 
+/// The monitor's connection to the liveness socket.
+struct Liveness<'a> {
+    writer: UnixStream,
+    reader: BufReader<UnixStream>,
+    watch: &'a Watch,
+}
+
+impl Liveness<'_> {
+    /// Ask for one heartbeat and read its answer into `line`. `false` ends
+    /// the monitor: the compositor went away (`check` reports its exit), or
+    /// it neither acknowledged the wake nor delivered its report of the
+    /// stall in time, which is recorded as the stall it is.
+    fn heartbeat(&mut self, line: &mut String) -> bool {
+        let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
+        let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
+        if let Ok(mut outstanding) = self.watch.outstanding.lock() {
+            *outstanding = Some(Instant::now());
+        }
+        let read = self
+            .writer
+            .write_all(request.as_bytes())
+            .and_then(|()| self.reader.read_line(line));
+        let answered = match read {
+            Ok(0) => false,
+            Ok(_) => true,
+            // The compositor closed the socket: it went away.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                false
+            }
+            Err(error) => {
+                if let Ok(mut stall) = self.watch.stall.lock() {
+                    *stall = Some(format!(
+                        "the main loop did not acknowledge a wake within {HEARTBEAT_BUDGET:?}, \
+                         and the compositor's report of the stall, with every thread's stack, \
+                         did not arrive within {STALL_REPORT_DEADLINE:?} ({error})"
+                    ));
+                }
+                false
+            }
+        };
+        if let Ok(mut outstanding) = self.watch.outstanding.lock() {
+            *outstanding = None;
+        }
+        answered
+    }
+}
+
 /// Drain the compositor's stdout and stderr on threads (unread output blocks
 /// it mid-write) and report the sockets it announces.
 fn drain_log_pipes(
@@ -840,7 +992,18 @@ fn drain_log_pipes(
     let stderr = child.stderr.take().expect("compositor stderr");
     let log_writer = Arc::clone(log);
     std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        // Bytes, not `lines()`: one line that is not UTF-8 would end the
+        // read and silently drop everything the compositor says after it.
+        let mut reader = BufReader::new(stderr);
+        let mut raw = Vec::new();
+        while reader
+            .read_until(b'\n', &mut raw)
+            .is_ok_and(|read| read > 0)
+        {
+            let line = String::from_utf8_lossy(&raw)
+                .trim_end_matches(['\n', '\r'])
+                .to_string();
+            raw.clear();
             for (marker, key) in [
                 ("tilo compositor listening on ", "public"),
                 ("tilo compositor test_control listening on ", "control"),

@@ -36,10 +36,11 @@ def first_json(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith(("{", "[")):
-            return json.loads(line)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("{", "[")):
+            # CLI receipts can surround a complete, pretty-printed JSON document.
+            return json.JSONDecoder().raw_decode("\n".join(lines[index:]).lstrip())[0]
     raise VmError(f"no JSON in output: {text[:400]!r}")
 
 

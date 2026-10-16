@@ -184,9 +184,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if view.device() != view.governor() || view.governor() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
-            view.peer().check_checkpoint_writer(&key, now)?;
+            view.peer().workspace().check_checkpoint_writer(&key, now)?;
             if mutation {
-                view.peer().check_checkpoint_namer(caller, now)?;
+                view.peer()
+                    .workspace()
+                    .check_checkpoint_namer(caller, now)?;
             }
             Ok(())
         })?;
@@ -372,7 +374,7 @@ async fn record_receipt_elsewhere(
     else {
         return Err("missing effect receipt operation".into());
     };
-    let expected = tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(
+    let expected = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
         *invocation,
         redacted,
     )?;
@@ -816,6 +818,7 @@ fn launchable_applications(
             package_id: format!("{HOST_APPLICATION_PREFIX}{}", app.desktop_id),
             display_name: app.name,
             unconfined: true,
+            offers: Vec::new(),
         });
     packages
         .into_iter()
@@ -823,6 +826,7 @@ fn launchable_applications(
             package_id: app.package_id,
             display_name: app.display_name,
             unconfined: false,
+            offers: app.offers,
         })
         .chain(hosts)
         .collect()
@@ -1885,6 +1889,7 @@ pub fn native_services(
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
         }),
         nearby_transfer,
+        own_device: NativeOwnDevice::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
@@ -1894,6 +1899,41 @@ pub fn native_services(
         display_control,
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
+    }
+}
+
+/// The network carrying an application's action to another of the
+/// person's own devices.
+struct NativeOwnDevice(Arc<super::network::ShellNetwork>);
+
+impl NativeOwnDevice {
+    /// The service over `network`; none without a network.
+    fn service(
+        network: Option<&Arc<super::network::ShellNetwork>>,
+    ) -> Option<Arc<dyn tilo_action_broker::services::OwnDeviceActions>> {
+        network.map(|network| {
+            Arc::new(Self(Arc::clone(network)))
+                as Arc<dyn tilo_action_broker::services::OwnDeviceActions>
+        })
+    }
+}
+
+impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        checked: &tilo_actions::remote::own_device::Checked,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<
+        tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>,
+        tilo_actions::remote::ActionHostError,
+    > {
+        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        };
+        self.0
+            .invoke_own_device(person, checked, request)
+            .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
     }
 }
 
@@ -2376,6 +2416,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            offers: Vec::new(),
         };
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
             desktop_id: id.into(),

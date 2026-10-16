@@ -192,8 +192,11 @@ impl WorkspaceTaskExecution for Native {
             return Err("foreign task room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer()
-                .check_task_execution_actor(agent, None, std::time::SystemTime::now())?;
+            view.peer().workspace().check_task_execution_actor(
+                agent,
+                None,
+                std::time::SystemTime::now(),
+            )?;
             tilo_peer_state::workspace_task::snapshot(
                 view.peer()
                     .admitted_room()
@@ -239,7 +242,9 @@ impl WorkspaceTaskExecution for Native {
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
-            view.peer().check_task_execution_actor(agent, None, now)?;
+            view.peer()
+                .workspace()
+                .check_task_execution_actor(agent, None, now)?;
             requirement.check(view.peer(), requested, agent, now)
         })
     }
@@ -645,7 +650,8 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .with_current(room(), |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_grants(&[grant], &f.native.key, now)?;
+            next.governance_mut()
+                .put_governed_grants(&[grant], &f.native.key, now)?;
             next.durable_mutation_messages(
                 &before,
                 &f.native.key,
@@ -902,14 +908,14 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(8011))
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(
@@ -962,7 +968,7 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(
@@ -1064,7 +1070,7 @@ async fn native_approval_grants_no_tool_permission_and_deleted_targets_fail_clos
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("authorized")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(

@@ -415,6 +415,44 @@ mod tests {
         reload.abort();
     }
 
+    /// The list tmpfiles seeded on a machine installed on 2026-10-02, byte
+    /// for byte. `C` never overwrites it, so after the update that wrapped
+    /// the list in a file authority object it is still what fs.service
+    /// reads; refusing it crash-looped the service and left
+    /// `/var/workspace` unmounted.
+    #[test]
+    fn the_list_an_older_image_seeded_still_mounts_with_its_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fs-capabilities.json");
+        std::fs::write(
+            &path,
+            r#"[
+  {
+    "subject": { "Principal": { "Person": "local" } },
+    "scope": { "FsPath": "/" },
+    "effect": "Grant",
+    "verb": "Write",
+    "id": "local-session-workspace",
+    "expiry": "Never",
+    "granted_by": null
+  }
+]
+"#,
+        )
+        .unwrap();
+        let local = vec![Principal::Person("local".into())];
+        let file = CapabilityFile::load(&path, ALICE, local).expect("the old list must load");
+        let handle = file.handle();
+        assert!(handle.permits(&ALICE, "/notes/today.md", Access::Write));
+        let outsider = CapabilityFile::load(&path, ALICE, Vec::new())
+            .unwrap()
+            .handle();
+        assert!(
+            !outsider.permits(&ALICE, "/notes/today.md", Access::Read),
+            "migrating must not widen the grant beyond its principal"
+        );
+    }
+
     #[test]
     fn missing_deleted_malformed_or_empty_capability_files_fail_closed() {
         // Phase `a_deleted_file_denies_everything`.

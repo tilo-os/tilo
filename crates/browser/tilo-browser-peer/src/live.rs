@@ -57,7 +57,6 @@ pub struct LiveState {
     remote: BTreeMap<[u8; 32], RemoteMember>,
     local_presence: Option<PresenceFrame>,
     presence_seq: u64,
-    preview_seq: BTreeMap<LiveRecord, u64>,
 }
 
 impl LiveState {
@@ -205,26 +204,6 @@ impl LiveState {
         self.local_presence = Some(presence);
         Ok(encoded)
     }
-
-    /// Encode preview operations for `record`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the frame violates the wire bounds.
-    pub fn publish_preview(
-        &mut self,
-        record: LiveRecord,
-        ops: Vec<PreviewOp>,
-    ) -> Result<Vec<u8>, LiveWireError> {
-        let seq = self.preview_seq.entry(record.clone()).or_default();
-        *seq = seq.saturating_add(1);
-        LiveFrame::Ops(OpsFrame::Preview {
-            seq: *seq,
-            record,
-            ops,
-        })
-        .encode()
-    }
 }
 
 #[cfg(test)]
@@ -291,15 +270,16 @@ mod tests {
             Some([2.0, 2.0])
         );
 
-        let preview = sender
-            .publish_preview(
-                record(),
-                vec![PreviewOp::Insert {
-                    at: LiveAnchor { cursor: vec![1] },
-                    text: "x".into(),
-                }],
-            )
-            .unwrap();
+        let preview = LiveFrame::Ops(OpsFrame::Preview {
+            seq: 1,
+            record: record(),
+            ops: vec![PreviewOp::Insert {
+                at: LiveAnchor { cursor: vec![1] },
+                text: "x".into(),
+            }],
+        })
+        .encode()
+        .unwrap();
         receiver.receive(from, &preview, 13);
         assert_eq!(receiver.remote(14)[0].previews.len(), 1);
         receiver.durable_changed(&record());

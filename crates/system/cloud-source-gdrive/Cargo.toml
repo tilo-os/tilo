@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }

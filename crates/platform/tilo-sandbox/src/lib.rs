@@ -19,8 +19,9 @@
 //!     [`confine::ConfineError::Unsupported`], and callers parse in process.
 //! - [`job`] (Linux only): run a whole command (a CI check, a shell
 //!   session) as an isolated job on a shared kernel: its own cgroup and
-//!   namespaces, no capabilities, Landlock and the CI seccomp filter. See
-//!   `docs/job-sandbox.md`.
+//!   namespaces, no capabilities, Landlock and the CI seccomp filter; and
+//!   [`job::vm`], a command that needs real root run in a micro-VM whose QEMU
+//!   is such a job. See `docs/job-sandbox.md`.
 //! - `shm` (Unix only) — anonymous memory files.
 //!   - Linux: sealed memfds, so a reader can map what it received as
 //!     immutable bytes.

@@ -113,11 +113,13 @@ impl Column {
 
     /// Update the extra top inset before the next layout pass.
     pub fn set_extra_top_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.extra_top_padding.to_bits() != px.to_bits();
         self.extra_top_padding = px;
     }
 
     /// Update the extra bottom inset before the next layout pass.
     pub fn set_extra_bottom_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.extra_bottom_padding.to_bits() != px.to_bits();
         self.extra_bottom_padding = px;
     }
 
@@ -140,6 +142,7 @@ impl Column {
 
     /// Update the top + bottom inset before the next layout pass.
     pub fn set_vertical_padding(&mut self, px: f32) {
+        self.flow.style_dirty |= self.vertical_padding_override != Some(px);
         self.vertical_padding_override = Some(px);
     }
 
@@ -163,6 +166,7 @@ impl Column {
 
     /// Update the inter-child gap before the next layout pass.
     pub fn set_gap(&mut self, px: f32) {
+        self.flow.style_dirty |= self.flow.gap_override != Some(px) || self.flow.rhythm.is_some();
         self.flow.gap_override = Some(px);
         self.flow.rhythm = None;
     }
@@ -366,6 +370,33 @@ mod tests {
             .iter()
             .filter(|t| matches!(**t, DrawTag::IMAGE) || **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn a_changed_inset_or_gap_rebuilds_the_retained_layout_and_an_unchanged_one_does_not() {
+        let mut col = Column::new()
+            .with_vertical_padding(0.0)
+            .with_gap(0.0)
+            .push(Box::new(Text::new("a")));
+        let _ = lay_out(&mut col);
+        assert!(!col.take_structure_dirty(), "a fresh build owes nothing");
+        // Hosts restyle every frame; restating the same values is free.
+        col.set_vertical_padding(0.0);
+        col.set_gap(0.0);
+        col.set_extra_top_padding(0.0);
+        col.set_extra_bottom_padding(0.0);
+        assert!(!col.take_structure_dirty());
+        // A new inset only reaches layout through a rebuild of the node.
+        col.set_extra_bottom_padding(12.0);
+        assert!(col.take_structure_dirty());
+        assert!(!col.take_structure_dirty(), "the flag drains once");
+        col.set_extra_top_padding(12.0);
+        assert!(matches!(
+            col.take_structure_change(),
+            crate::widget::StructureChange::Rebuild
+        ));
+        let (taffy, node) = lay_out(&mut col);
+        assert_eq!(taffy.style(node).unwrap().padding.top, length(12.0_f32));
     }
 
     #[test]

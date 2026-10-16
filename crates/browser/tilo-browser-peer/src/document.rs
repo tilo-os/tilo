@@ -499,9 +499,13 @@ pub fn open_frame(
             let cipher = ciphers
                 .get_mut(&route)
                 .ok_or_else(|| DocumentError::Payload("route has no content key".into()))?;
+            // A key holder's compaction of the record's sealed history
+            // carries its sealed snapshot inside, and opens like one.
+            let ciphertext = collab_types::sealed_ciphertext(&envelope)
+                .map_err(|error| DocumentError::Payload(error.to_string()))?;
             Some(
                 cipher
-                    .open(route.artifact(), &metadata, &envelope.payload)
+                    .open(route.artifact(), &metadata, &ciphertext)
                     .map_err(DocumentError::Payload)?,
             )
         }
@@ -558,6 +562,76 @@ mod tests {
                 .unwrap_err(),
             "a content-key reader cannot seal documents"
         );
+    }
+
+    /// A key holder (a room's governing node) compacts a record's sealed
+    /// history into one sealed snapshot wrapped in a compaction; the page
+    /// opens it as that snapshot.
+    #[test]
+    fn a_sealed_compaction_opens_as_its_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let route = DocumentRoute {
+            app_id: "app".into(),
+            cluster_id: "room".into(),
+            record: "record".into(),
+        };
+        let steward = channel_crypto::ChannelSteward::open_or_create(
+            dir.path(),
+            collab_types::document_channel_id("app", "room", "record"),
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            &channel_crypto::VaultKey::new([8; 32]),
+        )
+        .unwrap();
+        let keys = steward.content_keys().unwrap();
+        let node = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let author = collab_types::Ed25519PublicKey::from_bytes(node.verifying_key().to_bytes());
+        let mut merged = AutoCommit::new();
+        merged.put(automerge::ROOT, "title", "merged").unwrap();
+        let snapshot = DocumentMutation::Snapshot(merged.save());
+        let (metadata, ciphertext) = keys
+            .seal_content(
+                route.artifact(),
+                ContentRetention::Checkpoint,
+                &snapshot.encode().unwrap(),
+            )
+            .unwrap();
+        let superseded = SignedOp::new_unsigned(
+            vec![1],
+            route.artifact(),
+            author,
+            document_attestation_id("app", "room", "record"),
+            collab_types::OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        let mut op = SignedOp::new_unsigned_with_encryption(
+            collab_types::SealedCompaction::new(&[superseded], ciphertext)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            route.artifact(),
+            author,
+            document_attestation_id("app", "room", "record"),
+            collab_types::OpKind::Compaction,
+            std::time::SystemTime::UNIX_EPOCH,
+            2,
+            metadata,
+        );
+        collab_types::sign_op(&mut op, &node).unwrap();
+        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
+            peer: peer_id(author.as_bytes()),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(op),
+        })
+        .unwrap();
+        let mut ciphers = Ciphers::new();
+        ciphers.insert(route, content_key_reader(keys));
+        let opened = open_frame(&body, *author.as_bytes(), &mut ciphers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.mutation(), Some(snapshot));
     }
 
     fn opened(

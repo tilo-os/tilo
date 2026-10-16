@@ -14,6 +14,8 @@
 )]
 
 #[cfg(target_os = "linux")]
+mod host_ids;
+#[cfg(target_os = "linux")]
 mod isolation;
 #[cfg(target_os = "linux")]
 mod limits;
@@ -23,6 +25,8 @@ mod seccomp;
 mod startup;
 #[cfg(target_os = "linux")]
 mod support;
+#[cfg(target_os = "linux")]
+mod vm;
 
 #[cfg(not(target_os = "linux"))]
 #[test]

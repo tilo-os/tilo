@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as InputDevice,
     Event as InputEventTrait, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent,
@@ -29,7 +28,6 @@ use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier}
 use smithay::backend::udev::{UdevBackend, all_gpus};
 use smithay::input::keyboard::{Keysym, keysyms, xkb};
 use smithay::reexports::calloop::{EventLoop, LoopHandle};
-use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
@@ -41,7 +39,7 @@ use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use super::access_keys::{
     BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
 };
-use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
+use super::devices::{filter_kms_nodes, is_kms_node, order_by_connected_connectors};
 use super::direct_retry::DirectDegradation;
 #[cfg(test)]
 use super::gestures::GestureAction;
@@ -50,7 +48,7 @@ use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
 use super::input_config::{DeviceCaps, InputSettings, KeyboardSettings};
 use super::output_signal::{HdrRequest, OutputSignalStatus};
-use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
+use super::outputs::{DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
     CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DirectScanoutTargets,
@@ -2270,8 +2268,14 @@ impl DrmDispatchState {
         self.touch_output_bindings.insert(id, output_name);
     }
 
-    /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
+    /// [`Self::handle_gesture_at`] for a gesture event arriving now.
+    #[cfg(test)]
     fn handle_gesture(&mut self, ev: GestureEvent) {
+        self.handle_gesture_at(ev, std::time::Instant::now());
+    }
+
+    /// Route one gesture, reported `at`: to the shell when the finger count says so, otherwise on to the focused client.
+    fn handle_gesture_at(&mut self, ev: GestureEvent, at: std::time::Instant) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
         // gesture in flight belongs to — and `end` clears that, which
@@ -2306,7 +2310,7 @@ impl DrmDispatchState {
             }
         };
         if let Some(action) = action {
-            self.push(BackendEvent::ShellGesture(action));
+            self.push(BackendEvent::ShellGesture(action, at));
             // A navigation gesture changes what is on screen.
             self.push(BackendEvent::Redraw);
         }
@@ -3457,50 +3461,80 @@ impl DrmDispatchState {
     /// The touchpad-gesture arms of [`Self::handle_libinput_event`] — split
     /// out to keep that dispatcher short.
     fn handle_libinput_gesture_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        // libinput stamps each event with its kernel `CLOCK_MONOTONIC` time
+        // in microseconds. A strip pan resamples the finger path on that
+        // clock, so a batch drained late keeps the spacing it was made with.
+        let at = |usec: u64| {
+            super::scanout::instant_from_monotonic(std::time::Duration::from_micros(usec))
+        };
         match event {
             InputEvent::GestureSwipeBegin { event } => {
-                self.handle_gesture(GestureEvent::SwipeBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureSwipeUpdate { event } => {
-                self.handle_gesture(GestureEvent::SwipeUpdate {
-                    dx: event.delta_x(),
-                    dy: event.delta_y(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeUpdate {
+                        dx: event.delta_x(),
+                        dy: event.delta_y(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureSwipeEnd { event } => {
-                self.handle_gesture(GestureEvent::SwipeEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::SwipeEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchBegin { event } => {
-                self.handle_gesture(GestureEvent::PinchBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchUpdate { event } => {
-                self.handle_gesture(GestureEvent::PinchUpdate {
-                    dx: event.delta_x(),
-                    dy: event.delta_y(),
-                    scale: event.scale(),
-                    rotation: event.rotation(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchUpdate {
+                        dx: event.delta_x(),
+                        dy: event.delta_y(),
+                        scale: event.scale(),
+                        rotation: event.rotation(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GesturePinchEnd { event } => {
-                self.handle_gesture(GestureEvent::PinchEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::PinchEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureHoldBegin { event } => {
-                self.handle_gesture(GestureEvent::HoldBegin {
-                    fingers: event.fingers(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::HoldBegin {
+                        fingers: event.fingers(),
+                    },
+                    at(event.time()),
+                );
             }
             InputEvent::GestureHoldEnd { event } => {
-                self.handle_gesture(GestureEvent::HoldEnd {
-                    cancelled: event.cancelled(),
-                });
+                self.handle_gesture_at(
+                    GestureEvent::HoldEnd {
+                        cancelled: event.cancelled(),
+                    },
+                    at(event.time()),
+                );
             }
             _ => {}
         }
@@ -5514,87 +5548,6 @@ fn keyboard_input_event(
         is_synthetic: false,
     }
 }
-
-/// Enumerate every connected connector on every `cardN` node in
-/// `kms_gpus`. Each device is opened through the supplied session
-/// (`session.open` returns an `OwnedFd` privileged via libseat); a
-/// `DrmDevice` is built, its resource handles read, and each connector
-/// queried (`force_probe = true` for fresh EDID/modes at boot). Failures
-/// on individual devices/connectors are **logged and skipped** — a single misbehaving GPU shouldn't down the whole compositor.
-///
-/// Returns the flattened connector list for [`OutputRegistry::populate`].
-///
-/// **Side-effect**: temporarily holds DRM master on each opened device;
-/// fds drop at function end, releasing master before page-flip wiring.
-pub fn enumerate_connectors<S>(session: &mut S, kms_gpus: &[PathBuf]) -> Vec<ConnectorInfo>
-where
-    S: smithay::backend::session::Session,
-{
-    let mut all = Vec::new();
-    for path in kms_gpus {
-        match enumerate_connectors_on_device(session, path) {
-            Ok(mut conns) => all.append(&mut conns),
-            Err(e) => {
-                tracing::warn!(?path, "DRM connector enumeration failed on device: {e}");
-            }
-        }
-    }
-    all
-}
-
-/// Open a single `cardN` node through the session, build a `DrmDevice`, and project each connector into [`ConnectorInfo`].
-fn enumerate_connectors_on_device<S>(
-    session: &mut S,
-    path: &Path,
-) -> Result<Vec<ConnectorInfo>, String>
-where
-    S: smithay::backend::session::Session,
-{
-    use drm_re::control::Device as ControlDevice;
-    use smithay::backend::session::AsErrno;
-    use smithay::reexports::rustix::fs::OFlags;
-    use smithay::utils::DeviceFd;
-
-    // O_RDWR|O_CLOEXEC|O_NONBLOCK matches what smithay's anvil example uses for the DRM device fd.
-    let fd = session
-        .open(
-            path,
-            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-        )
-        .map_err(|e| format!("session.open({}): errno={:?}", path.display(), e.as_errno()))?;
-    let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))?;
-
-    let (drm_device, _notifier) = DrmDevice::new(device_fd, /* disable_connectors */ false)
-        .map_err(|e| format!("DrmDevice::new: {e}"))?;
-
-    let resources = drm_device
-        .resource_handles()
-        .map_err(|e| format!("resource_handles: {e}"))?;
-
-    let mut connectors = Vec::with_capacity(resources.connectors().len());
-    for &handle in resources.connectors() {
-        match drm_device.get_connector(handle, /* force_probe */ true) {
-            Ok(info) => {
-                let connected =
-                    matches!(info.state(), drm_re::control::connector::State::Connected);
-                let modes: Vec<ModeInfo> =
-                    info.modes().iter().map(super::scanout::mode_info).collect();
-                connectors.push(ConnectorInfo {
-                    device_id: dev_id_raw,
-                    connector_id: u32::from(handle),
-                    connected,
-                    modes,
-                });
-            }
-            Err(e) => {
-                tracing::warn!(?handle, "DRM get_connector failed: {e}");
-            }
-        }
-    }
-    Ok(connectors)
-}
-
 #[cfg(test)]
 mod libinput_drain_tests {
     use std::cell::Cell;
@@ -5763,57 +5716,8 @@ mod tests {
 
     // These tests build a `DrmDispatchState` directly; they avoid calling `DrmRuntime::new` which would try to open a real seat.
 
-    /// Pure-data stub `Session` for unit tests — always fails to open any
-    /// path (real seat handling needs a TTY), but the failure path itself must be verified: `enumerate_connectors` must log + skip, not crash.
-    struct StubSession {
-        seat_name: String,
-    }
-
-    #[derive(Debug)]
-    struct StubError;
-
-    impl std::fmt::Display for StubError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "stub")
-        }
-    }
-
-    impl smithay::backend::session::AsErrno for StubError {
-        fn as_errno(&self) -> Option<i32> {
-            Some(libc::ENODEV)
-        }
-    }
-
-    impl smithay::backend::session::Session for StubSession {
-        type Error = StubError;
-
-        fn open(
-            &mut self,
-            _path: &std::path::Path,
-            _flags: smithay::reexports::rustix::fs::OFlags,
-        ) -> Result<std::os::fd::OwnedFd, Self::Error> {
-            Err(StubError)
-        }
-
-        fn close(&mut self, _fd: std::os::fd::OwnedFd) -> Result<(), Self::Error> {
-            Err(StubError)
-        }
-
-        fn change_vt(&mut self, _vt: i32) -> Result<(), Self::Error> {
-            Err(StubError)
-        }
-
-        fn is_active(&self) -> bool {
-            true
-        }
-
-        fn seat(&self) -> String {
-            self.seat_name.clone()
-        }
-    }
-
     #[test]
-    fn dispatch_state_and_connector_enumeration() {
+    fn dispatch_state_collects_events() {
         // Phase `dispatch_state_starts_empty`.
         {
             let s = DrmDispatchState::default();
@@ -5834,36 +5738,6 @@ mod tests {
             assert_eq!(s.events.len(), 2);
             assert!(matches!(s.events[0], BackendEvent::Input(_)));
             assert!(matches!(s.events[1], BackendEvent::Redraw));
-        }
-        // Phase `enumerate_connectors_returns_empty_when_no_devices`.
-        {
-            let mut session = StubSession {
-                seat_name: "seat0".into(),
-            };
-            let conns = enumerate_connectors(&mut session, &[]);
-            assert!(
-                conns.is_empty(),
-                "no card nodes → no connectors (got {} entries)",
-                conns.len()
-            );
-        }
-        // Phase `enumerate_connectors_skips_devices_that_fail_to_open`.
-        {
-            // The stub session refuses every open(), so even with paths supplied, we must end up with zero connectors and a warn-log, not a panic.
-            let mut session = StubSession {
-                seat_name: "seat0".into(),
-            };
-            let conns = enumerate_connectors(
-                &mut session,
-                &[
-                    PathBuf::from("/dev/dri/card0"),
-                    PathBuf::from("/dev/dri/card1"),
-                ],
-            );
-            assert!(
-                conns.is_empty(),
-                "failed-to-open devices must be skipped, not crash"
-            );
         }
     }
 
@@ -7990,7 +7864,7 @@ mod tests {
                 .events
                 .iter()
                 .filter_map(|e| match e {
-                    BackendEvent::ShellGesture(a) => Some(*a),
+                    BackendEvent::ShellGesture(a, _) => Some(*a),
                     _ => None,
                 })
                 .collect();
@@ -8020,7 +7894,7 @@ mod tests {
                 .events
                 .iter()
                 .filter_map(|event| match event {
-                    BackendEvent::ShellGesture(action) => Some(*action),
+                    BackendEvent::ShellGesture(action, _) => Some(*action),
                     _ => None,
                 })
                 .collect();
@@ -8118,7 +7992,7 @@ mod tests {
                 !state
                     .events
                     .iter()
-                    .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
+                    .any(|e| matches!(e, BackendEvent::ShellGesture(..))),
                 "two fingers is the client's gesture"
             );
         }
@@ -8139,7 +8013,7 @@ mod tests {
             assert!(
                 state.events.iter().any(|e| matches!(
                     e,
-                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1))
+                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1), _)
                 )),
                 "the same preference that inverts scrolling inverts gestures"
             );

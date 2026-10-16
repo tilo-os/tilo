@@ -179,7 +179,7 @@ RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp
 # Runtime profile (identity, sockets, joined rooms) and MCP token dir.
 VOLUME ["/var/lib/tilo-runtime", "/run/tilo"]
 
-# Loopback MCP HTTP (Streamable). Token required beyond loopback.
+# Loopback MCP HTTP (Streamable). Token required on every listen address.
 EXPOSE 7391/tcp
 
 ENTRYPOINT ["/usr/bin/tilo-agent-mcp"]

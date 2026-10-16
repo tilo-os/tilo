@@ -35,6 +35,10 @@ case ${1:-} in
     rm -rf "$context"
     install -D -m 0644 os/Containerfile.env-runtime "$context/os/Containerfile.env-runtime"
     use_buildah
+    # overlay, as oci-build.sh: vfs copies every layer of the RPM snapshot whole, which filled
+    # the micro-VM step's scratch disk before the build started. overlay works on that disk.
+    export STORAGE_DRIVER=overlay
+    printf '[storage]\ndriver = "overlay"\n' > "$CONTAINERS_STORAGE_CONF"
     mkdir -p "$out"
     b build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
       --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$rpms_ref" \

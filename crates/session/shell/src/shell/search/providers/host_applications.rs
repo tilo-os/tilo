@@ -229,6 +229,7 @@ impl HostApplicationsProvider {
                         placement,
                         portal_workspace_id,
                         requested_at: std::time::Instant::now(),
+                        reopen_from_tray: true,
                     })
                 } else {
                     host_apps::launch(&desktop_id, None).map(|_| ())
@@ -943,6 +944,7 @@ mod tests {
                     opens_extensions: Vec::new(),
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
+                    offers: Vec::new(),
                 }],
                 crate::shell::chrome_state::OpenTarget::Beside,
             );
@@ -996,6 +998,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            offers: Vec::new(),
         }
     }
 

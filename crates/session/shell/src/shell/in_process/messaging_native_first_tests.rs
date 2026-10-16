@@ -423,6 +423,9 @@ fn default_native_first_account_protected_two_peer_text_and_revoke() {
     drop(b);
 }
 
+/// Linux only: it reads the default native accounts from Messages' Linux
+/// account provider.
+#[cfg(target_os = "linux")]
 #[test]
 fn default_native_denied_review_never_publishes_or_writes_private_account() {
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());

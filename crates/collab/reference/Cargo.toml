@@ -15,15 +15,11 @@ path = "src/lib.rs"
 [dependencies]
 tilo-actions = { path = "../actions" }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-# A direct room's id is derived from its pair of members rather than negotiated;
-# `blake3` is the digest and `uuid` renders it in the shape room ids are parsed
-# as everywhere else.
 uuid = { workspace = true }
-blake3 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+serde_json = "1.0"
 
 [lints]
 workspace = true

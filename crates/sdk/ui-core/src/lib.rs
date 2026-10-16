@@ -228,6 +228,8 @@ pub mod storage;
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+#[cfg(any(test, feature = "lazy-hyphenation", feature = "lazy-image-decode"))]
+mod deferred;
 pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
@@ -264,6 +266,7 @@ pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
+pub mod shared_selection;
 pub mod shell_tabs;
 mod standalone_history;
 mod standalone_history_host;
@@ -459,8 +462,7 @@ pub use history_source::{
     participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
-    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
-    SemanticActivity, StatusOrigin, StatusSharing,
+    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

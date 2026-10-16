@@ -65,11 +65,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Configure the kiosk output before winit observes its logical size.
+    // Configure the kiosk outputs before winit observes the window's scale,
+    // and keep them configured (hotplug) for as long as the greeter runs.
     // Session and sign-in use the same physical panel-DPI policy.
-    if let Err(error) = greeter::output_scale::configure() {
-        tracing::warn!(%error, "greeter output scale remains compositor-controlled");
-    }
+    let displays = greeter::output_scale::start();
 
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
@@ -79,7 +78,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let console = console_control::ConsoleServer::new();
     let widget = GreeterApp::new()
         .with_proxy_slot(proxy_slot.clone())
-        .with_console(console.clone());
+        .with_console(console.clone())
+        .with_displays(displays.clone());
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .without_native_document_chrome();
@@ -100,6 +100,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tilo_startup_metrics::mark("greeter-run-start");
     app.run_with_setup(move |proxy| {
         serve_console(&console, proxy.clone());
+        let outputs = proxy.clone();
+        displays.set_wake(move || {
+            let _ = outputs.send_event(UserEvent::External(
+                greeter::output_scale::OUTPUTS_WAKE.to_owned(),
+            ));
+        });
         let _ = proxy_slot.set(proxy);
     });
     Ok(())

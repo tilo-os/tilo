@@ -32,6 +32,7 @@ pub mod channel_policy;
 pub mod chrome_state;
 pub mod closed_tabs;
 pub mod codec_pack_notice;
+pub(crate) mod cold_record_reads;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
@@ -150,6 +151,7 @@ pub mod room_records;
 pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
+pub(crate) mod selection_agent;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
@@ -164,6 +166,7 @@ pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
 pub mod status;
+pub mod storage_notice;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
@@ -226,6 +229,17 @@ impl TabMenuAction {
         }
     }
 
+    /// The glyph leading the row, so the menu reads at a glance like every
+    /// other menu with icons (HIG 9.3): close, a second column, a window of
+    /// its own.
+    pub fn icon(self) -> ui::icons::Icon {
+        match self {
+            Self::CloseTab => ui::icons::Icon::X,
+            Self::SplitRight => ui::icons::Icon::Columns2,
+            Self::MoveToNewGroup => ui::icons::Icon::AppWindow,
+        }
+    }
+
     /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
     /// `semantic:` target a script or the bench names, and the
     /// `perform_semantic_action` target an assistive technology activates.
@@ -269,7 +283,9 @@ pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabM
     let mut menu = ContextMenu::new();
     for item in &items {
         match item {
-            Some(action) => menu.push(MenuItem::action(action.label(), || {})),
+            Some(action) => {
+                menu.push(MenuItem::icon_action(action.icon(), action.label(), || {}));
+            }
             None => menu.push(MenuItem::separator()),
         }
     }
@@ -303,7 +319,7 @@ mod tab_menu_item_tests {
             let (menu, actions) = build_tab_context_menu(3);
             assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
             let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-            assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+            assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
         }
 
         fn semantic_keys_round_trip_and_are_unique() {
@@ -732,15 +748,8 @@ fn open_legacy_document_from_files(
                 ],
             )
         })?;
-        let text = std::fs::read_to_string(&path).map_err(|error| {
-            crate::shell::i18n::t_args(
-                "shell-path-read-failed",
-                &[
-                    ("path", path.display().to_string().into()),
-                    ("error", error.to_string().into()),
-                ],
-            )
-        })?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let title = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
@@ -767,7 +776,6 @@ fn open_legacy_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },
@@ -791,8 +799,8 @@ pub(crate) fn open_document_from_files(
         let path = path
             .canonicalize()
             .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let checkout = ui::record::RecordCheckout::new(
             ui::record::RecordId::for_file(&path),
             ui::record::RecordKind::new("text-document"),
@@ -847,7 +855,6 @@ pub(crate) fn open_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },
@@ -1101,6 +1108,18 @@ pub fn mount_in_process(
     })
 }
 
+/// Spacing of the strip column under the top bar. Nothing between the bar
+/// and the first strip: the tab row above every window already carries
+/// `TAB_PILL_INSET_Y` of air over its pills, and the bar keeps `s1` under
+/// its controls, so a margin on top of both was an empty band (24 physical
+/// px at scale 2) between the bar and the windows' tab row. The windows
+/// keep a margin over the bottom edge, which nothing else provides.
+pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
+    tilo_desktop::composition::WorkArea::Flush {
+        top: 0.0,
+        bottom: 12.0,
+    };
+
 /// The native chrome the shared desktop surface is built with: the session's
 /// top bar and wallpaper, the collaboration launchpad for an empty
 /// workspace, and a leading inset for the sidebar wheel.
@@ -1134,7 +1153,7 @@ pub(crate) fn workspace_surface_chrome(
         navigation: tilo_desktop::composition::NavigationChrome::InSurface,
         // Window surfaces meet the strip boundary: moving apps inward to keep
         // a clipped shadow would leave a visible shell-owned gutter.
-        work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+        work_area: WORK_AREA,
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(

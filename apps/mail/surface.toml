@@ -103,6 +103,16 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "attach"
+kind = "outside"
+params = [
+  { name = "content", required = true, schema = { type = "string", content = true } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "size", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "mime", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "discard-draft"
 destructive = true
 kind = "outside"

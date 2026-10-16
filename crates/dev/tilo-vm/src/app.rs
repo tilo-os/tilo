@@ -2053,16 +2053,38 @@ impl App {
             );
             image = Some(published.dest.display().to_string());
         }
-        if plan.choice.adapter == "utm" && args.template.is_none() {
-            return Err(CliError::Unsupported {
-                what: "creating a UTM VM from a disk on the command line".into(),
-                alternative: format!(
-                    "import {} in UTM once (Create > Virtualize > Linux, use the existing disk), name it, then: tilo-vm vm create {} --template '<that name>'",
-                    image.as_deref().unwrap_or("the dev disk"),
-                    args.name
-                ),
-            });
-        }
+        // utmctl cannot import a disk, but UTM's AppleScript can: the disk
+        // becomes the template VM each dev VM is a clone of.
+        let template = match (
+            plan.choice.adapter == "utm",
+            args.template.clone(),
+            image.as_deref(),
+        ) {
+            (true, None, Some(disk)) => {
+                let name = format!("Tilo Dev ({})", args.name);
+                crate::hypervisor::utm_import_template(
+                    &mut self.runner,
+                    (&name, disk),
+                    (
+                        args.memory_mb.unwrap_or(crate::hypervisor::UTM_MEMORY_MB),
+                        args.cpus.unwrap_or(crate::hypervisor::UTM_CPUS),
+                    ),
+                )?;
+                self.receipt
+                    .set("utm-template", json!({ "name": name, "disk": disk }));
+                Some(name)
+            }
+            (true, None, None) => {
+                return Err(CliError::Unsupported {
+                    what: "a UTM VM without a disk or a template".into(),
+                    alternative: format!(
+                        "tilo-vm vm create {} --image <disk.qcow2>, or --template '<an imported UTM VM>'",
+                        args.name
+                    ),
+                });
+            }
+            (_, template, _) => template,
+        };
         if let Some(dir) = plan.disk_path.as_deref().and_then(Path::parent) {
             std::fs::create_dir_all(dir)
                 .map_err(CliError::io(format!("create {}", dir.display())))?;
@@ -2092,7 +2114,7 @@ impl App {
             resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: plan.ssh_port,
-            template: args.template,
+            template,
             image_format: image_format
                 .filter(|f| *f == image::Format::Raw)
                 .map(|f| f.name().to_owned()),

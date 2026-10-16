@@ -2,6 +2,10 @@
 //! context subscribers are re-checked when an input announces a change and
 //! at the first expiry the last check read, not once a second.
 use super::*;
+// The idle-broker test reads its thread's wakeups from /proc, so it and the
+// fixtures only it uses (`RECHECK_INTERVAL`, `Announcing::write`,
+// `CountedRoom`) exist on Linux.
+#[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
@@ -25,6 +29,7 @@ impl crate::services::WorkspaceAuthority for Announcing {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Announcing {
     /// Change the tree and announce it, as the shell's write guard does.
     fn write(&self, change: impl FnOnce(&mut WorkspaceTree)) {
@@ -35,17 +40,20 @@ impl Announcing {
 
 /// The native membership owner of one room. Every re-check of the room's
 /// membership surface reads its tasks, so the reads are the re-checks.
+#[cfg(target_os = "linux")]
 struct CountedRoom {
     room: String,
     checks: Mutex<Vec<u64>>,
 }
 
+#[cfg(target_os = "linux")]
 impl CountedRoom {
     fn checks(&self) -> Vec<u64> {
         self.checks.lock().unwrap().clone()
     }
 }
 
+#[cfg(target_os = "linux")]
 impl crate::services::WorkspaceMemberships for CountedRoom {
     fn requires_room(&self, room: &str) -> bool {
         room == self.room

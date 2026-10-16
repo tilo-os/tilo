@@ -18,6 +18,17 @@
 // link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// What librespot shares with rustypipe and the runtime lacks (rand 0.9,
+// sha1 0.10) comes from the YouTube engine, which Music loads beside this
+// one; without it both libraries would carry those crates and Music's link
+// would refuse the second copy.
+#[cfg(feature = "thin")]
+extern crate tilo_youtube_engine;
+// tilo-spotify's sign-in (account-custody, tilo-oauth and the cloud-storage
+// providers custody depends on) comes from the accounts engine, which Mail
+// and Settings load too; without it this library would carry a second copy.
+#[cfg(feature = "thin")]
+extern crate tilo_accounts_engine;
 
 #[cfg(feature = "thin")]
 pub use tilo_spotify;

@@ -1396,19 +1396,6 @@ impl Clip {
             self.anim.forget_effect(removed.id);
         }
     }
-    /// Move the effect at `idx` one slot earlier (toward the start of the
-    /// stack), changing the order it's applied. No-op at the top / out of range.
-    pub fn move_effect_up(&mut self, idx: usize) {
-        if idx > 0 && idx < self.effects.len() {
-            self.effects.swap(idx, idx - 1);
-        }
-    }
-    /// Move the effect at `idx` one slot later. No-op at the bottom / out of range.
-    pub fn move_effect_down(&mut self, idx: usize) {
-        if idx + 1 < self.effects.len() {
-            self.effects.swap(idx, idx + 1);
-        }
-    }
 
     /// Clear the stack and every animation curve belonging to it, preserving
     /// unrelated clip animation.
@@ -1503,7 +1490,7 @@ impl Clip {
             Param::MaskFeather => self.mask.feather = v,
             Param::CurveMix => self.curves.mix = v,
             Param::EffectAmount(id) => {
-                if let Some(e) = self.effects.iter_mut().find(|e| e.id == id) {
+                if let Some(e) = self.effects.find_mut(&key(id)) {
                     e.amount = v;
                 }
             }
@@ -1977,25 +1964,13 @@ impl Project {
     }
 
     pub fn marker_mut(&mut self, id: MarkerId) -> Option<&mut Marker> {
-        self.markers.iter_mut().find(|m| m.id == id)
+        self.markers.find_mut(&key(id))
     }
 
     pub fn remove_marker(&mut self, id: MarkerId) -> bool {
         let before = self.markers.len();
         self.markers.retain(|m| m.id != id);
         self.markers.len() != before
-    }
-
-    /// The first project marker strictly after `t`, for "jump to next
-    /// marker". `None` at the end of the list rather than wrapping, so the
-    /// playhead never silently teleports backwards.
-    pub fn next_marker(&self, t: f64) -> Option<&Marker> {
-        self.markers.iter().find(|m| m.t > t + 1e-9)
-    }
-
-    /// The last project marker strictly before `t`.
-    pub fn prev_marker(&self, t: f64) -> Option<&Marker> {
-        self.markers.iter().rev().find(|m| m.t < t - 1e-9)
     }
 
     /// Every marker in the project on one absolute timeline: the project's
@@ -2015,11 +1990,9 @@ impl Project {
 
     /// The next / previous marked instant after / before `t`, in absolute
     /// seconds, across **every** marker — the project's own and each
-    /// clip's, rebased onto where its clip sits.
-    ///
-    /// [`Self::next_marker`] answers with a project marker so the caller can
-    /// name it; these answer with a time, because navigation only needs to
-    /// know where to go and a clip marker is just as valid a destination.
+    /// clip's, rebased onto where its clip sits. `None` past the last (or
+    /// before the first) rather than wrapping, so the playhead never silently
+    /// teleports.
     pub fn next_marker_at(&self, t: f64) -> Option<f64> {
         self.all_markers()
             .into_iter()
@@ -3874,11 +3847,11 @@ mod tests {
             let mut p = Project::new("m");
             p.add_marker(2.0, "a", 0);
             p.add_marker(8.0, "b", 0);
-            assert_eq!(p.next_marker(0.0).map(|m| m.t), Some(2.0));
-            assert_eq!(p.next_marker(2.0).map(|m| m.t), Some(8.0), "strictly after");
-            assert_eq!(p.next_marker(8.0).map(|m| m.t), None, "no wrap at the end");
-            assert_eq!(p.prev_marker(8.0).map(|m| m.t), Some(2.0));
-            assert_eq!(p.prev_marker(0.0).map(|m| m.t), None, "nor at the start");
+            assert_eq!(p.next_marker_at(0.0), Some(2.0));
+            assert_eq!(p.next_marker_at(2.0), Some(8.0), "strictly after");
+            assert_eq!(p.next_marker_at(8.0), None, "no wrap at the end");
+            assert_eq!(p.prev_marker_at(8.0), Some(2.0));
+            assert_eq!(p.prev_marker_at(0.0), None, "nor at the start");
         }
         // Case `a_split_hands_each_half_the_markers_inside_it`.
         {
@@ -4215,7 +4188,8 @@ mod tests {
             // A fresh effect carries its kind's default intensity.
             assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
             // Reorder: move Invert (idx 2) up.
-            c.move_effect_up(2);
+            let invert = c.effects[2].id;
+            assert!(c.move_effect_id(invert, true));
             assert_eq!(
                 kinds(c),
                 vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]
@@ -4224,8 +4198,9 @@ mod tests {
             c.remove_effect(0);
             assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
             // Out-of-range moves / removes are no-ops.
-            c.move_effect_up(0);
-            c.move_effect_down(1);
+            let (head, tail) = (c.effects[0].id, c.effects[1].id);
+            assert!(!c.move_effect_id(head, true));
+            assert!(!c.move_effect_id(tail, false));
             c.remove_effect(9);
             assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
         }

@@ -436,7 +436,7 @@ impl NativeWorkspaceOwner {
             {
                 return Err("workspace task action lease is stale".into());
             }
-            view.peer().check_task_execution_actor(
+            view.peer().workspace().check_task_execution_actor(
                 agent_id,
                 run.approval.as_ref(),
                 std::time::SystemTime::now(),

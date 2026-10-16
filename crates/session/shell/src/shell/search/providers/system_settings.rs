@@ -230,8 +230,14 @@ fn percent(scale: f64) -> i64 {
 
 /// The compositor's published displays and the committed layout, when it has
 /// published any.
+/// The display hardware as published. The compositor publishes it itself,
+/// so it reads its own copy from memory; only a process that reads another's
+/// snapshot reads the file (and checks its publisher is alive).
 fn displays() -> Option<DisplayHardwareSnapshot> {
-    DisplayHardwareSnapshot::load().filter(|snapshot| !snapshot.outputs.is_empty())
+    DisplayHardwareSnapshot::published()
+        .map(|published| published.as_ref().clone())
+        .or_else(DisplayHardwareSnapshot::load)
+        .filter(|snapshot| !snapshot.outputs.is_empty())
 }
 
 fn committed_layout(snapshot: &DisplayHardwareSnapshot) -> settings_store::hardware::DisplayConfig {
@@ -648,9 +654,16 @@ struct Built {
     fields: Vec<Vec<(String, FieldWeight)>>,
 }
 
+/// Asked on every keystroke. A process that publishes the display snapshot
+/// itself (the compositor) knows when it moved from the published
+/// generation, so only a reader of another's snapshot stats the file.
 fn built_from() -> BuiltFrom {
-    let displays = settings_store::hardware::display_snapshot_path()
-        .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+    let displays = if DisplayHardwareSnapshot::published().is_some() {
+        None
+    } else {
+        settings_store::hardware::display_snapshot_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+    };
     (
         settings_store::stamp(),
         displays,
@@ -1016,17 +1029,21 @@ mod tests {
 
         // Phase `a_boolean_toggles_and_sets`.
         {
-            assert!(power::AUTO_SUSPEND.get());
-            let toggled = run(&chrome, "power.auto-suspend.toggle", Vec::new()).unwrap();
-            assert_eq!(toggled["value"], false);
+            // An untouched machine does not suspend on idle, and the action
+            // says so the way the Settings pane and the compositor read it.
+            let fresh = run(&chrome, "power.auto-suspend.get", Vec::new()).unwrap();
+            assert_eq!(fresh["value"], false);
             assert!(!power::AUTO_SUSPEND.get());
+            let toggled = run(&chrome, "power.auto-suspend.toggle", Vec::new()).unwrap();
+            assert_eq!(toggled["value"], true);
+            assert!(power::AUTO_SUSPEND.get());
             run(
                 &chrome,
                 "power.auto-suspend.set",
-                arg("enabled", ArgValue::Boolean(true)),
+                arg("enabled", ArgValue::Boolean(false)),
             )
             .unwrap();
-            assert!(power::AUTO_SUSPEND.get());
+            assert!(!power::AUTO_SUSPEND.get());
         }
 
         // Phase `keyboard_layout_switches_to_a_listed_source_and_adds_a_new_one`.

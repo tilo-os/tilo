@@ -512,6 +512,47 @@ fn the_root_offers_call_starts_only_once_there_is_a_workspace() {
     );
 }
 
+/// What the package manifest offers while Chat is closed is what the running
+/// app publishes on its root, with the same label, kind and confirmation, so
+/// launching it from the catalogue lands on a real action.
+#[test]
+fn the_actions_the_manifest_offers_while_closed_are_published() {
+    use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
+    use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
+    let manifest =
+        Manifest::from_toml_str(include_str!("../../tilo-app.toml")).expect("the manifest");
+    assert!(!manifest.offers.is_empty(), "Chat offers actions");
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    for offer in &manifest.offers {
+        assert_eq!(offer.resource, Chat::KIND, "offered on the root");
+        let action = root_action(&mut app, &offer.action);
+        assert_eq!(action.label, offer.label);
+        let kind = match offer.kind {
+            OfferKind::Read => ActionKind::Read,
+            OfferKind::Undoable => ActionKind::Undoable,
+            OfferKind::Outside => ActionKind::Outside,
+        };
+        assert_eq!(action.contract.kind, kind, "{}", offer.action);
+        let operation = match offer.operation {
+            OfferOperation::Document => OperationKind::Document,
+            OfferOperation::Effect => OperationKind::Effect,
+            OfferOperation::View => OperationKind::View,
+        };
+        assert_eq!(action.kind, operation, "{}", offer.action);
+        assert_eq!(
+            offer.confirm,
+            action.contract.confirmation != ConfirmationPolicy::None,
+            "{}",
+            offer.action
+        );
+        assert!(
+            action.params().is_empty(),
+            "{} takes no parameters",
+            offer.action
+        );
+    }
+}
+
 #[test]
 fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -977,5 +1018,44 @@ fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane()
             .iter()
             .any(|declaration| declaration.id == "post-agent-message"),
         "execution interaction is task steering, not a second message lane"
+    );
+}
+
+/// A file another step handed over posts by its content address: described
+/// from its bytes where it is posted, and refused when it is not here.
+#[test]
+fn a_handed_over_file_posts_as_a_file() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let (channel, _) = general(&app);
+    let hash = app.content().put(b"minutes of the meeting").unwrap();
+    app.call_on(
+        &channel,
+        "post-file",
+        serde_json::json!({
+            "content": ui::tilo_actions::content_resource(&hash),
+            "name": "minutes.txt",
+            "text": "Here are the minutes",
+        }),
+    )
+    .unwrap();
+    app.settle();
+    let posted = messages(&app).pop().unwrap();
+    assert_eq!(posted.text, "Here are the minutes");
+    assert_eq!(
+        posted.attachment,
+        Some(crate::model::Attachment::File {
+            name: "minutes.txt".into(),
+            blob: hash,
+            size: 22,
+        })
+    );
+    let missing = tilo_content::hash_bytes(b"never stored");
+    assert!(
+        app.call_on(
+            &channel,
+            "post-file",
+            serde_json::json!({"content": missing, "name": "x.txt"}),
+        )
+        .is_err()
     );
 }

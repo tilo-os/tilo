@@ -1139,7 +1139,13 @@ pub fn initial_path() -> PathBuf {
     // override means there is no workspace: test/alternate environments often
     // have an unrelated `/workspace` (for example, the CI checkout mount), and
     // must be able to keep Files from mistaking it for user content.
-    if let Some(root) = workspace_roots().into_iter().next() {
+    //
+    // Only a configured mount: `~/Shared`, where what others share with this
+    // person arrives, is listed beside them in the sidebar but is not where a
+    // window opens. The session mounts it whether or not anything was ever
+    // shared, so opening on it greeted every fresh desktop with an empty
+    // folder instead of the person's home.
+    if let Some(root) = workspace_record_authority_roots().into_iter().next() {
         return root;
     }
     // `/workspace` predates `TILO_WORKSPACE_ROOTS`; retain it only when no

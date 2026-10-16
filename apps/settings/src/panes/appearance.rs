@@ -286,8 +286,9 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     let accept = t("settings-appearance-choose");
     let pictures = t("settings-appearance-pictures");
     let confirm = t("settings-appearance-confirm-preview");
-    Ok(cx.thread(
-        move |_| {
+    Ok(crate::device_read::job(
+        cx,
+        move || {
             let pick = ui::portal::PickRequest::open(&title, &accept)
                 .filter(
                     ui::portal::FileFilter::new(&pictures)

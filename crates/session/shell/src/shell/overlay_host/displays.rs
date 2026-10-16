@@ -29,10 +29,14 @@ use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
 /// What a display that doesn't touch the desktop's top edge keeps along its
-/// own top edge: its top bar and the tiled layout's top rhythm (the same
-/// spacing step the workspace column puts under the full bar).
+/// own top edge: its top bar and the margin the workspace column puts under
+/// the full bar.
 fn own_top_band() -> f64 {
-    f64::from(TOPBAR_HEIGHT_PX) + f64::from(ui::tokens::Spacing::BASE.s3)
+    let top = match crate::shell::WORK_AREA {
+        tilo_desktop::composition::WorkArea::Flush { top, .. } => top,
+        tilo_desktop::composition::WorkArea::Framed => 0.0,
+    };
+    f64::from(TOPBAR_HEIGHT_PX) + f64::from(top)
 }
 
 /// The outputs that are displays of their own, in the backend's order: the
@@ -333,10 +337,19 @@ impl ShellOverlayHost {
             .iter()
             .filter_map(|id| {
                 let o = self.outputs.iter().find(|o| o.id == *id)?;
-                let leading = Some(o.id) == primary && self.sidebar.is_some();
-                // A display below the desktop's top edge draws its own bar
-                // along its top; the windows start beneath it.
-                let band = if o.y > top + 0.5 { own_top_band() } else { 0.0 };
+                let leading_display = Some(o.id) == primary;
+                let leading = leading_display && self.sidebar.is_some();
+                // Every display but the primary draws its own bar along its
+                // top, and so does the primary below the desktop's top
+                // edge; the windows start beneath it. Taken from the
+                // display, not the column, so a fullscreen that collapses
+                // the primary's bar leaves the other displays' windows
+                // where they were.
+                let band = if !leading_display || o.y > top + 0.5 {
+                    own_top_band()
+                } else {
+                    0.0
+                };
                 let gutter = if leading { wheel } else { 0.0 };
                 Some(StripLane {
                     output: o.id,

@@ -186,25 +186,3 @@ pub fn volume_extent_allowed(
 pub fn valid_efi_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric())
 }
-
-/// `BootCurrent` / `BootNext`: one little-endian `u16`, formatted `%04X`.
-pub fn decode_boot_number(bytes: &[u8]) -> OpResult<String> {
-    match *bytes {
-        [lo, hi] => Ok(format!("{:04X}", u16::from_le_bytes([lo, hi]))),
-        _ => Err(format!("boot number variable has {} bytes", bytes.len())),
-    }
-}
-
-/// `BootOrder`: an array of little-endian `u16`.
-pub fn decode_boot_order(bytes: &[u8]) -> OpResult<Vec<String>> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err("BootOrder has an odd length".into());
-    }
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|pair| match *pair {
-            [lo, hi] => format!("{:04X}", u16::from_le_bytes([lo, hi])),
-            _ => String::new(),
-        })
-        .collect())
-}

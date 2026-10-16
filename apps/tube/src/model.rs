@@ -484,16 +484,6 @@ impl Settings {
         matches!(self.mode_of(c), SkipMode::Show)
     }
 
-    /// Cycle a category's mode: Auto-skip → Show → Off → Auto-skip.
-    pub fn cycle_category(&mut self, c: Category) {
-        let cur = self
-            .categories
-            .get(c.api_key())
-            .copied()
-            .unwrap_or(SkipMode::Skip);
-        self.categories.insert(c.api_key().to_string(), cur.next());
-    }
-
     /// Whether `DeArrow` title replacement is active (master + titles sub-toggle).
     pub fn dearrow_titles_on(&self) -> bool {
         self.dearrow_enabled && self.dearrow_titles
@@ -1091,18 +1081,23 @@ mod tests {
             assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
             assert!(!s.should_auto_skip(Category::Sponsor));
         }
-        // Case `cycle_category_walks_skip_show_off`.
+        // Case `modes_cycle_skip_show_off`.
         {
             let mut s = Settings::default();
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
-            s.cycle_category(Category::Intro);
+            let cycle = |s: &mut Settings| {
+                let next = s.mode_of(Category::Intro).next();
+                s.categories
+                    .insert(Category::Intro.api_key().to_string(), next);
+            };
+            cycle(&mut s);
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Show);
             assert!(s.should_show_skip(Category::Intro));
             assert!(s.category_enabled(Category::Intro), "Show is still enabled");
-            s.cycle_category(Category::Intro);
+            cycle(&mut s);
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Disabled);
             assert!(!s.category_enabled(Category::Intro));
-            s.cycle_category(Category::Intro);
+            cycle(&mut s);
             assert_eq!(
                 s.mode_of(Category::Intro),
                 SkipMode::Skip,

@@ -164,6 +164,7 @@ pub(crate) fn surfaces_at_rest(
 /// for every surface it skipped it for: each live root has the owners its
 /// surface registered, and no committed frontier asks for a refresh. A
 /// debug build proves every quiet frame with this.
+#[cfg(debug_assertions)]
 pub(crate) fn settled_checks_hold(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,

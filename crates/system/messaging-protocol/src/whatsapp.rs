@@ -1,5 +1,5 @@
-//! `WhatsApp` acknowledgment/receipt contract for an account-bound SDK adapter.
-//! Independently specified from whatsapp-rust's `ServerAck` and `ReceiptType`.
+//! `WhatsApp` receipt contract for an account-bound SDK adapter.
+//! Independently specified from whatsapp-rust's `ReceiptType`.
 //! This module neither implements cryptography nor links a `WhatsApp` device.
 
 use crate::{Error, Route, Service};
@@ -7,44 +7,11 @@ use crate::{Error, Route, Service};
 /// Protocol observations stay separate from document/UI delivery state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Evidence {
-    ServerAcknowledged,
     SentOnly,
     RecipientDelivered,
     RecipientRead,
     ReconciliationRequired,
     NoRecipientEvidence,
-}
-
-/// Project only public routing/correlation data from an SDK `ServerAck` event.
-pub struct ServerAck<'a> {
-    pub account: &'a str,
-    pub stanza_id: &'a str,
-    pub class: Option<&'a str>,
-    pub from: Option<&'a str>,
-    pub rejected: bool,
-}
-
-/// Admit an exact message acknowledgment; call/receipt acks cannot complete it.
-/// A caller must bind the event to the actual account-owned SDK instance.
-///
-/// # Errors
-/// Refuses another account/service, mismatched IDs/chat/class and server nacks.
-pub fn acknowledgment(
-    route: &Route,
-    message_id: &str,
-    event: &ServerAck<'_>,
-) -> Result<Evidence, Error> {
-    check_route(route, event.account)?;
-    if event.stanza_id != message_id || event.class != Some("message") {
-        return Err(Error::WrongRequest);
-    }
-    if event.from.is_some_and(|from| from != route.recipient()) {
-        return Err(Error::InvalidIdentity);
-    }
-    if event.rejected {
-        return Err(Error::RemoteRejected);
-    }
-    Ok(Evidence::ServerAcknowledged)
 }
 
 /// The SDK's processed receipt semantics, not Rust enum serialization labels.
@@ -109,38 +76,6 @@ mod tests {
     use super::*;
     fn route() -> Route {
         Route::new(Service::Whatsapp, "account-a".into(), "123@lid".into()).unwrap()
-    }
-
-    #[test]
-    fn call_and_other_account_acks_never_complete_a_message() {
-        let mut ack = ServerAck {
-            account: "account-a",
-            stanza_id: "message-id",
-            class: Some("message"),
-            from: Some("123@lid"),
-            rejected: false,
-        };
-        assert_eq!(
-            acknowledgment(&route(), "message-id", &ack),
-            Ok(Evidence::ServerAcknowledged)
-        );
-        ack.class = Some("call");
-        assert_eq!(
-            acknowledgment(&route(), "message-id", &ack),
-            Err(Error::WrongRequest)
-        );
-        ack.class = Some("message");
-        ack.account = "account-b";
-        assert_eq!(
-            acknowledgment(&route(), "message-id", &ack),
-            Err(Error::WrongAccount)
-        );
-        ack.account = "account-a";
-        ack.rejected = true;
-        assert_eq!(
-            acknowledgment(&route(), "message-id", &ack),
-            Err(Error::RemoteRejected)
-        );
     }
 
     #[test]

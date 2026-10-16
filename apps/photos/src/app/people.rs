@@ -40,7 +40,7 @@ impl PhotosApp {
     }
 
     /// Mutable local People controller. Callers use this for explicit opt-in,
-    /// review, hiding, splitting, and deletion of private clusters.
+    /// review, hiding, merging, and deletion of private clusters.
     pub fn people_controller_mut(&mut self) -> &mut crate::people::PeopleController {
         &mut self.people_controller
     }

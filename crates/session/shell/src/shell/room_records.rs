@@ -454,45 +454,13 @@ impl RoomRecords {
             .is_none_or(|s| s.lock().is_ok_and(|st| st.done))
     }
 
-    /// Load a scanned record without opening a [`ui::record::RecordStore`],
-    /// creating directories, touching actor state, or acquiring a writer lock.
-    /// The canonical path and size bound are revalidated on every read so a
-    /// stale or replaced scan result fails closed.
-    pub fn load_local_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        let scan = self.scan.as_ref()?.lock().ok()?;
-        if scan.ambiguous.contains(id) {
-            tracing::warn!(record = %id, "refusing ambiguous cross-room record hydration");
-            return None;
-        }
-        let location = scan.locations.get(id).cloned()?;
-        drop(scan);
-        read_validated_record_document(id, &location)
-    }
-
-    /// A witness of the bytes [`Self::load_local_record`] would read for
-    /// `id` now: the document's length and modification time, from one
-    /// `stat`. `None` when the record has no scanned location.
-    pub fn local_record_revision(&self, id: &RecordId) -> Option<u64> {
-        let scan = self.scan.as_ref()?.lock().ok()?;
-        if scan.ambiguous.contains(id) {
-            return None;
-        }
-        let location = scan.locations.get(id).cloned()?;
-        drop(scan);
-        let metadata = std::fs::metadata(&location.document).ok()?;
-        let modified = metadata
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"tilo-room-record-revision\0");
-        hash.update(location.document.as_os_str().as_encoded_bytes());
-        hash.update(&metadata.len().to_le_bytes());
-        hash.update(&modified.as_nanos().to_le_bytes());
-        let mut word = [0_u8; 8];
-        word.copy_from_slice(&hash.finalize().as_bytes()[..8]);
-        Some(u64::from_le_bytes(word))
+    /// The scanned record documents, as a handle another thread reads
+    /// through: [`LocalRecordReader::load`] loads one without opening a
+    /// [`ui::record::RecordStore`], and [`LocalRecordReader::revision`]
+    /// witnesses what it would read. Both touch the disk, which the
+    /// compositor loop must not wait for. `None` for an in-memory instance.
+    pub(crate) fn local_reader(&self) -> Option<LocalRecordReader> {
+        self.scan.clone().map(|scan| LocalRecordReader { scan })
     }
 
     /// Changes whenever the room indexes or the scanned corpus change, so a
@@ -731,6 +699,58 @@ fn scan_record_stores(root: &Path) -> ScanResult {
     out
 }
 
+/// The scanned record documents, read from any thread: see
+/// [`RoomRecords::local_reader`].
+#[derive(Clone)]
+pub(crate) struct LocalRecordReader {
+    scan: Arc<Mutex<ScanState>>,
+}
+
+impl LocalRecordReader {
+    /// The scanned location of `id`, unless two rooms' documents claim it;
+    /// `hydrating` says a refusal is worth a warning.
+    fn location(&self, id: &RecordId, hydrating: bool) -> Option<ValidatedRecordLocation> {
+        let scan = self.scan.lock().ok()?;
+        if scan.ambiguous.contains(id) {
+            if hydrating {
+                tracing::warn!(record = %id, "refusing ambiguous cross-room record hydration");
+            }
+            return None;
+        }
+        scan.locations.get(id).cloned()
+    }
+
+    /// Load scanned record `id` without opening a
+    /// [`ui::record::RecordStore`], creating directories, touching actor
+    /// state, or acquiring a writer lock. The canonical path and size bound
+    /// are revalidated on every read so a stale or replaced scan result
+    /// fails closed. Reads the disk: never on the compositor loop.
+    pub(crate) fn load(&self, id: &RecordId) -> Option<AutoCommit> {
+        read_validated_record_document(id, &self.location(id, true)?)
+    }
+
+    /// A witness of the bytes [`Self::load`] would read for `id` now: the
+    /// document's length and modification time, from one `stat`. `None`
+    /// when the record has no scanned location.
+    pub(crate) fn revision(&self, id: &RecordId) -> Option<u64> {
+        let location = self.location(id, false)?;
+        let metadata = std::fs::metadata(&location.document).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"tilo-room-record-revision\0");
+        hash.update(location.document.as_os_str().as_encoded_bytes());
+        hash.update(&metadata.len().to_le_bytes());
+        hash.update(&modified.as_nanos().to_le_bytes());
+        let mut word = [0_u8; 8];
+        word.copy_from_slice(&hash.finalize().as_bytes()[..8]);
+        Some(u64::from_le_bytes(word))
+    }
+}
+
 fn validate_record_location(scan_root: &Path, document: &Path) -> Option<ValidatedRecordLocation> {
     let document = document.canonicalize().ok()?;
     if !document.starts_with(scan_root) {
@@ -803,15 +823,6 @@ fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
         home,
         package_id: package_id.to_string(),
     })
-}
-
-impl crate::shell::workspace_history::PersistedRecordHistory for RoomRecords {
-    fn load_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        self.load_local_record(id)
-    }
-    fn revision(&self, id: &RecordId) -> Option<u64> {
-        self.local_record_revision(id)
-    }
 }
 
 /// What to call a record in a list. See [`KnownRecord::title`].

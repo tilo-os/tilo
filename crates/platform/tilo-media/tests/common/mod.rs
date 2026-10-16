@@ -40,6 +40,7 @@ use std::path::PathBuf;
 
 #[cfg(feature = "decode")]
 use gstreamer::prelude::*;
+#[cfg(feature = "decode")]
 use tilo_lock::MutexRecover as _;
 
 /// Frames per second of the fixture clip.

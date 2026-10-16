@@ -57,7 +57,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Read the app SDK snapshot only in the owned native boundary fixture.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 
@@ -496,4 +496,4 @@ windows-vm = { path = "../../windows/windows-vm" }
 ush = { path = "../../runtime/ush" }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }

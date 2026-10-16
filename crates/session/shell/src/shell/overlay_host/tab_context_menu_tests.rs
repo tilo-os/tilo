@@ -494,7 +494,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.as_deref())
             .collect();
-        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+        assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
         for (i, item) in menu.children.iter().enumerate() {
             assert_eq!(item.role, Role::MenuItem);
             assert!(item.state.focusable);
@@ -583,7 +583,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
             .iter()
             .filter_map(|c| c.name.clone())
             .collect();
-        assert_eq!(labels, ["Close Tab"]);
+        assert_eq!(labels, ["Close tab"]);
         assert!(!h.host.perform_semantic_action(
             "tabmenu:split-right",
             &ui::a11y::Action::Activate,
@@ -653,7 +653,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
-    /// Clicking "Close Tab" runs the same durable lifecycle as the `✕` and
+    /// Clicking "Close tab" runs the same durable lifecycle as the `✕` and
     /// the chord: the tab is gone from the persisted tree before the event
     /// returns.
     fn clicking_close_tab_removes_that_tab_from_the_tree() {
@@ -664,9 +664,9 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
             .expect("open")
             .children
             .into_iter()
-            .find(|c| c.name.as_deref() == Some("Close Tab"))
+            .find(|c| c.name.as_deref() == Some("Close tab"))
             .and_then(|c| c.bounds.map(ui::AccessBounds::to_rect))
-            .expect("Close Tab is a bounded row");
+            .expect("Close tab is a bounded row");
         h.move_to(close.center());
         assert!(h.press(MouseButton::Left));
         assert!(
@@ -682,7 +682,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
         );
     }
 
-    /// "Split Right" through Enter is tree-first (`window_actions::split_tab`:
+    /// "Split right" through Enter is tree-first (`window_actions::split_tab`:
     /// cache, replicated document, chrome bump) with the live tab host moved
     /// under the tree's new group id in the same dispatch — so the tree is
     /// right before any frame, and the resync the bump triggers finds the
@@ -690,8 +690,8 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
     fn split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it() {
         let mut h = harness(2);
         h.right_click_pill(1);
-        h.key(Key::Named(NamedKey::ArrowDown)); // Close Tab
-        h.key(Key::Named(NamedKey::ArrowDown)); // Split Right
+        h.key(Key::Named(NamedKey::ArrowDown)); // Close tab
+        h.key(Key::Named(NamedKey::ArrowDown)); // Split right
         assert!(h.key(Key::Named(NamedKey::Enter)));
         assert!(!h.host.tab_context_menu_is_open());
         // Tree-first: the tree is already split before any structure pass.
@@ -1372,4 +1372,34 @@ fn tab_menu_current_output_capture_matrix_is_written() {
         )
         .unwrap();
     }
+}
+
+/// Every row of the window menu leads with a real icon, like every other
+/// menu with icons, and reads in the shell's sentence case ("Close tab",
+/// not "Close Tab").
+#[test]
+fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
+    use ui::widget::context_menu::MenuItem;
+    let (menu, actions) = crate::shell::build_tab_context_menu(3);
+    let mut rows = 0;
+    for (item, action) in menu.items().iter().zip(&actions) {
+        let MenuItem::Action { label, icon, .. } = item else {
+            assert!(action.is_none(), "a separator stands for no action");
+            continue;
+        };
+        rows += 1;
+        let action = action.expect("an action row maps to an action");
+        assert_eq!(*icon, Some(action.icon()), "{label:?} leads with its icon");
+        let mut words = label.split_whitespace();
+        let first = words.next().expect("a label");
+        assert!(
+            first.chars().next().is_some_and(char::is_uppercase),
+            "{label:?} starts with a capital"
+        );
+        assert!(
+            words.all(|word| !word.chars().next().is_some_and(char::is_uppercase)),
+            "{label:?} is sentence case"
+        );
+    }
+    assert_eq!(rows, 3, "close, split right and move to a new group");
 }

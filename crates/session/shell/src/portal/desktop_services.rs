@@ -231,7 +231,11 @@ impl ShellDynamicLauncherService {
     }
 
     fn persist(&self, records: &[DynamicLauncherRecord]) -> Result<(), String> {
-        write_private_json(self.path.as_ref(), records)
+        let written = write_private_json(self.path.as_ref(), records);
+        // Even a failed write may have replaced the file: let the palette
+        // read it again rather than trust its projection.
+        DYNAMIC_LAUNCHER_WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        written
     }
 }
 
@@ -258,11 +262,27 @@ pub fn dynamic_launcher_records() -> Vec<DynamicLauncherRecord> {
         .collect()
 }
 
-/// Cheap file generation for the reviewed launcher library.  This is used to
-/// decide whether a retained palette projection must re-read the JSON; normal
-/// query edits only stat the private file and never clone its records.
+/// Writes of a reviewed launcher library made by this process, which hosts
+/// the portal and so is the library's only writer.
+static DYNAMIC_LAUNCHER_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cheap generation for the reviewed launcher library.  This is used to
+/// decide whether a retained palette projection must re-read the JSON, and
+/// the palette asks on every refresh while it is open: the file is stat-ed
+/// once, and after that the generation moves with this process's writes,
+/// never another syscall.
 #[must_use]
 pub fn dynamic_launcher_generation() -> u128 {
+    static AT_START: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let at_start = *AT_START.get_or_init(dynamic_launcher_file_generation);
+    at_start
+        ^ (u128::from(DYNAMIC_LAUNCHER_WRITES.load(std::sync::atomic::Ordering::Acquire)) << 64)
+}
+
+/// The library file's length and modification time.
+fn dynamic_launcher_file_generation() -> u128 {
+    #[cfg(test)]
+    DYNAMIC_LAUNCHER_STATS.with(|stats| stats.set(stats.get().saturating_add(1)));
     let path = portal_state_path("dynamic-launchers.json");
     let Ok(metadata) = fs::metadata(path) else {
         return 0;
@@ -273,6 +293,12 @@ pub fn dynamic_launcher_generation() -> u128 {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_nanos());
     modified ^ u128::from(metadata.len())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Stats of the library file made on this thread.
+    static DYNAMIC_LAUNCHER_STATS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Pair one parsed dynamic-launcher library with the file generation that was
@@ -1260,6 +1286,44 @@ mod tests {
             assert_eq!(grant.expiry, Expiry::AfterUse);
             assert!(grant.id.starts_with("portal-email:"));
         }
+    }
+
+    /// The palette asks for the launcher library's generation on every
+    /// refresh while it is open. The file is stat-ed for the first ask at
+    /// most; after that the generation costs no syscall, and an install
+    /// still moves it.
+    #[test]
+    fn the_launcher_library_generation_costs_no_syscall_per_refresh() {
+        let _ = dynamic_launcher_generation();
+        let stats = || DYNAMIC_LAUNCHER_STATS.with(std::cell::Cell::get);
+        let before = stats();
+        for _ in 0..100 {
+            let _ = dynamic_launcher_generation();
+        }
+        let generation = dynamic_launcher_generation();
+        assert_eq!(stats(), before, "a refresh stat-ed the library file");
+
+        let dir = tempfile::tempdir().expect("temporary state directory");
+        let service = ShellDynamicLauncherService::at_path(dir.path().join("launchers.json"));
+        assert!(matches!(
+            service.prepare_install(&LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Example site".into(),
+                launcher_type: 2,
+                target: Some("https://example.test/".into()),
+                editable_name: true,
+                editable_icon: false,
+                icon_kind: "tilo-web".into(),
+                icon_bytes: None,
+            }),
+            PortalResult::Success(_)
+        ));
+        assert_ne!(
+            dynamic_launcher_generation(),
+            generation,
+            "an install moves the generation"
+        );
+        assert_eq!(stats(), before, "without a stat");
     }
 
     #[test]

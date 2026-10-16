@@ -10,57 +10,7 @@
 use std::fmt::Write as _;
 
 use serde_json::Value;
-
-/// `str.isspace()`: Unicode whitespace plus the four ASCII separators
-/// (U+001C..U+001F) that Rust does not count.
-pub fn is_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-/// `str.strip()`.
-pub fn strip(text: &str) -> &str {
-    text.trim_matches(is_space)
-}
-
-/// `str.split()` without arguments.
-pub fn split_whitespace(text: &str) -> Vec<&str> {
-    text.split(is_space).filter(|s| !s.is_empty()).collect()
-}
-
-/// `str.splitlines()`.
-pub fn splitlines(text: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let Some((at, c)) = rest.char_indices().find(|&(_, c)| is_line_break(c)) else {
-            lines.push(rest);
-            break;
-        };
-        let (line, tail) = rest.split_at(at);
-        lines.push(line);
-        let mut tail = tail.strip_prefix(c).unwrap_or(tail);
-        if c == '\r' {
-            tail = tail.strip_prefix('\n').unwrap_or(tail);
-        }
-        rest = tail;
-    }
-    lines
-}
-
-fn is_line_break(c: char) -> bool {
-    matches!(
-        c,
-        '\n' | '\r'
-            | '\u{0b}'
-            | '\u{0c}'
-            | '\u{1c}'
-            | '\u{1d}'
-            | '\u{1e}'
-            | '\u{85}'
-            | '\u{2028}'
-            | '\u{2029}'
-    )
-}
+pub use tilo_pycompat::{Dumps, split, splitlines, strip, truthy};
 
 /// The first `count` characters of `text` (`text[:count]`).
 pub fn truncate(text: &str, count: usize) -> &str {
@@ -303,7 +253,7 @@ pub fn repr(value: &Value) -> String {
         Value::Null => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),
-        Value::Number(number) => number_text(number),
+        Value::Number(number) => tilo_pycompat::number_repr(number),
         Value::String(text) => repr_str(text),
         Value::Array(items) => {
             let inner: Vec<String> = items.iter().map(repr).collect();
@@ -316,26 +266,6 @@ pub fn repr(value: &Value) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
-    }
-}
-
-fn number_text(number: &serde_json::Number) -> String {
-    if number.is_i64() || number.is_u64() {
-        return number.to_string();
-    }
-    let value = number.as_f64().unwrap_or_default();
-    if value.is_finite() && value.fract() == 0.0 && value.abs() < 1e16 {
-        return format!("{value:.1}");
-    }
-    let text = format!("{value:?}");
-    match text.split_once('e') {
-        Some((mantissa, exponent)) if !exponent.starts_with('-') => {
-            format!("{mantissa}e+{exponent:0>2}")
-        }
-        Some((mantissa, exponent)) => {
-            format!("{mantissa}e-{:0>2}", exponent.trim_start_matches('-'))
-        }
-        None => text,
     }
 }
 
@@ -352,121 +282,9 @@ pub fn equals_one(value: &Value) -> bool {
     }
 }
 
-/// Truthiness of a parsed JSON value (`bool(value)`).
-pub fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|f| f != 0.0),
-        Some(Value::String(text)) => !text.is_empty(),
-        Some(Value::Array(items)) => !items.is_empty(),
-        Some(Value::Object(map)) => !map.is_empty(),
-    }
-}
-
-/// `json.dumps(value, indent=2, sort_keys=True)`.
-pub fn dumps(value: &Value) -> String {
-    let mut out = String::new();
-    dump(value, 0, &mut out);
-    out
-}
-
-fn dump(value: &Value, level: usize, out: &mut String) {
-    match value {
-        Value::Array(items) if !items.is_empty() => {
-            out.push('[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                newline(level.saturating_add(1), out);
-                dump(item, level.saturating_add(1), out);
-            }
-            newline(level, out);
-            out.push(']');
-        }
-        Value::Object(map) if !map.is_empty() => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            out.push('{');
-            for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                newline(level.saturating_add(1), out);
-                string(key, out);
-                out.push_str(": ");
-                if let Some(item) = map.get(key) {
-                    dump(item, level.saturating_add(1), out);
-                }
-            }
-            newline(level, out);
-            out.push('}');
-        }
-        Value::Array(_) => out.push_str("[]"),
-        Value::Object(_) => out.push_str("{}"),
-        Value::Null => out.push_str("null"),
-        Value::Bool(true) => out.push_str("true"),
-        Value::Bool(false) => out.push_str("false"),
-        Value::Number(number) => out.push_str(&json_number(number)),
-        Value::String(text) => string(text, out),
-    }
-}
-
-fn json_number(number: &serde_json::Number) -> String {
-    if number.is_i64() || number.is_u64() {
-        return number.to_string();
-    }
-    number_text(number)
-}
-
-fn newline(level: usize, out: &mut String) {
-    out.push('\n');
-    for _ in 0..level {
-        out.push_str("  ");
-    }
-}
-
-/// A JSON string with `ensure_ascii`: everything outside printable ASCII is
-/// a `\uXXXX` escape (a surrogate pair above the BMP).
-fn string(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            ' '..='~' => out.push(c),
-            c => {
-                let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    let _ = write!(out, "\\u{unit:04x}");
-                }
-            }
-        }
-    }
-    out.push('"');
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn dumps_matches_python_json() {
-        let value =
-            json!({"b": [1, {"y": null, "x": true}], "a": "é\u{1F600}\"\n", "c": {}, "d": []});
-        assert_eq!(
-            dumps(&value),
-            "{\n  \"a\": \"\\u00e9\\ud83d\\ude00\\\"\\n\",\n  \"b\": [\n    1,\n    {\n      \"x\": true,\n      \
-             \"y\": null\n    }\n  ],\n  \"c\": {},\n  \"d\": []\n}"
-        );
-    }
 
     #[test]
     fn urlsplit_matches_python() {
@@ -497,13 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn lines_and_spaces_match_python() {
-        assert_eq!(
-            splitlines("a\r\nb\rc\n\nd\u{1c}e"),
-            vec!["a", "b", "c", "", "d", "e"]
-        );
-        assert_eq!(strip("\u{1f} x \t"), "x");
-        assert_eq!(split_whitespace(" a  b\u{1d}c "), vec!["a", "b", "c"]);
+    fn text_slices_and_unquotes_like_python() {
         assert_eq!(truncate("héllo", 2), "hé");
         assert_eq!(unquote("/a/%2e%2E/%zz%C3%A9"), "/a/../%zzé");
     }

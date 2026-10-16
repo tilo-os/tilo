@@ -99,6 +99,7 @@ pub(crate) fn fingerprint(event: &Event) -> String {
     label = "Calendar",
     params = calendar,
     search = Calendar::search_entries,
+    read_content = Calendar::read_items,
     scopes = Calendar::scopes,
     load = Calendar::load_notes,
     queue = Calendar::queue,
@@ -516,6 +517,95 @@ impl Calendar {
 
 /// How many settled uploads and deletes the calendar keeps.
 const SETTLED_KEPT: usize = 64;
+
+/// The most events and tasks one read lists.
+const MOST_READ_ITEMS: usize = 500;
+
+impl Calendar {
+    /// What the calendar holds, for a caller with no screen. With no item,
+    /// its events by start (the next first, then the past) and its tasks;
+    /// with an event's or task's id, that one in full: who is invited and
+    /// its notes.
+    fn read_items(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let event_line = |event: &Event| {
+            serde_json::json!({
+                "item": crate::actions::event_resource_id(event.id),
+                "title": event.display_title(),
+                "start": event.start.to_string(),
+                "end": event.end.to_string(),
+                "all_day": event.all_day,
+                "location": event.location,
+                "repeats": format!("{:?}", event.recurrence),
+            })
+        };
+        let task_line = |task: &crate::model::Task| {
+            serde_json::json!({
+                "item": crate::actions::task_resource_id(task.id),
+                "title": task.title,
+                "done": task.done,
+                "due": task.due.map(|due| due.to_string()),
+                "priority": format!("{:?}", task.priority),
+            })
+        };
+        let Some(item) = item else {
+            let now = chrono::Local::now().naive_local();
+            let mut events: Vec<&Event> = self.events.iter().collect();
+            // The next events first, soonest first; then the past, latest first.
+            events.sort_by_key(|event| {
+                let past = event.end < now;
+                (
+                    past,
+                    if past {
+                        now - event.start
+                    } else {
+                        event.start - now
+                    },
+                )
+            });
+            return Ok(serde_json::json!({
+                "events": events.into_iter().take(MOST_READ_ITEMS).map(event_line).collect::<Vec<_>>(),
+                "tasks": self.tasks.iter().take(MOST_READ_ITEMS).map(task_line).collect::<Vec<_>>(),
+            }));
+        };
+        let raw = item.as_str().rsplit('/').next().unwrap_or_default();
+        let id = Uuid::parse_str(raw)
+            .map_err(|_| format!("`{item}` is not an event or task this calendar lists"))?;
+        let notes = self.notes_text(id);
+        if let Some(event) = self.events.iter().find(|event| event.id == id) {
+            let mut read = event_line(event);
+            if let Some(map) = read.as_object_mut() {
+                map.insert("timezone".into(), event.timezone.clone().into());
+                map.insert(
+                    "attendees".into(),
+                    event
+                        .attendees
+                        .iter()
+                        .map(|attendee| {
+                            serde_json::json!({
+                                "name": attendee.name,
+                                "email": attendee.email,
+                                "status": format!("{:?}", attendee.status),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+                map.insert("notes".into(), notes.into());
+            }
+            return Ok(read);
+        }
+        let task = self
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .ok_or_else(|| format!("`{item}` is not an event or task this calendar lists"))?;
+        let mut read = task_line(task);
+        if let Some(map) = read.as_object_mut() {
+            map.insert("notes".into(), notes.into());
+        }
+        Ok(read)
+    }
+}
 
 impl Calendar {
     /// After every change, whoever made it: queue the upload of each remote
@@ -986,6 +1076,29 @@ fn project_scope(id: crate::model::Id) -> String {
     format!("{TASKS_SCOPE}/{}", crate::actions::project_resource_id(id))
 }
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
+/// database's self-check. It needs `runtime-engine`, the release build, where
+/// that code is in `libtilo_timezone_engine.so`; the check proves Calendar
+/// loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-timezone-engine",
+    run: probe_timezone_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    let report = tilo_timezone_engine::self_check()?;
+    println!("calendar --probe-timezone-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    Err("the time-zone engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for CalendarShell {
     type Resource = Calendar;
     const ID: &'static str = "so.tilo.calendar";
@@ -993,6 +1106,10 @@ impl ResourceApp for CalendarShell {
     const ICON: Option<&'static str> = Some("calendar");
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     fn view(cx: &mut ViewCx<Calendar>) -> Element {
         // A search hit or an agent's `open` shows the item it names.

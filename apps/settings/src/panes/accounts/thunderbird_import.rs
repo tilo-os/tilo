@@ -25,8 +25,9 @@ pub(super) fn discover(
         pane.changed = true;
         revision
     };
-    Ok(cx.thread(
-        move |_| accounts::thunderbird::discover(Path::new(&prefs)),
+    Ok(crate::device_read::job(
+        cx,
+        move || accounts::thunderbird::discover(Path::new(&prefs)),
         move |app: &mut SettingsApp, outcome, _| finish(app, revision, outcome),
     ))
 }
@@ -45,8 +46,9 @@ pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>
     };
     let title = t("accounts-import-title");
     let accept = t("accounts-import-choose");
-    Ok(cx.thread(
-        move |_| {
+    Ok(crate::device_read::job(
+        cx,
+        move || {
             let result = ui::portal::PickRequest::open(&title, &accept)
                 .filter(ui::portal::FileFilter::new("prefs.js").glob("prefs.js"))
                 .thread_name("settings-thunderbird-metadata")

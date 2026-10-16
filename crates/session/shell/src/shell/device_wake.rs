@@ -375,16 +375,25 @@ fn push_event(
 /// [`ROUTE_SCAN_INTERVAL`]. `previous` is what it last advertised.
 pub fn local_routes(previous: &[WakeRoute]) -> Vec<WakeRoute> {
     let now = Instant::now();
-    let Ok(mut state) = wake_state().lock() else {
-        return previous.to_vec();
-    };
-    if state
-        .scanned
-        .is_none_or(|at| now.saturating_duration_since(at) >= ROUTE_SCAN_INTERVAL)
     {
-        state.routes = remember_subnets(scan_interfaces(), previous);
-        state.scanned = Some(now);
+        let Ok(state) = wake_state().lock() else {
+            return previous.to_vec();
+        };
+        if state
+            .scanned
+            .is_some_and(|at| now.saturating_duration_since(at) < ROUTE_SCAN_INTERVAL)
+        {
+            return state.routes.clone();
+        }
     }
+    // The scan's ethtool ioctls wait on the kernel's rtnl lock. The wake
+    // state stays free meanwhile: the compositor takes it for a wake request.
+    let routes = remember_subnets(scan_interfaces(), previous);
+    let Ok(mut state) = wake_state().lock() else {
+        return routes;
+    };
+    state.routes = routes;
+    state.scanned = Some(now);
     state.routes.clone()
 }
 

@@ -21,6 +21,13 @@ Three fingers work the plane you see and four go one level out, the split Super 
 Ctrl+Super make on the keyboard ([window-management.md](architecture/window-management.md)).
 A touchscreen swipe of three or four fingers means the same.
 
+A three-finger pan follows the fingers 1:1. Each frame reads the finger path at the frame's
+own time from libinput's event timestamps, interpolating between reports, so a steady swipe
+moves the strip the same distance every frame whatever the touchpad's report rate. Fingers
+lifted while still moving throw the strip: it carries on at their speed and slows to a stop
+over the gesture coast time (`Gesture::fling_projection_ms`), and a throw or release past
+either end settles on that end.
+
 A gesture is never delivered to both. Turning off **Touchpad gestures** in Settings hands
 every gesture to the client. Swipe direction follows the touchpad's natural-scrolling
 setting.

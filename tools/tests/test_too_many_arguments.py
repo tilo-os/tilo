@@ -54,6 +54,17 @@ class TooManyArgumentsTests(unittest.TestCase):
             ["crates/a/Cargo.toml", "crates/b/Cargo.toml"],
         )
 
+    def test_malformed_manifests_cannot_pass_the_audit(self):
+        for text in ('[lints.clippy]\ntoo_many_arguments = "allow"\nbroken = [',
+                     '[package\nname = "broken"\n'):
+            with self.subTest(text=text):
+                root = self.fixture({"crates/a/Cargo.toml": text})
+                violations = check.audit(root)
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn("crates/a/Cargo.toml: cannot audit malformed Cargo manifest:",
+                              violations[0])
+                self.assertRegex(violations[0], r"\(at (?:line|end of document)")
+
     def test_denying_mentioning_and_vendored_code_pass(self):
         root = self.fixture(
             {

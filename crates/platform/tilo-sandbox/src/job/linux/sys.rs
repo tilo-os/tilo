@@ -1,5 +1,5 @@
 //! Kernel interfaces the `libc` crate does not wrap: `clone3`, `mount_setattr`,
-//! Landlock, and the few structures they take.
+//! `open_tree`, `move_mount`, Landlock, and the few structures they take.
 
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
@@ -36,7 +36,15 @@ pub struct MountAttr {
 pub const MOUNT_ATTR_RDONLY: u64 = 0x1;
 pub const MOUNT_ATTR_NOSUID: u64 = 0x2;
 pub const MOUNT_ATTR_NODEV: u64 = 0x4;
+pub const MOUNT_ATTR_IDMAP: u64 = 0x10_0000;
 pub const AT_RECURSIVE: libc::c_uint = 0x8000;
+
+/// `open_tree` flags.
+pub const OPEN_TREE_CLONE: libc::c_uint = 1;
+pub const OPEN_TREE_CLOEXEC: libc::c_uint = libc::O_CLOEXEC.unsigned_abs();
+
+/// `move_mount` from the mount a descriptor names.
+pub const MOVE_MOUNT_F_EMPTY_PATH: libc::c_uint = 0x4;
 
 /// `struct landlock_ruleset_attr`, the filesystem half only: the kernel
 /// accepts a prefix of the structure, so this works on every ABI.

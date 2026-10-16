@@ -104,3 +104,104 @@ fn editing_a_notes_body_is_decided_by_the_committed_surface() {
     );
     assert_eq!(receipt, Receipt::Admit);
 }
+
+/// What the committed surface decides of every change made since `before`,
+/// with the kind each claims (the record's own when it names none).
+fn receipts_since(
+    doc: &automerge::AutoCommit,
+    before: &[automerge::ChangeHash],
+) -> Vec<(String, Result<Receipt, String>)> {
+    let mut doc = doc.clone();
+    let changes: Vec<automerge::Change> = doc.get_changes(before);
+    let file = SurfaceFile::parse(SURFACE).expect("the committed surface parses");
+    changes
+        .iter()
+        .map(|change| {
+            let before = doc.fork_at(change.deps()).expect("the record before it");
+            let hash = change.hash().0;
+            let units = collab_types::units::units_by_change(before, std::slice::from_ref(change))
+                .remove(&hash)
+                .unwrap_or_else(|| vec![Vec::new()]);
+            let claim = match ChangeClaim::of_change(hash, change.message(), units) {
+                Ok(claim) => claim,
+                Err(error) => return (String::new(), Err(format!("unnamed: {error}"))),
+            };
+            let kind = claim
+                .action
+                .members()
+                .into_iter()
+                .find_map(|member| match member {
+                    ClaimedAction::Verb { action, .. } => Some(action.kind.clone()),
+                    ClaimedAction::Edit { kind, .. } => Some(kind.clone()),
+                    _ => None,
+                })
+                .filter(|kind| !kind.is_empty())
+                .unwrap_or_else(|| "notes.notebook".to_owned());
+            let Some(surface) = file.resource(Some(&kind)) else {
+                return (
+                    kind.clone(),
+                    Err(format!("the surface does not describe `{kind}`")),
+                );
+            };
+            let record = Record {
+                room: "room",
+                app: "so.tilo.notes",
+                record: "record",
+            };
+            let receipt = check_claims(
+                std::slice::from_ref(&claim),
+                &record,
+                Some(&[hash]),
+                None,
+                Some(&KindSurface(surface.clone())),
+                &|_, _| true,
+            )
+            .map_err(|refusal| refusal.to_string());
+            (kind, receipt)
+        })
+        .collect()
+}
+
+/// Typing into a note's body edits it through the body's own dispatcher,
+/// not an action invocation. Its changes must claim the notebook's field
+/// edit too: a change claiming the body's kind is refused by the identity
+/// service, which then turns the window's collaboration off.
+#[test]
+fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
+    use crate::component_support::*;
+    let f = NotebookFixture::rich();
+    f.write_page(f.child, b"Alpha");
+    let checkout = notebook(&f);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            notes::read::page_block_snapshots(doc, f.child)[0].0.clone()
+        })
+        .unwrap();
+    let before = f
+        .records
+        .read(&checkout.id, |doc| doc.clone().get_heads())
+        .unwrap();
+    let mut live = driver(&f, 81, &checkout);
+    open_note(&mut live, 81, f.child, Some(&block));
+    let rect = semantic_rect(&live, &format!("notes.block:{block}"));
+    live.click_at(rect.x0 + 8.0, rect.center().y);
+    live.key("End");
+    live.type_text(" Beta");
+    live.relayout();
+    close_driver(&mut live);
+    drop(live);
+    f.records.try_flush().unwrap();
+    let receipts = f
+        .records
+        .read(&checkout.id, |doc| receipts_since(doc, &before))
+        .unwrap();
+    assert!(!receipts.is_empty(), "typing changed the record");
+    for (kind, receipt) in receipts {
+        assert_eq!(
+            kind, "notes.notebook",
+            "typed body edits claim the notebook's field edit"
+        );
+        assert_eq!(receipt, Ok(Receipt::Admit));
+    }
+}

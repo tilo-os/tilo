@@ -139,12 +139,23 @@ impl ActionHost for GatedHost {
 }
 
 fn gated_endpoint(host: GatedHost) -> Arc<Endpoint<GatedHost>> {
-    Endpoint::new(host, "room".into(), "owner".into(), None, None)
+    Endpoint::new(
+        host,
+        "room".into(),
+        "owner".into(),
+        Some("secret".into()),
+        None,
+    )
 }
 
 async fn gated_session(endpoint: &Arc<Endpoint<GatedHost>>) -> String {
     let response = endpoint
-        .dispatch(&Method::POST, "/mcp", &HeaderMap::new(), &initialize("a"))
+        .dispatch(
+            &Method::POST,
+            "/mcp",
+            &bearer_headers(&[]),
+            &initialize("a"),
+        )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     response
@@ -167,7 +178,7 @@ async fn call(
         .dispatch(
             &Method::POST,
             "/mcp",
-            &headers(&[(SESSION_HEADER, session)]),
+            &bearer_headers(&[(SESSION_HEADER, session)]),
             request.to_string().as_bytes(),
         )
         .await;
@@ -574,7 +585,7 @@ fn a_session_refuses_calls_beyond_those_it_admits() {
             endpoint.dispatch(
                 &Method::POST,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &session)]),
+                &bearer_headers(&[(SESSION_HEADER, &session)]),
                 request.to_string().as_bytes(),
             ),
         )

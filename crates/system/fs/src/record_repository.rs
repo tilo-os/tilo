@@ -85,8 +85,9 @@ pub struct RecordRepositoryKey {
     pub record_id: FileRecordId,
 }
 
-/// Repository-wide completeness proof for one staged transaction. A
-/// materializer may expose the mutation only when `complete` is true.
+/// Repository-wide completeness proof for one staged transaction, as tests
+/// observe it.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordTransactionStatus {
     pub transaction: FileMutationTransaction,
@@ -1570,6 +1571,7 @@ impl RecordRepository {
     /// # Errors
     ///
     /// Returns an error for poisoned state or inconsistent signed manifests.
+    #[cfg(test)]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "one repository read lock provides a consistent cross-record transaction snapshot"

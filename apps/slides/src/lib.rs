@@ -48,7 +48,7 @@ pub mod sample;
 pub mod search;
 pub mod strings;
 
-pub use app::{PresentSurface, SlidesApp};
+pub use app::SlidesApp;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

@@ -57,6 +57,26 @@ impl SemanticsGate {
     pub(crate) fn request(&mut self) {
         self.requested = true;
     }
+    /// Whether a frame that only moved laid-out content would leave its
+    /// tree unbuilt at `now` ([`Self::defer_unbuilt`], the IME line held),
+    /// without scheduling anything.
+    pub(crate) fn would_defer_unbuilt(&self, now: ui::time::Instant) -> bool {
+        !self.requested && self.delivered != 0 && self.schedule.would_defer(now)
+    }
+    /// Hold a moved frame's tree, whose window is over, for the frame after
+    /// (due `now`), unless something else asks for it now: a request, the
+    /// first tree, or the IME line moved. Returns whether it is held.
+    pub(crate) fn hold_for_next_frame(
+        &mut self,
+        ime: Option<&ImeWindowState>,
+        now: ui::time::Instant,
+    ) -> bool {
+        if self.requested || self.delivered == 0 || ime_signature(ime) != self.ime {
+            return false;
+        }
+        self.schedule.hold(now);
+        true
+    }
     /// Deadline of a deferred content change, if one is pending.
     pub(crate) fn due(&self) -> Option<ui::time::Instant> {
         self.schedule.due()

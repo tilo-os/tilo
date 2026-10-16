@@ -508,6 +508,14 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
+        // A Moderator's block removes what was already mirrored of the
+        // Discord author.
+        TriggerSpec::RecordChanged {
+            kind: KIND.into(),
+            actions: vec!["block-persona".to_owned()],
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
     ];
     triggers.extend(
         discord_wire::event::source::ALL
@@ -656,4 +664,76 @@ fn the_program_names_only_the_discord_connector_and_chat() {
         "the bridge posts under Discord authors' names"
     );
     let _: Value = serde_json::to_value(program()).unwrap();
+}
+
+/// A Moderator's `block-persona` fires the bridge, and its plan removes from
+/// Chat every message mirrored from that Discord author, and only those.
+#[test]
+fn blocking_a_persona_removes_what_was_mirrored_of_them() {
+    use discord::record::guild;
+    use discord::{MappedKind, Origin};
+    use tilo_automation::dispatch::{Armed, Event, Firer, dispatch, event_of};
+    use ui::tilo_resource::Replica;
+
+    let mut ada = Replica::<Guild>::new().as_author("u_ada");
+    ada.apply(Guild::CONNECT.with(guild::Connect {
+        guild_id: "1".into(),
+        name: "Tilo".into(),
+        workspace: "w1".into(),
+        only_channel: None,
+        mirror_channels: None,
+        map_roles: None,
+    }))
+    .unwrap();
+    let mut bot = ada.fork().as_bot_for("b1", "u_ada");
+    for (tilo, discord, persona) in [
+        ("m1", "dm1", "d_spam"),
+        ("m2", "dm2", "d_spam"),
+        ("m3", "dm3", "d_kind"),
+    ] {
+        bot.apply(Guild::MAP.with(guild::Map {
+            kind: MappedKind::Message,
+            tilo: tilo.into(),
+            discord: discord.into(),
+            origin: Origin::Discord,
+            persona: Some(persona.into()),
+            root: None,
+        }))
+        .unwrap();
+    }
+    let mut ada = bot.fork().as_author("u_ada");
+    ada.apply(Guild::BLOCK_PERSONA.with(guild::BlockPersona {
+        discord_user: "d_spam".into(),
+    }))
+    .unwrap();
+
+    let version = ui::tilo_resource::history::versions(&mut ada.doc().clone())
+        .pop()
+        .unwrap();
+    let change = version.hash.to_string();
+    let record = event_of("room", "guild", KIND, &change, &version.context.unwrap());
+    let shortcut = program();
+    let armed = [Armed {
+        firer: Firer::Bot { installation: "b1" },
+        shortcut: &shortcut,
+    }];
+    let fired = dispatch(&armed, Event::Record(&record));
+    let [firing] = fired.firings.as_slice() else {
+        panic!("the block fires the bridge once: {fired:?}");
+    };
+
+    let state = ada.state().unwrap();
+    let plan = discord::bridge::plan(
+        discord::bridge::Reading {
+            guild: &state,
+            chat: &json!({}),
+            context: &discord::outbound::Context::default(),
+            room: &Value::Null,
+        },
+        &firing.inputs["event"],
+    );
+    assert_eq!(
+        plan.chat_deletes,
+        [json!({"message": "m1"}), json!({"message": "m2"})]
+    );
 }

@@ -44,6 +44,7 @@ extern crate self as tilo_agent;
 
 pub mod memory;
 pub mod model;
+pub mod pages;
 pub mod plan;
 pub mod providers;
 pub mod session;

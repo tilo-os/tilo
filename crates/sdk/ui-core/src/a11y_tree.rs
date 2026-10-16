@@ -54,12 +54,14 @@ mod continuation;
 
 #[path = "a11y_tree/node_identity.rs"]
 mod node_identity;
+mod reading_order;
 
 #[path = "a11y_tree/component_nodes.rs"]
 mod component_nodes;
 use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
+use reading_order::ReadingOrder;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
@@ -84,7 +86,10 @@ struct RetainedSubtree {
     access: Arc<AccessNode>,
     durable: bool,
     owner: Option<TaffyNodeId>,
-    ids: Vec<SemanticId>,
+    /// Shared with the [`ReadingOrder`] of every refresh that keeps it.
+    ids: Arc<[SemanticId]>,
+    /// Whether the refresh that holds it kept it rather than built it.
+    kept: bool,
 }
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, Resource};
@@ -116,6 +121,12 @@ pub(crate) struct SemanticOperation {
 ///   already-stable [`ResourceId`](tilo_actions::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SemanticId(pub String);
+
+impl std::borrow::Borrow<str> for SemanticId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
 
 impl SemanticId {
     fn root() -> Self {
@@ -270,7 +281,7 @@ type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedActi
 pub struct SemanticTree {
     nodes: NodeMap,
     /// DFS reading order, so consumers can iterate the tree deterministically.
-    order: Vec<SemanticId>,
+    order: ReadingOrder,
     root: SemanticId,
     /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
     /// actions, keyed by `(node id, action name)`. Kept out of [`SemanticNode`]
@@ -287,10 +298,13 @@ pub struct SemanticTree {
     /// the child's id: the next refresh moves over the nodes of those it is
     /// handed again unchanged.
     retained: RetainedMap,
-    /// The widget and declared-resource nodes the last refresh built, rather
-    /// than moved over from the frame before.
+    /// The nodes the last refresh built, rather than kept from the frame
+    /// before.
     #[cfg(any(test, feature = "test-support"))]
     built: usize,
+    /// The widgets' synthetic children the last refresh compared or built.
+    #[cfg(any(test, feature = "test-support"))]
+    compared: usize,
 }
 
 impl Default for SemanticTree {
@@ -321,7 +335,7 @@ impl SemanticTree {
         );
         Self {
             nodes,
-            order: vec![root.clone()],
+            order: ReadingOrder::from_ids(vec![root.clone()]),
             root,
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
@@ -330,14 +344,25 @@ impl SemanticTree {
             retained: RetainedMap::default(),
             #[cfg(any(test, feature = "test-support"))]
             built: 0,
+            #[cfg(any(test, feature = "test-support"))]
+            compared: 0,
         }
     }
 
-    /// The widget and declared-resource nodes the last refresh built, rather
-    /// than moved over from the frame before: what a refresh costs.
+    /// The widget, declared-resource and bound-resource nodes the last
+    /// refresh built, rather than kept from the frame before: what a refresh
+    /// costs.
     #[cfg(any(test, feature = "test-support"))]
     pub fn nodes_built_for_test(&self) -> usize {
         self.built
+    }
+
+    /// The widgets' synthetic children the last refresh compared in full or
+    /// built: every one a widget handed over other than as the very node the
+    /// tree kept from it ([`Widget::accessibility_shared`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn subtrees_compared_for_test(&self) -> usize {
+        self.compared
     }
 
     /// Rebuild the tree from the live UI and diff it against the retained frame.
@@ -458,7 +483,6 @@ impl SemanticTree {
             std::mem::take(&mut self.retained)
         };
         let mut builder = Build::<BOUND>::new(&ptr_to_taffy, focused, actions_only, retained);
-        builder.order.reserve(self.order.len());
 
         let root_id = SemanticId::root();
         builder.order.push(root_id.clone());
@@ -499,10 +523,14 @@ impl SemanticTree {
         let mut next_components = Vec::with_capacity(components.len());
         let mut reused = Vec::with_capacity(components.len());
         let mut updates = TreeDelta::default();
+        #[cfg(any(test, feature = "test-support"))]
+        let mut component_built = 0_usize;
         for component in components {
             let kept = previous
                 .iter_mut()
                 .find_map(|slot| slot.take_if(|nodes| nodes.built_from(component)));
+            #[cfg(any(test, feature = "test-support"))]
+            let kept_whole = kept.is_some();
             let kept = kept.or_else(|| {
                 if actions_only {
                     return None;
@@ -519,6 +547,10 @@ impl SemanticTree {
             });
             reused.push(kept.is_some());
             let nodes = kept.unwrap_or_else(|| ComponentNodes::build(component));
+            #[cfg(any(test, feature = "test-support"))]
+            if !kept_whole {
+                component_built = component_built.saturating_add(nodes.built_for_test());
+            }
             root_children.extend(nodes.roots().iter().cloned());
             next_components.push(nodes);
         }
@@ -582,17 +614,14 @@ impl SemanticTree {
 
         #[cfg(any(test, feature = "test-support"))]
         {
-            self.built = builder.nodes.len();
+            self.built = builder.nodes.len().saturating_add(component_built);
+            self.compared = builder.compared;
         }
         // The carried nodes are present and unchanged in both frames, in no
         // list of the delta. Where they are most of the tree (a keystroke),
         // they stay where they are and this frame's built nodes replace the
         // rest; where most was built again (a scroll), they move over.
-        let carried = builder
-            .carried
-            .iter()
-            .map(ExactSizeIterator::len)
-            .sum::<usize>();
+        let carried = builder.order.kept_len();
         if builder.nodes.len() <= carried {
             for id in &stale {
                 self.nodes.remove(id);
@@ -600,7 +629,7 @@ impl SemanticTree {
             self.nodes.extend(std::mem::take(&mut builder.nodes));
         } else {
             let mut nodes = std::mem::take(&mut builder.nodes);
-            for id in Self::carried_ids(&builder) {
+            for id in builder.order.kept() {
                 if let Some((id, node)) = self.nodes.remove_entry(id) {
                     nodes.insert(id, node);
                 }
@@ -622,17 +651,6 @@ impl SemanticTree {
         delta
     }
 
-    /// The ids of the nodes of the subtrees `builder` retained, which keep
-    /// their nodes from the last frame.
-    fn carried_ids<'b, const BOUND: bool>(
-        builder: &'b Build<'_, BOUND>,
-    ) -> impl Iterator<Item = &'b SemanticId> {
-        builder
-            .carried
-            .iter()
-            .flat_map(|range| &builder.order[range.clone()])
-    }
-
     /// Whether the subtrees `builder` retained may keep their nodes: none of
     /// their ids was built afresh this frame, a repeated id the full walk has
     /// to report.
@@ -641,13 +659,34 @@ impl SemanticTree {
     /// from a build that repeated none, and one that repeats a kept id fails
     /// here and is built again by the full walk. Each kept id is in the last
     /// frame's nodes, which keep every carried node in place.
+    ///
+    /// Asked of the built nodes, not the kept ones, so a keystroke asks it
+    /// of the row it rebuilt: every id in a kept subtree is its root's id or
+    /// extends it past a `~`, so only a built id one of whose `~`-prefixes
+    /// is a kept root can be one of its ids.
     fn carried_ids_hold<const BOUND: bool>(&self, builder: &Build<'_, BOUND>) -> bool {
-        Self::carried_ids(builder).all(|id| {
+        #[cfg(debug_assertions)]
+        for id in builder.order.kept() {
             debug_assert!(
                 self.nodes.contains_key(id),
                 "a retained subtree's node {id:?} is missing from the last frame"
             );
-            !builder.nodes.contains_key(id)
+        }
+        if builder.kept_overwritten {
+            return false;
+        }
+        builder.nodes.keys().all(|id| {
+            let text = id.as_str();
+            text.match_indices('~')
+                .filter_map(|(at, _)| text.get(..at))
+                .chain(std::iter::once(text))
+                .all(|prefix| {
+                    builder
+                        .retained
+                        .get(prefix)
+                        .filter(|subtree| subtree.kept)
+                        .is_none_or(|subtree| !subtree.ids.contains(id))
+                })
         })
     }
 
@@ -656,11 +695,7 @@ impl SemanticTree {
     /// has none, which counting tells without visiting the kept nodes: every
     /// last-frame node is kept, built again or stale.
     fn stale_nodes<const BOUND: bool>(&self, builder: &Build<'_, BOUND>) -> Vec<SemanticId> {
-        let carried = builder
-            .carried
-            .iter()
-            .map(ExactSizeIterator::len)
-            .sum::<usize>();
+        let carried = builder.order.kept_len();
         let rebuilt = builder
             .nodes
             .keys()
@@ -670,7 +705,7 @@ impl SemanticTree {
             return Vec::new();
         }
         let carried: std::collections::HashSet<&SemanticId, rustc_hash::FxBuildHasher> =
-            Self::carried_ids(builder).collect();
+            builder.order.kept().collect();
         self.nodes
             .keys()
             .filter(|id| !carried.contains(id) && !builder.nodes.contains_key(*id))
@@ -1054,7 +1089,7 @@ struct Build<'a, const BOUND: bool> {
     actions_only: bool,
     ambiguous_projection: bool,
     nodes: NodeMap,
-    order: Vec<SemanticId>,
+    order: ReadingOrder,
     prompted: PromptedMap,
     bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     ptr_to_taffy: &'a WidgetNodeMap<'a>,
@@ -1064,9 +1099,12 @@ struct Build<'a, const BOUND: bool> {
     retained_before: RetainedMap,
     /// This refresh's, for the next.
     retained: RetainedMap,
-    /// The spans of `order` holding the ids of retained subtrees, whose nodes
-    /// are taken from the last frame once the walk is done.
-    carried: Vec<std::ops::Range<usize>>,
+    /// A subtree built this refresh took the place of one it kept under the
+    /// same id: a repeated id the full walk has to report.
+    kept_overwritten: bool,
+    /// The synthetic children compared in full or built.
+    #[cfg(any(test, feature = "test-support"))]
+    compared: usize,
 }
 
 /// A widget's synthetic child as the widget handed it over: built this
@@ -1082,6 +1120,12 @@ impl Synthetic {
             Self::Owned(node) => node,
             Self::Shared(node) => node,
         }
+    }
+
+    /// Whether this child is the very node `retained` was retained from.
+    #[cfg(any(test, feature = "test-support"))]
+    fn is_shared(&self, retained: &Arc<AccessNode>) -> bool {
+        matches!(self, Self::Shared(node) if Arc::ptr_eq(node, retained))
     }
 
     /// Whether this child is `retained`'s: the very node it was retained
@@ -1170,11 +1214,18 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         retained_before: RetainedMap,
     ) -> Self {
         Self {
+            // As many as last time, most of them the same ones: room for
+            // them up front rather than rehashing as they recur.
+            retained: RetainedMap::with_capacity_and_hasher(
+                retained_before.len(),
+                rustc_hash::FxBuildHasher,
+            ),
             retained_before,
-            retained: RetainedMap::default(),
-            carried: Vec::new(),
+            kept_overwritten: false,
+            #[cfg(any(test, feature = "test-support"))]
+            compared: 0,
             nodes: NodeMap::default(),
-            order: Vec::new(),
+            order: ReadingOrder::default(),
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
@@ -1322,6 +1373,10 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         // A widget hosted in the child is walked afresh, and the projection
         // for actions keeps nothing.
         if !hosted.is_empty() || self.actions_only {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.compared = self.compared.saturating_add(1);
+            }
             return self.visit_synthetic(parent, index, access.node(), owner, hosted);
         }
         let id = access.node().key.map_or_else(
@@ -1333,27 +1388,41 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             && retained.owner == owner
             && access.is(&retained.access)
         {
-            let start = self.order.len();
-            self.order.extend(retained.ids.iter().cloned());
-            self.carried.push(start..self.order.len());
-            self.retained.insert(id.clone(), retained);
+            #[cfg(any(test, feature = "test-support"))]
+            if !access.is_shared(&retained.access) {
+                self.compared = self.compared.saturating_add(1);
+            }
+            self.order.keep(&retained.ids);
+            self.retained.insert(
+                id.clone(),
+                RetainedSubtree {
+                    kept: true,
+                    ..retained
+                },
+            );
             return id;
         }
-        let start = self.order.len();
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.compared = self.compared.saturating_add(1);
+        }
+        let start = self.order.mark();
         let duplicates = self.duplicate_ids.len();
         let built = self.visit_synthetic(parent, index, access.node(), owner, hosted);
         // A subtree that repeated an id is left to the full walk.
         if built == id && self.duplicate_ids.len() == duplicates {
-            let ids = self.order[start..].to_vec();
-            self.retained.insert(
+            let ids = self.order.since(start).into();
+            let replaced = self.retained.insert(
                 id,
                 RetainedSubtree {
                     access: access.into_shared(),
                     durable: parent.durable,
                     owner,
                     ids,
+                    kept: false,
                 },
             );
+            self.kept_overwritten |= replaced.is_some_and(|subtree| subtree.kept);
         }
         built
     }
@@ -1591,7 +1660,12 @@ mod tests {
             tree.nodes
                 .insert(shallow.clone(), node(shallow.clone(), Vec::new()));
             tree.nodes.get_mut(&tree.root).unwrap().children = vec![group.clone(), shallow.clone()];
-            tree.order = vec![tree.root.clone(), group, deep.clone(), shallow.clone()];
+            tree.order = ReadingOrder::from_ids(vec![
+                tree.root.clone(),
+                group,
+                deep.clone(),
+                shallow.clone(),
+            ]);
 
             let routes = tree.control_paths("save");
             assert_eq!(routes.len(), 2);

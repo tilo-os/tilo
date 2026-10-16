@@ -5,8 +5,10 @@
 //! What each device holds of the person's workspaces, and what of it is
 //! only there, is [`residency`]: this device's storage summary is the
 //! `storage-summary` effect, which another of the person's devices asks
-//! for too.
+//! for too, and the other devices' are theirs, asked of each through the
+//! host ([`other_devices`]).
 
+mod other_devices;
 mod residency;
 
 pub use residency::{DeviceResidency, Fleet};
@@ -20,9 +22,10 @@ use runtime_fs::storage::{
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::i18n::ArgValue;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource;
 use ui::widget::{Button, Widget};
 
+use crate::device_read::{Landed, Landing};
 use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
@@ -137,54 +140,269 @@ pub enum StorageEffect {
     },
 }
 
-/// Answer `effect` on the area's model.
-#[expect(
-    clippy::unnecessary_wraps,
-    clippy::needless_pass_by_value,
-    reason = "every area answers through the effect vocabulary's one signature"
-)]
+/// Answer `effect`: a tool is opened, and caches are cleaned up, off the UI
+/// thread; freeing synced files, changing the cache policy and the
+/// residency effects run on the area's model, which asks the storage
+/// service off the UI thread.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: StorageEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let reply = cx.reply();
-    app.storage().model().borrow_mut().run(&effect, reply);
-    Ok(Effected::Pending)
+    let area = app.storage();
+    match effect {
+        StorageEffect::CleanUpCaches => {
+            let preview = area.model().borrow_mut().begin_clean_up()?;
+            let device = area.device();
+            Ok(crate::device_read::job(
+                cx,
+                move || -> Result<StorageScan, String> {
+                    device.clean_up(&preview)?;
+                    Ok(device.scan())
+                },
+                |app: &mut SettingsApp, cleaned: Result<StorageScan, String>, _| {
+                    app.storage().model().borrow_mut().cleaned(cleaned)
+                },
+            ))
+        }
+        StorageEffect::FreeSyncedFiles => {
+            let reply = cx.reply();
+            area.model().borrow_mut().free_synced_files(reply);
+            Ok(Effected::Pending)
+        }
+        StorageEffect::SetPrefetch { on } => {
+            let reply = cx.reply();
+            area.model().borrow_mut().set_policy(
+                StorageEffect::SET_PREFETCH.id,
+                reply,
+                move |policy| {
+                    policy.prefetch = on;
+                    Ok(())
+                },
+            );
+            Ok(Effected::Pending)
+        }
+        StorageEffect::SetCacheSize { size } => {
+            let budget = cache_budget(&size)?;
+            let reply = cx.reply();
+            area.model().borrow_mut().set_policy(
+                StorageEffect::SET_CACHE_SIZE.id,
+                reply,
+                move |policy| {
+                    policy.budget_bytes = budget;
+                    Ok(())
+                },
+            );
+            Ok(Effected::Pending)
+        }
+        StorageEffect::StorageSummary => {
+            let reply = cx.reply();
+            area.model().borrow_mut().summarize(reply);
+            Ok(Effected::Pending)
+        }
+        StorageEffect::FreeCache { workspace } => {
+            let reply = cx.reply();
+            area.model().borrow_mut().free_cache(workspace, reply);
+            Ok(Effected::Pending)
+        }
+        StorageEffect::KeepHere { workspace, keep } => {
+            let reply = cx.reply();
+            area.model().borrow_mut().keep_here(workspace, keep, reply);
+            Ok(Effected::Pending)
+        }
+        StorageEffect::OpenDisks => Ok(open_tool(
+            area,
+            cx,
+            ToolIntent::Disks {
+                route: DisksRoute::Overview,
+            },
+            "settings-storage-opened-disks",
+        )),
+        StorageEffect::OpenBackups => Ok(open_tool(
+            area,
+            cx,
+            ToolIntent::Backups {
+                route: BackupsRoute::Overview,
+            },
+            "settings-storage-opened-backups",
+        )),
+    }
 }
 
-/// What the storage area keeps for the window: the model, scanned when
-/// first needed.
-pub struct StorageArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<StorageModel>>,
+/// Ask the shell to open `intent` off the UI thread; `opened` names the
+/// message it answers with once the shell took it.
+fn open_tool(
+    area: &StorageArea,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+    intent: ToolIntent,
+    opened: &'static str,
+) -> Effected {
+    let device = area.device();
+    crate::device_read::job(
+        cx,
+        move || device.open_tool(intent),
+        move |_: &mut SettingsApp, result: Result<(), String>, _| {
+            result.map(|()| Effected::value(t(opened)))
+        },
+    )
 }
 
-impl StorageArea {
-    pub fn new(cx: &PaneCx) -> Self {
+/// What Storage measured of this device: what each app keeps, and the
+/// caches it could remove.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StorageScan {
+    pub(crate) snapshot: StorageSnapshot,
+    pub(crate) cleanup: Option<CleanupPreview>,
+}
+
+impl StorageScan {
+    /// Measure what lies under `roots`: a walk of whole trees, the sync
+    /// replica among them.
+    fn of(roots: &StorageRoots) -> Self {
         Self {
-            cx: cx.clone(),
-            model: std::cell::OnceCell::new(),
+            snapshot: desktop_policy::scan_storage(roots),
+            cleanup: roots
+                .app_cache
+                .as_deref()
+                .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok()),
         }
     }
 
-    /// The model, created on first use: a capture's scans nothing and asks
-    /// no storage service.
+    /// Nothing could be measured: the scan ended without a result.
+    fn unavailable() -> Self {
+        Self {
+            snapshot: StorageSnapshot {
+                entries: Vec::new(),
+                unavailable: vec![
+                    StorageCategory::InstalledApps,
+                    StorageCategory::AppData,
+                    StorageCategory::Cache,
+                ],
+            },
+            cleanup: None,
+        }
+    }
+}
+
+/// What Storage asks of the device. Each call may take long — a walk of
+/// the sync replica, a round trip to the shell — so it runs off the UI
+/// thread.
+pub(crate) trait StorageDevice: Send + Sync {
+    /// Measure the device's storage.
+    fn scan(&self) -> StorageScan;
+    /// Remove every cache item `preview` lists.
+    ///
+    /// # Errors
+    /// Why the caches could not be removed.
+    fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String>;
+    /// Ask the shell to open a storage tool.
+    ///
+    /// # Errors
+    /// Why the shell did not open it.
+    fn open_tool(&self, intent: ToolIntent) -> Result<(), String>;
+}
+
+/// This device's storage, or, in a window nobody uses, none: nothing is
+/// measured and the shell is not asked for a tool.
+struct DeviceStorage {
+    roots: StorageRoots,
+    reaches_shell: bool,
+}
+
+impl DeviceStorage {
+    fn of(cx: &PaneCx) -> Self {
+        if cx.reaches_devices() {
+            Self {
+                roots: StorageRoots::discover(),
+                reaches_shell: true,
+            }
+        } else {
+            Self {
+                roots: StorageRoots {
+                    app_payloads: None,
+                    room_data: None,
+                    app_cache: None,
+                    sync_replica: None,
+                },
+                reaches_shell: false,
+            }
+        }
+    }
+}
+
+impl StorageDevice for DeviceStorage {
+    fn scan(&self) -> StorageScan {
+        crate::device_read::off_ui_thread();
+        StorageScan::of(&self.roots)
+    }
+
+    fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        let selected: Vec<usize> = (0..preview.items.len()).collect();
+        desktop_policy::apply_cleanup(preview, &selected)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        if !self.reaches_shell {
+            return Err("only a window someone uses opens a storage tool".into());
+        }
+        os_actions::open_tool(intent)
+    }
+}
+
+/// What the storage area keeps for the window: the device, and the model,
+/// scanned when first needed.
+pub struct StorageArea {
+    cx: PaneCx,
+    device: std::cell::OnceCell<std::sync::Arc<dyn StorageDevice>>,
+    model: std::cell::OnceCell<Shared<StorageModel>>,
+    /// The window's client for the action door, which asks the person's
+    /// other devices for their summaries.
+    remote: ui::RemoteActions,
+}
+
+impl StorageArea {
+    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+        Self {
+            cx: cx.clone(),
+            device: std::cell::OnceCell::new(),
+            model: std::cell::OnceCell::new(),
+            remote,
+        }
+    }
+
+    /// The device Storage measures and asks for tools; a capture's
+    /// measures nothing and asks no shell.
+    fn device(&self) -> std::sync::Arc<dyn StorageDevice> {
+        std::sync::Arc::clone(
+            self.device
+                .get_or_init(|| std::sync::Arc::new(DeviceStorage::of(&self.cx))),
+        )
+    }
+
+    /// Measure `device` in place of this device's storage; before the
+    /// area was first used.
+    #[cfg(test)]
+    pub(crate) fn use_device(&self, device: std::sync::Arc<dyn StorageDevice>) {
+        assert!(
+            self.device.set(device).is_ok(),
+            "the storage device is chosen before the area is used"
+        );
+    }
+
+    /// The model, created on first use: its scan runs off the UI thread,
+    /// and only a window someone uses asks the storage service and the
+    /// person's other devices; a capture shows its stand-in devices.
     pub fn model(&self) -> &Shared<StorageModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                StorageModel::new(self.cx.clone())
+            let mut model = StorageModel::over(self.cx.clone(), self.device());
+            if self.cx.reaches_devices() {
+                model.refresh_sync();
+                model.ask_other_devices(other_devices::OtherDevices::new(self.remote.clone()));
             } else {
-                let mut model = StorageModel::with_roots(
-                    self.cx.clone(),
-                    StorageRoots {
-                        app_payloads: None,
-                        room_data: None,
-                        app_cache: None,
-                        sync_replica: None,
-                    },
-                );
-                // A capture shows its stand-in devices.
                 for device in self
                     .cx
                     .scene()
@@ -193,8 +411,7 @@ impl StorageArea {
                 {
                     model.fleet.adopt(device);
                 }
-                model
-            };
+            }
             std::rc::Rc::new(std::cell::RefCell::new(model))
         })
     }
@@ -202,33 +419,36 @@ impl StorageArea {
     /// Take in finished background work, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            let _ = model.borrow_mut().poll();
+            model.borrow_mut().take_in();
         }
     }
 }
 
 pub struct StorageModel {
     cx: PaneCx,
-    roots: StorageRoots,
-    snapshot: StorageSnapshot,
-    cleanup: Option<CleanupPreview>,
+    /// What was last measured; `None` until the first scan lands.
+    scan: Option<StorageScan>,
+    /// The scan on its way, off the UI thread.
+    scanning: Option<Landing>,
+    /// Whether caches are being removed.
+    cleaning: bool,
     sync_snapshot: Option<SyncStorageSnapshot>,
     sync_message: Option<String>,
-    sync_busy: bool,
-    sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
-    snapshot_result: Option<std::sync::mpsc::Receiver<SyncRead>>,
+    /// Freeing synced files, off the UI thread.
+    sync_result: Option<Landing>,
+    snapshot_result: Option<Landing>,
     /// The daemon's cache policy, once asked; `None` while unknown.
     cache_policy: Option<CachePolicy>,
     /// The policy being read, or changed by the effect named.
     policy_result: Option<PolicyAnswer>,
     /// What each of the person's devices holds of their workspaces.
     fleet: Fleet,
+    /// The person's other devices, asked for their summaries; `None` where
+    /// no device is reached.
+    others: Option<other_devices::OtherDevices>,
     /// The residency effect running against the storage service, and how
     /// it ends.
-    residency_job: Option<(
-        &'static str,
-        std::sync::mpsc::Receiver<Result<String, String>>,
-    )>,
+    residency_job: Option<(&'static str, Landing)>,
     /// Asked for this device's summary, answered once the next read ends.
     summary_waiting: bool,
     replies: Replies,
@@ -244,6 +464,7 @@ struct SyncRead {
 
 impl SyncRead {
     fn now() -> Self {
+        crate::device_read::off_ui_thread();
         let mut client = match StorageClient::connect(DEFAULT_STORAGE_SOCKET) {
             Ok(client) => client,
             Err(error) => {
@@ -271,34 +492,22 @@ impl SyncRead {
 }
 
 impl StorageModel {
-    /// This device's storage, scanned now, with the synced-file accounting
-    /// asked of the storage service.
-    pub fn new(cx: PaneCx) -> Self {
-        let roots = StorageRoots::discover();
-        let mut model = Self::with_roots(cx, roots);
-        model.refresh_sync();
-        model
-    }
-
-    pub fn with_roots(cx: PaneCx, roots: StorageRoots) -> Self {
-        let snapshot = desktop_policy::scan_storage(&roots);
-        let cleanup = roots
-            .app_cache
-            .as_deref()
-            .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+    /// `device`'s storage, measured off the UI thread: the pane shows that
+    /// it is being measured until the scan lands.
+    fn over(cx: PaneCx, device: std::sync::Arc<dyn StorageDevice>) -> Self {
         Self {
             cx,
-            roots,
-            snapshot,
-            cleanup,
+            scan: None,
+            scanning: Some(Landing::start(move || device.scan())),
+            cleaning: false,
             sync_snapshot: None,
             sync_message: None,
-            sync_busy: false,
             sync_result: None,
             snapshot_result: None,
             cache_policy: None,
             policy_result: None,
             fleet: Fleet::default(),
+            others: None,
             residency_job: None,
             summary_waiting: false,
             replies: Replies::default(),
@@ -306,11 +515,34 @@ impl StorageModel {
         }
     }
 
+    /// Ask the person's other devices for their summaries through
+    /// `others`, now and whenever the figures are read again.
+    fn ask_other_devices(&mut self, mut others: other_devices::OtherDevices) {
+        others.refresh();
+        self.others = Some(others);
+    }
+
+    /// Take in the other devices' answers that arrived; whether any did.
+    fn poll_other_devices(&mut self) -> bool {
+        let Some(others) = self.others.as_mut() else {
+            return false;
+        };
+        let arrived = others.poll();
+        let changed = arrived.listed.is_some() || !arrived.summaries.is_empty();
+        if let Some(listed) = &arrived.listed {
+            self.fleet.keep_listed(listed);
+        }
+        for device in arrived.summaries {
+            self.fleet.adopt(device);
+        }
+        changed
+    }
+
     fn refresh_sync(&mut self) {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(SyncRead::now());
-        });
+        if let Some(others) = self.others.as_mut() {
+            others.refresh();
+        }
+        let receiver = Landing::start(SyncRead::now);
         if self.sync_snapshot.is_none() {
             self.sync_message = Some(t("settings-storage-loading"));
         }
@@ -321,16 +553,15 @@ impl StorageModel {
     }
 
     /// Ask the daemon for its cache policy and, for the effect `effect`,
-    /// replace it with what `change` makes of it.
+    /// replace it with what `change` makes of it, off the UI thread.
     fn change_policy(
         &mut self,
         effect: Option<&'static str>,
         change: impl FnOnce(&mut CachePolicy) -> Result<(), String> + Send + 'static,
     ) {
-        let (sender, receiver) = std::sync::mpsc::channel();
         let read_only = effect.is_none();
-        std::thread::spawn(move || {
-            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+        let receiver = Landing::start(move || -> Result<CachePolicy, String> {
+            StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                 .and_then(|mut client| {
                     let mut policy = client.cache_policy()?;
                     if read_only {
@@ -342,81 +573,68 @@ impl StorageModel {
                     client.set_cache_policy(policy).map(Ok)
                 })
                 .map_err(|error| error.to_string())
-                .and_then(|changed| changed);
-            let _ = sender.send(result);
+                .and_then(|changed| changed)
         });
         self.policy_result = Some(PolicyAnswer { effect, receiver });
     }
 
-    /// Start `effect`; `reply` is told how it ends.
-    pub(crate) fn run(&mut self, effect: &StorageEffect, reply: EffectReply) {
-        let id = effect.id();
+    /// Change the cache policy for the effect `id`; `reply` is told how it
+    /// ends.
+    fn set_policy(
+        &mut self,
+        id: &'static str,
+        reply: EffectReply,
+        change: impl FnOnce(&mut CachePolicy) -> Result<(), String> + Send + 'static,
+    ) {
+        self.wait(id, reply);
+        self.change_policy(Some(id), change);
+    }
+
+    /// The caches to remove, once measured; the pane shows them being
+    /// removed until [`Self::cleaned`].
+    fn begin_clean_up(&mut self) -> Result<CleanupPreview, String> {
+        if self.cleaning {
+            return Err(t("settings-storage-cleaning"));
+        }
+        let Some(scan) = &self.scan else {
+            return Err(t("settings-pane-reading"));
+        };
+        let preview = scan
+            .cleanup
+            .clone()
+            .ok_or_else(|| t("settings-storage-no-cache"))?;
+        self.cleaning = true;
+        self.changed = true;
+        Ok(preview)
+    }
+
+    /// Take in how removing the caches ended: the storage measured after
+    /// it, or why nothing was removed.
+    fn cleaned(&mut self, cleaned: Result<StorageScan, String>) -> EffectAnswer {
+        self.cleaning = false;
+        self.changed = true;
+        match cleaned {
+            Ok(scan) => {
+                self.scan = Some(scan);
+                Ok(Effected::value(t("settings-storage-cleaned")))
+            }
+            Err(error) => Err(t_args(
+                "settings-storage-clean-failed",
+                &[("error", error.into())],
+            )),
+        }
+    }
+
+    /// Wait to tell `reply` how the effect `id` ends.
+    fn wait(&mut self, id: &'static str, reply: EffectReply) {
         self.replies.wait(id, reply);
         self.changed = true;
-        match effect {
-            StorageEffect::CleanUpCaches => self.clean_up_caches(),
-            StorageEffect::FreeSyncedFiles => self.free_synced_files(),
-            StorageEffect::OpenDisks => {
-                let result = os_actions::open_tool(ToolIntent::Disks {
-                    route: DisksRoute::Overview,
-                });
-                self.replies
-                    .finish(id, result.map(|()| t("settings-storage-opened-disks")));
-            }
-            StorageEffect::OpenBackups => {
-                let result = os_actions::open_tool(ToolIntent::Backups {
-                    route: BackupsRoute::Overview,
-                });
-                self.replies
-                    .finish(id, result.map(|()| t("settings-storage-opened-backups")));
-            }
-            StorageEffect::SetPrefetch { on } => {
-                let on = *on;
-                self.change_policy(Some(id), move |policy| {
-                    policy.prefetch = on;
-                    Ok(())
-                });
-            }
-            StorageEffect::SetCacheSize { size } => match cache_budget(size) {
-                Ok(budget) => self.change_policy(Some(id), move |policy| {
-                    policy.budget_bytes = budget;
-                    Ok(())
-                }),
-                Err(error) => self.replies.finish(id, Err(error)),
-            },
-            StorageEffect::StorageSummary => self.summarize(),
-            StorageEffect::FreeCache { workspace } => {
-                let workspace = workspace.clone();
-                self.run_residency_job(id, move |client| {
-                    client.free_cache(&workspace).map(|freed| {
-                        t_args(
-                            "settings-storage-cache-freed",
-                            &[
-                                ("size", ui::format::bytes_si(freed.freed_bytes).into()),
-                                ("files", ArgValue::Number(freed.files as f64)),
-                            ],
-                        )
-                    })
-                });
-            }
-            StorageEffect::KeepHere { workspace, keep } => {
-                let (workspace, keep) = (workspace.clone(), *keep);
-                self.run_residency_job(id, move |client| {
-                    client.keep_here(&workspace, keep).map(|()| {
-                        t(if keep {
-                            "settings-storage-now-kept"
-                        } else {
-                            "settings-storage-no-longer-kept"
-                        })
-                    })
-                });
-            }
-        }
     }
 
     /// Answer this device's storage summary: from the next read of the
     /// storage service, or, in a capture, its stand-in.
-    fn summarize(&mut self) {
+    fn summarize(&mut self, reply: EffectReply) {
+        self.wait(StorageEffect::STORAGE_SUMMARY.id, reply);
         if !self.cx.reaches_devices() {
             let summary = self
                 .fleet
@@ -444,14 +662,44 @@ impl StorageModel {
         }
     }
 
+    /// Free `workspace`'s cache; `reply` is told how much was freed.
+    fn free_cache(&mut self, workspace: String, reply: EffectReply) {
+        self.run_residency_job(StorageEffect::FREE_CACHE.id, reply, move |client| {
+            client.free_cache(&workspace).map(|freed| {
+                t_args(
+                    "settings-storage-cache-freed",
+                    &[
+                        ("size", ui::format::bytes_si(freed.freed_bytes).into()),
+                        ("files", ArgValue::Number(freed.files as f64)),
+                    ],
+                )
+            })
+        });
+    }
+
+    /// Keep `workspace` on this device, or stop keeping it.
+    fn keep_here(&mut self, workspace: String, keep: bool, reply: EffectReply) {
+        self.run_residency_job(StorageEffect::KEEP_HERE.id, reply, move |client| {
+            client.keep_here(&workspace, keep).map(|()| {
+                t(if keep {
+                    "settings-storage-now-kept"
+                } else {
+                    "settings-storage-no-longer-kept"
+                })
+            })
+        });
+    }
+
     /// Run `job` against the storage service off the UI thread, one at a
     /// time; the effect `id` is told how it ends, and the figures are read
     /// again.
     fn run_residency_job(
         &mut self,
         id: &'static str,
+        reply: EffectReply,
         job: impl FnOnce(&mut StorageClient) -> std::io::Result<String> + Send + 'static,
     ) {
+        self.wait(id, reply);
         if self.residency_job.is_some() {
             self.replies.fail(id, t("settings-storage-residency-busy"));
             return;
@@ -461,61 +709,27 @@ impl StorageModel {
                 .fail(id, t("settings-storage-accounting-unavailable"));
             return;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+        let receiver = Landing::start(move || -> Result<String, String> {
+            StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                 .and_then(|mut client| job(&mut client))
-                .map_err(|error| error.to_string());
-            let _ = sender.send(result);
+                .map_err(|error| error.to_string())
         });
         self.residency_job = Some((id, receiver));
     }
 
-    fn clean_up_caches(&mut self) {
-        if let Some(preview) = &self.cleanup {
-            let selected: Vec<usize> = (0..preview.items.len()).collect();
-            match desktop_policy::apply_cleanup(preview, &selected) {
-                Ok(_) => {
-                    self.snapshot = desktop_policy::scan_storage(&self.roots);
-                    self.cleanup = self
-                        .roots
-                        .app_cache
-                        .as_deref()
-                        .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
-                    self.replies.finish(
-                        StorageEffect::CLEAN_UP_CACHES.id,
-                        Ok(t("settings-storage-cleaned")),
-                    );
-                }
-                Err(error) => self.replies.finish(
-                    StorageEffect::CLEAN_UP_CACHES.id,
-                    Err(t_args(
-                        "settings-storage-clean-failed",
-                        &[("error", error.to_string().into())],
-                    )),
-                ),
-            }
-        } else {
-            self.replies.finish(
-                StorageEffect::CLEAN_UP_CACHES.id,
-                Err(t("settings-storage-no-cache")),
-            );
-        }
-    }
-
-    fn free_synced_files(&mut self) {
-        if !self.sync_busy
+    /// Free the local copies of synced files the service says are safe;
+    /// `reply` is told how it ends.
+    fn free_synced_files(&mut self, reply: EffectReply) {
+        self.wait(StorageEffect::FREE_SYNCED_FILES.id, reply);
+        if self.sync_result.is_none()
             && let Some(snapshot) = &self.sync_snapshot
         {
             let selected = reclaimable_selections(snapshot);
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+            let receiver = Landing::start(move || -> Result<EvictionReport, String> {
+                StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                     .and_then(|mut client| client.evict(selected))
-                    .map_err(|error| error.to_string());
-                let _ = sender.send(result);
+                    .map_err(|error| error.to_string())
             });
-            self.sync_busy = true;
             self.sync_result = Some(receiver);
         } else {
             self.replies.finish(
@@ -523,6 +737,113 @@ impl StorageModel {
                 Err(t("settings-storage-no-reclaimable")),
             );
         }
+    }
+
+    /// Take in the background work that ended, marking the pane changed.
+    /// The window's sync takes it in whether or not the pane is open, so
+    /// this leaves telling the pane to [`PaneModel::poll`].
+    pub(crate) fn take_in(&mut self) {
+        let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
+        let measured = self.poll_scan();
+        let residency_finished = self.poll_residency_job();
+        if let Some(receiver) = &self.snapshot_result {
+            match receiver.poll::<SyncRead>() {
+                Landed::Done(read) => {
+                    self.snapshot_result = None;
+                    self.take_read(read);
+                }
+                Landed::Lost => {
+                    self.sync_snapshot = None;
+                    self.snapshot_result = None;
+                    self.sync_message = Some(t("settings-storage-service-ended"));
+                    if self.summary_waiting {
+                        self.summary_waiting = false;
+                        self.replies.fail(
+                            StorageEffect::STORAGE_SUMMARY.id,
+                            t("settings-storage-service-ended"),
+                        );
+                    }
+                }
+                Landed::Pending => {}
+            }
+        }
+        if let Some(receiver) = &self.sync_result {
+            match receiver.poll::<Result<EvictionReport, String>>() {
+                Landed::Done(Ok(report)) => {
+                    self.sync_result = None;
+                    self.refresh_sync();
+                    self.sync_message =
+                        Some(if report.queued_files > 0 && report.evicted_files > 0 {
+                            t_args(
+                                "settings-storage-freed-queued",
+                                &[
+                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                    ("queued", ArgValue::Number(report.queued_files as f64)),
+                                ],
+                            )
+                        } else if report.queued_files > 0 {
+                            t_args(
+                                "settings-storage-queued-only",
+                                &[("queued", ArgValue::Number(report.queued_files as f64))],
+                            )
+                        } else {
+                            t_args(
+                                "settings-storage-freed",
+                                &[
+                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                ],
+                            )
+                        });
+                    self.replies.finish(
+                        StorageEffect::FREE_SYNCED_FILES.id,
+                        Ok(t("settings-storage-reclaim-done")),
+                    );
+                }
+                Landed::Done(Err(error)) => {
+                    self.sync_result = None;
+                    let message = t_args(
+                        "settings-storage-nothing-removed",
+                        &[("error", error.into())],
+                    );
+                    self.sync_message = Some(message.clone());
+                    self.replies
+                        .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
+                }
+                Landed::Lost => {
+                    self.sync_result = None;
+                    self.sync_message = Some(t("settings-storage-request-ended"));
+                    self.replies.finish(
+                        StorageEffect::FREE_SYNCED_FILES.id,
+                        Err(t("settings-storage-service-ended")),
+                    );
+                }
+                Landed::Pending => {}
+            }
+        }
+        let policy_changed = self.poll_policy();
+        let others_answered = self.poll_other_devices();
+        let finished = (waiting.0 && self.snapshot_result.is_none())
+            || (waiting.1 && self.sync_result.is_none())
+            || residency_finished
+            || others_answered;
+        self.changed |= finished || measured || policy_changed;
+    }
+
+    /// Take in the scan if it landed; whether it did.
+    fn poll_scan(&mut self) -> bool {
+        let Some(receiver) = &self.scanning else {
+            return false;
+        };
+        let scan = match receiver.poll::<StorageScan>() {
+            Landed::Done(scan) => scan,
+            Landed::Lost => StorageScan::unavailable(),
+            Landed::Pending => return false,
+        };
+        self.scan = Some(scan);
+        self.scanning = None;
+        true
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -543,7 +864,8 @@ impl StorageModel {
     }
 
     fn overview_card(&self) -> SettingsSection {
-        let totals = self.snapshot.totals();
+        let snapshot = self.scan.as_ref().map(|scan| &scan.snapshot);
+        let totals = snapshot.map(StorageSnapshot::totals).unwrap_or_default();
         card(
             &t("settings-storage-use"),
             rows(
@@ -564,8 +886,12 @@ impl StorageModel {
                                 )
                             },
                         )
-                    } else if self.snapshot.unavailable.contains(&category) {
+                    } else if let Some(snapshot) = snapshot
+                        && snapshot.unavailable.contains(&category)
+                    {
                         t("settings-storage-unavailable")
+                    } else if snapshot.is_none() {
+                        t("settings-pane-reading")
                     } else {
                         ui::format::bytes_si(*totals.get(&category).unwrap_or(&0))
                     };
@@ -616,7 +942,7 @@ impl StorageModel {
                         value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
                     }),
             );
-            if reclaimable > 0 && !self.sync_busy {
+            if reclaimable > 0 && self.sync_result.is_none() {
                 let free = t_args(
                     "settings-storage-free",
                     &[("size", ui::format::bytes_si(reclaimable).into())],
@@ -630,7 +956,7 @@ impl StorageModel {
                     rows(sync_rows),
                 )
             } else {
-                sync_rows.push(note(&t(if self.sync_busy {
+                sync_rows.push(note(&t(if self.sync_result.is_some() {
                     "settings-storage-reclaiming"
                 } else if snapshot.online {
                     "settings-storage-nothing-reclaimable"
@@ -647,6 +973,92 @@ impl StorageModel {
                     self.sync_message.as_deref().unwrap_or(&fallback),
                 )]),
             )
+        }
+    }
+
+    fn apps_card(&self) -> SettingsSection {
+        let Some(scan) = &self.scan else {
+            return card(
+                &t("settings-storage-largest"),
+                rows(vec![note(&t("settings-pane-reading"))]),
+            );
+        };
+        let mut largest = scan.snapshot.entries.clone();
+        largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
+        let largest_rows = largest
+            .into_iter()
+            .take(8)
+            .map(|e| {
+                value_row(
+                    &e.owner,
+                    &t_args(
+                        "settings-storage-item-meta",
+                        &[
+                            ("size", ui::format::bytes_si(e.bytes).into()),
+                            ("category", category_label(e.category).into()),
+                        ],
+                    ),
+                )
+            })
+            .collect();
+        card(
+            &t("settings-storage-largest"),
+            if scan.snapshot.entries.is_empty() {
+                rows(vec![note(&t("settings-storage-no-apps"))])
+            } else {
+                rows(largest_rows)
+            },
+        )
+    }
+
+    fn cleanup_card(&self) -> SettingsSection {
+        let Some(scan) = &self.scan else {
+            return card(
+                &t("settings-storage-cleanup"),
+                rows(vec![note(&t("settings-pane-reading"))]),
+            );
+        };
+        match &scan.cleanup {
+            Some(preview) if self.cleaning => card(
+                &t("settings-storage-cleanup-preview"),
+                rows(vec![
+                    value_row(
+                        &t("settings-storage-cat-cache"),
+                        &ui::format::bytes_si(preview.total_bytes),
+                    ),
+                    note(&t("settings-storage-cleaning")),
+                ]),
+            ),
+            Some(preview) if !preview.items.is_empty() => {
+                let remove = t_args(
+                    "settings-storage-remove",
+                    &[("size", ui::format::bytes_si(preview.total_bytes).into())],
+                );
+                let action = Box::new(self.cx.bind_invocation(
+                    Button::new("storage.clean", &remove),
+                    StorageEffect::CleanUpCaches,
+                ));
+                let mut preview_rows = vec![note(&t("settings-storage-cleanup-caption"))];
+                let cache_item = t("settings-storage-cache-item");
+                preview_rows.extend(preview.items.iter().take(8).map(|i| {
+                    value_row(
+                        i.path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(cache_item.as_str()),
+                        &ui::format::bytes_si(i.bytes),
+                    )
+                }));
+                card_with_action(
+                    &t("settings-storage-cleanup-preview"),
+                    action,
+                    rows(preview_rows),
+                )
+            }
+            _ => card(
+                &t("settings-storage-cleanup"),
+                rows(vec![note(&t("settings-storage-cleanup-empty"))]),
+            ),
         }
     }
 
@@ -698,70 +1110,6 @@ impl StorageModel {
         )
     }
 
-    fn apps_card(&self) -> SettingsSection {
-        let mut largest = self.snapshot.entries.clone();
-        largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
-        let largest_rows = largest
-            .into_iter()
-            .take(8)
-            .map(|e| {
-                value_row(
-                    &e.owner,
-                    &t_args(
-                        "settings-storage-item-meta",
-                        &[
-                            ("size", ui::format::bytes_si(e.bytes).into()),
-                            ("category", category_label(e.category).into()),
-                        ],
-                    ),
-                )
-            })
-            .collect();
-        card(
-            &t("settings-storage-largest"),
-            if self.snapshot.entries.is_empty() {
-                rows(vec![note(&t("settings-storage-no-apps"))])
-            } else {
-                rows(largest_rows)
-            },
-        )
-    }
-
-    fn cleanup_card(&self) -> SettingsSection {
-        match &self.cleanup {
-            Some(preview) if !preview.items.is_empty() => {
-                let remove = t_args(
-                    "settings-storage-remove",
-                    &[("size", ui::format::bytes_si(preview.total_bytes).into())],
-                );
-                let action = Box::new(self.cx.bind_invocation(
-                    Button::new("storage.clean", &remove),
-                    StorageEffect::CleanUpCaches,
-                ));
-                let mut preview_rows = vec![note(&t("settings-storage-cleanup-caption"))];
-                let cache_item = t("settings-storage-cache-item");
-                preview_rows.extend(preview.items.iter().take(8).map(|i| {
-                    value_row(
-                        i.path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(cache_item.as_str()),
-                        &ui::format::bytes_si(i.bytes),
-                    )
-                }));
-                card_with_action(
-                    &t("settings-storage-cleanup-preview"),
-                    action,
-                    rows(preview_rows),
-                )
-            }
-            _ => card(
-                &t("settings-storage-cleanup"),
-                rows(vec![note(&t("settings-storage-cleanup-empty"))]),
-            ),
-        }
-    }
-
     fn tools_card(&self) -> SettingsSection {
         let open_disks = t("settings-storage-open-disks");
         let open_backups = t("settings-storage-open-backups");
@@ -788,93 +1136,8 @@ impl PaneModel for StorageModel {
     }
 
     fn poll(&mut self) -> bool {
-        let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
-        let residency_finished = self.poll_residency_job();
-        if let Some(receiver) = &self.snapshot_result {
-            match receiver.try_recv() {
-                Ok(read) => {
-                    self.snapshot_result = None;
-                    self.take_read(read);
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.sync_snapshot = None;
-                    self.snapshot_result = None;
-                    self.sync_message = Some(t("settings-storage-service-ended"));
-                    if self.summary_waiting {
-                        self.summary_waiting = false;
-                        self.replies.fail(
-                            StorageEffect::STORAGE_SUMMARY.id,
-                            t("settings-storage-service-ended"),
-                        );
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(receiver) = &self.sync_result {
-            match receiver.try_recv() {
-                Ok(Ok(report)) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    self.refresh_sync();
-                    self.sync_message =
-                        Some(if report.queued_files > 0 && report.evicted_files > 0 {
-                            t_args(
-                                "settings-storage-freed-queued",
-                                &[
-                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
-                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
-                                    ("queued", ArgValue::Number(report.queued_files as f64)),
-                                ],
-                            )
-                        } else if report.queued_files > 0 {
-                            t_args(
-                                "settings-storage-queued-only",
-                                &[("queued", ArgValue::Number(report.queued_files as f64))],
-                            )
-                        } else {
-                            t_args(
-                                "settings-storage-freed",
-                                &[
-                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
-                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
-                                ],
-                            )
-                        });
-                    self.replies.finish(
-                        StorageEffect::FREE_SYNCED_FILES.id,
-                        Ok(t("settings-storage-reclaim-done")),
-                    );
-                }
-                Ok(Err(error)) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    let message = t_args(
-                        "settings-storage-nothing-removed",
-                        &[("error", error.into())],
-                    );
-                    self.sync_message = Some(message.clone());
-                    self.replies
-                        .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    self.sync_message = Some(t("settings-storage-request-ended"));
-                    self.replies.finish(
-                        StorageEffect::FREE_SYNCED_FILES.id,
-                        Err(t("settings-storage-service-ended")),
-                    );
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        let policy_changed = self.poll_policy();
-        let finished = (waiting.0 && self.snapshot_result.is_none())
-            || (waiting.1 && self.sync_result.is_none())
-            || residency_finished
-            || policy_changed;
-        std::mem::take(&mut self.changed) || finished
+        self.take_in();
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
@@ -882,8 +1145,9 @@ impl PaneModel for StorageModel {
     }
 
     fn busy(&self) -> bool {
-        self.sync_busy
+        self.sync_result.is_some()
             || self.snapshot_result.is_some()
+            || self.scanning.is_some()
             || self.policy_result.is_some()
             || self.residency_job.is_some()
     }
@@ -892,7 +1156,7 @@ impl PaneModel for StorageModel {
 /// The daemon's answer about its cache policy, for the effect that asked.
 struct PolicyAnswer {
     effect: Option<&'static str>,
-    receiver: std::sync::mpsc::Receiver<Result<CachePolicy, String>>,
+    receiver: Landing,
 }
 
 impl StorageModel {
@@ -901,12 +1165,10 @@ impl StorageModel {
         let Some(answer) = &self.policy_result else {
             return false;
         };
-        let result = match answer.receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err(t("settings-storage-service-ended"))
-            }
+        let result = match answer.receiver.poll::<Result<CachePolicy, String>>() {
+            Landed::Done(result) => result,
+            Landed::Pending => return false,
+            Landed::Lost => Err(t("settings-storage-service-ended")),
         };
         let effect = answer.effect;
         self.policy_result = None;
@@ -940,12 +1202,10 @@ impl StorageModel {
             return false;
         };
         let id = *id;
-        let result = match receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err(t("settings-storage-service-ended"))
-            }
+        let result = match receiver.poll::<Result<String, String>>() {
+            Landed::Done(result) => result,
+            Landed::Pending => return false,
+            Landed::Lost => Err(t("settings-storage-service-ended")),
         };
         self.residency_job = None;
         self.replies.finish(id, result);
@@ -1010,14 +1270,17 @@ mod tests {
     fn the_pane_shows_what_only_one_device_holds() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let mut pane = StorageModel::with_roots(
+        let mut pane = StorageModel::over(
             cx,
-            StorageRoots {
-                app_payloads: None,
-                room_data: None,
-                app_cache: None,
-                sync_replica: None,
-            },
+            std::sync::Arc::new(DeviceStorage {
+                roots: StorageRoots {
+                    app_payloads: None,
+                    room_data: None,
+                    app_cache: None,
+                    sync_replica: None,
+                },
+                reaches_shell: false,
+            }),
         );
         for device in crate::scenarios::storage_fixture() {
             pane.fleet.adopt(device);
@@ -1090,17 +1353,28 @@ mod tests {
             std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
-            let pane = StorageModel::with_roots(
+            let mut pane = StorageModel::over(
                 cx,
-                StorageRoots {
-                    app_payloads: None,
-                    room_data: None,
-                    app_cache: Some(cache),
-                    sync_replica: None,
-                },
+                std::sync::Arc::new(DeviceStorage {
+                    roots: StorageRoots {
+                        app_payloads: None,
+                        room_data: None,
+                        app_cache: Some(cache),
+                        sync_replica: None,
+                    },
+                    reaches_shell: false,
+                }),
             );
-            assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
-            assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
+            // The roots are measured off the calling thread.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while pane.scan.is_none() {
+                assert!(std::time::Instant::now() < deadline, "the scan lands");
+                pane.poll();
+                std::thread::yield_now();
+            }
+            let scan = pane.scan.as_ref().unwrap();
+            assert_eq!(scan.snapshot.reclaimable_bytes(), 24);
+            assert_eq!(scan.cleanup.as_ref().unwrap().total_bytes, 24);
         }
 
         // Case `settings_submits_only_authority_approved_reclaimable_files`.
@@ -1130,6 +1404,162 @@ mod tests {
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].identity, "clean");
         }
+    }
+
+    /// A device whose storage calls wait at a gate, as a slow disk walk or a
+    /// shell that does not answer does.
+    struct StalledStorage(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledStorage {
+        fn wait(&self) -> Result<(), String> {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err("the device never answered".into());
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            Ok(())
+        }
+    }
+
+    /// The app the stalled device reports.
+    const STALLED_APP: &str = "so.tilo.stalled-sample";
+
+    impl StorageDevice for StalledStorage {
+        fn scan(&self) -> StorageScan {
+            crate::device_read::off_ui_thread();
+            if self.wait().is_err() {
+                return StorageScan::unavailable();
+            }
+            StorageScan {
+                snapshot: StorageSnapshot {
+                    entries: vec![desktop_policy::StorageEntry {
+                        category: StorageCategory::InstalledApps,
+                        owner: STALLED_APP.into(),
+                        path: "/nonexistent/stalled".into(),
+                        bytes: 42,
+                        files: 1,
+                        reclaimable: false,
+                    }],
+                    unavailable: Vec::new(),
+                },
+                cleanup: None,
+            }
+        }
+
+        fn clean_up(&self, _: &CleanupPreview) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            self.wait()
+        }
+
+        fn open_tool(&self, _: ToolIntent) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            self.wait()
+        }
+    }
+
+    type Gate = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+    /// A Settings window whose storage waits at a gate it hands back.
+    fn stalled_window() -> (ui::framework::testing::TestApp<crate::SettingsShell>, Gate) {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let gate: Gate = std::sync::Arc::default();
+        let stalled = std::sync::Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings
+                .storage()
+                .use_device(std::sync::Arc::new(StalledStorage(stalled)));
+        })
+        .expect("the Settings window is mounted");
+        (app, gate)
+    }
+
+    fn release(gate: &Gate) {
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+    }
+
+    /// Opening Storage while the disk walk takes its time is answered and
+    /// drawn at once: the pane says storage is being measured, and shows
+    /// what was measured once the walk ends.
+    #[test]
+    fn a_stalled_disk_walk_never_holds_the_window() {
+        let (mut app, gate) = stalled_window();
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "opening the pane waited {answered:?} on the disk walk"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("settings-pane-reading")), "{frame}");
+        assert!(!frame.contains(STALLED_APP), "{frame}");
+
+        release(&gate);
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(STALLED_APP))),
+            "what the walk measured is shown"
+        );
+    }
+
+    /// A click on Open Disks is answered and the window keeps drawing while
+    /// the shell takes its time; the job ends once the shell answers.
+    #[test]
+    fn a_stalled_shell_never_holds_the_window() {
+        let (mut app, gate) = stalled_window();
+        let clicked = std::time::Instant::now();
+        let invocation = app
+            .start_effect(&crate::effects::SettingsEffect::from(
+                StorageEffect::OpenDisks,
+            ))
+            .expect("opening Disks runs as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on the shell"
+        );
+        let ended = |updates: &[ui::tilo_actions::InvocationUpdate]| {
+            updates
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        };
+        assert!(
+            !ended(app.harness().job_updates(invocation)),
+            "the job waits for the shell"
+        );
+
+        release(&gate);
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| ended(
+                    harness.job_updates(invocation)
+                )),
+            "the job ends once the shell answers"
+        );
+        let opened = app.harness().job_updates(invocation).iter().any(|update| {
+            matches!(
+                update,
+                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }
+                    if output.value == Some(serde_json::Value::String(t("settings-storage-opened-disks")))
+            )
+        });
+        assert!(opened, "the job says Disks opened");
     }
 
     /// Every cache size an agent may choose maps to a budget the daemon

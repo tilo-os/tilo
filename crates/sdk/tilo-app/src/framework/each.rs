@@ -25,11 +25,17 @@ use super::live::Live;
 use super::reactive::{Gate, Updaters};
 
 /// One entry of a row's context menu: an action published on the row's item.
-struct MenuEntry {
-    address: tilo_actions::ActionAddress,
-    /// Whether the action still takes arguments once the item is bound; those
-    /// open in the action palette, which asks for them.
-    prompts: bool,
+enum MenuEntry {
+    Action {
+        address: tilo_actions::ActionAddress,
+        /// Whether the action still takes arguments once the item is bound;
+        /// those open in the action palette, which asks for them.
+        prompts: bool,
+    },
+    /// Ask the desktop's agent about this row: its item, in its resource.
+    AskAgent(Box<ui_core::shared_selection::SharedSelection>),
+    /// The rule above it, which the menu counts as a row.
+    Separator,
 }
 
 /// The context menu of a row: the actions offered on its item.
@@ -532,13 +538,29 @@ impl<R: Resource> Each<R> {
                 MenuItem::action(spec.label.clone(), || {})
             };
             menu.push(entry.with_enabled(!read_only));
-            entries.push(MenuEntry {
+            entries.push(MenuEntry::Action {
                 address: tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str()),
                 prompts: !spec.params().is_empty(),
             });
         }
         if entries.is_empty() {
             return false;
+        }
+        if ui_core::shared_selection::agent_host_available() {
+            let selection = ui_core::shared_selection::SharedSelection::of_text(&resource.label)
+                .at(tilo_actions::SelectionPlace::item(item.as_str()))
+                .in_resource(tilo_actions::ActionResource {
+                    id: resource.id.0.clone(),
+                    kind: resource.kind.clone(),
+                    label: resource.label.clone(),
+                });
+            menu.push(MenuItem::separator());
+            entries.push(MenuEntry::Separator);
+            menu.push(MenuItem::action(
+                ui_core::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
+                || {},
+            ));
+            entries.push(MenuEntry::AskAgent(Box::new(selection)));
         }
         #[allow(
             clippy::cast_possible_truncation,
@@ -553,14 +575,19 @@ impl<R: Resource> Each<R> {
     /// Act on the menu entry the user chose: invoke it, or hand it to the
     /// palette when it still needs arguments.
     fn choose(&mut self, index: usize) {
-        let Some(entry) = self.menu.entries.get(index) else {
-            return;
-        };
-        if entry.prompts {
-            self.menu.palette = Some(entry.address.clone());
-        } else {
-            self.dispatch
-                .invoke_at(entry.address.clone(), serde_json::Map::new());
+        match self.menu.entries.get(index) {
+            Some(MenuEntry::Action { address, prompts }) => {
+                if *prompts {
+                    self.menu.palette = Some(address.clone());
+                } else {
+                    self.dispatch
+                        .invoke_at(address.clone(), serde_json::Map::new());
+                }
+            }
+            Some(MenuEntry::AskAgent(selection)) => {
+                ui_core::shared_selection::ask_agent(Some(selection.as_ref().clone()));
+            }
+            Some(MenuEntry::Separator) | None => {}
         }
     }
 

@@ -513,6 +513,7 @@ dependencies = [
  "registry-types",
  "reqwest 0.13.4",
  "runtime-bundle",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -1571,12 +1572,14 @@ dependencies = [
  "test-http",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-dav",
  "tilo-document",
  "tilo-files",
  "tilo-net",
  "tilo-rich-text",
+ "tilo-timezone-engine",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -1666,6 +1669,7 @@ dependencies = [
  "tilo-content",
  "tilo-files",
  "tilo-model-gateway",
+ "tilo-paint-engine",
  "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
@@ -1926,6 +1930,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
@@ -2152,6 +2157,7 @@ dependencies = [
  "tilo-app",
  "tilo-history",
  "tilo-test-env",
+ "tilo-timezone-engine",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -2608,6 +2614,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-files",
  "tilo-vello",
  "tilo-winit",
@@ -2743,7 +2750,7 @@ dependencies = [
  "rangemap",
  "rustc-hash 2.1.3",
  "self_cell",
- "skrifa 0.40.0",
+ "skrifa 0.44.0",
  "smol_str 0.3.6",
  "swash",
  "sys-locale",
@@ -4448,6 +4455,7 @@ dependencies = [
  "tilo-fs",
  "tilo-history",
  "tilo-paths",
+ "tilo-pdf",
  "tilo-process",
  "tilo-test-env",
  "tilo-thumbnail",
@@ -5283,7 +5291,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
- "ssh-agent-client",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -5765,14 +5772,13 @@ dependencies = [
 
 [[package]]
 name = "harfrust"
-version = "0.5.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9da2e5ae821f6e96664977bf974d6d6a2d6682f9ccee23e62ec1d134246845f9"
+checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
 dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
- "core_maths",
- "read-fonts 0.37.0",
+ "read-fonts 0.41.0",
  "smallvec",
 ]
 
@@ -8942,11 +8948,13 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
@@ -9111,6 +9119,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-messaging",
  "uuid",
  "workspace-hack",
@@ -9333,6 +9342,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
+ "tilo-youtube-engine",
  "tokio",
  "tracing",
  "url",
@@ -12439,17 +12449,6 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
-dependencies = [
- "bytemuck",
- "core_maths",
- "font-types 0.11.3",
-]
-
-[[package]]
-name = "read-fonts"
 version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
@@ -13145,11 +13144,8 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
- "account-custody",
  "accounts",
  "agent-provider-config",
- "async-imap",
- "chrono-tz",
  "collab-types",
  "desktop-policy",
  "mime_guess",
@@ -13158,13 +13154,11 @@ dependencies = [
  "roxmltree 0.21.1",
  "runtime-fs",
  "runtime-identity",
- "rustypipe",
  "settings-store",
  "tilo-actions",
  "tilo-app",
  "tilo-bluez",
  "tilo-cli-kit",
- "tilo-contact-directory",
  "tilo-dav",
  "tilo-desktop-entry",
  "tilo-doc-codecs",
@@ -13172,15 +13166,12 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-model-gateway",
- "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-rich-text",
- "tilo-subject",
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
- "tilo-wet-media",
  "vte",
  "workspace-hack",
  "xattr",
@@ -14116,6 +14107,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-accessibility-settings",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -14637,16 +14629,6 @@ dependencies = [
 
 [[package]]
 name = "skrifa"
-version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
-dependencies = [
- "bytemuck",
- "read-fonts 0.37.0",
-]
-
-[[package]]
-name = "skrifa"
 version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
@@ -14975,14 +14957,6 @@ name = "sponge-cursor"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
-
-[[package]]
-name = "ssh-agent-client"
-version = "0.1.0"
-dependencies = [
- "russh",
- "workspace-hack",
-]
 
 [[package]]
 name = "ssh-cipher"
@@ -15883,6 +15857,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "thumbnails"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "image",
+ "launcher",
+ "package-store",
+ "runtime-bundle",
+ "runtime-dylib",
+ "serde_json",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-relay",
+ "tilo-test-env",
+ "tilo-thumbnail",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tiff"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15921,6 +15915,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-accounts-engine"
+version = "0.1.0"
+dependencies = [
+ "account-custody",
+ "async-imap",
+ "runtime-dylib",
+ "tilo-oauth",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-action-broker"
 version = "0.1.0"
 dependencies = [
@@ -15952,6 +15957,7 @@ dependencies = [
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -16367,6 +16373,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -16671,6 +16678,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-contact-directory-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-contact-directory",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
@@ -16709,7 +16726,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pollster",
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "smallvec",
  "tilo-font-catalog",
  "tilo-vello",
@@ -16851,6 +16868,7 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "hex",
+ "postcard",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -17085,6 +17103,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-net",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17430,6 +17449,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17936,6 +17956,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-paint-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-subject",
+ "tilo-wet-media",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-paint-stream"
 version = "0.1.0"
 dependencies = [
@@ -17974,7 +18004,7 @@ dependencies = [
  "postcard",
  "runtime-portal",
  "serde",
- "skrifa 0.40.0",
+ "skrifa 0.44.0",
  "subsetter",
  "tempfile",
  "thiserror 2.0.21",
@@ -18130,10 +18160,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-pycompat"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "proptest",
  "serde",
  "serde_json",
@@ -18466,6 +18504,8 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
@@ -18816,7 +18856,9 @@ name = "tilo-spotify-engine"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "tilo-accounts-engine",
  "tilo-spotify",
+ "tilo-youtube-engine",
  "workspace-hack",
 ]
 
@@ -18887,6 +18929,16 @@ dependencies = [
  "tilo-pdf",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "tilo-timezone-engine"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "runtime-dylib",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -18991,7 +19043,7 @@ dependencies = [
  "serial_test",
  "settings-store",
  "sha2 0.11.0",
- "skrifa 0.40.0",
+ "skrifa 0.44.0",
  "syntect",
  "taffy",
  "tempfile",
@@ -19318,6 +19370,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-web-search"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-wet-media"
 version = "0.1.0"
 dependencies = [
@@ -19396,6 +19463,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-user-identity",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-youtube-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "rustypipe",
  "workspace-hack",
 ]
 
@@ -20019,6 +20095,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
+ "tilo-youtube-engine",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -21647,6 +21724,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-files",
+ "tilo-net",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-web-search",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.85"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22735,6 +22834,7 @@ dependencies = [
  "aead 0.6.1",
  "aes 0.9.3",
  "aes-gcm 0.10.3",
+ "aes-gcm 0.11.1",
  "aho-corasick",
  "anstream",
  "anyhow",
@@ -22823,7 +22923,6 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
- "hex",
  "hickory-proto",
  "hmac 0.12.1",
  "hpke-rs",
@@ -22897,6 +22996,7 @@ dependencies = [
  "raw-window-handle",
  "rcgen",
  "read-fonts 0.39.2",
+ "read-fonts 0.41.0",
  "regex",
  "regex-automata",
  "regex-syntax",
@@ -22904,7 +23004,6 @@ dependencies = [
  "resvg",
  "ring",
  "rqrr",
- "russh",
  "rustc-hash 1.1.0",
  "rustix 0.38.44",
  "rustix 1.1.4",
@@ -22926,6 +23025,7 @@ dependencies = [
  "simdutf8",
  "siphasher",
  "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "slab",
  "slotmap",
  "smallvec",

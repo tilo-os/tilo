@@ -107,7 +107,7 @@ pub use snapshot::{
     MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization, SNAPSHOT_PROTOCOL,
     SignedRegistrySnapshot, SnapshotError, sign_channel_authorization, sign_snapshot,
     sign_snapshot_delegated, snapshot_hash, snapshot_signing_message, verify_channel_authorization,
-    verify_snapshot,
+    verify_snapshot, within_validity_window,
 };
 pub use target::{
     ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,

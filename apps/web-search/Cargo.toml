@@ -1,0 +1,45 @@
+[package]
+name = "web-search"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "tilo-web-search: a headless service that publishes keyless web search and page reading as actions, so agents and shortcuts look things up on the device."
+
+[lib]
+name = "tilo_web_search_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-web-search"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# The typed `TILO_SVC_COLLAB_FD` client: actions are published and invoked
+# through the broker like any app's.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
+# Searches and fetches are network waits, run on one bounded runtime.
+tilo-rt = { path = "../../crates/platform/tilo-rt" }
+# The instance lock, in the service's own state directory.
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tokio = { workspace = true, features = ["rt", "time"] }
+serde = { workspace = true }
+# Output fields keep their declared order: an agent may see only the start of
+# a long answer, so what it needs comes first.
+serde_json = { workspace = true, features = ["preserve_order"] }
+uuid.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

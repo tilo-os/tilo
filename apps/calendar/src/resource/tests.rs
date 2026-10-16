@@ -843,6 +843,51 @@ mod tasks_screen {
         );
     }
 
+    /// What the package manifest offers while Calendar is closed is what
+    /// the running app publishes, at the same address, with the same label,
+    /// kind and confirmation, so launching it from the catalogue lands on a
+    /// real action.
+    #[test]
+    fn the_actions_the_manifest_offers_while_closed_are_published() {
+        use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
+        let manifest =
+            Manifest::from_toml_str(include_str!("../../tilo-app.toml")).expect("the manifest");
+        assert!(!manifest.offers.is_empty(), "Calendar offers actions");
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let resources = app.harness().resources();
+        for offer in &manifest.offers {
+            let action = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == offer.resource)
+                .and_then(|resource| resource.actions.iter().find(|a| a.id == offer.action))
+                .unwrap_or_else(|| panic!("{}#{} is published", offer.resource, offer.action));
+            assert_eq!(action.label, offer.label);
+            let kind = match offer.kind {
+                OfferKind::Read => ActionKind::Read,
+                OfferKind::Undoable => ActionKind::Undoable,
+                OfferKind::Outside => ActionKind::Outside,
+            };
+            assert_eq!(action.contract.kind, kind, "{}", offer.action);
+            let operation = match offer.operation {
+                OfferOperation::Document => OperationKind::Document,
+                OfferOperation::Effect => OperationKind::Effect,
+                OfferOperation::View => OperationKind::View,
+            };
+            assert_eq!(action.kind, operation, "{}", offer.action);
+            assert_eq!(
+                offer.confirm,
+                action.contract.confirmation != tilo_actions::ConfirmationPolicy::None,
+                "{}",
+                offer.action
+            );
+            assert!(
+                action.params().is_empty(),
+                "{} takes no parameters",
+                offer.action
+            );
+        }
+    }
+
     #[test]
     fn viewers_can_show_tasks_but_cannot_add_tasks() {
         let mut app =
@@ -970,4 +1015,46 @@ mod tasks_screen {
         assert!(app.undo(), "adding a task is one undo step");
         assert!(app.state().tasks.is_empty());
     }
+}
+
+/// A caller with no screen reads the calendar's events through the
+/// framework's `read`, and one event in full with its notes.
+#[test]
+fn the_calendar_reads_its_events_and_one_in_full() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    let id = Uuid::new_v4();
+    app.invoke(Calendar::NEW_EVENT.with(calendar::NewEvent {
+        event: EventData {
+            id: id.to_string(),
+            title: "Review".into(),
+            start: "2026-09-08T09:00".into(),
+            end: "2026-09-08T10:00".into(),
+            location: "Room 4".into(),
+            ..EventData::default()
+        },
+    }))
+    .expect("create");
+    app.invoke(Invoke::from(
+        notes_path(id)
+            .perform(&RichTextAction::AppendParagraph {
+                text: "Bring the mockups".into(),
+            })
+            .expect("a notes edit"),
+    ))
+    .expect("append");
+    let listed = app.call("read", serde_json::json!({})).unwrap().unwrap();
+    let event = &listed["events"][0];
+    assert_eq!(event["title"], "Review");
+    assert_eq!(event["location"], "Room 4");
+    let item = event["item"].as_str().unwrap().to_owned();
+    let full = app
+        .call("read", serde_json::json!({ "item": item }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(full["notes"], "Bring the mockups");
+    assert_eq!(full["start"], "2026-09-08 09:00:00");
+    assert!(
+        app.call("read", serde_json::json!({ "item": "nothing" }))
+            .is_err()
+    );
 }

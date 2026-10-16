@@ -294,6 +294,7 @@ impl LauncherServices for Apps {
                 package_id: app.package_id,
                 display_name: app.display_name,
                 unconfined: false,
+                offers: app.offers,
             })
             .collect()
     }

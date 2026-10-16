@@ -12,11 +12,6 @@ impl crate::collaboration::PeerTransport for PublicationTransport {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
-    fn take_primary_route_result(
-        &mut self,
-    ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
-        None
-    }
     fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
         Ok(())
     }

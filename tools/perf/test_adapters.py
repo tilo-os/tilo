@@ -770,8 +770,8 @@ def stream_report(**changes) -> dict:
         "browser": {"product": "Chrome/153.0.8010.12"},
         "viewport": {"width": 960, "height": 540, "deviceScaleFactor": 1},
         "session": {"encoder": "x264enc (software, software)", "hardware": False, "fps": 30, "width": 1280,
-                    "height": 720},
-        "workload": {"seconds": 10, "inputs": 20, "carrier": "webtransport"},
+                    "height": 720, "codec": "h264"},
+        "workload": {"seconds": 10, "inputs": 20, "carrier": "webtransport", "codec": "h264"},
         "counts": {"sent": 300, "deliveredPercent": 99.33},
         "correctness": {"failures": []},
         "samples": {"startup_ms": [640.0], "frame_latency_ms": [30.0, 35.0, 80.0], "frame_interval_ms": [33.0, 34.0],
@@ -785,6 +785,13 @@ def stream_report(**changes) -> dict:
     return report
 
 
+def codec_report(codec: str) -> dict:
+    """A report of a session streaming `codec` (`vp9`: a session without an H.264 encoder)."""
+    report = stream_report()
+    return stream_report(session={**report["session"], "encoder": f"{codec} (software, software)", "codec": codec},
+                         workload={**report["workload"], "codec": codec})
+
+
 class NativeStream(unittest.TestCase):
     def test_each_sample_list_becomes_its_kpi_and_misses_one_more(self):
         records = {item.kpi: item for item in adapters.native_stream(stream_report(), BROWSER_ENV)}
@@ -793,8 +800,29 @@ class NativeStream(unittest.TestCase):
         self.assertEqual((latency.unit, latency.n, latency.p50, latency.max), ("ms", 3, 35.0, 80.0))
         missed = records["stream.frame.missed"]
         self.assertEqual((missed.unit, missed.n, missed.max), ("percent", 1, 0.67))
-        self.assertEqual((latency.meta["encoder_hardware"], latency.meta["window"], latency.meta["carrier"]),
-                         ("false", "1280x720", "webtransport"))
+        self.assertEqual((latency.meta["encoder_hardware"], latency.meta["window"], latency.meta["carrier"],
+                          latency.meta["codec"]), ("false", "1280x720", "webtransport", "h264"))
+
+    def test_a_vp9_stream_is_its_own_series(self):
+        """VP9's records carry the codec in their ids, so no H.264 baseline ever judges them."""
+        records = {item.kpi: item for item in adapters.native_stream(codec_report("vp9"), BROWSER_ENV)}
+        self.assertEqual(set(records), {"stream.vp9.startup.first_picture", "stream.vp9.frame.latency",
+                                        "stream.vp9.frame.interval", "stream.vp9.encode.frame",
+                                        "stream.vp9.input.latency", "stream.vp9.frame.missed"})
+        latency = records["stream.vp9.frame.latency"]
+        self.assertEqual((latency.unit, latency.n, latency.p50, latency.meta["codec"]), ("ms", 3, 35.0, "vp9"))
+        self.assertEqual(records["stream.vp9.frame.missed"].max, 0.67)
+
+    def test_a_session_that_streamed_another_codec_is_refused(self):
+        """A session that fell back to H.264 must not fill VP9's series, nor the reverse."""
+        fell_back, upgraded, garbled = codec_report("vp9"), stream_report(), codec_report("VP9.x")
+        fell_back["session"]["codec"] = "h264"
+        upgraded["session"]["codec"] = "vp9"
+        for report, reason in ((fell_back, "streamed h264, not the requested vp9"),
+                               (upgraded, "streamed vp9, not the requested h264"),
+                               (garbled, "names codec")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream(report, BROWSER_ENV)
 
     def test_a_report_of_another_environment_or_an_incorrect_stream_is_refused(self):
         for report, reason in ((stream_report(renderer="gpu"), "not the env's swiftshader"),
@@ -820,9 +848,14 @@ class NativeStream(unittest.TestCase):
         self.assertEqual(set(re.findall(r"\b([a-z_]+_ms):", samples)), set(adapters.STREAM_KPIS))
 
     def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        """Each codec the nightly streams (H.264 by default, then each `--codec`) has a budget for every KPI."""
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text().replace("\\\n", " ")
+        runs = [line for line in workflow.splitlines() if line.lstrip().startswith("node scripts/perf/native_stream")]
+        codecs = {(re.findall(r"--codec (\w+)", run) or [adapters.STREAM_DEFAULT_CODEC])[0] for run in runs}
+        self.assertEqual(codecs, {"h264", "vp9"})
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("stream.")}
-        produced = {item.kpi for item in adapters.native_stream(stream_report(), BROWSER_ENV)}
+        produced = {item.kpi for codec in codecs for item in adapters.native_stream(codec_report(codec), BROWSER_ENV)}
         self.assertEqual(budgeted, produced)
 
 

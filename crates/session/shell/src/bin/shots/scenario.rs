@@ -565,12 +565,14 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::MiddleDrag { from, to, steps } => driver.middle_drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
         Action::StripPan(travel) => {
-            driver.host_mut().update_active_strip_pan(*travel, true);
+            driver
+                .host_mut()
+                .update_active_strip_pan(*travel, true, std::time::Instant::now());
         }
         Action::EndStripPan => {
             driver
                 .host_mut()
-                .end_active_strip_pan(std::time::Instant::now());
+                .end_active_strip_pan(std::time::Instant::now(), false);
         }
         Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),

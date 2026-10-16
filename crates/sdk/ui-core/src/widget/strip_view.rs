@@ -1,12 +1,9 @@
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub const STRIP_COOLDOWN_MS: u64 = 600;
@@ -106,17 +103,6 @@ impl Widget for StripView {
         taffy.widget_leaf(style, node_map, self)
     }
     crate::rect_geometry!();
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        // Invisible — real strip chrome lives in the shell's window-group
-        // layout + top-bar.
-    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {

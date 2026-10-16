@@ -25,17 +25,14 @@
 //! (`tilo-fs`), sandbox launcher, app host or install CLI. An app that calls
 //! into one of those links it statically and gets only the code it reaches;
 //! `tools/policy/check_runtime_dylib_surface.py` keeps them out of this graph.
-//! Nor does it carry an engine only one app uses once that engine has a
+//! Nor does it carry an engine only a few apps use once that engine has a
 //! library of its own beside this one (`crates/runtime/engines/`).
 
 // `pub use`, not a bare `extern crate`: that's what keeps the symbols and
 // records these crates as provided-by-this-dylib in the metadata, which
 // the downstream `-C prefer-dynamic` link step consumes.
-pub use account_custody;
 pub use accounts;
 pub use agent_provider_config;
-pub use async_imap;
-pub use chrono_tz;
 pub use cli;
 pub use collab_types;
 pub use desktop_entry;
@@ -47,25 +44,20 @@ pub use registry_types;
 pub use roxmltree;
 pub use runtime_fs;
 pub use runtime_identity;
-pub use rustypipe;
 pub use settings_store;
 pub use thumbnail;
 pub use tilo_actions;
 pub use tilo_app;
 pub use tilo_bluez;
-pub use tilo_contact_directory;
 pub use tilo_dav;
 pub use tilo_doc_codecs;
 pub use tilo_document;
 pub use tilo_files;
 pub use tilo_model_gateway;
-pub use tilo_oauth;
 pub use tilo_pdf;
 pub use tilo_relay_protocol;
 pub use tilo_rich_text;
-pub use tilo_subject;
 pub use tilo_user_identity;
-pub use tilo_wet_media;
 pub use ui;
 pub use vte;
 pub use xattr;

@@ -802,7 +802,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
     for owner in [&fixture.owner, &reopened] {
         owner
             .with_current(room(), |view| {
-                view.peer().check_checkpoint_reader(
+                view.peer().workspace().check_checkpoint_reader(
                     &member,
                     &member_routes()[0].app,
                     &member_routes()[0].record,
@@ -810,6 +810,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
                 )?;
                 assert!(
                     view.peer()
+                        .workspace()
                         .check_checkpoint_reader(
                             &member,
                             &member_routes()[1].app,
@@ -869,7 +870,11 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
     assert!(capture_member(&fixture, &fixture.owner, &substituted, id).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), durable);
     publish_peer_change(&fixture, |peer| {
-        assert!(peer.remove_member(member.user_public_key, &fixture.key, fixture.now)?);
+        assert!(peer.governance_mut().remove_member(
+            member.user_public_key,
+            &fixture.key,
+            fixture.now
+        )?);
         Ok(())
     });
     let reopened = open_file(&path).unwrap();
@@ -900,7 +905,9 @@ fn checkpoint_signed_root_outgoing_reaches_governor_and_names_and_snapshots_reop
         .unwrap();
     let root = fixture
         .owner
-        .with_current(room(), |view| view.peer().workspace_checkpoint_root())
+        .with_current(room(), |view| {
+            view.peer().workspace().workspace_checkpoint_root()
+        })
         .unwrap();
     assert!(root.is_some());
     let reopened = open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -925,7 +932,12 @@ fn checkpoint_signed_root_outgoing_reaches_governor_and_names_and_snapshots_reop
             .unwrap();
     }
     assert_eq!(
-        fixture.governor.peer().workspace_checkpoint_root().unwrap(),
+        fixture
+            .governor
+            .peer()
+            .workspace()
+            .workspace_checkpoint_root()
+            .unwrap(),
         root
     );
     for name in ["original", "alias"] {
@@ -970,7 +982,9 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
         .unwrap();
     let root = fixture
         .owner
-        .with_current(room(), |view| view.peer().workspace_checkpoint_root())
+        .with_current(room(), |view| {
+            view.peer().workspace().workspace_checkpoint_root()
+        })
         .unwrap();
     for bytes in stale {
         // The receiver may classify an old signed frame as duplicate or refuse
@@ -986,7 +1000,10 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
         assert_eq!(
             fixture
                 .owner
-                .with_current(room(), |view| view.peer().workspace_checkpoint_root())
+                .with_current(room(), |view| view
+                    .peer()
+                    .workspace()
+                    .workspace_checkpoint_root())
                 .unwrap(),
             root
         );
@@ -1286,8 +1303,12 @@ fn checkpoint_receiving_member_reads_hydrated_signed_index_with_different_genera
             assert_eq!(view.device(), &member);
             assert_ne!(view.device(), view.governor());
             assert_eq!(
-                view.peer().workspace_checkpoint_root()?,
-                fixture.governor.peer().workspace_checkpoint_root()?
+                view.peer().workspace().workspace_checkpoint_root()?,
+                fixture
+                    .governor
+                    .peer()
+                    .workspace()
+                    .workspace_checkpoint_root()?
             );
             Ok(())
         })

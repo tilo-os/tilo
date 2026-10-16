@@ -282,7 +282,9 @@ impl syn::parse::Parse for ParamOptions {
         }
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
-            if key == "content" || key == "flatten" || key == "place" {
+            // `place` alone is a flag; `place = "field"` names its collection.
+            let flag = key == "content" || key == "flatten" || key == "place";
+            if flag && !input.peek(Token![=]) {
                 if key == "content" {
                     options.content = true;
                 } else if key == "place" {
@@ -389,18 +391,22 @@ struct Verb {
     item: Option<(syn::Ident, Type)>,
 }
 
-/// The rules a verb's parameters keep: a content or flattened parameter is
-/// the only one.
+/// The rules a verb's parameters keep: at most one content parameter, a
+/// `String` holding the content's hash, beside any others; a flattened
+/// parameter is the only one.
 fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
-    if params.iter().any(|param| param.role == Role::Content)
-        && !(params.len() == 1
-            && params.first().is_some_and(|param| {
-                last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
-            }))
+    let content: Vec<&Param> = params
+        .iter()
+        .filter(|param| param.role == Role::Content)
+        .collect();
+    if content.len() > 1
+        || content
+            .iter()
+            .any(|param| last_ident(&param.ty).is_none_or(|(name, _)| name != "String"))
     {
         return Err(syn::Error::new(
             span,
-            "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
+            "a verb takes at most one `#[param(content)]`, a `String` holding the content's hash",
         ));
     }
     if params.iter().any(|param| param.role == Role::Flatten) && params.len() != 1 {
@@ -585,6 +591,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, true) => quote!(#krate::__private::PlaceIn::Record),
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
+    let content = param.role == Role::Content;
     quote! {
         #krate::__private::ParamDecl {
             name: #name,
@@ -595,6 +602,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
             place: #place,
             example: #example,
             flat: #flat,
+            content: #content,
         }
     }
 }
@@ -1218,29 +1226,36 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 })
             },
         };
-        let (collects, prompted, content) =
-            match verb.params.iter().find(|param| param.role == Role::Content) {
-                Some(param) => {
-                    let description = &param.description;
-                    let public = &param.public;
-                    (
-                        quote!(::core::option::Option::Some(#description)),
-                        quote! {
-                            if let ::core::option::Option::Some(hash) =
-                                arguments.remove(#krate::__private::PROMPTED_PARAM)
-                            {
-                                arguments.insert(::std::string::String::from(#public), hash);
-                            }
-                        },
-                        quote!(::core::option::Option::Some(#public)),
-                    )
-                }
-                None => (
-                    quote!(::core::option::Option::None),
-                    quote!(),
-                    quote!(::core::option::Option::None),
-                ),
-            };
+        // A verb whose one input is content is published as collecting it
+        // (its callers carry the hash in); one that takes content beside
+        // other parameters publishes them all, the content one marked.
+        let only_content = verb.params.len() == 1;
+        let (collects, prompted, content) = match verb
+            .params
+            .iter()
+            .find(|param| param.role == Role::Content && only_content)
+        {
+            Some(param) => {
+                let description = &param.description;
+                let public = &param.public;
+                (
+                    quote!(::core::option::Option::Some(#description)),
+                    quote! {
+                        if let ::core::option::Option::Some(hash) =
+                            arguments.remove(#krate::__private::PROMPTED_PARAM)
+                        {
+                            arguments.insert(::std::string::String::from(#public), hash);
+                        }
+                    },
+                    quote!(::core::option::Option::Some(#public)),
+                )
+            }
+            None => (
+                quote!(::core::option::Option::None),
+                quote!(),
+                quote!(::core::option::Option::None),
+            ),
+        };
         let description = &verb.description;
         let field = verb.options.field.as_deref().map_or_else(
             || quote!(::core::option::Option::None),

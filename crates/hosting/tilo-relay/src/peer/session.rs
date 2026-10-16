@@ -259,7 +259,10 @@ where
     let writing = SessionWriter::new(queues, &mut write, &presence).run(cx);
     let outcome = tokio::select! {
         _ = &mut closed => Ok(()),
-        _ = disconnect_rx.recv() => Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into())),
+        _ = disconnect_rx.recv() => {
+            metrics.inc_subscriber_dropped_backpressure();
+            Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))
+        }
         result = reading => result,
         result = writing => result,
     };

@@ -129,6 +129,8 @@ export XDG_STATE_HOME=$work/state
 mkdir -p "$XDG_STATE_HOME/tilo/session-logs"
 printf 'prior private diagnostic\n' >"$XDG_STATE_HOME/tilo/session-logs/latest.log"
 chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/latest.log"
+printf 'prior log event\n' >"$XDG_STATE_HOME/tilo/session-logs/events.log"
+chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/events.log"
 printf 'old frame trace\n' >"$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
 chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
 
@@ -152,6 +154,12 @@ grep -Fqx '0,0,0,1,2,3,4,5,0,6,7,1,1,8,9,0,10' "$flight_dir/frame-trace.csv"
 grep -Fq 'tilo-flight-record-v1 start=' "$flight_dir/latest.log"
 grep -Fq 'DRM render phase summary' "$flight_dir/latest.log"
 grep -Fq 'tilo-flight-record-v1 end=' "$flight_dir/latest.log"
+# The log events are kept, and rotated, beside the full record.
+test "$(stat -c %a "$flight_dir/events.log")" = 600
+test "$(stat -c %a "$flight_dir/previous-events.log")" = 600
+grep -Fqx 'prior log event' "$flight_dir/previous-events.log"
+head -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-record-v1 start='
+tail -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-record-v1 end='
 cat >"$work/expected" <<EOF
 systemctl --user is-active --quiet tilo-graphical-session.target
 systemctl --user is-active --quiet graphical-session.target

@@ -8,8 +8,10 @@
 //! ([`crate::apps`]), records the grants people give apps for other apps'
 //! actions in its own workspace, owns its room's documents durably
 //! ([`owner`]), local to this machine, joins rooms a Tilo device or cloud
-//! host governs ([`joined`]) and serves route keys for both
-//! ([`channels`]); every other host service is absent,
+//! host governs ([`joined`]), serves route keys for both
+//! ([`channels`]) and routes offloadable actions through the person's home
+//! relay when one retains its room ([`crate::offload`]); every other host
+//! service is absent,
 //! and the broker answers as it does for any host that does not provide one.
 //! What this host keeps durably is in the profile: the room, grants, effect
 //! and task records in its own workspace file, the invocation journal and
@@ -130,6 +132,8 @@ impl Standalone {
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
         )?;
+        stage("opening the content store");
+        let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
         let (policy_origin, policy_time) = execution_policy_clock()?;
         let owners = Arc::new(Owners {
@@ -160,14 +164,14 @@ impl Standalone {
                 // The service the identity service answers key requests
                 // from: endpoints ask again when it says a channel changed.
                 channel_keys: Some(channel_keys.keys.clone()),
+                // Offloadable actions of the room may run on a better-placed
+                // device of this person, over the room's media in this store.
+                action_offload: crate::offload::action_offload(&[room_id.as_str()], media.store()),
                 ..HostServices::default()
             },
             channels,
             fanout,
         )?;
-        let blob_socket = root.join(BLOB_SOCKET);
-        stage("opening the content store");
-        let media = profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         let author = files::Author {
             person: identity.user_public_key,
             device,
@@ -182,7 +186,7 @@ impl Standalone {
             room: room_id,
             actor,
             identity_socket,
-            blob_socket,
+            blob_socket: root.join(BLOB_SOCKET),
             _files: files,
             _media: media,
             _lock: lock,

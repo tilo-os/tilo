@@ -284,12 +284,11 @@ pub(crate) fn answer(
     let begun = app.network().model().borrow_mut().begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => cx.thread(
-            move |_| work(),
-            |app: &mut SettingsApp, landed: Landed, _| {
+        Begun::Work(work) => {
+            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed: Landed, _| {
                 app.network().model().borrow_mut().land(landed)
-            },
-        ),
+            })
+        }
     })
 }
 
@@ -655,8 +654,19 @@ impl Drop for NetworkChange {
 /// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the SIMs.
-    /// Connectivity is the last verdict; this never probes the internet.
+    /// Connectivity is the last verdict; this never probes the internet,
+    /// and the networks are those last seen: it never waits for a scan.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Scan for Wi-Fi networks and return once the scan has finished, so the
+    /// snapshot that follows lists what the radio sees now. Only the
+    /// explicit refresh does this: a scan takes as long as the hardware
+    /// needs, and no reading may wait for it.
+    ///
+    /// # Errors
+    /// Why the device could not scan.
+    fn scan(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
@@ -702,6 +712,10 @@ impl NetworkService for DeviceNetwork {
         // A refused or failed recheck still leaves the last verdict, which
         // the snapshot that follows reads and reports.
         let _ = os_actions::check_connectivity_now();
+    }
+
+    fn scan(&self) -> Result<(), String> {
+        os_actions::scan_wifi()
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -752,6 +766,7 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::open_tool(intent)
     }
 }
@@ -822,6 +837,7 @@ impl NetworkService for SampleNetwork {
     }
 
     fn open_tool(&self, _intent: ToolIntent) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -846,7 +862,10 @@ pub(crate) enum Joined {
 
 /// Work that finished on a worker, for the model to take in.
 pub(crate) enum Landed {
-    Refreshed(NetworkSnapshot),
+    Refreshed {
+        snapshot: NetworkSnapshot,
+        scan: Result<(), String>,
+    },
     Changed(NetworkChange, Result<(), String>),
     Connected {
         ssid: String,
@@ -855,6 +874,8 @@ pub(crate) enum Landed {
     Shared(Result<String, String>),
     Diagnosed(Result<os_actions::ConnectionDiagnostics, String>),
     SignedIn(Result<(), String>),
+    /// A system tool the shell was asked to open.
+    Opened(Result<(), String>),
 }
 
 /// The fields of one saved Wi-Fi network's policy form.
@@ -1133,7 +1154,7 @@ pub struct NetworkModel {
     /// False until the first snapshot arrives; until then the pane shows a
     /// pending view.
     loaded: bool,
-    snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
+    snapshot: Option<crate::channel::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
     wifi_enabled: bool,
     /// The radios the kernel listed when the model last looked.
@@ -1360,19 +1381,20 @@ impl NetworkModel {
     /// Start reading a snapshot in the background; a newer read supersedes
     /// an older one still running.
     fn start_snapshot(&mut self) {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::channel::channel();
         let service = Arc::clone(&self.service);
         let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
-        let started = std::thread::Builder::new()
-            .name("settings-network-read".into())
-            .spawn(move || {
+        let started = crate::device_read::thread(
+            "settings-network-read",
+            Box::new(move || {
                 if sender.send(service.snapshot(initial)).is_ok() {
                     wake.wake();
                 }
-            });
+            }),
+        );
         match started {
-            Ok(_) => self.snapshot = Some(receiver),
+            Ok(()) => self.snapshot = Some(receiver),
             Err(error) => self.notice = Some(format!("{}: {error}", t("net-notice-unavailable"))),
         }
         self.changed = true;
@@ -1569,8 +1591,12 @@ impl NetworkModel {
             NetworkEffect::RefreshNetworks => {
                 self.refreshes_pending += 1;
                 Begun::work(move || {
+                    let scan = service.scan();
                     service.recheck_connectivity();
-                    Landed::Refreshed(service.snapshot(false))
+                    Landed::Refreshed {
+                        snapshot: service.snapshot(false),
+                        scan,
+                    }
                 })
             }
             NetworkEffect::SetWifi { on } => {
@@ -1676,8 +1702,7 @@ impl NetworkModel {
                         profile: None,
                     },
                 };
-                self.service.open_tool(intent)?;
-                Begun::Done
+                Begun::work(move || Landed::Opened(service.open_tool(intent)))
             }
             NetworkEffect::RunDiagnostics => {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
@@ -2034,9 +2059,18 @@ impl NetworkModel {
     fn land(&mut self, landed: Landed) -> EffectAnswer {
         self.changed = true;
         let reported = match landed {
-            Landed::Refreshed(snapshot) => {
+            Landed::Refreshed { snapshot, scan } => {
                 self.refreshes_pending = self.refreshes_pending.saturating_sub(1);
-                self.adopt_snapshot(snapshot)
+                let adopted = self.adopt_snapshot(snapshot);
+                match scan {
+                    // The list and status still read; only the fresh look
+                    // failed. A radio that is off cannot scan, and says so.
+                    Err(error) if adopted.is_ok() && self.wifi_enabled => {
+                        warn!(target: "tilo::settings", op = "scan_wifi", %error, "Wi-Fi scan failed");
+                        Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
+                    }
+                    _ => adopted,
+                }
             }
             Landed::Changed(change, result) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
@@ -2070,6 +2104,8 @@ impl NetworkModel {
             Landed::SignedIn(result) => result
                 .map(|()| String::new())
                 .map_err(|error| format!("Could not open network sign-in: {error}")),
+            // The tool answers for itself: neither outcome is a notice.
+            Landed::Opened(result) => return result.map(|()| Effected::done()),
         };
         self.notice = Some(match &reported {
             Ok(said) if said.is_empty() => return Ok(Effected::done()),
@@ -3305,11 +3341,11 @@ impl NetworkModel {
                     self.snapshot = None;
                     let _ = self.adopt_snapshot(snapshot);
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.snapshot = None;
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         self.poll_picker();
@@ -3460,11 +3496,11 @@ mod tests {
     }
 
     struct SnapshotGate {
-        started: std::sync::mpsc::Sender<()>,
-        release: std::sync::mpsc::Receiver<()>,
+        started: crate::channel::Sender<()>,
+        release: crate::channel::Receiver<()>,
     }
 
-    struct ReleaseSnapshot(Option<std::sync::mpsc::Sender<()>>);
+    struct ReleaseSnapshot(Option<crate::channel::Sender<()>>);
 
     impl Drop for ReleaseSnapshot {
         fn drop(&mut self) {
@@ -3475,8 +3511,8 @@ mod tests {
     }
 
     fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> {
-        let (started, starts) = std::sync::mpsc::channel();
-        let (release, releases) = std::sync::mpsc::channel();
+        let (started, starts) = crate::channel::channel();
+        let (release, releases) = crate::channel::channel();
         let fake = Arc::new(FakeNetwork::default());
         *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
             started,
@@ -3520,7 +3556,7 @@ mod tests {
         use ui::headless::{Framed, viewport};
 
         let mut scope = ui::WakeScope::new();
-        let (woke, wakes) = std::sync::mpsc::channel();
+        let (woke, wakes) = crate::channel::channel();
         scope
             .bind(move |_| {
                 let _ = woke.send(());
@@ -3565,9 +3601,24 @@ mod tests {
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
         connectivity_rechecks: std::sync::atomic::AtomicUsize,
+        /// Scans, each recorded with the snapshot reads made before it.
+        scans: Mutex<Vec<usize>>,
+        scan_refusal: Mutex<Option<String>>,
     }
 
     impl NetworkService for FakeNetwork {
+        fn scan(&self) -> Result<(), String> {
+            let reads = self
+                .snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.scans.lock().unwrap().push(reads);
+            self.scan_refusal
+                .lock()
+                .unwrap()
+                .clone()
+                .map_or(Ok(()), Err)
+        }
+
         fn recheck_connectivity(&self) {
             self.connectivity_rechecks
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3666,6 +3717,7 @@ mod tests {
         }
 
         fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             let _ = intent;
             self.changes.lock().unwrap().push("tool".into());
             Ok(())
@@ -3802,8 +3854,8 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         mount_network(&mut app, observed).unwrap();
         app.settle();
-        let (started, starts) = std::sync::mpsc::channel();
-        let (release, releases) = std::sync::mpsc::channel();
+        let (started, starts) = crate::channel::channel();
+        let (release, releases) = crate::channel::channel();
         *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
             started,
             release: releases,
@@ -3914,6 +3966,26 @@ mod tests {
                 Effected::Pending => Ok(None),
             },
         }
+    }
+
+    /// Opening the VPN studio asks the shell on a worker, never while the
+    /// effect is begun on the UI thread; the shell's answer is the effect's.
+    #[test]
+    fn the_vpn_studio_is_opened_off_the_ui_thread() {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        let Ok(Begun::Work(work)) = model.begin(NetworkEffect::OpenVpnStudio { vpn: None }) else {
+            panic!("opening the VPN studio runs on a worker");
+        };
+        assert!(
+            fake.changes.lock().unwrap().is_empty(),
+            "the shell is not asked before the worker runs"
+        );
+        let landed = std::thread::spawn(work).join().unwrap();
+        assert_eq!(fake.changes.lock().unwrap().as_slice(), ["tool"]);
+        let notice = model.notice.clone();
+        assert!(matches!(model.land(landed), Ok(Effected::Done(_))));
+        assert_eq!(model.notice, notice, "the tool answers for itself");
     }
 
     /// The ordinary worker completion must honor the action a caller invoked,
@@ -4038,6 +4110,50 @@ mod tests {
             1,
             "the explicit refresh asks for a fresh connectivity verdict"
         );
+    }
+
+    /// Opening Network shows the connected network from what
+    /// `NetworkManager` already knows; it never waits for a radio scan,
+    /// which takes over ten seconds on some adapters and once timed the
+    /// status out ("Can't read network status: nmcli timed out after
+    /// 12000 ms") while the internet worked. Only Refresh scans, before it
+    /// reads, and a failed scan leaves the status and list readable.
+    #[test]
+    fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut model = model(&fake);
+        assert!(
+            fake.scans.lock().unwrap().is_empty(),
+            "opening Network must not scan"
+        );
+        let connected = t_args("net-connected-to", &[("ssid", "Home_Network".into())]);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert_eq!(model.wifi_status_error(), None);
+
+        run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
+        assert_eq!(
+            *fake.scans.lock().unwrap(),
+            vec![1],
+            "Refresh scans once, before the snapshot it adopts"
+        );
+        assert_eq!(
+            fake.snapshot_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+
+        *fake.scan_refusal.lock().unwrap() = Some("Scanning not allowed".into());
+        let refused = run(&mut model, NetworkEffect::RefreshNetworks)
+            .expect_err("a failed scan is reported to whoever pressed Refresh");
+        assert!(refused.contains("Scanning not allowed"), "{refused}");
+        assert_eq!(model.read_errors, NetworkReadErrors::default());
+        assert_eq!(model.wifi_status_error(), None);
+        assert_eq!(model.networks().len(), 3);
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&connected), "{text}");
+        assert!(!text.contains("Can't read network status"), "{text}");
     }
 
     /// A secure network first asks the person's devices for its password,

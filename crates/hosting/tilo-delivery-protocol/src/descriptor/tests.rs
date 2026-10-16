@@ -30,7 +30,11 @@ impl CommittedWorkspace for StatePeer {
         self.certificates().contains(device)
     }
     fn is_member_device(&self, device: &[u8; 32], now: SystemTime) -> Result<bool, String> {
-        Ok(self.governed_access(now)?.member_devices.contains(device))
+        Ok(self
+            .governance()
+            .governed_access(now)?
+            .member_devices
+            .contains(device))
     }
     fn has_permissions(&self, device: [u8; 32], now: SystemTime) -> bool {
         self.permissions(device, now).is_ok()
@@ -203,6 +207,7 @@ impl Fixture {
             join::verify_join_proof(&proof, &challenge, &host, &RevocationList::new(), 1000 * NS)
                 .unwrap();
         self.peer
+            .governance_mut()
             .admit_invited_member(&redemption, &self.governor_key, self.now)
             .unwrap();
         self.host = host;
@@ -463,6 +468,7 @@ fn current_governance_revocation_host_pin_and_primary_only_mode_are_mandatory() 
     };
     sign_revocation_entry(&mut entry, &f.root).unwrap();
     f.peer
+        .governance_mut()
         .publish_governed_revocations(&[entry], &f.governor_key, f.now)
         .unwrap();
     assert!(verified.revalidate(&f.current()).is_err());
@@ -501,6 +507,7 @@ fn real_foreign_root_host_role_removal_invalidates_existing_descriptor() {
     let verified = verify_transport_hint(&hint, &f.current()).unwrap();
     assert!(
         f.peer
+            .governance_mut()
             .remove_member(f.host.user_public_key, &f.governor_key, f.now)
             .unwrap()
     );

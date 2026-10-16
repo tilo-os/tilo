@@ -156,6 +156,7 @@ shortcut-name-magnifier-zoom-out = Lupe verkleinern
 shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
 shortcut-category-system = System
@@ -300,10 +301,10 @@ qs-power-kept-awake-by-apps = { $power } · { $count } Apps verhindern den Ruhez
 
 # Schnelleinstellungen: Steuerungen bearbeiten
 qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Zum Anordnen ziehen · Strg + Auf/Ab
+qs-edit-help = Ziehen oder Strg + Auf/Ab drücken zum Anordnen
 qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
-qs-edit-active-heading = AKTIVE STEUERUNGEN
-qs-edit-available-heading = VERFÜGBAR
+qs-edit-active-heading = Aktive Steuerungen
+qs-edit-available-heading = Verfügbar
 qs-edit-reset = Standard wiederherstellen
 qs-edit-reset-a11y = Standard der Schnelleinstellungen wiederherstellen
 qs-edit-done = Fertig
@@ -908,6 +909,7 @@ osd-microphone-on = Mikrofon an
 osd-keyboard-backlight-off = Tastaturbeleuchtung aus
 osd-keyboard-backlight = Tastaturbeleuchtung { $percent } %
 osd-no-backlight = Kein regelbarer Bildschirm
+osd-no-agent = Hier ist kein Agent verfügbar
 osd-airplane-mode-on = Flugmodus an
 osd-airplane-mode-off = Flugmodus aus
 osd-touchpad-on = Touchpad an
@@ -1409,6 +1411,8 @@ search-action-invitation-cancel = Einladung zurückziehen
 search-action-invitation-cancel-subtitle = Eine offene Einladung widerrufen, damit sie nicht mehr eingelöst werden kann
 search-action-agent-invite = Agenten in den Arbeitsbereich einladen
 search-action-agent-invite-subtitle = Eine eingegrenzte Agenten-Einrichtung starten; jeden Bereich wählen, den er nutzen darf
+search-action-agent-remove = Agenten entfernen
+search-action-agent-remove-subtitle = Einen Agenten aus diesem Arbeitsbereich nehmen und sofort alles widerrufen, was er hier tun durfte
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
 search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen
@@ -1808,7 +1812,7 @@ peer-sync-title-invite = Jemanden einladen
 peer-sync-title-join = Einem Arbeitsbereich beitreten
 peer-sync-title-workspace-invite = Einladung zum Arbeitsbereich
 peer-sync-paste-token = Einladungscode einfügen oder eingeben
-peer-sync-identity-copied = Identität kopiert – schick sie der Person, die dich einlädt
+peer-sync-identity-copied = Kopiert
 peer-sync-invite-failed = Einladung fehlgeschlagen: { $error }
 peer-sync-identity-unavailable = Identität nicht verfügbar: { $error }
 peer-sync-joined-room = Raum { $room } beigetreten
@@ -1819,19 +1823,20 @@ peer-sync-invite-canceled = Einladung zurückgezogen
 peer-sync-cancel-failed = Zurückziehen fehlgeschlagen: { $error }
 peer-sync-unexpected-response = Unerwartete Antwort der Zusammenarbeit
 peer-sync-working = Wird ausgeführt …
-peer-sync-using-verified-identity = Verifizierte Identität wird verwendet · { $verification }
+peer-sync-using-verified-identity = Verifizierte Identität wird verwendet: { $verification }
 peer-sync-ask-for-identity = Bitte die Person, dir ihre Tilo-Identität zu schicken, und füge sie dann hier ein.
 peer-sync-name-required = Gib an, für wen diese Einladung ist
 peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-copied = Kopiert
-peer-sync-pasted = Eingefügt – drück die Eingabetaste zum Beitreten
+peer-sync-joining = Beitreten…
+peer-sync-pasted = Eingefügt
 peer-sync-clipboard-empty = Die Zwischenablage ist leer
-peer-sync-identity-bound = Identität gebunden · { $fingerprint }
+peer-sync-identity-bound = Identität gebunden: { $fingerprint }
 peer-sync-identity-invalid = Das ist kein Tilo-Identitätsschlüssel (erwartet werden 64 Hexadezimalzeichen)
-peer-sync-pending-heading = AUSSTEHENDE EINLADUNGEN
-peer-sync-pending-heading-paged = AUSSTEHENDE EINLADUNGEN · { $first }–{ $last } von { $total } · scrollen
-peer-sync-role-expires = { $role } · { $unit ->
+peer-sync-pending-heading = Ausstehende Einladungen
+peer-sync-pending-heading-paged = Ausstehende Einladungen ({ $first }–{ $last } von { $total })
+peer-sync-role-expires = { $role }, { $unit ->
     [now] läuft gleich ab
     [seconds] läuft in { $count ->
         [one] 1 Sekunde
@@ -1850,7 +1855,7 @@ peer-sync-role-expires = { $role } · { $unit ->
        *[other] { $count } Tagen
     } ab
 }
-peer-sync-received-role-expires = Zugriff als { $role } · { $unit ->
+peer-sync-received-role-expires = Zugriff als { $role }, { $unit ->
     [now] läuft gleich ab
     [seconds] läuft in { $count ->
         [one] 1 Sekunde
@@ -1881,29 +1886,29 @@ peer-sync-create-invite = Einladung erstellen
 peer-sync-review-invite = Einladung prüfen
 peer-sync-paste-identity = Neue Identität einfügen
 peer-sync-copy-identity = Meine Identität kopieren
-peer-sync-recipient-heading = WEN LÄDST DU EIN?
-peer-sync-recipient-new = Jemand Neues · Tilo-Identität austauschen
-peer-sync-role-heading = ZUGRIFF, DEN DIE PERSON ERHÄLT
-peer-sync-review-workspace = Arbeitsbereich · { $workspace }
-peer-sync-review-workspace-this = Arbeitsbereich · dieser Arbeitsbereich
-peer-sync-review-inviter = Eingeladen von · { $inviter }
-peer-sync-review-inviter-you = Eingeladen von · dir
-peer-sync-review-recipient = Empfänger · { $name }
-peer-sync-review-recipient-unnamed = Empfänger · unbenannt
-peer-sync-review-role = Zugriff · { $role }
-peer-sync-review-identity = Gebundene Identität · { $fingerprint }
-peer-sync-review-identity-missing = Gebundene Identität · fehlt
+peer-sync-recipient-heading = Wen lädst du ein?
+peer-sync-recipient-new = Jemand Neues
+peer-sync-role-heading = Zugriff
+peer-sync-review-workspace = Arbeitsbereich: { $workspace }
+peer-sync-review-workspace-this = Arbeitsbereich: dieser Arbeitsbereich
+peer-sync-review-inviter = Eingeladen von: { $inviter }
+peer-sync-review-inviter-you = Eingeladen von: dir
+peer-sync-review-recipient = Empfänger: { $name }
+peer-sync-review-recipient-unnamed = Empfänger: unbenannt
+peer-sync-review-role = Zugriff: { $role }
+peer-sync-review-identity = Gebundene Identität: { $fingerprint }
+peer-sync-review-identity-missing = Gebundene Identität: fehlt
 peer-sync-review-note = Nur diese Identität kann die signierte, eine Stunde gültige Einladung einlösen.
 peer-sync-selected-person = Ausgewählte Person
 peer-sync-name-new-person = Name der neuen Person
 peer-sync-name-placeholder = Name
 peer-sync-recipient-hint = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein.
-peer-sync-identity-remembered = Verifizierte gespeicherte Identität · { $fingerprint }
-peer-sync-identity-new = Neue Identität gebunden · { $fingerprint }
+peer-sync-identity-remembered = Verifizierte gespeicherte Identität: { $fingerprint }
+peer-sync-identity-new = Neue Identität gebunden: { $fingerprint }
 peer-sync-invite-anyone = Jeder mit dieser Einladung
 peer-sync-invite-received = Einladung erhalten
 peer-sync-paste-invite-hint = Füge die Einladung ein, die man dir geschickt hat.
-peer-sync-token-characters = { $token } · { $count ->
+peer-sync-token-characters = { $token }, { $count ->
     [one] 1 Zeichen
    *[other] { $count } Zeichen
 }
@@ -1957,7 +1962,6 @@ hosted-window-running-on = Läuft auf { $device }
 shell-document-unavailable = Dokument nicht verfügbar
 shell-named-document-unavailable = { $name } nicht verfügbar
 shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
-shell-path-read-failed = { $path } kann nicht gelesen werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
 editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
@@ -2443,6 +2447,13 @@ session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
 session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
 session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
 session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
+session-diagnostics-profile-start = Compositor profilieren und das Profil speichern
+session-diagnostics-profile-stop = Profilierung des Compositors beenden
+session-diagnostics-profile-seconds = Wie viele Sekunden aufgezeichnet werden (Standard 30)
+session-diagnostics-profile-seconds-range = Ein Profil zeichnet zwischen 1 und { $max } Sekunden auf.
+session-diagnostics-profile-no-state-dir = Es gibt kein Statusverzeichnis zum Speichern des Profils; setze HOME oder XDG_STATE_HOME.
+session-diagnostics-profile-already-recording = Es wird bereits ein Profil in { $path } aufgezeichnet. Beende es zuerst.
+session-diagnostics-profile-not-created = Das Profil konnte nicht angelegt werden: { $error }
 
 device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
@@ -2591,53 +2602,40 @@ file-picker-declared-operation = Verwende einen veröffentlichten Dateiauswahlvo
 
 portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr verfügbar. Wähle sie erneut aus.
 
-## Private marker-adjacent Agent composer
+## Der Agent-Verfasser: ein Feld, um einen Agenten zu fragen oder ihm zu sagen, was er tun soll
 agent-quick-title = { $agent }
-agent-quick-kind = Agent
-agent-quick-accessible-name = Agent-Schnellverfasser
-agent-quick-origin-context = Kontext beim Öffnen: { $context }
-agent-quick-shots-context = Release Notes Agent hat „Umbenennen“ auf die Versionshinweise angewendet
-agent-quick-checking = Verfügbare Agent-Aktionen werden geprüft…
-agent-quick-ready = Wähle eine Aufgabe für deine Anweisung
-agent-quick-message = Nachricht
-agent-quick-queue = Einreihen
-agent-quick-steer = Steuern
-agent-quick-intent = Was soll dieser Agent tun?
-agent-quick-placeholder = Nachricht oder Anweisung schreiben
-agent-quick-editor-name = Nachricht oder Anweisung
+agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
+agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
+agent-quick-accessible-name = Agent-Verfasser
+agent-quick-shots-context = Zu deiner Auswahl in Notes: „[tilo OS](search for the tilo homepage)“
+agent-quick-shots-draft = Wohin führt dieser Link?
+agent-quick-shots-question = Führt dieser Link schon irgendwohin?
+agent-quick-shots-answer = Noch nicht. Er ist als Link geschrieben, aber in den Klammern steht nur der Hinweis, die Adresse nachzuschlagen, keine Adresse.
+agent-quick-shots-request = Ersetze die Klammer durch den echten Link
+agent-quick-shots-task = tilo-Startseite verlinken
+agent-quick-shots-steer = Nimm die https-Adresse
+agent-quick-placeholder-idle = Frag { $agent } oder sag, was zu tun ist
+agent-quick-placeholder-running = Sag { $agent }, wie es weitergehen soll
+agent-quick-editor-name = Deine Nachricht an den Agenten
 agent-quick-send = Senden
-agent-quick-open-conversation = Unterhaltung öffnen
-agent-quick-open-tasks = Task-Center öffnen
+agent-quick-stop = Stoppen
 agent-quick-close = Schließen
-agent-quick-message-submitting = Anweisung für die ausgewählte Aufgabe wird gespeichert…
-agent-quick-message-outcome-unknown = Warten auf Bestätigung der gespeicherten Anweisung…
-agent-quick-message-sent = Chat hat eine frühere Nachricht angenommen
-agent-quick-message-refused = Nachricht nicht verfügbar. Dein Entwurf bleibt erhalten.
-agent-quick-queue-help = Separate Arbeit speichern; zum bewussten Start die Unterhaltung öffnen
-agent-quick-queue-submitting = Aufgabe wird bei der Aufgabenzentrale eingereiht…
-agent-quick-queue-outcome-unknown = Gesendet. Auf Bestätigung der Aufgabenzentrale wird gewartet…
-agent-quick-queue-accepted = Aufgabe { $task } wurde eingereiht, nicht gestartet. Zum Starten in Chat die Unterhaltung öffnen.
-agent-quick-guide-task = Aktuelle Aufgabe anleiten: { $task }
-agent-quick-guide-choose = Wähle, welche aktuelle Aufgabe du anleiten möchtest
-agent-quick-task-label = Aufgabe
-agent-quick-task-placeholder = Aufgabe auswählen
-agent-quick-task-changed = Die aktuelle Aufgabe hat sich geändert. Wähle erneut eine Aufgabe.
-agent-quick-task-option = { $task } ({ $phase })
-agent-quick-task-phase-unknown = Status nicht verfügbar
-agent-quick-task-phase-accepted = Agent hat die Aufgabe angenommen
-agent-quick-task-phase-planning = Planung
-agent-quick-task-phase-executing = In Arbeit
-agent-quick-guide-none = Dieser Agent hat keine aktuelle Aufgabe zum Anleiten
-agent-quick-guide-submitting = Anweisung wird in der aktuellen Aufgabe gespeichert…
-agent-quick-guide-outcome-unknown = Gesendet. Auf Bestätigung der gespeicherten Anweisung wird gewartet…
-agent-quick-guide-saved = Anweisung für { $task }, Lauf { $run }, Revision { $revision } gespeichert.
-agent-quick-guide-applied = Anweisung von { $task }, Lauf { $run }, Revision { $revision } angewendet.
-agent-quick-work-refused = Diese Aktion ist nicht verfügbar. Dein Entwurf bleibt erhalten.
-agent-quick-shots-draft = Prüfe Änderungen und markiere offene Entscheidungen.
-agent-quick-stop = Aktuelle Aufgabe stoppen
-agent-quick-stopped = Aufgabe { $task }, Lauf { $run }, wurde gestoppt.
-agent-quick-stop-submitting = Task Center wird gebeten, die aktuelle Aufgabe zu stoppen…
-agent-quick-stop-outcome-unknown = Warten auf die Bestätigung von Task Center, ob die aktuelle Aufgabe gestoppt wurde…
+agent-quick-insert = Einfügen
+agent-quick-save-note = Als Notiz speichern
+agent-quick-you-asked = Du: { $text }
+agent-quick-thinking = Denkt nach…
+agent-quick-steering = Wird gesendet…
+agent-quick-stopping = Wird gestoppt…
+agent-quick-steer-saved = Gesendet. { $agent } berücksichtigt es.
+agent-quick-steer-applied = { $agent } folgt deinem Hinweis.
+agent-quick-run-starting = Wird gestartet: { $task }
+agent-quick-run-working = In Arbeit: { $task }
+agent-quick-run-done = { $agent } ist fertig.
+agent-quick-run-attention = { $agent } hat angehalten und braucht dich.
+agent-quick-run-stopped = Gestoppt.
+agent-quick-outcome-unknown = Noch keine Antwort. Deine Nachricht bleibt erhalten.
+agent-quick-refused = { $agent } konnte das nicht annehmen. Deine Nachricht bleibt erhalten.
+agent-quick-stop-refused = Konnte nicht gestoppt werden. Versuch es noch einmal.
 ## Suchvokabular: die Wörter, mit denen Menschen Aktionen und Einstellungsseiten suchen.
 ## Jede `search-kw-*`-Nachricht ist eine kommagetrennte Liste; die Desktop-Suche nutzt
 ## die Listen aller Sprachen, gleich welche Sprache der Desktop spricht.
@@ -2818,3 +2816,11 @@ search-kw-settings-updates = aktualisierung, aktualisieren, systemupdate, firmwa
 search-settings-page-about = Info
 search-settings-page-about-subtitle = Geräteidentität und Übertragung
 search-kw-settings-about = info, über, gerätename, hostname, version, systeminformationen, seriennummer, hardware, identität
+
+storage-app-name = Speicher
+storage-volume-home = deine Dateien
+storage-volume-system = das System
+storage-low-title = Der Speicher ist fast voll
+storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
+storage-full-title = Der Speicher ist voll
+storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.

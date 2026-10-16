@@ -12,7 +12,6 @@
 //! consent and validate its mailbox before either service account is saved.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
@@ -21,6 +20,7 @@ use accounts::cloud_types::FilesMode;
 use ui::widget::{Button, Checkbox, Dropdown, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
+use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::t;
 use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
 
@@ -107,7 +107,7 @@ impl Outcome {
 
 enum Cancel {
     Loopback(LoopbackCancel),
-    Channel(mpsc::Sender<()>),
+    Channel(std::sync::mpsc::Sender<()>),
 }
 
 enum Stage {
@@ -578,34 +578,38 @@ impl SignInFlow {
             .config_root()
             .map(std::path::Path::to_path_buf)
             .or_else(accounts::config_root);
-        let (sender, result) = mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let prepared = runtime_fs::cloud::default_socket()
-                .ok_or_else(|| std::io::Error::other("cloud service is unavailable"))
-                .and_then(|socket| {
-                    let root = root.ok_or_else(|| std::io::Error::other("no account directory"))?;
-                    let writer = runtime_fs::cloud::import_writer_lock(&root, &account)?;
-                    let mut client = runtime_fs::cloud::CloudClient::connect(&socket)?;
-                    let token = client.prepare_import(&account)?;
-                    let prepared = ImportPreparation {
-                        socket,
-                        account,
-                        token: Some(token),
-                        writer: Some(writer),
-                    };
-                    client.begin_commit_import(
-                        &prepared.account,
-                        prepared.token.as_deref().unwrap_or_default(),
-                    )?;
-                    Ok(prepared)
-                });
-            let _ = sender.send(match prepared {
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let prepared = runtime_fs::cloud::default_socket()
+                    .ok_or_else(|| std::io::Error::other("cloud service is unavailable"))
+                    .and_then(|socket| {
+                        let root =
+                            root.ok_or_else(|| std::io::Error::other("no account directory"))?;
+                        let writer = runtime_fs::cloud::import_writer_lock(&root, &account)?;
+                        let mut client = runtime_fs::cloud::CloudClient::connect(&socket)?;
+                        let token = client.prepare_import(&account)?;
+                        let prepared = ImportPreparation {
+                            socket,
+                            account,
+                            token: Some(token),
+                            writer: Some(writer),
+                        };
+                        client.begin_commit_import(
+                            &prepared.account,
+                            prepared.token.as_deref().unwrap_or_default(),
+                        )?;
+                        Ok(prepared)
+                    });
+                let _ = sender.send(match prepared {
                 Ok(prepared) => Outcome::Prepared(prepared, completed),
                 Err(error) => Outcome::Failed(format!(
                     "Cannot switch to Import safely: {error}. Pending uploads must finish before retrying. For an interrupted mode change, close this form and choose Recover mode change on the account."
                 )),
             });
-        });
+            }),
+        );
         self.stage = Stage::Waiting {
             urls: None,
             launch: None,
@@ -625,42 +629,47 @@ impl SignInFlow {
         let display_name = self.display_name();
         let mut config = self.existing_config.clone();
         accounts::cloud_types::set_files_mode(&mut config, self.selected_services().mode);
-        let (sender, result) = mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let outcome = (|| {
-                // No service was added: retain the approved grant, never ask for
-                // broader scopes merely to change local Files policy.
-                if let Some(cloud) = kind.oauth_cloud() {
-                    let scopes = custodian.oauth_scopes(&accounts::AccountId::from(id.as_str()))?;
-                    let (provider, _) = custodian.use_config(cloud.oauth_use())?;
-                    if !scopes.as_deref().is_some_and(|granted| {
-                        provider.scopes.iter().all(|required| {
-                            granted.split_whitespace().any(|scope| scope == required)
-                        })
-                    }) {
-                        return Ok(Outcome::NeedsAuthorization(cloud));
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = (|| {
+                    // No service was added: retain the approved grant, never ask for
+                    // broader scopes merely to change local Files policy.
+                    if let Some(cloud) = kind.oauth_cloud() {
+                        let scopes =
+                            custodian.oauth_scopes(&accounts::AccountId::from(id.as_str()))?;
+                        let (provider, _) = custodian.use_config(cloud.oauth_use())?;
+                        if !scopes.as_deref().is_some_and(|granted| {
+                            provider.scopes.iter().all(|required| {
+                                granted.split_whitespace().any(|scope| scope == required)
+                            })
+                        }) {
+                            return Ok(Outcome::NeedsAuthorization(cloud));
+                        }
                     }
-                }
-                let vault = custodian
-                    .config_root()
-                    .map_or_else(accounts::SecretVault::open, accounts::SecretVault::open_in);
-                if let Some(error) = vault.recovery_error() {
-                    return Err(CustodyError::Storage(error.to_string()));
-                }
-                let secret = vault
-                    .get(&accounts::AccountId::from(id.as_str()))
-                    .ok_or(CustodyError::NeedsAuthentication)?;
-                Ok(Outcome::completed(Completed {
-                    kind,
-                    existing_id: Some(id),
-                    display_name,
-                    config,
-                    secret,
-                    mail: None,
-                }))
-            })();
-            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
-        });
+                    let vault = custodian
+                        .config_root()
+                        .map_or_else(accounts::SecretVault::open, accounts::SecretVault::open_in);
+                    if let Some(error) = vault.recovery_error() {
+                        return Err(CustodyError::Storage(error.to_string()));
+                    }
+                    let secret = vault
+                        .get(&accounts::AccountId::from(id.as_str()))
+                        .ok_or(CustodyError::NeedsAuthentication)?;
+                    Ok(Outcome::completed(Completed {
+                        kind,
+                        existing_id: Some(id),
+                        display_name,
+                        config,
+                        secret,
+                        mail: None,
+                    }))
+                })();
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
         self.stage = Stage::Waiting {
             urls: None,
             launch: None,
@@ -676,17 +685,20 @@ impl SignInFlow {
             self.saved_id = Some(id);
             return;
         }
-        let (sender, result) = mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let saved = finish_import(preparation).map(|()| id);
-            let outcome = match saved {
-                Ok(id) => Outcome::Saved(id),
-                Err(error) => Outcome::Failed(format!(
-                    "Could not save the mode change: {error}. Close this form and use Recover mode change on the account before retrying."
-                )),
-            };
-            let _ = sender.send(outcome);
-        });
+        let (sender, result) = channel::sync_channel(1);
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let saved = finish_import(preparation).map(|()| id);
+                let outcome = match saved {
+                    Ok(id) => Outcome::Saved(id),
+                    Err(error) => Outcome::Failed(format!(
+                        "Could not save the mode change: {error}. Close this form and use Recover mode change on the account before retrying."
+                    )),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
         self.stage = Stage::Waiting {
             urls: None,
             launch: None,
@@ -740,26 +752,31 @@ impl SignInFlow {
             return;
         };
         let cancel = Cancel::Loopback(canceller);
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
         let selected = self.selected_services();
-        std::thread::spawn(move || {
-            let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
-                oauth_completed(
-                    &custodian,
-                    cloud,
-                    kind,
-                    existing_id,
-                    display_name,
-                    &tokens,
-                    selected,
-                )
-            });
-            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
+                    oauth_completed(
+                        &custodian,
+                        cloud,
+                        kind,
+                        existing_id,
+                        display_name,
+                        &tokens,
+                        selected,
+                    )
+                });
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
+
         self.message = Some(format!(
             "Continue in your browser: sign in with {} and allow access. This page updates when you are done.",
             cloud.sign_in_with()
@@ -785,27 +802,32 @@ impl SignInFlow {
             };
             return;
         }
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
         let selected = self.selected_services();
-        std::thread::spawn(move || {
-            let outcome =
-                Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
-                    oauth_completed(
-                        &custodian,
-                        cloud,
-                        kind,
-                        existing_id,
-                        display_name,
-                        &tokens,
-                        selected,
-                    )
-                });
-            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome =
+                    Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
+                        oauth_completed(
+                            &custodian,
+                            cloud,
+                            kind,
+                            existing_id,
+                            display_name,
+                            &tokens,
+                            selected,
+                        )
+                    });
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
+
         self.code.set(String::new());
         self.message = Some("Checking the code…".into());
         self.stage = Stage::Waiting {
@@ -822,35 +844,40 @@ impl SignInFlow {
             self.message = Some(error.to_string());
             return;
         }
-        let (url_sender, urls) = mpsc::sync_channel(1);
-        let (sender, result) = mpsc::sync_channel(1);
-        let (stop, cancel) = mpsc::channel();
+        let (url_sender, urls) = channel::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
+        let (stop, cancel) = std::sync::mpsc::channel();
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let outcome = nextcloud::begin(&server).and_then(|flow| {
-                let _ = url_sender.send(flow.login_url().to_string());
-                flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
-            });
-            let _ = sender.send(match outcome {
-                Ok(login) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name: display_name.clone(),
-                    config: serde_json::json!({
-                        "label": display_name,
-                        "server_url": login.server,
-                        "username": login.login_name,
-                        "app_password": true,
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = nextcloud::begin(&server).and_then(|flow| {
+                    let _ = url_sender.send(flow.login_url().to_string());
+                    flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
+                });
+                let _ = sender.send(match outcome {
+                    Ok(login) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name: display_name.clone(),
+                        config: serde_json::json!({
+                            "label": display_name,
+                            "server_url": login.server,
+                            "username": login.login_name,
+                            "app_password": true,
+                        }),
+                        secret: accounts::Secret::password(login.app_password.as_str()),
+                        mail: None,
                     }),
-                    secret: accounts::Secret::password(login.app_password.as_str()),
-                    mail: None,
-                }),
-                Err(NextcloudError::Cancelled) => Outcome::Failed("sign-in was cancelled".into()),
-                Err(error) => Outcome::Failed(error.to_string()),
-            });
-        });
+                    Err(NextcloudError::Cancelled) => {
+                        Outcome::Failed("sign-in was cancelled".into())
+                    }
+                    Err(error) => Outcome::Failed(error.to_string()),
+                });
+            }),
+        );
         self.message = Some(
             "Contacting your Nextcloud server… Approve access in the browser page that opens; \
              Nextcloud then gives this device its own app password."
@@ -874,26 +901,29 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let password = zeroize::Zeroizing::new(password);
-            let outcome = match auth.sign_in(&apple_id, &password) {
-                Ok(ICloudSignIn::Complete(session)) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name,
-                    config: icloud_config(auth.as_ref(), &apple_id),
-                    secret: account_custody::icloud_secret(&apple_id, &session),
-                    mail: None,
-                }),
-                Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
-                Err(error) => Outcome::Failed(error.to_string()),
-            };
-            let _ = sender.send(outcome);
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let password = zeroize::Zeroizing::new(password);
+                let outcome = match auth.sign_in(&apple_id, &password) {
+                    Ok(ICloudSignIn::Complete(session)) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name,
+                        config: icloud_config(auth.as_ref(), &apple_id),
+                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        mail: None,
+                    }),
+                    Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
+                    Err(error) => Outcome::Failed(error.to_string()),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
         self.message = Some("Signing in to iCloud…".into());
         self.stage = Stage::Waiting {
             urls: None,
@@ -912,27 +942,30 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let outcome = match auth.verify_code(&challenge, &code) {
-                Err(ICloudAuthError::InvalidCode) => {
-                    Outcome::CodeRejected(challenge, ICloudAuthError::InvalidCode.to_string())
-                }
-                Ok(session) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name,
-                    config: icloud_config(auth.as_ref(), &apple_id),
-                    secret: account_custody::icloud_secret(&apple_id, &session),
-                    mail: None,
-                }),
-                Err(error) => Outcome::Failed(error.to_string()),
-            };
-            let _ = sender.send(outcome);
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = match auth.verify_code(&challenge, &code) {
+                    Err(ICloudAuthError::InvalidCode) => {
+                        Outcome::CodeRejected(challenge, ICloudAuthError::InvalidCode.to_string())
+                    }
+                    Ok(session) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name,
+                        config: icloud_config(auth.as_ref(), &apple_id),
+                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        mail: None,
+                    }),
+                    Err(error) => Outcome::Failed(error.to_string()),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
         self.code.set(String::new());
         self.message = Some("Checking the code…".into());
         self.stage = Stage::Waiting {
@@ -1098,9 +1131,9 @@ impl SignInFlow {
         if let Some(receiver) = urls.take() {
             match receiver.recv_timeout(remaining()) {
                 Ok(url) => *launch = Some(self.opener.open(&url)),
-                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+                Err(channel::RecvTimeoutError::Timeout) => return false,
                 // The worker failed before learning a URL; its outcome follows.
-                Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(channel::RecvTimeoutError::Disconnected) => {}
             }
         }
         match result.recv_timeout(remaining()) {

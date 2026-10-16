@@ -193,8 +193,62 @@ spotify() (
   rm -rf "$runtime"
 )
 
+# Apps run their engine libraries. Settings has no probe, to keep its tapp as
+# it is: for it only the trace of its start counts (it need not accept --help).
+engines() (
+  set -euo pipefail
+  libdir=$(rustc --print target-libdir)
+  failed=0
+  for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
+               "music libtilo_youtube_engine.so --probe-youtube-engine" \
+               "tube libtilo_youtube_engine.so --probe-youtube-engine" \
+               "mail libtilo_accounts_engine.so --probe-accounts-engine" \
+               "settings libtilo_accounts_engine.so" \
+               "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
+               "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
+               "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+               "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+               "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
+    read -r app library option <<<"$probe"
+    if [[ ! -x $target/thin-app/$app ]]; then
+      echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
+      continue
+    fi
+    if ! grep -Fxq "$library" "$target/thin-app/runtime-engines"; then
+      echo "build-thin-apps.sh did not list $library" >&2
+      failed=1
+      continue
+    fi
+    if [[ -n $option ]]; then arguments=("$option" check); else arguments=(--help); fi
+    runtime=$(mktemp -d)
+    chmod 700 "$runtime"
+    status=0
+    XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
+      timeout 120 "$target/thin-app/$app" "${arguments[@]}" \
+      >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+    if [[ -n $option ]] && (( status != 0 )); then
+      grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+      echo "$app could not run $library (exit $status)" >&2
+      failed=1
+    else
+      arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
+        "$runtime/loader.log" | head -1 || true)
+      if [[ $arrival == */$app && -n $option ]]; then
+        printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+      elif [[ $arrival == */$app ]]; then
+        printf '%s starts with %s\n' "$app" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+      else
+        echo "$app ${option:-started} without loading $library itself: ${arrival:-not loaded}" >&2
+        failed=1
+      fi
+    fi
+    rm -rf "$runtime"
+  done
+  exit "$failed"
+)
+
 failed=()
-for step in tapp_size runtime_size loader_cost first_frame media typst spotify; do
+for step in tapp_size runtime_size loader_cost first_frame media typst spotify engines; do
   printf '==> %s\n' "$step"
   "$step" || failed+=("$step")
 done

@@ -19,8 +19,16 @@ pub const DEFAULT_BLANK_MINUTES: u32 = 10;
 /// The Settings default idle-lock timeout, in minutes.
 pub const DEFAULT_LOCK_MINUTES: u32 = 5;
 
+/// Whether a machine with no saved choice suspends on its own when idle.
+///
+/// Off: a laptop that goes to sleep while its owner reads, listens or waits
+/// for a build looks like it suspended at random, and idle is a guess about
+/// attention the machine cannot verify. Closing the lid, the power key and a
+/// critically low battery still suspend; idle-suspend is an opt-in.
+pub const DEFAULT_AUTO_SUSPEND: bool = false;
+
 /// Master switch for idle-suspend; off disables it whatever the timeouts say.
-pub const AUTO_SUSPEND: Key<bool> = Key::new(SECTION, "auto_suspend", || true);
+pub const AUTO_SUSPEND: Key<bool> = Key::new(SECTION, "auto_suspend", || DEFAULT_AUTO_SUSPEND);
 /// Idle minutes before the screen blanks; `0` never.
 pub const BLANK_MINUTES: Key<u32> = Key::new(SECTION, "blank_minutes", || DEFAULT_BLANK_MINUTES);
 /// Idle minutes before the session locks; `0` never. A manual lock and the
