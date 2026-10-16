@@ -3,9 +3,14 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import errno
+import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
+RECORDER = Path(__file__).resolve().parents[2] / "dist/session/tilo-flight-recorder.py"
 SPEC = importlib.util.spec_from_file_location(
     "flight_recorder", Path(__file__).resolve().parents[2] / "dist/session/tilo-flight-recorder.py"
 )
@@ -48,10 +53,49 @@ class FlightRecorderPublication(unittest.TestCase):
             path = Path(directory) / "latest.log"
             path.write_bytes(b"previous record")
             with patch.object(recorder.os, "replace", side_effect=OSError("publication refused")):
-                with self.assertRaisesRegex(OSError, "publication refused"):
-                    recorder.persist(path, bytearray(b"new record"))
+                self.assertFalse(recorder.persist(path, bytearray(b"new record")))
             self.assertEqual(path.read_bytes(), b"previous record")
             self.assertEqual(list(Path(directory).iterdir()), [path])
+
+
+    def test_a_full_disk_never_raises_out_of_persist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.log"
+            full = OSError(errno.ENOSPC, "No space left on device")
+            with patch.object(recorder.os, "fsync", side_effect=full):
+                self.assertFalse(recorder.persist(path, bytearray(b"record")))
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_the_relay_keeps_running_while_storage_refuses_every_publication(self):
+        # The compositor's stderr is this relay. If storage failures ended it,
+        # the compositor's next log line would hit a closed pipe and abort it.
+        with tempfile.TemporaryDirectory() as directory:
+            gone = Path(directory) / "removed"
+            gone.mkdir()
+            path = gone / "latest.log"
+            process = subprocess.Popen(
+                [sys.executable, str(RECORDER), str(path), "now", "1", "/usr/bin/shell"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+            assert process.stdin is not None and process.stdout is not None
+            deadline = time.monotonic() + 60
+            while not path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            path.unlink()
+            gone.rmdir()  # every later publication now fails inside mkstemp
+            sent = bytearray()
+            for line in range(200):
+                chunk = f"log line {line} after storage went away\n".encode()
+                process.stdin.write(chunk)
+                process.stdin.flush()
+                sent.extend(chunk)
+                time.sleep(0.002)
+            process.stdin.close()
+            relayed = process.stdout.read()
+            self.assertEqual(process.wait(timeout=60), 0)
+            self.assertEqual(relayed, bytes(sent))
 
 
 if __name__ == "__main__":
