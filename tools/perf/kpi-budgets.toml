@@ -1942,7 +1942,7 @@ min_delta = 20.0
 source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
-# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry
 # publishes) in headless Chrome for Testing on the shared `runner` class, one
 # fresh-context round at 960x540. The runner has no GPU, and Chrome offers
 # WebGPU no CPU driver but its own SwiftShader (it renders its page on

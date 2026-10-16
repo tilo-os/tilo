@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -414,13 +415,20 @@ class CloudPromotionTests(unittest.TestCase):
 
 
 class WorkflowContractTests(unittest.TestCase):
-    def test_image_receipts_name_their_build_run(self):
-        for name, artifact in (("web-entry.yml", "web-entry-image.json"),):
-            text = (ROOT / ".forgejo/workflows" / name).read_text()
-            self.assertIn("schemaVersion:2", text, name)
-            self.assertIn("build:{workflow:$workflow,runId:($runId|tonumber),runNumber:($runNumber|tonumber),url:$runUrl}",
-                          text, name)
-            self.assertIn(artifact, text, name)
+    def test_t_publishes_the_receipts_promotion_reads(self):
+        """Each promoted image's release is published from stable with a receipt behind a pointer
+        named after the service, signed first."""
+        checks = {c["name"]: c for c in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        for service in promotion.SERVICES:
+            publish = checks[f"publish-{service.name}"]
+            self.assertIn("stable", publish["on"], service.name)
+            self.assertIn(f"oci-publish.sh any {service.image} ", publish["run"], service.name)
+            self.assertIn("'release:sha-{commit}'", publish["run"], service.name)
+            self.assertEqual(publish["pointers"], {service.name: f"/target/publish/{service.name}/receipt.json"})
+            self.assertIn(f"sign-{service.name}", publish["optional_needs"], service.name)
+        # The web entry's release is the image carrying production's version, not the bare build.
+        self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry"])
+        self.assertIn("carry-web-entry", checks["publish-web-entry"]["optional_needs"])
 
     def test_promotion_runs_only_on_dispatch_and_its_weekly_report(self):
         text = (ROOT / ".forgejo/workflows/cloud-promotion.yml").read_text()

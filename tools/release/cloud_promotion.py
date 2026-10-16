@@ -335,7 +335,7 @@ class Git:
 # --- Choosing and checking the images ------------------------------------
 
 def load_receipt(path: Path) -> tuple[Service, Image]:
-    """A digest receipt written by the image workflows."""
+    """A digest receipt written by t's publishing checks (tools/ci/publish/oci-publish.sh)."""
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

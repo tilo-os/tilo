@@ -1260,8 +1260,7 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
-reason = "needs the built web entry image"
-workflow = "web-entry.yml"
+reason = "needs the built web entry image: t's image-web-entry check runs it, and carry-web-entry on the release"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"

@@ -816,7 +816,7 @@ jobs:
           if-no-files-found: warn
 
   # The browser runtime: the release desktop bundle (build.sh --bundle
-  # desktop, the bytes web-entry.yml publishes) built once here, then
+  # desktop, the bytes the t check image-web-entry publishes) built once here, then
   # scripts/perf/browser_qualification.mjs in headless Chrome for Testing:
   # load, first opens, window activation and an idle desktop. The harness first proves the page ran exactly this
   # commit's clean bundle and that WebGPU ran on the renderer the records
@@ -827,7 +827,7 @@ jobs:
   # and its frame-rate goals left to hardware qualification (--demo-seconds 0;
   # kpi-budgets.toml, "Browser runtime"). A first FHD round took 20 minutes,
   # and a second one never finished within the job's two hours. Built in the CI builder like
-  # web-entry.yml's bundle, with its compiler cache.
+  # the web entry's bundle (tools/ci/publish/web-entry-context.sh), with its compiler cache.
   browser:
     needs: [plan, builder]
     if: needs.plan.outputs.browser == 'true'
