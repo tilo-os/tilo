@@ -506,6 +506,12 @@ impl ActionArgs {
                 });
             }
             match &value {
+                ArgValue::Number(number) if !number.is_finite() => {
+                    return Err(ArgError::Constraint {
+                        name,
+                        reason: "must be a finite number".into(),
+                    });
+                }
                 ArgValue::Resource(address)
                     if address.trim().is_empty()
                         || address.contains(crate::KEY_SEP)
@@ -747,15 +753,18 @@ fn validate_object_schema(
     {
         for (key, property_schema) in properties {
             if let Some(property) = object.get(key) {
-                validate_schema(property, property_schema)
+                validate_schema_value(property, property_schema)
                     .map_err(|reason| format!("property `{key}` {reason}"))?;
             }
         }
-        if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-            for key in object.keys() {
-                if !properties.contains_key(key) {
-                    return Err(format!("contains unknown property `{key}`"));
-                }
+    }
+    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        for key in object.keys() {
+            if !properties.is_some_and(|properties| properties.contains_key(key)) {
+                return Err(format!("contains unknown property `{key}`"));
             }
         }
     }
@@ -766,6 +775,17 @@ fn validate_object_schema(
 /// action inputs and outputs. Unknown annotations are intentionally ignored;
 /// all assertion keywords accepted here are enforced centrally.
 pub(crate) fn validate_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    // Validation is also called directly, without publication-time checks.
+    // Check the entire definition, including branches the value never visits,
+    // rather than accepting a contract whose assertions we cannot enforce.
+    validate_schema_definition(schema)?;
+    validate_schema_value(value, schema)
+}
+
+fn validate_schema_value(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
@@ -795,7 +815,7 @@ fn validate_one_of(
     let mut failures = Vec::new();
     let mut matched = 0_usize;
     for alternative in alternatives {
-        match validate_schema(value, alternative) {
+        match validate_schema_value(value, alternative) {
             Ok(()) => matched = matched.saturating_add(1),
             Err(reason) => failures.push((alternative, reason)),
         }
@@ -992,7 +1012,7 @@ fn validate_schema_array(
         }
         if let Some(item_schema) = schema.get("items") {
             for (index, item) in items.iter().enumerate() {
-                validate_schema(item, item_schema)
+                validate_schema_value(item, item_schema)
                     .map_err(|reason| format!("item {index} {reason}"))?;
             }
         }
@@ -1015,8 +1035,8 @@ fn validate_schema_object(
 ///
 /// # Errors
 ///
-/// Returns a human-readable contract violation when `schema` is not an object
-/// or `value` fails one of its supported assertions.
+/// Returns a human-readable contract violation when `schema` is malformed,
+/// uses unsupported assertions, or `value` fails one of its supported assertions.
 pub fn validate_json_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
@@ -1044,6 +1064,7 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "oneOf",
 ];
 const SCHEMA_ANNOTATIONS: &[&str] = &[
+    RESOURCE_KIND_ANNOTATION,
     "$schema",
     "$id",
     "$comment",
