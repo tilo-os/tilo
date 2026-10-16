@@ -1578,6 +1578,7 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-rich-text",
+ "tilo-timezone-engine",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -2154,6 +2155,7 @@ dependencies = [
  "tilo-app",
  "tilo-history",
  "tilo-test-env",
+ "tilo-timezone-engine",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -2610,6 +2612,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-files",
  "tilo-vello",
  "tilo-winit",
@@ -8941,11 +8944,13 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
@@ -9110,6 +9115,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-contact-directory",
+ "tilo-contact-directory-engine",
  "tilo-messaging",
  "uuid",
  "workspace-hack",
@@ -13134,11 +13140,8 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
- "account-custody",
  "accounts",
  "agent-provider-config",
- "async-imap",
- "chrono-tz",
  "collab-types",
  "desktop-policy",
  "mime_guess",
@@ -13152,7 +13155,6 @@ dependencies = [
  "tilo-app",
  "tilo-bluez",
  "tilo-cli-kit",
- "tilo-contact-directory",
  "tilo-dav",
  "tilo-desktop-entry",
  "tilo-doc-codecs",
@@ -13160,7 +13162,6 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-model-gateway",
- "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-rich-text",
@@ -14101,6 +14102,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-accessibility-settings",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -15902,6 +15904,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-accounts-engine"
+version = "0.1.0"
+dependencies = [
+ "account-custody",
+ "async-imap",
+ "runtime-dylib",
+ "tilo-oauth",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-action-broker"
 version = "0.1.0"
 dependencies = [
@@ -16634,6 +16647,16 @@ dependencies = [
  "serde",
  "tilo-resource",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-contact-directory-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-contact-directory",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -18804,6 +18827,7 @@ name = "tilo-spotify-engine"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "tilo-accounts-engine",
  "tilo-spotify",
  "tilo-youtube-engine",
  "workspace-hack",
@@ -18876,6 +18900,16 @@ dependencies = [
  "tilo-pdf",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "tilo-timezone-engine"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "runtime-dylib",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22732,6 +22766,7 @@ dependencies = [
  "aead 0.6.1",
  "aes 0.9.3",
  "aes-gcm 0.10.3",
+ "aes-gcm 0.11.1",
  "aho-corasick",
  "anstream",
  "anyhow",
@@ -22820,7 +22855,6 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
- "hex",
  "hickory-proto",
  "hmac 0.12.1",
  "hpke-rs",
@@ -22902,7 +22936,6 @@ dependencies = [
  "resvg",
  "ring",
  "rqrr",
- "russh",
  "rustc-hash 1.1.0",
  "rustix 0.38.44",
  "rustix 1.1.4",

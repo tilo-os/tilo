@@ -35,6 +35,8 @@ mod history_and_agents;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
+#[path = "legacy_notebook.rs"]
+mod legacy_notebook;
 #[path = "live_block_anchor.rs"]
 mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
