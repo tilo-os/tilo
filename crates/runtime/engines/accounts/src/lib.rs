@@ -72,7 +72,7 @@ pub fn self_check() -> Result<String, String> {
 
     let greeting = b"* CAPABILITY IMAP4rev1 IDLE AUTH=XOAUTH2\r\n";
     let capabilities = match Response::from_bytes(greeting) {
-        Ok((rest, Response::Capabilities(capabilities))) if rest.is_empty() => capabilities,
+        Ok(([], Response::Capabilities(capabilities))) => capabilities,
         other => return Err(format!("imap-proto misread a CAPABILITY line: {other:?}")),
     };
     let expected = [
