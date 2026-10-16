@@ -170,7 +170,7 @@ impl SettingsApp {
             keyboard_map_cache: std::rc::Rc::default(),
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
-            storage: panes::storage::StorageArea::new(&cx),
+            storage: panes::storage::StorageArea::new(&cx, device_mesh.remote()),
             disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users,
@@ -398,7 +398,6 @@ impl SettingsApp {
         self.input = panes::mouse_keyboard::InputArea::new(&cx);
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
-        self.storage = panes::storage::StorageArea::new(&cx);
         self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
@@ -406,6 +405,7 @@ impl SettingsApp {
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
         self.users = panes::users::UsersArea::new(&cx, self.device_mesh.remote());
+        self.storage = panes::storage::StorageArea::new(&cx, self.device_mesh.remote());
         self.audio = panes::audio::AudioArea::new(&cx);
         self.accounts =
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
