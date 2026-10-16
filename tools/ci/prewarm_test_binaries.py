@@ -98,11 +98,14 @@ def stop_owned(process):
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=2)
+        pass
+    # The leader exiting on TERM does not mean its group is gone: a listing
+    # helper may ignore TERM and retain resources after the leader is reaped.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=2)
 
 
 def cancel_listings(signum, frame):

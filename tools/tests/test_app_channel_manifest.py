@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 
 SPEC = importlib.util.spec_from_file_location(
@@ -44,6 +45,37 @@ class ChannelReaderTests(unittest.TestCase):
 
     def select(self, raw, architecture='x86_64', policy=None, **kwargs):
         return c.select(raw, hashlib.sha256(raw).hexdigest(), 'c' * 40, architecture, policy or self.policy, **kwargs)
+
+    def test_archive_tree_allows_linked_workspace_ancestors_but_not_linked_members(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            workspace = root / 'workspace'
+            tree = workspace / 'nested' / 'collection'
+            (tree / 'tapp').mkdir(parents=True)
+            (tree / 'runtime').mkdir()
+            (tree / 'index.json').write_bytes(b'{}')
+            (tree / 'tapp/app.tapp').write_bytes(b'app')
+            (tree / 'runtime/bundle').write_bytes(b'runtime')
+            files = sorted(path for path in tree.rglob('*') if path.is_file())
+            (tree / 'SHA256SUMS').write_text(''.join(
+                c.sha(path) + '  ' + path.relative_to(tree).as_posix() + '\n'
+                for path in files))
+            archive = root / 'collection.tar.gz'
+            with tarfile.open(archive, 'w:gz') as stream:
+                for name in ('tapp', 'runtime', 'index.json', 'SHA256SUMS'):
+                    stream.add(tree / name, arcname=name)
+            linked_workspace = root / 'linked-workspace'
+            linked_workspace.symlink_to(workspace, target_is_directory=True)
+            c.archive_matches_tree(archive, linked_workspace / 'nested' / 'collection')
+
+            linked_tree = root / 'linked-tree'
+            linked_tree.symlink_to(tree, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlink in local collection'):
+                c.archive_matches_tree(archive, linked_tree)
+            (tree / 'runtime').rename(workspace / 'runtime')
+            (tree / 'runtime').symlink_to(workspace / 'runtime', target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlink in local collection'):
+                c.archive_matches_tree(archive, tree)
 
     def test_channel_reader_consumes_only_published_exact_architecture_entries(self):
         with self.subTest(phase='exact architecture selection preserves entry source'):

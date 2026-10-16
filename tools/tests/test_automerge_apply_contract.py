@@ -31,6 +31,20 @@ class AutomergeApplyContractTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
         return root
 
+    def test_git_quoted_source_and_config_paths_are_not_skipped(self):
+        for name in ("tab\tname", "line\nbreak", "caf\u00e9", "raw-\udcff"):
+            with self.subTest(name=repr(name)):
+                source = f"crates/{name}/src/lib.rs"
+                config = f"crates/{name}/clippy.toml"
+                root = self.fixture({
+                    "clippy.toml": clippy(),
+                    config: clippy(contract.BANNED[1:]),
+                    source: "#![allow(clippy::disallowed_methods)]\n"
+                            "fn f(d: &mut AutoCommit) { d.load_incremental(b); }\n",
+                })
+                violations = contract.audit(root)
+                self.assertEqual({v.path for v in violations}, {config, source})
+
     def test_raw_automerge_apply_calls_are_banned_and_cannot_be_suppressed(self):
         with self.subTest(phase='complete configs and wrapped calls pass'):
             root = self.fixture(

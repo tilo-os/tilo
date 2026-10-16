@@ -319,6 +319,23 @@ class SignedBoard(unittest.TestCase):
             self.assertEqual(actual, expected)
             self.assertEqual((root/'usr/share/tilo/cosign.pub').read_bytes(), key)
 
+    def test_late_invalid_vm_route_preserves_earlier_routes_and_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_root(root)
+            first = root / policy.VM_ONLY_PATHS[0]
+            first.parent.mkdir(parents=True, exist_ok=True)
+            first.write_bytes(b'existing VM service')
+            last = root / policy.VM_ONLY_PATHS[-1]
+            last.mkdir(parents=True)
+            path = root / 'etc/containers/policy.json'
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'directory'):
+                policy.strengthen(root)
+            self.assertEqual(first.read_bytes(), b'existing VM service')
+            self.assertEqual(path.read_bytes(), before)
+            self.assertTrue(last.is_dir())
+
     def test_signed_board_excludes_new_vm_root_endpoint_and_input_routes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

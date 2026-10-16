@@ -10,6 +10,7 @@ import base64
 import json
 import re
 import shlex
+import sys
 import time
 from pathlib import Path
 
@@ -1435,7 +1436,10 @@ HOME_RELAY_KEY = r"""
 exec 2>&1
 set -eu
 d="${XDG_RUNTIME_DIR:?}/__DIR__"
-systemctl --user stop __UNIT__.service >/dev/null 2>&1 || true
+load=$(systemctl --user show __UNIT__.service --property=LoadState --value)
+if [ "$load" != not-found ]; then
+  systemctl --user stop __UNIT__.service
+fi
 rm -rf "$d"
 mkdir -m 700 "$d"
 mkdir -m 700 "$d/identity" "$d/state" "$d/records"
@@ -1472,9 +1476,11 @@ echo "HOME-RELAY started"
 HOME_RELAY_STOP = r"""
 d="${XDG_RUNTIME_DIR:?}/__DIR__"
 journalctl --user -u __UNIT__ --no-pager -o short-monotonic 2>/dev/null | tail -n 200 | cut -c1-400
-systemctl --user stop __UNIT__.service >/dev/null 2>&1
+load=$(systemctl --user show __UNIT__.service --property=LoadState --value) || exit $?
+if [ "$load" != not-found ]; then
+  systemctl --user stop __UNIT__.service || exit $?
+fi
 rm -rf "$d"
-true
 """
 
 HOME_PEERS = '"${TILO_IDENTITY_ROOT:?}/peers/home-peers.json"'
@@ -1508,19 +1514,27 @@ def start_home_relay(ctx) -> dict:
         device, service = key["device_public_key"], key["relay_service_node_id"]
     except (VmError, KeyError, TypeError, ValueError) as e:
         raise core.Unobservable(f"tilo-enroll device-key gave no relay key: {out.strip()[-300:]!r}") from e
-    port = home_relay_port(ctx.vm.slot_uid())
-    out = ctx.vm.exec(_guest(HOME_RELAY_START, DEVICE=device, SERVICE=service, PORT=port,
-                             LABEL=shlex.quote(HOME_RELAY_LABEL)), timeout=180, check=False)
-    ctx.write("R09-home-relay-setup.txt", out)
-    if "HOME-RELAY no-identity-root" in out:
-        raise core.Unobservable("the slot has no identity root of its own (TILO_IDENTITY_ROOT): "
-                                "R09 enrolls a host only into a throwaway identity")
-    if "--home-peer-service" in out and "unexpected argument" in out:
-        raise core.Unobservable("the image's tilo-enroll cannot record a home peer out of band "
-                                "(it predates `certify --home-peer-service`)")
-    if "HOME-RELAY started" not in out:
-        raise core.Unobservable(f"the home relay did not start: {out.strip()[-400:]!r}")
-    return {"device": device, "service": service, "port": port}
+    try:
+        port = home_relay_port(ctx.vm.slot_uid())
+        out = ctx.vm.exec(_guest(HOME_RELAY_START, DEVICE=device, SERVICE=service, PORT=port,
+                                 LABEL=shlex.quote(HOME_RELAY_LABEL)), timeout=180, check=False)
+        ctx.write("R09-home-relay-setup.txt", out)
+        if "HOME-RELAY no-identity-root" in out:
+            raise core.Unobservable("the slot has no identity root of its own (TILO_IDENTITY_ROOT): "
+                                    "R09 enrolls a host only into a throwaway identity")
+        if "--home-peer-service" in out and "unexpected argument" in out:
+            raise core.Unobservable("the image's tilo-enroll cannot record a home peer out of band "
+                                    "(it predates `certify --home-peer-service`)")
+        if "HOME-RELAY started" not in out:
+            raise core.Unobservable(f"the home relay did not start: {out.strip()[-400:]!r}")
+        return {"device": device, "service": service, "port": port}
+    except Exception as exc:
+        # Certification may already have persisted the home peer before startup fails.
+        try:
+            stop_home_relay(ctx, device)
+        except Exception as cleanup:
+            exc.add_note(f"home relay cleanup also failed: {cleanup}")
+        raise
 
 
 def without_home_peer(text: str, device: str) -> str | None:
@@ -1539,7 +1553,7 @@ def without_home_peer(text: str, device: str) -> str | None:
 def stop_home_relay(ctx, device: str | None) -> None:
     """Stop the relay, keep its journal as evidence, and remove its home-peer entry so a
     slot that runs the suite again does not keep dialling relays that are gone."""
-    ctx.write("R09-home-relay.log", ctx.vm.exec(_guest(HOME_RELAY_STOP), check=False))
+    ctx.write("R09-home-relay.log", ctx.vm.exec(_guest(HOME_RELAY_STOP)))
     if device is None:
         return
     text = ctx.vm.exec(f"cat {HOME_PEERS} 2>/dev/null; true", check=False)
@@ -1547,7 +1561,7 @@ def stop_home_relay(ctx, device: str | None) -> None:
     if rest is not None:
         blob = base64.b64encode(rest.encode()).decode()
         ctx.vm.exec(f"f={HOME_PEERS}; echo {blob} | base64 -d > \"$f.acc-tmp\" && "
-                    "chmod 644 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"", check=False)
+                    "chmod 644 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"")
 
 
 def committed_workspace(state: dict, host_device: str) -> dict | None:
@@ -1702,8 +1716,14 @@ def idle_shared(ctx, res):
 def _leave_shared(ctx, res, home, device: str | None) -> None:
     """Close R09's windows, return to the workspace the run was in and stop the relay.
     Every step runs whatever the one before did; what failed is kept in the metrics."""
+    errors = []
     for step in (ctx.reset, lambda: _select_workspace(ctx, home), lambda: stop_home_relay(ctx, device)):
         try:
             step()
         except Exception as e:  # noqa: BLE001 - every cleanup step must run
-            res.metrics.setdefault("cleanup_errors", []).append(str(e)[:300])
+            errors.append(str(e)[:300])
+    if errors:
+        res.metrics.setdefault("cleanup_errors", []).extend(errors)
+        # Keep the original failure when unwinding, but never pass dirty cleanup.
+        if sys.exception() is None:
+            raise core.CheckFailed("shared workspace cleanup failed: " + "; ".join(errors))

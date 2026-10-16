@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 sys.path.append(str(Path(__file__).parents[1] / 'apps'))
 import canonical_verifier_bundle as bundle
@@ -111,6 +111,41 @@ class BundleTests(unittest.TestCase):
                     reader.select(reader.manifest(receipt), policy=policy)
                 with patch.object(bundle, 'native_arch', return_value='aarch64'), self.assertRaises(KeyError):
                     final.load_policy(policy_file, bundle.channel.sha(policy_file))
+
+    def test_failed_fetch_does_not_poison_retry_or_touch_sibling_archive(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive, descriptor = self.fixture(root)
+            raw = archive.read_bytes()
+            policy = root / 'policy.json'
+            policy.write_text(json.dumps({'verifier_sha256': descriptor['verifier_sha256'],
+                                         'canonical_verifier_bundles': {'x86_64': descriptor}}))
+            for failure in ('truncated', 'oversized', 'read-error', 'interrupted'):
+                with self.subTest(failure=failure):
+                    output = root / failure
+                    sibling = output.with_suffix('.tar.gz')
+                    # A pre-existing sibling belongs to the caller, not fetch.
+                    if failure == 'interrupted':
+                        sibling.write_bytes(b'preserve')
+                    response = io.BytesIO(raw[:10] if failure == 'truncated' else raw + b'extra')
+                    if failure in ('read-error', 'interrupted'):
+                        error = OSError('connection lost') if failure == 'read-error' else KeyboardInterrupt()
+                        response.read = Mock(side_effect=[raw[:10], error])
+                    with patch.object(bundle.urllib.request, 'build_opener') as network:
+                        network.return_value.open.return_value = response
+                        with self.assertRaises((ValueError, OSError, KeyboardInterrupt)):
+                            bundle.fetch(policy, bundle.channel.sha(policy), output, BUILDER, 'secret', 'x86_64')
+                        self.assertFalse(output.exists())
+                        if failure == 'interrupted':
+                            self.assertEqual(sibling.read_bytes(), b'preserve')
+                        else:
+                            self.assertFalse(sibling.exists())
+                        network.return_value.open.return_value = io.BytesIO(raw)
+                        bundle.fetch(policy, bundle.channel.sha(policy), output, BUILDER, 'secret', 'x86_64')
+                    self.assertEqual(bundle.channel.sha(output / 'tilo-app-package'),
+                                     descriptor['canonical_binaries']['tilo_pkg_sha256'])
+                    if sibling.exists():
+                        self.assertEqual(sibling.read_bytes(), b'preserve')
 
     def test_bundle_is_fetched_pinned_imported_frozen_and_consumed_per_platform(self):
         with self.subTest(phase='preflight imports frozen bundle adapter not candidate copy'):

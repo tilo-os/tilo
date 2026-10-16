@@ -52,6 +52,10 @@ def upload(path, url, token):
         text=True, capture_output=True, check=False,
     )
     status = result.stdout.strip()
+    # Another publisher may have won after our anonymous 404. Only curl's
+    # HTTP-error exit is recoverable here; publish still verifies exact bytes.
+    if status == "409" and result.returncode == 22:
+        return
     if result.returncode or status not in ("200", "201", "204"):
         raise ValueError(f"package publication failed (curl {result.returncode}, HTTP {status})")
 

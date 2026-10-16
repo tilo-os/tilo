@@ -74,6 +74,28 @@ def image():
 
 
 class FatReadbackTests(unittest.TestCase):
+    def test_nonmirrored_volume_reads_the_active_fat(self):
+        raw = image()
+        # Insert a second FAT; every data cluster moves by one sector.
+        raw[2 * 512:2 * 512] = raw[512:2 * 512]
+        raw[16] = 2
+        struct.pack_into("<I", raw, 32, 33)
+        struct.pack_into("<H", raw, 40, 0x81)
+        raw[512:2 * 512] = bytes(512)  # inactive FAT is stale
+        with tempfile.TemporaryFile() as stream:
+            stream.write(raw)
+            reader = fat.Fat32(stream, 0, len(raw))
+            self.assertEqual(reader.file_sha256("EFI/Linux/bootc/" + NAME),
+                             fat.hashlib.sha256(DATA).hexdigest())
+
+    def test_active_fat_index_must_exist(self):
+        raw = image()
+        struct.pack_into("<H", raw, 40, 0x81)
+        with tempfile.TemporaryFile() as stream:
+            stream.write(raw)
+            with self.assertRaisesRegex(fat.FatError, "active FAT"):
+                fat.Fat32(stream, 0, len(raw))
+
     def test_fat32_readback(self):
         with self.subTest(phase="exact_long_name_file_hash"):
             with tempfile.TemporaryFile() as stream:
