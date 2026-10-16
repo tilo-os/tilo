@@ -110,6 +110,40 @@ impl LiveRowParts {
     }
 }
 
+#[test]
+fn swapping_transit_endpoints_replans_transit_not_a_road_route() {
+    let mut app = app_at(1280.0, 800.0);
+    app.model.mode = TravelMode::Transit;
+    app.model.route = None;
+    let origin = app.model.origin.expect("transit origin");
+    let dest = app.model.dest.expect("transit destination");
+    let origin_name = app.model.origin_name.clone();
+    let dest_name = app.model.dest_name.clone();
+    assert!(
+        !app.model.transit.is_empty(),
+        "a journey is shown before swapping"
+    );
+    let pending = app.pending;
+
+    app.apply_endpoint_effect(EndpointEffect::Swap);
+
+    assert_eq!(app.model.origin, Some(dest));
+    assert_eq!(app.model.dest, Some(origin));
+    assert_eq!(app.model.origin_name, dest_name);
+    assert_eq!(app.model.dest_name, origin_name);
+    assert_eq!(app.model.mode, TravelMode::Transit);
+    assert!(
+        app.model.route.is_none(),
+        "transit must not fabricate a road route"
+    );
+    assert!(
+        app.model.transit.is_empty(),
+        "the old direction's departures are stale"
+    );
+    assert_eq!(app.pending, pending + 1);
+    assert_eq!(app.model.status, "Finding departures…");
+}
+
 fn app_at(w: f64, h: f64) -> MapsApp {
     // Offline variant: no tile worker thread, no network — tests stay
     // hermetic and never touch the wire.
