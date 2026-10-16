@@ -18,6 +18,7 @@ import textwrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -204,6 +205,27 @@ class AgentDoorChecks(unittest.TestCase):
         self.assertTrue(results["M01"].unobservable)
         self.assertIn("never asked", results["M01"].detail)
 
+    def test_missing_eof_observation_cannot_pass_refusal_check(self):
+        ctx = make_ctx(None, self.root)
+        transcript = {"refusal": {"result": {"isError": True, "content": [{"text": "unknown action"}]}}}
+        denied = {"initialize": {"error": {"message": "denied"}}}
+        with (patch.object(agent, "_session", return_value=transcript),
+              patch.object(agent, "_run_client", return_value=denied)):
+            result = run_all(["M04"], ctx)["M04"]
+        self.assertEqual(result.status, "fail", result.detail)
+        self.assertIn("door stayed open", result.detail)
+
+    def test_non_boolean_is_error_cannot_prove_a_refusal(self):
+        ctx = make_ctx(None, self.root)
+        for value in ("false", "true", 1, [], None):
+            with self.subTest(value=value), patch.object(agent, "_session", return_value={
+                    "refusal": {"result": {"isError": value, "content": [{"text": "unknown action"}]}}}):
+                with patch.object(agent, "_run_client") as denied:
+                    result = run_all(["M04"], ctx)["M04"]
+                self.assertEqual(result.status, "fail", result.detail)
+                self.assertIn("not reported as isError", result.detail)
+                denied.assert_not_called()
+
     def test_transcript_parser_and_helpers(self):
         line = "receipt: x\nACC-MCP " + json.dumps({"a": 1}) + "\n"
         self.assertEqual(agent.parse_transcript(line), {"a": 1})
@@ -214,6 +236,76 @@ class AgentDoorChecks(unittest.TestCase):
         self.assertEqual(rows, ["deny@7"])
         self.assertIs(agent.is_error({"result": {"isError": True}}), True)
         self.assertIsNone(agent.is_error("timeout"))
+
+
+class GuestClientTransport(unittest.TestCase):
+    def probe(self, server, assertions, timeout=3):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "fake-mcp"
+            binary.write_text("#!/usr/bin/env python3\nimport os, sys\n" + textwrap.dedent(server))
+            binary.chmod(0o755)
+            code = ("import runpy\n"
+                    f"module = runpy.run_path({str(agent.CLIENT)!r})\n"
+                    "client = module['Client']()\n"
+                    "try:\n" + textwrap.indent(textwrap.dedent(assertions), "    ") +
+                    "\nfinally:\n    client.close()\n")
+            # Bound regressions that previously blocked forever inside readline/close.
+            proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=timeout)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_coalesced_lines_do_not_disappear_in_text_buffering(self):
+        self.probe('''
+            os.write(1, b'{"id":1}\\n{"id":2}\\n')
+            sys.stdin.read()
+        ''', '''
+            assert client.read(1) == {"id": 1}
+            assert client.read(0.1) == {"id": 2}
+        ''')
+
+    def test_partial_line_respects_deadline_and_survives_next_read(self):
+        self.probe('''
+            os.write(1, b'{"id":')
+            sys.stdin.readline()
+            os.write(1, b'1}\\n')
+        ''', '''
+            assert client.read(0.1) == "timeout"
+            client.send({"continue": True})
+            assert client.read(1) == {"id": 1}
+        ''')
+
+    def test_stderr_backpressure_cannot_block_protocol_reply(self):
+        self.probe('''
+            os.write(2, b'x' * 262144)
+            os.write(1, b'{"id":1}\\n')
+        ''', '''
+            assert client.read(1) == {"id": 1}
+        ''')
+
+    def test_shutdown_reaps_a_server_that_ignores_eof(self):
+        self.probe('''
+            import signal
+            sys.stdin.read()
+            signal.pause()
+        ''', '''
+            client.close()
+            client.close = lambda: None
+            assert client.proc.returncode == -9
+            assert client.proc.stdout.closed
+        ''', timeout=8)
+
+    def test_shutdown_drains_final_notifications_and_reaps_child(self):
+        self.probe('''
+            sys.stdin.read()
+            os.write(1, b'x' * 262144)
+            os.write(2, b'final diagnostic')
+        ''', '''
+            assert client.close() == "final diagnostic"
+            assert client.proc.returncode == 0
+            assert client.proc.stdout.closed
+            # The probe's finally must not close the same client twice.
+            client.close = lambda: None
+        ''')
 
 
 class CalibrationAndReport(unittest.TestCase):

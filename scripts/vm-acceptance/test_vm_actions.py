@@ -99,6 +99,21 @@ class ActionsPagingTest(unittest.TestCase):
         self.assertNotIn("--cursor", self.calls[2])
         self.assertIn("group.close", self.calls[2])
 
+    def test_cursor_cycles_fail_instead_of_looping_forever(self):
+        pages = [{"actions": [row(i)], "truncated": True, "next_cursor": cursor}
+                 for i, cursor in enumerate(("a", "b", "a"))]
+        with self.answer(pages), self.assertRaisesRegex(VmError, "repeated.*cursor"):
+            self.vm.actions()
+        self.assertEqual(len(self.calls), 3)
+
+    def test_launch_errors_use_vm_boundary_and_are_logged(self):
+        for error in (FileNotFoundError("missing executable"), PermissionError("not executable")):
+            with self.subTest(error=error), patch("acceptance.vm.subprocess.run", side_effect=error):
+                with self.assertRaisesRegex(VmError, "could not run") as raised:
+                    self.vm.state()
+                self.assertIs(raised.exception.__cause__, error)
+                self.assertIn(str(error), self.vm.log.read_text())
+
     def test_a_truncated_page_without_a_next_page_fails(self):
         with self.answer([{"actions": [row(0)], "truncated": True}]), self.assertRaises(VmError):
             self.vm.actions()
