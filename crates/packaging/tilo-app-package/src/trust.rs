@@ -220,11 +220,9 @@ impl TrustedAttestors {
     /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
     /// TOML for this shape.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        if !path.exists() {
+        let Some(text) = read_optional_policy(path)? else {
             return Ok(Self::empty());
-        }
-        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        };
         Self::from_toml_str(&text)
     }
 
@@ -291,14 +289,19 @@ impl RevocationList {
         Self::default()
     }
 
-    /// Decode from TOML.
+    /// Decode from TOML, rejecting malformed keys rather than ignoring
+    /// revocations that cannot be compared to a publisher.
     ///
     /// # Errors
     ///
-    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
-    /// shape.
+    /// Returns [`TrustLoadError::Parse`] for invalid TOML, or a key parsing
+    /// error when a revocation does not name a 32-byte hexadecimal key.
     pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
-        toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
+        let list: Self = toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))?;
+        for entry in &list.revoked {
+            entry.pubkey_bytes()?;
+        }
+        Ok(list)
     }
 
     /// Encode to TOML.
@@ -314,15 +317,13 @@ impl RevocationList {
     ///
     /// # Errors
     ///
-    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
-    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
-    /// TOML for this shape.
+    /// Returns [`TrustLoadError::Io`] if the file can't be read or isn't
+    /// valid UTF-8, [`TrustLoadError::Parse`] for invalid TOML, or a key
+    /// parsing error for a malformed revocation key.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        if !path.exists() {
+        let Some(text) = read_optional_policy(path)? else {
             return Ok(Self::empty());
-        }
-        let bytes = std::fs::read(path).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        let text = String::from_utf8(bytes).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        };
         Self::from_toml_str(&text)
     }
 
@@ -352,6 +353,16 @@ impl RevocationList {
             }
         }
         None
+    }
+}
+
+/// Only absence means an empty policy. Metadata lookup failures must not
+/// disable revocations by pretending the file is absent.
+fn read_optional_policy(path: &Path) -> Result<Option<String>, TrustLoadError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(TrustLoadError::Io(format!("{}: {error}", path.display()))),
     }
 }
 
@@ -400,6 +411,58 @@ pub enum TrustLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_policy_files_are_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.toml");
+        assert_eq!(
+            TrustedAttestors::load(&path).unwrap(),
+            TrustedAttestors::empty()
+        );
+        assert_eq!(
+            RevocationList::load(&path).unwrap(),
+            RevocationList::empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn policy_lookup_errors_are_not_empty_policies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.toml");
+        // A symlink loop produces a metadata/read error even when run as root.
+        std::os::unix::fs::symlink("policy.toml", &path).unwrap();
+        for error in [
+            TrustedAttestors::load(&path).unwrap_err(),
+            RevocationList::load(&path).unwrap_err(),
+        ] {
+            assert!(matches!(error, TrustLoadError::Io(ref detail)
+                if detail.contains(path.to_str().unwrap())));
+        }
+    }
+
+    #[test]
+    fn malformed_revocation_keys_are_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revoked-keys.toml");
+        for key in ["not-hex".to_string(), "ab".repeat(31), "ab".repeat(33)] {
+            let text = format!("[[revoked]]\npubkey_hex = {key:?}\n");
+            std::fs::write(&path, &text).unwrap();
+            assert!(matches!(
+                RevocationList::load(&path),
+                Err(TrustLoadError::BadHex(_) | TrustLoadError::BadPubkeyLength { .. })
+            ));
+        }
+        let text = format!("[[revoked]]\npubkey_hex = {:?}\n", "ab".repeat(32));
+        std::fs::write(&path, text).unwrap();
+        assert!(
+            RevocationList::load(&path)
+                .unwrap()
+                .find(&[0xab; 32])
+                .is_some()
+        );
+    }
 
     #[test]
     fn attestation_scopes_parse_round_trip_and_match() {
