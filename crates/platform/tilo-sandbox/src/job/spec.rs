@@ -249,6 +249,10 @@ impl IdMap {
 /// `Job::unmapped`. A socket is never idmapped: it becomes the job's user's
 /// (the caller makes it for this job), as connecting to it takes.
 ///
+/// The job's system files (the [`Root`]) are no work of the caller's: on
+/// their idmapped mounts every id keeps its number, so root's files stay
+/// root's whatever the job's own id is.
+///
 /// Needs `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_ADMIN` in the initial user
 /// namespace (a root worker) and Linux 5.12 (`mount_setattr` with
 /// `MOUNT_ATTR_IDMAP`); overlays need 5.19, for idmapped layers. `count`

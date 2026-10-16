@@ -243,7 +243,7 @@ impl Child<'_> {
                     plan.stage.as_ptr(),
                     c"tmpfs".as_ptr(),
                     libc::MS_NOSUID | libc::MS_NODEV,
-                    c"mode=0755,size=64k".as_ptr().cast(),
+                    c"mode=0755,size=2m".as_ptr().cast(),
                 )),
                 Step::Stage,
                 0,
@@ -607,6 +607,29 @@ unsafe fn run_op(op: &Op, trees_at: RawFd) -> libc::c_long {
                     &raw const attr,
                     std::mem::size_of::<sys::MountAttr>(),
                 )
+            }
+            Op::Write { path, contents } => {
+                let fd = libc::open(
+                    path.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+                    0o644,
+                );
+                if fd < 0 {
+                    return libc::c_long::from(fd);
+                }
+                let mut rest: &[u8] = contents;
+                while !rest.is_empty() {
+                    let n = libc::write(fd, rest.as_ptr().cast(), rest.len());
+                    let Ok(n) = usize::try_from(n) else {
+                        libc::close(fd);
+                        return -1;
+                    };
+                    rest = rest.get(n..).unwrap_or_default();
+                }
+                // Root's where the job's namespace maps root (a job with a
+                // block of ids); the job's own otherwise.
+                libc::fchown(fd, 0, 0);
+                libc::c_long::from(libc::close(fd))
             }
             Op::Attach { tree, dst } => {
                 let fd = RawFd::try_from(*tree)

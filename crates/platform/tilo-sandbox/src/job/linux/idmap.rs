@@ -121,6 +121,23 @@ pub fn namespace(ids: &IdMap) -> io::Result<OwnedFd> {
     Ok(copy)
 }
 
+/// A user namespace for the job's system files (its image or the host's
+/// `/usr` and `/etc`): every id on disk below the block's `count` shows as
+/// the same id in the job, so root's files are root's there too, whatever
+/// the job's own id. The files of [`namespace`] show as the job's own,
+/// which suits its work but not what it runs: a program checking that a
+/// system file is root's (a loader, a setuid helper) would find the job's.
+///
+/// # Errors
+/// As [`namespace`].
+pub fn system_namespace(ids: &IdMap) -> io::Result<OwnedFd> {
+    namespace(&IdMap {
+        outside_uid: ids.inside_uid,
+        outside_gid: ids.inside_gid,
+        ..*ids
+    })
+}
+
 /// Start a process in a new user namespace, map it, keep the namespace,
 /// end the process.
 fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
@@ -225,6 +242,12 @@ mod tests {
     #[test]
     fn a_root_owner_and_a_root_job_map_the_block_as_it_is() {
         assert_eq!(map_lines(0, 0, 100_000, 65536), "0 100000 65536\n");
+    }
+
+    #[test]
+    fn system_files_keep_their_ids_for_a_nested_job() {
+        // What `system_namespace` maps: the owner is the job's id itself.
+        assert_eq!(map_lines(1000, 1000, 100_000, 65536), "0 100000 65536\n");
     }
 
     #[test]

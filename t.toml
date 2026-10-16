@@ -1122,6 +1122,33 @@ cd crates/hosting/tilo-relay
 """
 inputs = []
 
+# The job sandbox's tests of jobs with host ids of their own map blocks of host ids and make
+# idmapped mounts, which take real root; the job sandbox never gives it, so there they skip. They
+# are built here and run in a micro-VM, as root.
+[[check]]
+name = "sandbox-host-ids-build"
+requires = ["arch=x86_64"]
+run = """
+test=$(cargo test --locked -p tilo-sandbox --test job --no-run --message-format json \
+  | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "job"))')
+mkdir -p "$CARGO_TARGET_DIR/vm"
+cp "$test" "$CARGO_TARGET_DIR/vm/tilo-sandbox-job"
+"""
+outputs = ["/target/vm/tilo-sandbox-job"]
+cargo_packages = ["tilo-sandbox"]
+inputs = []
+
+[[check]]
+name = "sandbox-host-ids"
+requires = ["arch=x86_64"]
+isolation = "vm"
+needs = ["sandbox-host-ids-build"]
+run = """
+cd crates/platform/tilo-sandbox
+/target/vm/tilo-sandbox-job host_ids:: --nocapture --test-threads=1
+"""
+inputs = []
+
 # ---------------------------------------------------------------------------
 # Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
 # `t test 'nightly-*'` or `t dispatch <check>`. t reserves `/` in check names for package
