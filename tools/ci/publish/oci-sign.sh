@@ -9,6 +9,10 @@
 # verify with a plain `cosign verify --key keys/cosign.pub` (the kernel buildroot, the
 # env-runtime) need that log entry, since such a verification requires one.
 #
+# With TILO_PUBLISH_DRY_RUN set, a throwaway key made here signs instead of the one in KMS, with
+# no identity token and no transparency log, and its public half is kept as OUT/dry-run.pub for
+# oci-publish.sh's dry run to verify against. T_REF says what the run pretends to sign for.
+#
 # usage: oci-sign.sh REPOSITORY OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -18,9 +22,23 @@ out=${2:?}
 expected=$(cat "$out/digest")
 actual=$(archive_digest "$out/image.oci.tar")
 [[ $actual == "$expected" ]] || die "the archive is $actual, the build recorded $expected"
+rm -f "$out/dry-run.pub"
 use_cosign
-. "$repo_root/os/dev/configure-cosign-kms.sh"
 signing_payload "$repository" "$expected" > "$out/payload.json"
+if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+  keys=$scratch/dry-run-signing
+  rm -rf "$keys"
+  mkdir -p "$keys"
+  (cd "$keys" && COSIGN_PASSWORD= cosign generate-key-pair >/dev/null)
+  COSIGN_PASSWORD= cosign sign-blob --yes --tlog-upload=false --key "$keys/cosign.key" \
+    --output-signature "$out/signature" "$out/payload.json"
+  cp "$keys/cosign.pub" "$out/dry-run.pub"
+  cosign verify-blob --insecure-ignore-tlog=true --key "$out/dry-run.pub" \
+    --signature "$out/signature" "$out/payload.json"
+  printf 'signed %s@%s with a throwaway key (dry run)\n' "$repository" "$expected"
+  exit 0
+fi
+. "$repo_root/os/dev/configure-cosign-kms.sh"
 if [[ ${TILO_SIGN_TLOG:-} == 1 ]]; then
   cosign sign-blob --yes --key "$COSIGN_KEY_REF" --bundle "$out/bundle.json" \
     --output-signature "$out/signature" "$out/payload.json"
