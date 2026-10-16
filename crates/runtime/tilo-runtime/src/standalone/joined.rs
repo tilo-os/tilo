@@ -304,7 +304,12 @@ impl Joined {
                     Some(Inbound::RecordContent { from, frame }) => {
                         self.content_arrived(room, from, &frame);
                     }
-                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. } | Inbound::Voice(_)) => {}
+                    Some(
+                        Inbound::RemoteAction { .. }
+                        | Inbound::Live { .. }
+                        | Inbound::RecordOpened { .. }
+                        | Inbound::Voice(_),
+                    ) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {

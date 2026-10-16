@@ -4831,6 +4831,8 @@ fn spawn_host_pump(
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
+                // The shell opens no on-demand record yet.
+                HostInbound::RecordOpened { .. } => continue,
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;

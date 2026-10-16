@@ -1219,9 +1219,16 @@ impl Rooms {
                 .await;
             return Ok(());
         }
-        if envelope.encryption.is_some() {
-            // Only the record's channel members read it: the relay retains
-            // the sealed write, and the governor keeps no copy.
+        let sealed = envelope.encryption.is_some();
+        // Only the record's channel members read a sealed write: unless this
+        // relay stewards that channel, it retains the write and the governor
+        // keeps no copy. A record that starts sealed, as each new part of a
+        // chained record does, is followed like any other where it does.
+        #[cfg(any(feature = "agents", feature = "web"))]
+        let readable = !sealed || room.stewards_channel(&app_id, &record_id).await;
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let readable = !sealed;
+        if !readable {
             return Ok(());
         }
         let now = SystemTime::now();
@@ -1248,10 +1255,14 @@ impl Rooms {
             message,
             now,
         )?;
-        let written = candidate
-            .document(&app_id, &record_id)
-            .ok_or("created record missing")?;
-        candidate.publish_document(&app_id, &record_id, written, &host.key, now)?;
+        // A sealed write stays in the record's sealed history; a readable
+        // one is folded into the governor's checkpoint.
+        if !sealed {
+            let written = candidate
+                .document(&app_id, &record_id)
+                .ok_or("created record missing")?;
+            candidate.publish_document(&app_id, &record_id, written, &host.key, now)?;
+        }
         room.commit(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())
         })?;

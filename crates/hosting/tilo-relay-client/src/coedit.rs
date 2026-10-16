@@ -207,6 +207,15 @@ pub enum Inbound {
     },
     /// The room's governor answered about one of its calls.
     Voice(VoiceEvent),
+    /// The host sent everything it retains of an on-demand record this
+    /// device opened, as [`Inbound::Delta`]s before this event; its changes
+    /// keep arriving from now on.
+    RecordOpened {
+        /// The record's retained channel.
+        channel: [u8; 32],
+        /// How many frames the host sent.
+        frames: u32,
+    },
 }
 
 /// What the governor of a room says about its calls; see

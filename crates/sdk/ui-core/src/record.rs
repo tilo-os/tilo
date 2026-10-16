@@ -204,6 +204,37 @@ impl RecordId {
         Self(format!("derived:{role}@{}", of.0))
     }
 
+    /// Part `index` of the chained record `self`: a record that grows
+    /// without end is kept as numbered parts, each a record of its own. A
+    /// room's host replays a joining device only the chain's head, the
+    /// highest part it holds; every earlier part is sent to a device when
+    /// it opens it. Two writers that start part `n + 1` start the same
+    /// record. The wire form is `neighbour_wire::record_part`'s.
+    pub fn part(&self, index: u64) -> Self {
+        Self::derived(&format!("part.{index}"), self)
+    }
+
+    /// The chain and number of a [`Self::part`], or `None` for any other
+    /// record.
+    pub fn chain_part(&self) -> Option<(Self, u64)> {
+        let (role, base) = self.0.strip_prefix("derived:")?.split_once('@')?;
+        let index = role.strip_prefix("part.")?;
+        let canonical = !index.is_empty()
+            && index.bytes().all(|byte| byte.is_ascii_digit())
+            && (index == "0" || !index.starts_with('0'));
+        canonical
+            .then(|| index.parse().ok())
+            .flatten()
+            .map(|index| (Self(base.to_owned()), index))
+    }
+
+    /// `self` declared on-demand: a room's host does not replay it to a
+    /// joining device, and sends it to a device when it opens it. The wire
+    /// form is `neighbour_wire::on_demand_record`'s.
+    pub fn on_demand(&self) -> Self {
+        Self::derived("on-demand", self)
+    }
+
     /// Adopt an id read back from a document, a room index, or the wire.
     /// Invalid, oversized, or non-canonical names fail closed: IDs name
     /// collaboration routes and storage directories, so accepting arbitrary
@@ -3933,6 +3964,22 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chain's parts and an on-demand record are ordinary record ids, in
+    /// the wire form the host reads them by.
+    #[test]
+    fn a_chain_part_and_an_on_demand_record_are_record_ids() {
+        let chat = RecordId::room_default();
+        let part = chat.part(12);
+        assert_eq!(part.as_str(), format!("derived:part.12@{}", chat.as_str()));
+        assert_eq!(RecordId::parse(part.as_str()), Some(part.clone()));
+        assert_eq!(part.chain_part(), Some((chat.clone(), 12)));
+        assert_eq!(chat.part(0).chain_part(), Some((chat.clone(), 0)));
+        assert_eq!(chat.chain_part(), None);
+        let archive = RecordId::minted().on_demand();
+        assert!(archive.as_str().starts_with("derived:on-demand@uuid:"));
+        assert_eq!(RecordId::parse(archive.as_str()), Some(archive));
+    }
 
     /// Two devices creating the same record make byte for byte the same
     /// single genesis change, under the record's own actor at time zero,
