@@ -1947,6 +1947,7 @@ default = false
 
 [[check]]
 name = "image-room-service"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service"
 inputs = ["tools/ci/publish/**"]
@@ -2001,6 +2002,7 @@ default = false
 
 [[check]]
 name = "image-web-entry"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /target/publish/web-entry/context/Containerfile /target/publish/web-entry"
 inputs = ["tools/ci/publish/**"]
@@ -2045,6 +2047,7 @@ on = ["stable"]
 # published from main, pinned by digest in tools/ci/images.toml by hand.
 [[check]]
 name = "image-ci-fast"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "mkdir -p $TMPDIR/empty && bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast"
 inputs = ["tools/ci/publish/**", "os/Containerfile.ci-fast"]
@@ -2056,6 +2059,7 @@ default = false
 # ci-control adds the Docker client to the ci-fast image just built, not to the pinned one.
 [[check]]
 name = "image-ci-control"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "mkdir -p $TMPDIR/empty && bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-control /target/publish/ci-control --build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar"
 inputs = ["tools/ci/publish/**", "os/Containerfile.ci-control"]
@@ -2068,6 +2072,7 @@ default = false
 # Both images run what the jobs that use them need, before either is published.
 [[check]]
 name = "image-ci-fast-smoke"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar /target/publish/ci-control/image.oci.tar"
 inputs = ["tools/ci/publish/**", "os/tests/ci_fast_images.sh"]
@@ -2202,6 +2207,7 @@ default = false
 # must be anonymously pullable.
 [[check]]
 name = "image-release-tools-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = """
 mkdir -p $TMPDIR/empty
@@ -2216,6 +2222,7 @@ default = false
 
 [[check]]
 name = "image-release-tools-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = """
 mkdir -p $TMPDIR/empty
@@ -2254,6 +2261,7 @@ on = ["main"]
 # and the GitOps repository pins the receipt's digest.
 [[check]]
 name = "image-registry-server"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = """
 assets=$TMPDIR/github-assets
@@ -2495,6 +2503,7 @@ default = false
 # only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`.
 [[check]]
 name = "image-relay"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/relay"
 inputs = ["tools/ci/publish/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**"]
@@ -2536,6 +2545,7 @@ on = ["tag:v*"]
 # environments fetch one on first use.
 [[check]]
 name = "image-env-runtime-tree-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/env-runtime.sh tree x86_64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
 inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
@@ -2547,6 +2557,7 @@ default = false
 
 [[check]]
 name = "image-env-runtime-tree-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/env-runtime.sh tree aarch64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
 inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
@@ -2577,6 +2588,7 @@ default = false
 
 [[check]]
 name = "image-env-runtime-preview"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/preview /target/publish/env-runtime/preview-image"
 inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
@@ -2596,6 +2608,7 @@ on = ["stable"]
 
 [[check]]
 name = "image-env-runtime"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/sealed /target/publish/env-runtime/image"
 inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
@@ -2634,6 +2647,7 @@ on = ["stable"]
 # proposes them.
 [[check]]
 name = "image-kernel-buildroot-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/kernel-buildroot.sh build x86_64 /target/publish/kernel-buildroot/x86_64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
@@ -2644,6 +2658,7 @@ default = false
 
 [[check]]
 name = "image-kernel-buildroot-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/kernel-buildroot.sh build aarch64 /target/publish/kernel-buildroot/aarch64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
@@ -2681,6 +2696,7 @@ on = ["stable"]
 # and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture.
 [[check]]
 name = "image-ci-builder-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/ci-builder.sh build x86_64 /target/publish/ci-builder/x86_64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
@@ -2694,6 +2710,7 @@ default = false
 
 [[check]]
 name = "image-ci-builder-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/ci-builder.sh build aarch64 /target/publish/ci-builder/aarch64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
@@ -2868,6 +2885,7 @@ default = false
 # per architecture. build-rpms.yml still signs and publishes the snapshot.
 [[check]]
 name = "image-rpms-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/rpms-build.sh x86_64 /target/publish/rpms/x86_64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
@@ -2880,6 +2898,7 @@ default = false
 
 [[check]]
 name = "image-rpms-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/rpms-build.sh aarch64 /target/publish/rpms/aarch64"
 inputs = ["tools/ci/publish/**", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
@@ -2897,6 +2916,7 @@ default = false
 # build-kernel.yml still signs, publishes and pins it.
 [[check]]
 name = "image-kernel-x86_64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/kernel.sh build x86_64 /target/publish/kernel/x86_64"
 inputs = ["tools/ci/publish/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
@@ -2919,6 +2939,7 @@ default = false
 
 [[check]]
 name = "image-kernel-aarch64"
+isolation = "vm"
 image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
 run = "bash tools/ci/publish/kernel.sh build aarch64 /target/publish/kernel/aarch64"
 inputs = ["tools/ci/publish/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
