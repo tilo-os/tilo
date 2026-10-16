@@ -15,8 +15,8 @@
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
-use ui::vello::kurbo::Rect;
 use ui::lock::MutexRecover as _;
+use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
 /// The first toggle or choice in the content pane, right of the sidebar.

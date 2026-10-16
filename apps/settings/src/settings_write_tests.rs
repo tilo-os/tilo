@@ -16,8 +16,8 @@ use crate::host::testing::{NOTIFICATIONS, edit_field};
 use crate::prefs::NotificationPrefs;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
-use ui::vello::kurbo::Rect;
 use ui::lock::MutexRecover as _;
+use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
 /// Held by every test that queues settings changes from a thread marked as

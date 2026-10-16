@@ -1070,21 +1070,33 @@ mod tests {
         std::thread::spawn(move || {
             crate::rt::mark_ui_thread();
             let _work = background.enter();
-            queued_mine.update_section("s", values("queued", 1)).unwrap();
-            queued_other.update_section("s", values("queued", 2)).unwrap();
+            queued_mine
+                .update_section("s", values("queued", 1))
+                .unwrap();
+            queued_other
+                .update_section("s", values("queued", 2))
+                .unwrap();
         })
         .join()
         .unwrap();
 
         other.update_section("s", values("direct", 3)).unwrap();
         let stored = settings_store::load_section_at(&other_path, "s");
-        assert_eq!(stored.get("queued"), Some(&Value::from(2)), "its queued change first");
+        assert_eq!(
+            stored.get("queued"),
+            Some(&Value::from(2)),
+            "its queued change first"
+        );
         assert_eq!(stored.get("direct"), Some(&Value::from(3)));
         assert!(
             settings_at(&mine_path).is_empty(),
             "another file's queued change waits for its own background"
         );
-        assert_eq!(mine.section("s").get("queued"), Some(&Value::from(1)), "and reads as made");
+        assert_eq!(
+            mine.section("s").get("queued"),
+            Some(&Value::from(1)),
+            "and reads as made"
+        );
 
         work.run_pending();
         assert_eq!(
