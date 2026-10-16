@@ -878,6 +878,7 @@ cost = "heavy"
 # not from the tree under test.
 [[check]]
 name = "standalone-app"
+on = ["dispatch"]
 image = "registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b"
 run = "bash tools/ci/standalone-app.sh --bootstrap --branch main"
 inputs = ["tools/ci/standalone-app.sh"]
@@ -1277,6 +1278,7 @@ default = false
 # and downloads them, then `git apply target/visual-baseline-review/candidates.patch`.
 [[check]]
 name = "visual-baselines"
+on = ["dispatch"]
 run = "bash tools/ci/visual-baselines.sh"
 requires = ["arch=x86_64"]
 writable_sources = true
@@ -1291,6 +1293,7 @@ default = false
 # failure ends the run.
 [[check]]
 name = "mounted-reopen"
+on = ["dispatch"]
 run = """
 rm -rf target/mounted-resource-recovery target/mounted-reopen-probe "$CARGO_TARGET_DIR/mounted-reopen-probe"
 bash tools/ci/ensure-browser-dependencies.sh
@@ -1314,6 +1317,7 @@ default = false
 # a clean checkout of a pushed commit writes target/ci/current-source-metadata.json.
 [[check]]
 name = "source-metadata"
+on = ["dispatch"]
 run = """
 mkdir -p "$CARGO_TARGET_DIR/ci"
 cargo metadata --locked --no-deps --format-version 1 > "$TMPDIR/metadata.json"
@@ -1559,6 +1563,7 @@ plan = "full"
 
 [[check]]
 name = "perf-fs"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh fs"
 inputs = ["crates/**", "vendor/**", "apps/**", "tools/perf/**", "Cargo.toml", "Cargo.lock"]
@@ -1570,6 +1575,7 @@ default = false
 
 [[check]]
 name = "perf-agent"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -1582,6 +1588,7 @@ default = false
 
 [[check]]
 name = "perf-footprint"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
@@ -1594,6 +1601,7 @@ default = false
 
 [[check]]
 name = "perf-footprint-image"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
@@ -1606,6 +1614,7 @@ default = false
 
 [[check]]
 name = "perf-latency"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh latency"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -1618,6 +1627,7 @@ default = false
 
 [[check]]
 name = "perf-render"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh render"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -1630,6 +1640,7 @@ default = false
 
 [[check]]
 name = "perf-wakeups"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh wakeups"
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
@@ -1641,6 +1652,7 @@ default = false
 
 [[check]]
 name = "perf-search"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh search"
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
@@ -1652,6 +1664,7 @@ default = false
 
 [[check]]
 name = "perf-hosting"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
@@ -1664,6 +1677,7 @@ default = false
 
 [[check]]
 name = "perf-hosting-room"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
@@ -1679,6 +1693,7 @@ default = false
 
 [[check]]
 name = "perf-browser"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh browser"
 # The release bundle names its commit through Git, which the script sets up
@@ -1696,6 +1711,7 @@ default = false
 
 [[check]]
 name = "perf-stream"
+on = ["schedule:15 1 * * *", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh stream"
 writable_sources = true
@@ -1865,6 +1881,7 @@ on = ["schedule:23 2 * * *"]
 # devices.
 [[check]]
 name = "staging-loop"
+on = ["schedule:40 2 * * *", "dispatch"]
 requires = ["disk-100g"]
 privileged = true
 devices = ["/dev/loop-control"]
@@ -1881,6 +1898,7 @@ default = false
 # fanotify, Btrfs and loop devices.
 [[check]]
 name = "native-tier1"
+on = ["schedule:50 2 * * *", "dispatch"]
 requires = ["native-storage"]
 privileged = true
 devices = ["/dev/loop-control"]
