@@ -177,6 +177,7 @@ history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernt
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
 

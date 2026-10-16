@@ -79,6 +79,16 @@ const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
 /// The one error a primary route that missed its deadline reports, whichever
 /// side noticed.
 const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
+/// Whether the identity service answered and declined to sign, as opposed
+/// to being unreachable: it reports a refusal as permission denied.
+fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
+    matches!(
+        error,
+        runtime_portal::NotAvailable::ConnectionFailed(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
 /// One absolute deadline for each host identity request/response exchange.
 /// The identity client drops a failed stream, so this also bounds shutdown of
 /// partial and late replies without blocking the shovel's `LocalSet`.
@@ -732,6 +742,13 @@ impl CollabTransport for BrokerTransport {
 
     fn document_publication_failed(&self) -> bool {
         self.state.publication_result().is_err()
+    }
+
+    fn document_change_refused(&self) -> bool {
+        matches!(
+            self.state.publication_result(),
+            Err(DocumentPublicationError::Refused(_))
+        )
     }
 
     fn fail_closed(&self, reason: &'static str) {
@@ -2008,6 +2025,17 @@ impl BridgeState {
             self.fail_closed(context);
         }
         failure
+    }
+
+    /// The identity service declined to sign a change on the workspace's
+    /// behalf. Later changes build on the declined one, so publication stops
+    /// as it does for any failure; but the reason is kept apart, so nobody is
+    /// told they are offline when the workspace said no.
+    fn publication_refused(&self, error: impl std::fmt::Display) -> DocumentPublicationError {
+        let refusal = DocumentPublicationError::Refused(error.to_string());
+        self.record_publication_failure(refusal.clone());
+        self.fail_closed("document signing refused");
+        refusal
     }
 
     fn fail_closed(&self, direction: &'static str) {
@@ -5827,6 +5855,9 @@ async fn try_send_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
+                if signing_refused(&error) {
+                    return FrameSend::Failed(state.publication_refused(error));
+                }
                 return FrameSend::Failed(state.publication_failed(
                     "document signing or encoding",
                     error,
@@ -10080,6 +10111,10 @@ mod tests {
         );
         assert!(captures.lock().unwrap().signed_ops.is_empty());
         assert!(!manager.is_connected());
+        assert!(
+            manager.document_change_refused(),
+            "a refusal is told apart from a lost connection"
+        );
         drop(manager);
         thread.join().unwrap();
     }
