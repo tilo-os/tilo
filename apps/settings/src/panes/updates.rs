@@ -918,6 +918,7 @@ impl UpdatesModel {
 
     /// The status-file watcher saw a change (tests call this in place of the
     /// inotify thread).
+    #[cfg(test)]
     pub fn codec_status_file_changed(&self) {
         self.codec_status_changed.store(true, Ordering::Release);
     }
@@ -937,6 +938,7 @@ impl UpdatesModel {
     }
 
     /// The codec card's title and lines, in order, as the person reads them.
+    #[cfg(test)]
     pub fn codecs_card_lines(&self) -> Vec<String> {
         let mut out = vec![
             codecs_card_title(),
