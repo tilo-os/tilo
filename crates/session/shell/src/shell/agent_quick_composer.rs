@@ -382,7 +382,7 @@ impl AgentQuickComposer {
                     .push(Box::new(When::from_state(
                         &view.waiting,
                         |shown| *shown,
-                        Box::new(Spinner::new()),
+                        Box::new(Spinner::for_text(ui::TextRole::Caption)),
                     )))
                     .push(wrapped(
                         Text::from_state(&view.status, Clone::clone)
