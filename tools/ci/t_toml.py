@@ -54,7 +54,9 @@ GROUP_FIELDS = {
            "writable_sources": True, "git": True},
     "dist": {"why": "writes under target/ in the source tree and reads Git history",
              "writable_sources": True, "git": True},
-    "vm-acceptance": {"why": "writes under target/ in the source tree", "writable_sources": True},
+    "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
+                               "another uid, which the capability-less job sandbox cannot",
+                      "writable_sources": True, "isolation": "vm"},
     "mount-source-cache-keys": {"why": "lists files through Git", "git": True},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git", "git": True,
                             "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
@@ -101,6 +103,7 @@ def suite_checks(manifest: suites.Manifest) -> str:
             'requires = ["arch=x86_64"]',
             *(["writable_sources = true"] if fields.get("writable_sources") else []),
             *(["git = true"] if fields.get("git") else []),
+            *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
