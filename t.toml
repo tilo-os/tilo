@@ -2049,7 +2049,7 @@ default = false
 name = "sign-room-service"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-room-service"]
 outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature", "/target/publish/room-service/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2061,7 +2061,7 @@ on = ["stable"]
 name = "publish-room-service"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/room-service /target/publish/room-service 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-room-service"]
 optional_needs = ["sign-room-service"]
 outputs = ["/target/publish/room-service/receipt.json"]
@@ -2097,7 +2097,7 @@ default = false
 name = "sign-web-entry"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature", "/target/publish/web-entry/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2109,7 +2109,7 @@ on = ["stable"]
 name = "publish-web-entry"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-web-entry"]
 optional_needs = ["sign-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
@@ -2145,7 +2145,7 @@ default = false
 name = "publish-registry-server"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2173,7 +2173,7 @@ default = false
 name = "sign-release-rehearsal"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-release-rehearsal"]
 outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/release-rehearsal/signature", "/target/publish/release-rehearsal/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2185,7 +2185,7 @@ on = ["dispatch", "tag:v0-rehearsal-*"]
 name = "publish-release-rehearsal"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-release-rehearsal"]
 optional_needs = ["sign-release-rehearsal"]
 outputs = ["/target/publish/release-rehearsal/receipt.json"]
@@ -2217,7 +2217,7 @@ default = false
 name = "publish-ci-fast"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-fast /target/publish/ci-fast 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-ci-fast", "image-ci-fast-smoke"]
 outputs = ["/target/publish/ci-fast/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2245,7 +2245,7 @@ default = false
 name = "publish-ci-control"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /target/publish/ci-control 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-ci-control", "image-ci-fast-smoke"]
 outputs = ["/target/publish/ci-control/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2302,7 +2302,7 @@ run = """
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index 'sha-{commit}'
 bash tools/ci/publish/oci-anonymous.sh registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "tools/ci/publish/oci-anonymous.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-anonymous.sh"]
 needs = ["image-release-tools"]
 outputs = ["/target/publish/release-tools/index/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2707,7 +2707,7 @@ default = false
 name = "sign-relay"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-relay"]
 outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/dry-run.pub", "/target/publish/relay/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -2719,7 +2719,7 @@ on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 name = "publish-relay"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-relay /target/publish/relay '{version}' 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-relay", "sign-relay"]
 outputs = ["/target/publish/relay/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2752,7 +2752,7 @@ default = false
 name = "sign-legacy-guest"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-legacy-guest", "legacy-guest-e2e"]
 outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -2767,7 +2767,7 @@ run = """
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image 'x86_64-{commit}'
 bash tools/ci/publish/legacy-guest.sh pins /target/publish/legacy-guest/image
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
 needs = ["image-legacy-guest", "legacy-guest-e2e", "sign-legacy-guest"]
 outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
@@ -2944,7 +2944,7 @@ run = """
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/x86_64
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64"]
 outputs = ["/target/publish/kernel-buildroot/x86_64/payload.json", "/target/publish/kernel-buildroot/x86_64/signature", "/target/publish/kernel-buildroot/x86_64/dry-run.pub", "/target/publish/kernel-buildroot/x86_64/bundle.json", "/target/publish/kernel-buildroot/aarch64/payload.json", "/target/publish/kernel-buildroot/aarch64/signature", "/target/publish/kernel-buildroot/aarch64/dry-run.pub", "/target/publish/kernel-buildroot/aarch64/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -2960,7 +2960,7 @@ bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-b
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64 'sha-{commit}-aarch64'
 bash tools/ci/publish/kernel-buildroot.sh pins /target/publish/kernel-buildroot/x86_64 /target/publish/kernel-buildroot/aarch64
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64", "sign-kernel-buildroot"]
 outputs = ["/target/publish/kernel-buildroot/x86_64/receipt.json", "/target/publish/kernel-buildroot/aarch64/receipt.json", "/target/publish/kernel-buildroot/pins.env"]
 pointers = { kernel-buildroot = "/target/publish/kernel-buildroot/pins.env" }
@@ -3385,7 +3385,7 @@ default = false
 name = "publish-fex-buildroot"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-buildroot-candidate /target/publish/fex-buildroot '{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-fex-buildroot"]
 outputs = ["/target/publish/fex-buildroot/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -3412,7 +3412,7 @@ default = false
 name = "publish-fex-x86-sdk"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate /target/publish/fex-x86-sdk '{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-fex-x86-sdk"]
 outputs = ["/target/publish/fex-x86-sdk/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -3422,8 +3422,7 @@ on = ["dispatch"]
 # The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
 # verified with its submodules, compiled offline on aarch64 in the toolchain above against the
 # x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
-# them first. Unsigned: the release key signs for stable and v* tags only, and the payload is a
-# development candidate.
+# them first. A development candidate: signed with the development key, never the release key.
 [[check]]
 name = "image-fex-payload-context"
 run = "bash tools/ci/publish/windows-compat.sh fex-source /target/publish/fex-payload/fex-source.tar"
@@ -3449,14 +3448,26 @@ timeout_secs = 10800
 default = false
 
 [[check]]
+name = "sign-fex-payload"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[check]]
 name = "publish-fex-payload"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = '''
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload '{commit}'
 sed -n 's/.*"image":"\([^"]*\)".*/\1/p' /target/publish/fex-payload/receipt.json > /target/publish/fex-payload/reference
 '''
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
-needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk", "sign-fex-payload"]
 outputs = ["/target/publish/fex-payload/receipt.json", "/target/publish/fex-payload/reference"]
 pointers = { fex-payload-candidate = "/target/publish/fex-payload/reference" }
 id_token = ["registry.tilo.so"]
@@ -3483,7 +3494,7 @@ default = false
 name = "publish-wine-tools"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-tools /target/publish/wine-tools 'candidate-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-wine-tools"]
 outputs = ["/target/publish/wine-tools/receipt.json"]
 id_token = ["registry.tilo.so"]

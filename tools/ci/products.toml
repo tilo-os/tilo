@@ -7,6 +7,8 @@ buildah = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b35
 skopeo = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 # The release key in KMS and the role that may sign with it, for stable and v* tags only.
 signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+# The development key and the role that may sign with it, for main only (`dev_signed`).
+dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing" }
 
 # ---------------------------------------------------------------------------
 # Services, deployed by digest from a receipt.
@@ -683,12 +685,12 @@ about = """
 The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
 verified with its submodules, compiled offline on aarch64 in the toolchain above against the
 x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
-them first. Unsigned: the release key signs for stable and v* tags only, and the payload is a
-development candidate."""
+them first. A development candidate: signed with the development key, never the release key."""
 repository = "registry.tilo.so/tilo/tilo-fex-payload-candidate"
 arches = ["aarch64"]
 dev = ["{commit}"]
 dispatch = true
+dev_signed = true
 gates = ["publish-fex-buildroot", "publish-fex-x86-sdk"]
 after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.json > {dir}/reference"
 

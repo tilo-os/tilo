@@ -49,6 +49,10 @@ esac
 [[ $run_channel == dev || -s $out/signature ]] || die 'a release is published signed only'
 (($#)) || die 'no tags'
 require_commit
+# Releases verify against the release key; a signed development candidate against the
+# development key (oci-sign.sh, TILO_DEV_SIGNING).
+verify_key=$repo_root/keys/cosign.pub
+[[ $run_channel == dev ]] && verify_key=$repo_root/keys/cosign-dev.pub
 digest=$(cat "$out/digest")
 [[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] || die 'the archive is not the build'
 registry=${repository%%/*}
@@ -108,7 +112,7 @@ pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
   # No registry to attach to: check the signature is over this image, by the expected key.
   use_cosign
-  key=$repo_root/keys/cosign.pub
+  key=$verify_key
   [[ -s $out/dry-run.pub ]] && key=$out/dry-run.pub
   [[ $(cat "$out/payload.json") == "$(signing_payload "$repository" "$digest")" ]] \
     || die 'the signature is not over this repository and digest'
@@ -121,10 +125,10 @@ elif [[ -s $out/signature ]]; then
     # verify the way release builds do, requiring it.
     cosign attach signature --payload "$out/payload.json" --signature "$out/signature" \
       --rekor-response "$out/bundle.json" "$repository@$digest"
-    cosign verify --key "$repo_root/keys/cosign.pub" "$repository@$digest" >/dev/null
+    cosign verify --key "$verify_key" "$repository@$digest" >/dev/null
   else
     cosign attach signature --payload "$out/payload.json" --signature "$out/signature" "$repository@$digest"
-    cosign verify --insecure-ignore-tlog=true --key "$repo_root/keys/cosign.pub" "$repository@$digest" >/dev/null
+    cosign verify --insecure-ignore-tlog=true --key "$verify_key" "$repository@$digest" >/dev/null
   fi
 fi
 tags="\"$first\""
