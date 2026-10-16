@@ -3,7 +3,6 @@
 use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
 use crate::compositor::dictation_status::{DictationError, DictationStatus, SessionId};
 use crate::shell::i18n::{t, t_args};
-use std::time::Instant;
 use ui::a11y::AccessNode;
 use ui::widget::{Container, PermissionPrompt, PromptChoice, Text, Widget};
 use vello::kurbo::Rect;
@@ -539,9 +538,6 @@ impl ShellLayer for DictationSurface {
         }
         self.request_cancel();
         true
-    }
-    fn tick(&mut self, _now: Instant) -> bool {
-        false
     }
 }
 
