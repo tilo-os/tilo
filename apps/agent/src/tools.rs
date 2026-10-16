@@ -244,6 +244,27 @@ fn open_note(catalogue: &Catalogue, app: &str) -> String {
 /// The resource prefix of the launcher's published open.
 pub const LAUNCHER_OPEN_PREFIX: &str = "desktop:app:";
 
+/// Read the object and array arguments of `offer` that a model wrote as
+/// JSON text back into objects and arrays. The invoke tool takes its
+/// parameters as an open object, so a model cannot see that a parameter
+/// (a selection's place, say) is an object, and some (Gemini) then pass it
+/// as its JSON encoding. Text that is not the declared kind of JSON stays
+/// as it is, to be refused with what the parameter takes.
+pub fn decode_structured_arguments(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    for param in &offer.descriptor.params {
+        let Some(Value::String(text)) = arguments.get(param.name.as_ref()) else {
+            continue;
+        };
+        let ((tilo_actions::ParamType::Object, Ok(decoded @ Value::Object(_)))
+        | (tilo_actions::ParamType::Array, Ok(decoded @ Value::Array(_)))) =
+            (param.ty, serde_json::from_str::<Value>(text.trim()))
+        else {
+            continue;
+        };
+        arguments.insert(param.name.to_string(), decoded);
+    }
+}
+
 /// One operation's parameters as a compact signature and how to pass them,
 /// for an invoke that was refused for its arguments.
 pub fn parameter_hint(offer: &Offer) -> String {
@@ -1704,6 +1725,44 @@ mod tests {
             named_applications(&catalogue, request),
             vec![("so.tilo.word-processor", "Writer")]
         );
+    }
+
+    /// An object or array argument a model wrote as its JSON text is read
+    /// back as the object or array; text parameters, and text that is not
+    /// the declared kind of JSON, stay text.
+    #[test]
+    fn json_text_for_an_object_or_array_argument_is_decoded() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where"),
+            tilo_actions::ActionParam::optional("marks", tilo_actions::ParamType::Array, "marks"),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let mut arguments = json!({
+            "at": "{\"item\":\"b1\",\"start\":0,\"end\":39}",
+            "marks": "[\"link\"]",
+            "text": "{\"looks\":\"like json\"}",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        decode_structured_arguments(&replace, &mut arguments);
+        assert_eq!(
+            arguments["at"],
+            json!({"item": "b1", "start": 0, "end": 39})
+        );
+        assert_eq!(arguments["marks"], json!(["link"]));
+        assert_eq!(arguments["text"], json!("{\"looks\":\"like json\"}"));
+        let mut wrong = json!({"at": "[1, 2]"}).as_object().cloned().unwrap();
+        decode_structured_arguments(&replace, &mut wrong);
+        assert_eq!(wrong["at"], json!("[1, 2]"));
     }
 
     /// An open next to an application that already publishes operations

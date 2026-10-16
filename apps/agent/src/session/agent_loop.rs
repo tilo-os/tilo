@@ -1285,13 +1285,16 @@ impl Session {
         input: &Value,
     ) -> Result<Prepared, Box<InvokeReport>> {
         let refused = |error: String| Box::new(refused_report(error));
-        let invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
+        let mut invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
         if state.step_index >= MAX_TASK_STEPS {
             return Err(refused(format!(
                 "this task has used all {MAX_TASK_STEPS} of its steps"
             )));
         }
         let catalogue = self.task_catalogue();
+        if let Some(offer) = surface::find(&catalogue.offers, &invocation.operation) {
+            tools::decode_structured_arguments(offer, &mut invocation.arguments);
+        }
         // An argument error says what the operation takes, so the next
         // attempt needs no describe turn.
         let with_hint = |why: String| match surface::find(&catalogue.offers, &invocation.operation)
