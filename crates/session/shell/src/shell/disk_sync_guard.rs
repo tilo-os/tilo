@@ -10,8 +10,8 @@
 //!
 //! The filter binds only the calling thread and threads it spawns afterwards
 //! (no `SECCOMP_FILTER_FLAG_TSYNC`), never the test harness. The process's
-//! state writer is started before the filter goes on, so the writes the
-//! entry point hands it still sync on their own thread.
+//! state writer and session-start worker are started before the filter goes
+//! on, so the work the entry point hands them still syncs on their threads.
 
 /// The errno a denied sync returns, distinctive enough to name in an
 /// assertion: waiting for the disk is what would deadlock the desktop.
@@ -30,8 +30,10 @@ pub(crate) fn deny_disk_syncs_on_this_thread() {
         libc::SYS_syncfs,
         libc::SYS_sync,
     ];
-    // Started here, the writer thread does not inherit the filter.
+    // Started here, the writer thread and the session-start worker do not
+    // inherit the filter.
     let _ = crate::shell::durable_writer::global();
+    let _ = crate::session_runtime::start_worker();
     let statement = |code: u32, k: u32| libc::sock_filter {
         code: u16::try_from(code).expect("BPF opcode fits"),
         jt: 0,
@@ -129,6 +131,48 @@ pub(crate) fn blocking_source(directory: &std::path::Path, name: &str) -> std::p
     let made = unsafe { libc::mkfifo(raw.as_ptr(), 0o600) };
     assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
     path
+}
+
+/// Run `body` on this thread with `fifo` (from [`blocking_source`])
+/// watched. Should anything open the FIFO to read while `body` runs, a
+/// rescuer writes `bytes` so that read finishes instead of hanging the test,
+/// and the second value is `true`: `body` waited on a file. A rescuer that
+/// cannot open the FIFO (no reader) leaves it alone.
+///
+/// # Panics
+///
+/// When the rescuer thread cannot be started.
+pub(crate) fn read_while<T>(
+    fifo: &std::path::Path,
+    bytes: &[u8],
+    body: impl FnOnce() -> T,
+) -> (T, bool) {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let rescuer = scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                // Opening the write end without blocking succeeds only
+                // while a reader has the FIFO open.
+                if let Ok(mut writer) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(fifo)
+                {
+                    let _ = writer.write_all(bytes);
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            false
+        });
+        let value = body();
+        done.store(true, Ordering::Release);
+        let read = rescuer.join().expect("the rescuer finished");
+        (value, read)
+    })
 }
 
 #[cfg(test)]

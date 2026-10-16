@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn retired_execution_retained_server_refuses_tools_after_delete() {
     let host = StubHost::default();
-    let endpoint = endpoint(host.clone(), None);
+    let endpoint = endpoint(host.clone());
     run(async {
         let id = open(&endpoint, "retained execution").await;
         let retained = endpoint.find(&id).unwrap();
@@ -20,7 +20,7 @@ fn retired_execution_retained_server_refuses_tools_after_delete() {
             .dispatch(
                 &Method::DELETE,
                 "/mcp",
-                &headers(&[(SESSION_HEADER, &id)]),
+                &bearer_headers(&[(SESSION_HEADER, &id)]),
                 b"",
             )
             .await;

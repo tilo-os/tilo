@@ -91,22 +91,22 @@ impl AudioPrefs {}
 #[effect(operation = "settings.effect")]
 pub enum AudioEffect {
     /// Set the output volume, from 0 to 1.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SetOutputVolume { volume: f64 },
     /// Mute or unmute the output.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SetOutputMuted { muted: bool },
     /// Set the microphone level, from 0 to 1.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SetInputVolume { volume: f64 },
     /// Play sound through another output device.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SelectOutput {
         #[param("The output device's name")]
         device: String,
     },
     /// Record from another input device.
-    #[effect(idempotent)]
+    #[effect(job, idempotent)]
     SelectInput {
         #[param("The input device's name")]
         device: String,
@@ -124,7 +124,7 @@ pub enum AudioEffect {
         theme: String,
     },
     /// Use another profile of an audio device (high fidelity, headset…).
-    #[effect(row, idempotent)]
+    #[effect(row, job, idempotent)]
     SetDeviceProfile {
         #[param("The device's node id")]
         device: u32,
@@ -133,7 +133,7 @@ pub enum AudioEffect {
     },
     /// Play one app's stream through a device, or `Default` to follow the
     /// system's.
-    #[effect(row, idempotent)]
+    #[effect(row, job, idempotent)]
     RouteStream {
         #[param("The stream's node id")]
         stream: u32,
@@ -141,10 +141,10 @@ pub enum AudioEffect {
         device: String,
     },
     /// Set one app's volume, from 0 to 1.
-    #[effect(row, idempotent)]
+    #[effect(row, job, idempotent)]
     SetStreamVolume { stream: u32, volume: f64 },
     /// Mute or unmute one app.
-    #[effect(row, idempotent)]
+    #[effect(row, job, idempotent)]
     SetStreamMuted { stream: u32, muted: bool },
     /// Show or hide the speaker tests.
     #[effect(view)]
@@ -168,13 +168,127 @@ pub enum AudioEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AudioEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    app.audio()
-        .model()
-        .borrow_mut()
-        .apply(&effect)
-        .map(|_| Effected::done())
+    let model = app.audio().model();
+    let mut model = model.borrow_mut();
+    match model.plan(&effect)? {
+        Plan::Local => model.apply_local(&effect).map(|_| Effected::done()),
+        // `wpctl` and `pw-cli` each take up to their timeout, and a slider
+        // drag commits many values: run them off the UI thread, so the
+        // click is answered and painted at once.
+        Plan::Device { key, work, settle } => {
+            let work = model.changes.submit(key, work);
+            Ok(crate::device_read::job(
+                cx,
+                work,
+                move |app: &mut SettingsApp, ran: Option<Result<(), String>>, _| {
+                    // Replaced by a newer change of the same kind before it
+                    // ran: that one settles the model.
+                    let Some(result) = ran else {
+                        return Ok(Effected::done());
+                    };
+                    app.audio()
+                        .model()
+                        .borrow_mut()
+                        .settle(settle, result)
+                        .map(|_| Effected::done())
+                },
+            ))
+        }
+    }
+}
+
+/// A change of the audio hardware: one `wpctl` or `pw-cli` run.
+type DeviceWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// An effect as decided on the UI thread ([`AudioModel::plan`]).
+enum Plan {
+    /// A preference or diagnostic change, made on the UI thread
+    /// ([`AudioModel::apply_local`]).
+    Local,
+    /// A device change still to run, keyed by what it changes, and what
+    /// the model takes in once it ran.
+    Device {
+        key: ChangeKey,
+        work: DeviceWork,
+        settle: Settle,
+    },
+}
+
+/// What a device change changes: a newer change of the same key replaces
+/// one still waiting ([`DeviceChanges`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ChangeKey {
+    OutputVolume,
+    OutputMuted,
+    InputVolume,
+    OutputDevice,
+    InputDevice,
+    Profile(u32),
+    Route(u32),
+    StreamVolume(u32),
+    StreamMuted(u32),
+}
+
+/// What a device change that ran sets on the model ([`AudioModel::settle`]).
+enum Settle {
+    OutputVolume(f32),
+    OutputMuted(bool),
+    InputVolume(f32),
+    Output { id: u32, name: String },
+    Input { id: u32, name: String },
+    Profile,
+    Route(u32),
+    StreamVolume,
+    StreamMuted,
+}
+
+/// The device changes of one Sound area, run off the UI thread one at a
+/// time. A change a newer one of the same kind replaced before it ran is
+/// dropped, so the hardware ends at the last value asked for whatever order
+/// the background executor starts them in.
+#[derive(Clone, Default)]
+struct DeviceChanges {
+    latest: Arc<std::sync::Mutex<(u64, std::collections::HashMap<ChangeKey, u64>)>>,
+    /// Held while a change runs, so two never race on the mixer.
+    turn: Arc<std::sync::Mutex<()>>,
+}
+
+impl DeviceChanges {
+    /// `work` as a job for the background executor: `None` when a newer
+    /// change of `key` replaced it before its turn.
+    fn submit(
+        &self,
+        key: ChangeKey,
+        work: DeviceWork,
+    ) -> impl FnOnce() -> Option<Result<(), String>> + Send + 'static {
+        let ticket = {
+            let mut latest = self
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            latest.0 += 1;
+            let ticket = latest.0;
+            latest.1.insert(key, ticket);
+            ticket
+        };
+        let this = self.clone();
+        move || {
+            let _turn = this
+                .turn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = this
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1
+                .get(&key)
+                == Some(&ticket);
+            current.then(work)
+        }
+    }
 }
 
 fn follow_shown() -> String {
@@ -648,6 +762,10 @@ pub struct AudioModel {
     input_volume: f32,
     muted: bool,
     changed: bool,
+    /// Device changes on their way off the UI thread.
+    changes: DeviceChanges,
+    /// The hotplug re-read of the graph, on the background executor.
+    rescan: crate::device_read::DeviceRead<AudioGraph>,
 }
 
 /// What the Sound area reads of the device: the levels, the device list and
@@ -774,6 +892,8 @@ impl AudioModel {
             input_volume,
             muted: initial.muted,
             changed: false,
+            changes: DeviceChanges::default(),
+            rescan: crate::device_read::DeviceRead::default(),
             cx,
         }
     }
@@ -808,6 +928,8 @@ impl AudioModel {
             input_volume: 0.75,
             muted: false,
             changed: false,
+            changes: DeviceChanges::default(),
+            rescan: crate::device_read::DeviceRead::default(),
             cx,
         }
     }
@@ -879,78 +1001,241 @@ impl AudioModel {
         &self.graph
     }
 
-    /// Carry out `effect`; what it reported.
+    /// Carry out `effect` on this thread; what it reported. The window
+    /// answers effects through [`answer`], which makes the device changes
+    /// off the UI thread instead.
+    #[cfg(test)]
+    fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
+        match self.plan(effect)? {
+            Plan::Local => self.apply_local(effect),
+            Plan::Device { work, settle, .. } => {
+                let result = work();
+                self.settle(settle, result)
+            }
+        }
+    }
+
+    /// Decide what `effect` does: a preference or diagnostic change made
+    /// here, or a device change for [`answer`] to run off the UI thread.
     #[expect(
         clippy::too_many_lines,
-        reason = "one arm per effect, each a short device or preference change"
+        reason = "one arm per device effect, each naming its call and what it settles"
     )]
-    fn apply(&mut self, effect: &AudioEffect) -> Result<String, String> {
+    fn plan(&mut self, effect: &AudioEffect) -> Result<Plan, String> {
         self.changed = true;
-        let percent = |value: f64| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
+        let device = |key: ChangeKey, work: DeviceWork, settle: Settle| -> Result<Plan, String> {
+            Ok(Plan::Device { key, work, settle })
+        };
         match effect {
             AudioEffect::SetOutputVolume { volume } => {
                 let volume = volume.clamp(0.0, 1.0) as f32;
-                self.output
-                    .set_volume(volume * 100.0)
-                    .map_err(|error| self.failed("sound-notice-out-vol-err", error))?;
+                let output = Arc::clone(&self.output);
+                device(
+                    ChangeKey::OutputVolume,
+                    Box::new(move || output.set_volume(volume * 100.0)),
+                    Settle::OutputVolume(volume),
+                )
+            }
+            AudioEffect::SetOutputMuted { muted } => {
+                let (output, muted) = (Arc::clone(&self.output), *muted);
+                device(
+                    ChangeKey::OutputMuted,
+                    Box::new(move || output.set_mute(muted)),
+                    Settle::OutputMuted(muted),
+                )
+            }
+            AudioEffect::SetInputVolume { volume } => {
+                let volume = volume.clamp(0.0, 1.0) as f32;
+                let input = Arc::clone(&self.input);
+                device(
+                    ChangeKey::InputVolume,
+                    Box::new(move || input.set_input_volume(volume * 100.0)),
+                    Settle::InputVolume(volume),
+                )
+            }
+            AudioEffect::SelectOutput { device: name } => {
+                let id = self
+                    .devices
+                    .sink_id(name)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                let control = Arc::clone(&self.device);
+                device(
+                    ChangeKey::OutputDevice,
+                    Box::new(move || control.set_default(id)),
+                    Settle::Output {
+                        id,
+                        name: name.clone(),
+                    },
+                )
+            }
+            AudioEffect::SelectInput { device: name } => {
+                let id = self
+                    .devices
+                    .source_id(name)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                let control = Arc::clone(&self.device);
+                device(
+                    ChangeKey::InputDevice,
+                    Box::new(move || control.set_default(id)),
+                    Settle::Input {
+                        id,
+                        name: name.clone(),
+                    },
+                )
+            }
+            AudioEffect::SetDeviceProfile {
+                device: hardware_id,
+                profile,
+            } => {
+                let index = self
+                    .graph
+                    .hardware
+                    .iter()
+                    .find(|hardware| hardware.id == *hardware_id)
+                    .and_then(|hardware| {
+                        hardware
+                            .profiles
+                            .iter()
+                            .find(|known| known.available && &known.description == profile)
+                    })
+                    .map(|known| known.index)
+                    .ok_or_else(|| t("sound-notice-device-gone"))?;
+                let (gctl, hardware_id) = (Arc::clone(&self.gctl), *hardware_id);
+                device(
+                    ChangeKey::Profile(hardware_id),
+                    Box::new(move || gctl.set_device_profile(hardware_id, index)),
+                    Settle::Profile,
+                )
+            }
+            AudioEffect::RouteStream {
+                stream,
+                device: target,
+            } => {
+                let known = self.stream(*stream)?;
+                let gctl = Arc::clone(&self.gctl);
+                let work: DeviceWork = if is_follow_default(target) {
+                    Box::new(move || gctl.unroute_stream(known.id))
+                } else {
+                    let devices = if known.playback {
+                        &self.graph.sinks
+                    } else {
+                        &self.graph.sources
+                    };
+                    let serial = devices
+                        .iter()
+                        .find(|candidate| &candidate.description == target)
+                        .map(|candidate| candidate.serial);
+                    Box::new(move || {
+                        serial
+                            .ok_or_else(|| "audio route is no longer available".to_string())
+                            .and_then(|serial| gctl.route_stream(known.id, serial))
+                    })
+                };
+                device(ChangeKey::Route(*stream), work, Settle::Route(*stream))
+            }
+            AudioEffect::SetStreamVolume { stream, volume } => {
+                let known = self.stream(*stream)?;
+                let (gctl, volume) = (Arc::clone(&self.gctl), volume.clamp(0.0, 1.0) as f32);
+                device(
+                    ChangeKey::StreamVolume(*stream),
+                    Box::new(move || gctl.set_node_volume(known.id, volume)),
+                    Settle::StreamVolume,
+                )
+            }
+            AudioEffect::SetStreamMuted { stream, muted } => {
+                let known = self.stream(*stream)?;
+                let (gctl, muted) = (Arc::clone(&self.gctl), *muted);
+                device(
+                    ChangeKey::StreamMuted(*stream),
+                    Box::new(move || gctl.set_node_mute(known.id, muted)),
+                    Settle::StreamMuted,
+                )
+            }
+            _ => Ok(Plan::Local),
+        }
+    }
+
+    /// What a device change that ran makes of the model: the level or
+    /// device it set, or the notice of why it failed.
+    fn settle(&mut self, settle: Settle, result: Result<(), String>) -> Result<String, String> {
+        self.changed = true;
+        let percent = |value: f32| i64::from((value.clamp(0.0, 1.0) * 100.0).round() as u32);
+        match settle {
+            Settle::OutputVolume(volume) => {
+                result.map_err(|error| self.failed("sound-notice-out-vol-err", error))?;
                 self.volume = volume;
                 Ok(t_args(
                     "sound-notice-out-vol",
-                    &[("percent", percent(f64::from(volume)).into())],
+                    &[("percent", percent(volume).into())],
                 ))
             }
-            AudioEffect::SetOutputMuted { muted } => {
-                self.output
-                    .set_mute(*muted)
-                    .map_err(|error| self.failed("sound-notice-mute-err", error))?;
-                self.muted = *muted;
-                Ok(t(if *muted {
+            Settle::OutputMuted(muted) => {
+                result.map_err(|error| self.failed("sound-notice-mute-err", error))?;
+                self.muted = muted;
+                Ok(t(if muted {
                     "sound-notice-muted"
                 } else {
                     "sound-notice-unmuted"
                 }))
             }
-            AudioEffect::SetInputVolume { volume } => {
-                let volume = volume.clamp(0.0, 1.0) as f32;
-                self.input
-                    .set_input_volume(volume * 100.0)
-                    .map_err(|error| self.failed("sound-notice-in-vol-err", error))?;
+            Settle::InputVolume(volume) => {
+                result.map_err(|error| self.failed("sound-notice-in-vol-err", error))?;
                 self.input_volume = volume;
                 Ok(t_args(
                     "sound-notice-in-vol",
-                    &[("percent", percent(f64::from(volume)).into())],
+                    &[("percent", percent(volume).into())],
                 ))
             }
-            AudioEffect::SelectOutput { device } => {
-                let id = self
-                    .devices
-                    .sink_id(device)
-                    .ok_or_else(|| t("sound-notice-device-gone"))?;
-                self.device
-                    .set_default(id)
-                    .map_err(|error| self.failed("sound-notice-device-err", error))?;
+            Settle::Output { id, name } => {
+                result.map_err(|error| self.failed("sound-notice-device-err", error))?;
                 for sink in &mut self.devices.sinks {
                     sink.default = sink.id == id;
                 }
-                let name = device.clone();
                 self.save(|prefs| prefs.output_device = Some(name))?;
                 Ok(t("sound-notice-out-device"))
             }
-            AudioEffect::SelectInput { device } => {
-                let id = self
-                    .devices
-                    .source_id(device)
-                    .ok_or_else(|| t("sound-notice-device-gone"))?;
-                self.device
-                    .set_default(id)
-                    .map_err(|error| self.failed("sound-notice-in-device-err", error))?;
+            Settle::Input { id, name } => {
+                result.map_err(|error| self.failed("sound-notice-in-device-err", error))?;
                 for source in &mut self.devices.sources {
                     source.default = source.id == id;
                 }
-                let name = device.clone();
                 self.save(|prefs| prefs.input_device = Some(name))?;
                 Ok(t("sound-notice-in-device"))
             }
+            Settle::Profile => {
+                result.map_err(|error| self.failed("sound-notice-profile-err", error))?;
+                Ok(t("sound-notice-profile"))
+            }
+            Settle::Route(stream) => {
+                result.map_err(|error| {
+                    warn!(target: "tilo::settings", op = "route_stream", stream, error = %error, "audio stream route failed");
+                    t_args("sound-notice-stream-route-err", &[("error", error.into())])
+                })?;
+                Ok(t("sound-notice-stream-route"))
+            }
+            Settle::StreamVolume => {
+                result.map_err(|error| {
+                    t_args("sound-notice-stream-vol-err", &[("error", error.into())])
+                })?;
+                Ok(t("sound-notice-stream-vol"))
+            }
+            Settle::StreamMuted => {
+                result.map_err(|error| {
+                    t_args("sound-notice-stream-mute-err", &[("error", error.into())])
+                })?;
+                Ok(t("sound-notice-stream-mute"))
+            }
+        }
+    }
+
+    /// Carry out an effect that changes no hardware: a preference, the
+    /// sound theme or a bounded diagnostic.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per effect, each a short preference or diagnostic change"
+    )]
+    fn apply_local(&mut self, effect: &AudioEffect) -> Result<String, String> {
+        match effect {
             AudioEffect::SetMonoOutput { on } => {
                 let on = *on;
                 self.save(|prefs| prefs.mono_output = on)?;
@@ -982,63 +1267,6 @@ impl AudioModel {
                     .map(|known| known.id.clone())
                     .ok_or_else(|| t("sound-notice-theme-missing"))?;
                 self.save_sounds(|sounds| sounds.theme = Some(id))
-            }
-            AudioEffect::SetDeviceProfile { device, profile } => {
-                let index = self
-                    .graph
-                    .hardware
-                    .iter()
-                    .find(|hardware| hardware.id == *device)
-                    .and_then(|hardware| {
-                        hardware
-                            .profiles
-                            .iter()
-                            .find(|known| known.available && &known.description == profile)
-                    })
-                    .map(|known| known.index)
-                    .ok_or_else(|| t("sound-notice-device-gone"))?;
-                self.gctl
-                    .set_device_profile(*device, index)
-                    .map_err(|error| self.failed("sound-notice-profile-err", error))?;
-                Ok(t("sound-notice-profile"))
-            }
-            AudioEffect::RouteStream { stream, device } => {
-                let known = self.stream(*stream)?;
-                let result = if is_follow_default(device) {
-                    self.gctl.unroute_stream(known.id)
-                } else {
-                    let devices = if known.playback {
-                        &self.graph.sinks
-                    } else {
-                        &self.graph.sources
-                    };
-                    devices
-                        .iter()
-                        .find(|candidate| &candidate.description == device)
-                        .ok_or_else(|| "audio route is no longer available".to_string())
-                        .and_then(|target| self.gctl.route_stream(known.id, target.serial))
-                };
-                result.map_err(|error| {
-                    warn!(target: "tilo::settings", op = "route_stream", stream, error = %error, "audio stream route failed");
-                    t_args("sound-notice-stream-route-err", &[("error", error.into())])
-                })?;
-                Ok(t("sound-notice-stream-route"))
-            }
-            AudioEffect::SetStreamVolume { stream, volume } => {
-                let known = self.stream(*stream)?;
-                self.gctl
-                    .set_node_volume(known.id, volume.clamp(0.0, 1.0) as f32)
-                    .map_err(|error| {
-                        t_args("sound-notice-stream-vol-err", &[("error", error.into())])
-                    })?;
-                Ok(t("sound-notice-stream-vol"))
-            }
-            AudioEffect::SetStreamMuted { stream, muted } => {
-                let known = self.stream(*stream)?;
-                self.gctl.set_node_mute(known.id, *muted).map_err(|error| {
-                    t_args("sound-notice-stream-mute-err", &[("error", error.into())])
-                })?;
-                Ok(t("sound-notice-stream-mute"))
             }
             AudioEffect::ShowSoundTests { show } => {
                 self.tests_shown = *show;
@@ -1109,6 +1337,17 @@ impl AudioModel {
                 self.mic_level = 0.0;
                 self.runtime_notice = Some(t("sound-notice-mic-started"));
                 Ok(t("sound-notice-mic-started"))
+            }
+            AudioEffect::SetOutputVolume { .. }
+            | AudioEffect::SetOutputMuted { .. }
+            | AudioEffect::SetInputVolume { .. }
+            | AudioEffect::SelectOutput { .. }
+            | AudioEffect::SelectInput { .. }
+            | AudioEffect::SetDeviceProfile { .. }
+            | AudioEffect::RouteStream { .. }
+            | AudioEffect::SetStreamVolume { .. }
+            | AudioEffect::SetStreamMuted { .. } => {
+                Err("a device change is planned, not applied here".into())
             }
         }
     }
@@ -1600,17 +1839,31 @@ impl AudioModel {
     /// tree so the next layout rebuilds with the new rows. Returns whether a
     /// structural change was adopted.
     fn poll_hotplug(&mut self) -> bool {
-        let due = match (self.hotplug_interval, self.last_enum) {
-            (i, _) if i == Duration::ZERO => true,
-            (i, _) if i == Duration::MAX => false,
-            (i, Some(t)) => t.elapsed() >= i,
-            (_, None) => true,
+        // `pw-dump` can take up to its timeout, so the graph is read on the
+        // background executor and taken in by a later sync; scrolling the
+        // pane never waits for it.
+        let fresh = if self.rescan.is_finished()
+            && let Some(graph) = self.rescan.take()
+        {
+            graph
+        } else {
+            let due = match (self.hotplug_interval, self.last_enum) {
+                (i, _) if i == Duration::ZERO => true,
+                (i, _) if i == Duration::MAX => false,
+                (i, Some(t)) => t.elapsed() >= i,
+                (_, None) => true,
+            };
+            if !due || !self.rescan.is_finished() {
+                return false;
+            }
+            self.last_enum = Some(ui::time::now());
+            let enumerator = Arc::clone(&self.enumerator);
+            if self.rescan.start(move || enumerator.enumerate()) {
+                return false;
+            }
+            // No background executor runs here: read on this thread.
+            self.enumerator.enumerate()
         };
-        if !due {
-            return false;
-        }
-        self.last_enum = Some(ui::time::now());
-        let fresh = self.enumerator.enumerate();
         if fresh.topology_signature() == self.graph.topology_signature() {
             return false;
         }
@@ -2191,7 +2444,20 @@ Video
             model.hotplug_interval = Duration::ZERO;
             model.last_enum = None;
             assert_eq!(model.graph().sinks.len(), 1, "starts with one sink");
-            assert!(model.poll(), "the plugged-in sink is adopted");
+            // The re-read runs on the background executor: the sync that
+            // starts it returns at once, and a later sync adopts it.
+            assert!(
+                !model.poll(),
+                "the sync starting the re-read waits for nothing"
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !model.poll() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the plugged-in sink is adopted"
+                );
+                std::thread::yield_now();
+            }
             assert_eq!(model.graph().sinks.len(), 2);
             assert!(model.devices().sinks.iter().any(|d| d.name == "Headphones"));
         }
@@ -2337,5 +2603,107 @@ Video
                 .is_err()
         );
         assert_eq!(model.cx.settings::<AudioPrefs>().get().system_sounds, saved);
+    }
+
+    /// A mixer that does not answer until it is let go (or ten seconds
+    /// pass), as `wpctl` does against a wedged `PipeWire`.
+    struct StalledOutput(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledOutput {
+        fn wait(&self) -> Result<(), String> {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err("the mixer never answered".into());
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            Ok(())
+        }
+    }
+
+    impl OutputControl for StalledOutput {
+        fn set_volume(&self, _: f32) -> Result<(), String> {
+            self.wait()
+        }
+        fn set_mute(&self, _: bool) -> Result<(), String> {
+            self.wait()
+        }
+    }
+
+    /// A click on the volume control is answered and the window keeps
+    /// drawing while the mixer takes its time: the device call runs off
+    /// the UI thread, and its result lands once it returns.
+    #[test]
+    fn a_stalled_mixer_never_holds_the_window() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.audio().model().borrow_mut().output = Arc::new(StalledOutput(stalled));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        app.start_effect(&SettingsEffect::from(AudioEffect::SetOutputVolume {
+            volume: 0.3,
+        }))
+        .expect("the volume change runs as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on the mixer"
+        );
+        let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
+            app.with_widget::<SettingsApp, _>(|settings| {
+                (settings.audio().model().borrow().volume - 0.3).abs() < 0.01
+            })
+            .unwrap()
+        };
+        assert!(
+            !shows_set_level(&mut app),
+            "the level is not shown as set before the mixer took it"
+        );
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !shows_set_level(&mut app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the level the mixer took is shown"
+            );
+            app.settle();
+            std::thread::yield_now();
+        }
+    }
+
+    /// Changes of one kind that the background executor starts out of
+    /// order leave the hardware at the last one asked for.
+    #[test]
+    fn a_replaced_device_change_is_dropped() {
+        let changes = DeviceChanges::default();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let job = |level: u32| -> DeviceWork {
+            let ran = Arc::clone(&ran);
+            Box::new(move || {
+                ran.lock().unwrap().push(level);
+                Ok(())
+            })
+        };
+        let first = changes.submit(ChangeKey::OutputVolume, job(20));
+        let second = changes.submit(ChangeKey::OutputVolume, job(80));
+        let mute = changes.submit(ChangeKey::OutputMuted, job(0));
+        assert_eq!(second(), Some(Ok(())));
+        assert_eq!(first(), None, "the older level never reaches the mixer");
+        assert_eq!(mute(), Some(Ok(())), "another kind of change is kept");
+        assert_eq!(ran.lock().unwrap().as_slice(), [80, 0]);
     }
 }

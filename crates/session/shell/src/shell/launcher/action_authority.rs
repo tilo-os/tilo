@@ -779,6 +779,7 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            offers: Vec::new(),
         };
         let room = RoomId::new();
         let mut command = LaunchCommand {
@@ -828,6 +829,9 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    // Sandbox registration (`Lease::register_sandbox`) exists only on Linux,
+    // so do these fixtures and the tests below that use them.
+    #[cfg(target_os = "linux")]
     fn live_child() -> std::process::Child {
         std::process::Command::new("sleep")
             .arg("60")
@@ -835,6 +839,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(target_os = "linux")]
     fn grant(app: &str, path: &str) -> CapOverride {
         CapOverride::grant(
             collab_types::Subject::Principal(collab_types::Principal::App(app.into())),
@@ -846,6 +851,7 @@ mod tests {
 
     /// Register a lease for `app` in `room` that captured `grant` at
     /// `revision`, then clean up everything it published.
+    #[cfg(target_os = "linux")]
     fn register(
         room: RoomId,
         app: &str,

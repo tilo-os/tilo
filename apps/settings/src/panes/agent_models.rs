@@ -364,12 +364,21 @@ pub(crate) fn answer(
                 model.reviewing_local.set(None);
             }
             drop(model);
-            Ok(cx.thread(
-                move |_| work.run(control.as_ref()),
-                |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+            Ok(crate::device_read::job(
+                cx,
+                // The manager is asked again on the job too: the answer
+                // carries what the change left, read off the UI thread.
+                move || {
+                    let outcome = work.run(control.as_ref());
+                    (outcome, control.snapshot())
+                },
+                |app: &mut SettingsApp,
+                 (outcome, snapshot): (Result<String, String>, Snapshot),
+                 _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.refresh();
+                    model.snapshot_reads.supersede();
+                    model.apply_snapshot(snapshot);
                     if let Err(error) = &outcome {
                         model.notice = Some(error.clone());
                     }
@@ -379,47 +388,45 @@ pub(crate) fn answer(
         }
         AgentModelsEffect::SaveProviderKey { provider, key } => {
             let buffer = model.key_buffer(&provider);
+            let hosted = hosted_profiles(model.providers.get());
             drop(model);
-            Ok(cx.thread(
-                move |_| {
-                    let mut typed = buffer.lock_recover();
-                    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
-                    typed.zeroize();
-                    drop(typed);
-                    if value.trim().is_empty() {
-                        return Err(t_args(
-                            "agent-key-save-err",
-                            &[("error", "the key is empty".into())],
-                        ));
-                    }
-                    tilo_model_gateway::set_api_key(&provider, value).map_err(|error| {
-                        t_args("agent-key-save-err", &[("error", error.to_string().into())])
-                    })
+            Ok(crate::device_read::job(
+                cx,
+                // The keys are asked again on the job too: the answer
+                // carries whether the vault holds them now.
+                move || {
+                    let outcome = save_key(&buffer, key, &provider);
+                    (outcome, hosted_keys(hosted))
                 },
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &mut SettingsApp, (outcome, keys): (Result<(), String>, Keys), _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.read_keys();
+                    model.key_reads.supersede();
+                    model.apply_keys(keys);
                     model.provider_notice(outcome.as_ref().map(|()| t("agent-key-saved")));
                     outcome.map(|()| Effected::done())
                 },
             ))
         }
         AgentModelsEffect::RemoveProviderKey { provider } => {
+            let hosted = hosted_profiles(model.providers.get());
             drop(model);
-            Ok(cx.thread(
-                move |_| {
-                    tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
+            Ok(crate::device_read::job(
+                cx,
+                move || {
+                    let outcome = tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
                         t_args(
                             "agent-key-remove-err",
                             &[("error", error.to_string().into())],
                         )
-                    })
+                    });
+                    (outcome, hosted_keys(hosted))
                 },
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &mut SettingsApp, (outcome, keys): (Result<(), String>, Keys), _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.read_keys();
+                    model.key_reads.supersede();
+                    model.apply_keys(keys);
                     model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
                     outcome.map(|()| Effected::done())
                 },
@@ -453,6 +460,107 @@ pub(crate) fn answer(
             let result = model.change_providers(provider);
             model.provider_notice(result.as_ref().map(|()| t("agent-provider-saved")));
             result.map(|()| Effected::done())
+        }
+    }
+}
+
+/// Store `key`, or what `buffer` holds when it is `None`, as `provider`'s
+/// API key in the gateway's vault, erasing the buffer. Never on the UI
+/// thread: the gateway answers over its socket.
+fn save_key(buffer: &Mutex<String>, key: Option<String>, provider: &str) -> Result<(), String> {
+    let mut typed = buffer.lock_recover();
+    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
+    typed.zeroize();
+    drop(typed);
+    if value.trim().is_empty() {
+        return Err(t_args(
+            "agent-key-save-err",
+            &[("error", "the key is empty".into())],
+        ));
+    }
+    tilo_model_gateway::set_api_key(provider, value)
+        .map_err(|error| t_args("agent-key-save-err", &[("error", error.to_string().into())]))
+}
+
+/// What the model manager reported, or why it could not.
+type Snapshot = Result<LocalModelSnapshot, String>;
+
+/// Whether this device's vault holds each hosted provider's key, by
+/// provider id, or why that could not be told.
+type Keys = HashMap<String, Result<bool, String>>;
+
+/// A model's reads of the device while its pane is open, made one at a
+/// time off the UI thread and taken in at the sync their landing wakes.
+struct Rereads<T> {
+    read: crate::device_read::DeviceRead<T>,
+    /// Asked for while a read ran: read once more when it lands, so the
+    /// reading shows what changed meanwhile.
+    again: bool,
+    /// The read on its way began before a reading already taken in: it is
+    /// dropped when it lands rather than shown over the newer one.
+    stale: bool,
+}
+
+impl<T> Default for Rereads<T> {
+    fn default() -> Self {
+        Self {
+            read: crate::device_read::DeviceRead::default(),
+            again: false,
+            stale: false,
+        }
+    }
+}
+
+impl<T: Send + 'static> Rereads<T> {
+    /// Whether a read is on its way.
+    fn running(&self) -> bool {
+        !self.read.is_finished()
+    }
+
+    /// The reading that landed since last asked, unless a newer one was
+    /// taken in meanwhile.
+    fn landed(&mut self) -> Option<T> {
+        if self.running() {
+            return None;
+        }
+        let stale = std::mem::take(&mut self.stale);
+        let reading = self.read.take()?;
+        (!stale).then_some(reading)
+    }
+
+    /// Whether a read asked for while one ran is due now.
+    fn due_again(&mut self) -> bool {
+        let due = self.again && !self.running();
+        if due {
+            self.again = false;
+        }
+        due
+    }
+
+    /// Read with `read` off the UI thread, or once more after the read on
+    /// its way. Returns a reading to take in now: one that had landed, or,
+    /// on a host that runs no background work, the one read here.
+    fn ask(&mut self, read: impl FnOnce() -> T + Clone + Send + 'static) -> Option<T> {
+        if self.running() {
+            self.again = true;
+            return None;
+        }
+        // Finished stays finished until the next start: what landed is
+        // taken here, so the start below is not refused for it.
+        let landed = self.landed();
+        // This read answers what was asked for while the last one ran.
+        self.again = false;
+        if self.read.start(read.clone()) {
+            landed
+        } else {
+            Some(read())
+        }
+    }
+
+    /// A reading made after the read on its way began was taken in.
+    fn supersede(&mut self) {
+        if self.running() {
+            self.stale = true;
         }
     }
 }
@@ -548,8 +656,9 @@ fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
 }
 
 /// Ask the gateway whether this device's vault holds each of `hosted`'s
-/// keys: one blocking request each.
-fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+/// keys: one blocking request each, so never on the UI thread.
+fn hosted_keys(hosted: Vec<String>) -> Keys {
+    crate::device_read::off_ui_thread();
     hosted
         .into_iter()
         .map(|id| {
@@ -770,7 +879,11 @@ pub struct AgentModelsModel {
     /// Whether this device's vault holds each hosted provider's key (for
     /// a provider that signs in, a usable sign-in), or why that could not
     /// be told.
-    keys: HashMap<String, Result<bool, String>>,
+    keys: Keys,
+    /// The manager asked again off the UI thread while a model is busy.
+    snapshot_reads: Rereads<Snapshot>,
+    /// The keys asked again off the UI thread when the providers change.
+    key_reads: Rereads<Keys>,
     /// A Google Vertex AI sign-in: of a provider being added, or again of
     /// an existing one.
     vertex: Option<VertexSetup>,
@@ -826,6 +939,8 @@ impl AgentModelsModel {
             vertex_fields: Mutex::new(HashMap::new()),
             custodian: account_custody::Custodian::live(),
             opener: Arc::new(PortalOpener),
+            snapshot_reads: Rereads::default(),
+            key_reads: Rereads::default(),
             changed: false,
         };
         model.sync_local_profile();
@@ -839,11 +954,37 @@ impl AgentModelsModel {
         model
     }
 
-    /// Ask the gateway whether this device's vault holds each hosted
-    /// provider's key.
+    /// Ask the gateway, off the UI thread, whether this device's vault
+    /// holds each hosted provider's key; the answer is taken in at the
+    /// sync its landing wakes ([`Self::take_reads`]).
     fn read_keys(&mut self) {
-        self.keys = hosted_keys(hosted_profiles(self.providers.get()));
+        let hosted = hosted_profiles(self.providers.get());
+        if let Some(keys) = self.key_reads.ask(move || hosted_keys(hosted)) {
+            self.apply_keys(keys);
+        }
+    }
+
+    /// Take in what the gateway said of the keys.
+    fn apply_keys(&mut self, keys: Keys) {
+        self.keys = keys;
         self.changed = true;
+    }
+
+    /// Take in the readings that landed, and ask again what was asked for
+    /// while they ran.
+    fn take_reads(&mut self) {
+        if let Some(snapshot) = self.snapshot_reads.landed() {
+            self.apply_snapshot(snapshot);
+        }
+        if let Some(keys) = self.key_reads.landed() {
+            self.apply_keys(keys);
+        }
+        if self.snapshot_reads.due_again() {
+            self.refresh();
+        }
+        if self.key_reads.due_again() {
+            self.read_keys();
+        }
     }
 
     /// Whether `profile` is hosted and this device's vault has no key for
@@ -911,8 +1052,18 @@ impl AgentModelsModel {
             .clone()
     }
 
+    /// Ask the manager again off the UI thread; its answer is taken in at
+    /// the sync its landing wakes ([`Self::take_reads`]).
     fn refresh(&mut self) {
-        match self.control.snapshot() {
+        let control = Arc::clone(&self.control);
+        if let Some(snapshot) = self.snapshot_reads.ask(move || control.snapshot()) {
+            self.apply_snapshot(snapshot);
+        }
+    }
+
+    /// Take in what the manager reported, or why it could not.
+    fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        match snapshot {
             Ok(snapshot) => {
                 self.snapshot = snapshot;
                 self.manager_available = true;
@@ -2359,6 +2510,7 @@ impl ModelManagerCli {
 
 impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
             return Err(output.stderr_diagnostic());
@@ -2368,6 +2520,7 @@ impl LocalModelControl for ModelManagerCli {
     }
 
     fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(
             &[
                 "install",
@@ -2387,15 +2540,19 @@ impl LocalModelControl for ModelManagerCli {
     }
 
     fn start(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("start", id)
     }
     fn stop(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("stop", id)
     }
     fn remove(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("remove", id)
     }
     fn stage_accelerator(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(&["stage-accelerator"], Duration::from_secs(30 * 60))?;
         output
             .status
@@ -2579,6 +2736,7 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.take_reads();
         if self.providers.refresh() {
             self.read_keys();
         }
@@ -2592,7 +2750,12 @@ impl PaneModel for AgentModelsModel {
                 self.notice = Some(t("agent-vertex-signed-in"));
             }
         }
-        if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
+        // While a model is busy the manager is asked again, one read at a
+        // time, each a while after the last landed.
+        if self.is_busy()
+            && !self.snapshot_reads.running()
+            && self.last_poll.elapsed() >= POLL_INTERVAL
+        {
             self.refresh();
         }
         std::mem::take(&mut self.changed)
@@ -2625,6 +2788,7 @@ struct SampleManager;
 
 impl LocalModelControl for SampleManager {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+        crate::device_read::off_ui_thread();
         Ok(LocalModelSnapshot {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
@@ -2655,18 +2819,23 @@ impl LocalModelControl for SampleManager {
         })
     }
     fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn start(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn stop(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn remove(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn stage_accelerator(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -3429,6 +3598,143 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// A model manager that takes requests at once but does not report
+    /// its snapshot until it is let go (or ten seconds pass), as a wedged
+    /// `tilo-model-manager`. Once let go it reports a model ready.
+    struct StalledManager(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+    /// A snapshot with one model called `name` in `phase`.
+    fn one_model(name: &str, phase: LocalModelPhase) -> LocalModelSnapshot {
+        LocalModelSnapshot {
+            models: vec![InstalledLocalModel {
+                package: LocalModelPackage {
+                    name: name.into(),
+                    ..package()
+                },
+                phase,
+            }],
+            ..snapshot(None)
+        }
+    }
+
+    impl LocalModelControl for StalledManager {
+        fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+            crate::device_read::off_ui_thread();
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err("the model manager never answered".into());
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            Ok(one_model(
+                "Porch Model",
+                LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None,
+                },
+            ))
+        }
+        fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn start(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn stop(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn remove(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn stage_accelerator(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+    }
+
+    /// A click is answered and the window keeps drawing while the model
+    /// manager takes its time to report: neither the snapshot asked after
+    /// the change nor the one a busy model's polling asks holds the window,
+    /// and the snapshot lands once the manager answers.
+    #[test]
+    fn a_stalled_model_manager_never_holds_the_window() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            let model = settings.agent_models().model();
+            let mut model = model.borrow_mut();
+            model.follow_local_profile = false;
+            model.control = Arc::new(StalledManager(stalled));
+            // A model downloading: the pane asks the manager again soon.
+            model.snapshot = one_model(
+                "Busy Model",
+                LocalModelPhase::Downloading {
+                    downloaded_bytes: 1,
+                    total_bytes: 4,
+                },
+            );
+            model.last_poll = ui::time::now()
+                .checked_sub(POLL_INTERVAL)
+                .unwrap_or_else(ui::time::now);
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        app.start_effect(&SettingsEffect::from(AgentModelsEffect::SetUpAccelerator))
+            .expect("the accelerator setup runs as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on the model manager"
+        );
+        let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
+            app.with_widget::<SettingsApp, _>(|settings| {
+                let model = settings.agent_models().model().borrow();
+                model
+                    .snapshot
+                    .models
+                    .iter()
+                    .map(|model| model.package.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            shown(&mut app),
+            ["Busy Model"],
+            "the last snapshot is shown until the manager answers"
+        );
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while shown(&mut app) != ["Porch Model"] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the snapshot the manager reported is shown"
+            );
+            app.settle();
+            std::thread::yield_now();
+        }
     }
 
     /// Wait for a background read to end, as the warm-up's wake would.

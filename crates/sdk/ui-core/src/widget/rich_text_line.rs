@@ -25,7 +25,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -1349,13 +1349,6 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     (prefix, inserted, removed)
 }
 
-/// Pulled out as a free function so the chip-sizing math is
-/// unit-testable independent of the full draw path.
-pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32) -> f64 {
-    let (w, _) = text_renderer.measure_styled(slice, size, None, TextWeight::Regular, false, true);
-    f64::from(w)
-}
-
 /// Used by `MainPanel::handle_event` to route clicks on link spans to
 /// the page-navigation handler.
 pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
@@ -1503,25 +1496,6 @@ mod tests {
                 line.byte_for_pixel_x(&large, x),
                 target,
                 "pointer inverse lands on the scaled shaped caret stop"
-            );
-        }
-
-        // Case `chip_mono_width_uses_monospace_face_not_sans`.
-        {
-            // Also checks the mono advance differs from sans — without that, a
-            // face mismatch couldn't be detected at all.
-            let mut tr = crate::text_render::TextRenderer::new();
-            let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
-            let (sans_w, _) =
-                tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
-            assert!(
-                mono > 0.0,
-                "mono width must be non-zero for non-empty input"
-            );
-            assert!(
-                (mono - f64::from(sans_w)).abs() > 0.5,
-                "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
-             otherwise the chip-width-mismatch bug is undetectable",
             );
         }
     }

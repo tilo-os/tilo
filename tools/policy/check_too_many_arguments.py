@@ -63,8 +63,8 @@ def audit_source(relative: Path, text: str) -> list[str]:
 def audit_manifest(relative: Path, text: str) -> list[str]:
     try:
         manifest = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        return []
+    except tomllib.TOMLDecodeError as error:
+        return [f"{relative}: cannot audit malformed Cargo manifest: {error}"]
     lints = manifest.get("lints", {})
     tables = [lints, manifest.get("workspace", {}).get("lints", {})]
     violations = []
@@ -85,8 +85,7 @@ def audit(root: Path) -> list[str]:
             violations.extend(audit_source(path.relative_to(root), text))
     for path in repository_files(root, lambda name: name == "Cargo.toml"):
         text = path.read_text(encoding="utf-8")
-        if LINT in text:
-            violations.extend(audit_manifest(path.relative_to(root), text))
+        violations.extend(audit_manifest(path.relative_to(root), text))
     return violations
 
 

@@ -39,6 +39,11 @@ const KEPT_OPS: usize = 64;
 /// The most entries one move or copy takes.
 pub(crate) const MAX_MOVE_ENTRIES: usize = 256;
 
+/// The most text one written file holds. The text is kept in the document
+/// with the change until it is pruned, so it is bounded well below a
+/// document's size.
+pub(crate) const MAX_WRITE_BYTES: usize = 256 * 1024;
+
 /// One bookmarked place, stored as [`crate::places`] names it so it means
 /// the same folder on every device.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
@@ -497,6 +502,95 @@ impl FileExplorer {
         Ok(())
     }
 
+    /// Write a file
+    ///
+    /// Writes text as a new text file in a folder (Markdown, plain text,
+    /// CSV, HTML, code), as given. A PDF or a document (`.docx`, `.odt`,
+    /// `.rtf`) is Writer's: write Markdown here and convert it with Writer's
+    /// `convert-file`. With `replace`, a file of that name goes to Trash
+    /// first; undo puts it back and takes the new one away.
+    #[action(label = "Write file", undo = Self::revert_queued)]
+    pub fn write_file(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder to write it in")] folder: String,
+        #[param(
+            "The file's name with its extension; a text format, not a PDF or document",
+            example = "Summary.md"
+        )]
+        name: String,
+        #[param("What it says, written as given")] text: String,
+        #[param("Put an existing file of that name in Trash and write over it; default no")]
+        replace: Option<bool>,
+    ) -> Result<(), Refusal> {
+        if text.len() > MAX_WRITE_BYTES {
+            return Err(Refusal::new(format!(
+                "a file written here holds at most {} KiB of text",
+                MAX_WRITE_BYTES / 1024
+            )));
+        }
+        let name = file_name(&name)?;
+        crate::documents::writable(&name).map_err(Refusal::new)?;
+        let op = FileOp::Write {
+            folder: absolute_folder(&folder)?,
+            name,
+            text,
+            replace: replace.unwrap_or(false),
+        };
+        queue(cx, ops, device, op)
+    }
+
+    /// Compress to zip
+    ///
+    /// Packs entries, folders with all they hold, into one zip archive in
+    /// the folder that holds them, under a free name. Undo moves the archive
+    /// to Trash.
+    #[action(label = "Compress to zip", undo = Self::revert_queued)]
+    pub fn compress(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder holding the entries; the archive goes here")]
+        from: String,
+        #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
+        #[param("The archive's name; the single entry's name, or Archive, when none")] name: Option<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        let paths = entry_paths(&from, &entries)?;
+        let name = match name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            Some(name) => file_name(name)?,
+            None => match paths.as_slice() {
+                [only] => std::path::Path::new(only).file_stem().map_or_else(
+                    || "Archive".into(),
+                    |stem| stem.to_string_lossy().into_owned(),
+                ),
+                _ => "Archive".into(),
+            },
+        };
+        let name = if std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            name
+        } else {
+            format!("{name}.zip")
+        };
+        let op = FileOp::Compress {
+            paths,
+            folder: absolute_folder(&from)?,
+            name,
+        };
+        queue(cx, ops, device, op)
+    }
+
     /// Record a paste the native clipboard host already carried out, so it
     /// is in history and undoable like any change: undo asks the host to
     /// take back exactly what it transferred.
@@ -643,6 +737,28 @@ impl FileExplorer {
                     path: folder,
                     identity: destination,
                 },
+            }),
+            FileOp::Write {
+                folder,
+                name,
+                text,
+                replace,
+            } => Self::WRITE_FILE.with(file_explorer::WriteFile {
+                device,
+                folder,
+                name,
+                text,
+                replace: Some(replace),
+            }),
+            FileOp::Compress {
+                paths,
+                folder,
+                name,
+            } => Self::COMPRESS.with(file_explorer::Compress {
+                device,
+                from: folder,
+                entries: paths,
+                name: Some(name),
             }),
             FileOp::Revert { op } => Self::REVERT.with(Id::from_raw(op)),
             FileOp::ClipboardReceipt { .. } => return None,
@@ -1043,6 +1159,11 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         ) && !ui::bound_dispatch::host_person_invocation_permitted()
         {
             return Err("Only the host's person may access their private cloud accounts".into());
+        }
+        // A handed-over file answers with its content, which the next step
+        // takes by address.
+        if let FilesEffect::HandOver { file } = &effect {
+            return Effected::content(&self.hand_over(file)?);
         }
         let recovery =
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
@@ -1745,6 +1866,76 @@ mod tests {
             "{:?}",
             app.state()
         );
+    }
+
+    /// A caller with no screen reads what the files say, writes a new file
+    /// and compresses entries of the folder shown, through the same
+    /// published door, and each change undoes like any other.
+    #[test]
+    fn files_are_read_written_and_compressed_through_actions() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("notes.md"), "# Notes\n\nBuy milk.").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        let read = app
+            .effect(&FilesEffect::ReadText {
+                file: "notes.md".into(),
+                from: None,
+            })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(read["format"], "markdown");
+        assert_eq!(read["text"], "# Notes\n\nBuy milk.");
+        assert_eq!(read["next"], serde_json::Value::Null);
+        let handed = app
+            .effect(&FilesEffect::HandOver {
+                file: "notes.md".into(),
+            })
+            .unwrap();
+        let hash = ui::tilo_actions::content_hash(&handed.resources[0])
+            .expect("a content address")
+            .to_owned();
+        assert_eq!(
+            app.content().read(&hash).as_deref(),
+            Some(b"# Notes\n\nBuy milk.".as_slice()),
+            "the next step reads the file's bytes by their address"
+        );
+        app.effect(&FilesEffect::SelectAll).unwrap();
+        let selected = app
+            .effect(&FilesEffect::SelectedEntries)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(
+            selected["paths"],
+            serde_json::json!([folder.path().join("notes.md").display().to_string()])
+        );
+
+        act(
+            &mut app,
+            "write-file-here",
+            &serde_json::json!({"name": "todo.txt", "text": "milk\neggs\n"}),
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.path().join("todo.txt")).unwrap(),
+            "milk\neggs\n"
+        );
+        act(
+            &mut app,
+            "compress-here",
+            &serde_json::json!({"entries": ["notes.md", "todo.txt"]}),
+        );
+        assert!(folder.path().join("Archive.zip").exists());
+
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            !folder.path().join("Archive.zip").exists(),
+            "undo trashes it"
+        );
+        assert!(folder.path().join("notes.md").exists());
     }
 
     /// A change queued for another device waits for that device: only the

@@ -267,7 +267,8 @@ pub fn build() -> Project {
 /// The node id of `src/main.rs` in a freshly-built sample project — the file
 /// we open by default. Resolved by walking the tree so it stays correct if the
 /// construction order changes.
-pub fn default_open(project: &Project) -> Option<crate::model::NodeId> {
+#[cfg(test)]
+pub(crate) fn default_open(project: &Project) -> Option<crate::model::NodeId> {
     use crate::model::NodeKind;
     project
         .nodes

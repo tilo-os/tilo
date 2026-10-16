@@ -48,6 +48,89 @@ pub fn unbake_scroll() -> bool {
     UNBAKE_SCROLL.get()
 }
 
+thread_local! {
+    static PAN_REPLAY: Cell<PanFrame> = const { Cell::new(PanFrame::Drawn) };
+    static PAN_FRAMES: Cell<u64> = const { Cell::new(0) };
+    static REPLAYED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// What the frame being drawn lets a strip drawn in screen space do with
+/// the drawings it keeps of its windows ([`crate::widget::GroupRow`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanFrame {
+    /// Anything may have changed: every window is drawn, and the drawings
+    /// are dropped.
+    Drawn,
+    /// The frame only moved laid-out content, but every window is drawn
+    /// (its host is about to read what they note while drawing). Nothing in
+    /// them changed, so the drawings stay good for the frames after.
+    Kept,
+    /// The frame only moved laid-out content: a window at rest may show its
+    /// last drawing moved to where the window is now.
+    Replayed,
+}
+
+/// A frame that only moved laid-out content: nothing reached a widget, the
+/// document, focus or presence since the last frame, and layout re-applied
+/// positions without measuring. While one is drawn ([`PanFrame::Replayed`]),
+/// a strip drawn in screen space may show a window at rest by replaying its
+/// last drawing moved to where the window is now. Every other frame draws
+/// every window.
+///
+/// A replayed window did not draw, so what its widgets note while drawing
+/// (where a control was painted, where a caret is) still describes where
+/// the window was. The host draws again before anything reads that: before
+/// input reaches the widgets, and before it reads the frame's semantics
+/// ([`crate::headless::FrameHarness::settle_replayed_draws`]).
+pub struct PanReplay {
+    previous: (PanFrame, u64),
+}
+
+impl PanReplay {
+    /// Begin drawing one frame of the given kind, the host's frame number
+    /// `number`. A host that replays begins one for every frame it draws,
+    /// numbered in order, so a drawing can tell whether it was made in that
+    /// host's frame just before ([`pan_frame`]).
+    pub fn begin(frame: PanFrame, number: u64) -> Self {
+        Self {
+            previous: (PAN_REPLAY.replace(frame), PAN_FRAMES.replace(number)),
+        }
+    }
+}
+
+impl Drop for PanReplay {
+    fn drop(&mut self) {
+        PAN_REPLAY.set(self.previous.0);
+        PAN_FRAMES.set(self.previous.1);
+    }
+}
+
+/// What the frame being drawn lets a strip do with its windows' drawings
+/// ([`PanReplay`]).
+pub fn pan_frame_kind() -> PanFrame {
+    PAN_REPLAY.get()
+}
+
+/// Whether the frame being drawn may replay windows at rest ([`PanReplay`]).
+pub fn pan_replay() -> bool {
+    PAN_REPLAY.get() == PanFrame::Replayed
+}
+
+/// The number of the frame being drawn ([`PanReplay::begin`]).
+pub fn pan_frame() -> u64 {
+    PAN_FRAMES.get()
+}
+
+/// Count one window shown by replaying its drawing.
+pub fn note_replayed() {
+    REPLAYED.set(REPLAYED.get().saturating_add(1));
+}
+
+/// Windows replayed since the last call.
+pub fn take_replayed() -> usize {
+    REPLAYED.replace(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -87,11 +87,8 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         drop(environment);
         return;
     }
-    assert_eq!(
-        rustix::process::geteuid().as_raw(),
-        0,
-        "readonly owner projection fixture requires root parent"
-    );
+    // bwrap maps the child's uid 1000 onto whatever uid runs this test, root or
+    // not, so the profiles created here are the child's own either way.
     let root = tempfile::tempdir().unwrap();
     for case in ["owner", "missing", "foreign", "tampered"] {
         let profile = profile(root.path(), case).unwrap();

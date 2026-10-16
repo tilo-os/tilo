@@ -851,6 +851,7 @@ mod tests {
             route: tilo_desktop_model::WorkspaceTaskRoute::Model,
             status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
             resource: None,
+            subject: None,
             created_at: 1,
             updated_at: 1,
             audit: Vec::new(),
@@ -889,6 +890,7 @@ mod tests {
             route: tilo_desktop_model::WorkspaceTaskRoute::Model,
             status: tilo_desktop_model::WorkspaceTaskStatus::Waiting,
             resource: None,
+            subject: None,
             created_at: 1,
             updated_at: 1,
             audit: Vec::new(),
@@ -1391,6 +1393,239 @@ mod tests {
             Err(ActionHostError::ConfirmationRequired),
             "the app's own contract admits what it offers"
         );
+    }
+
+    /// What an installed app's signed manifest offers while it is closed.
+    fn offer(
+        action: &str,
+        kind: tilo_app_package::manifest::OfferKind,
+        confirm: bool,
+    ) -> tilo_app_package::manifest::OfferedAction {
+        tilo_app_package::manifest::OfferedAction {
+            resource: "files.app".into(),
+            resource_kind: None,
+            action: action.into(),
+            label: format!("Label of {action}"),
+            description: None,
+            kind,
+            operation: tilo_app_package::manifest::OfferOperation::Effect,
+            confirm,
+        }
+    }
+
+    /// The host's installed applications: Files, with what its manifest
+    /// offers. Launches go through the test's stand-in launcher.
+    struct Installed(Vec<crate::services::LaunchableApplication>);
+
+    impl crate::services::LauncherServices for Installed {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            self.0.clone()
+        }
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &LaunchPlace,
+        ) -> Result<(), String> {
+            Err("the test's stand-in launcher starts apps".into())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    /// [`broker`], on a host where Files is installed and its manifest
+    /// offers `new-window`, `empty-trash` (confirmed), and an action the
+    /// app never publishes.
+    fn broker_with_installed_files(workspace: &Workspace) -> (Arc<CapnpBrokerState>, String) {
+        use tilo_app_package::manifest::OfferKind;
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace.clone());
+        let tree = tree.shared();
+        let installed = Installed(vec![crate::services::LaunchableApplication {
+            package_id: APP.into(),
+            display_name: "Files".into(),
+            unconfined: false,
+            offers: vec![
+                offer("new-window", OfferKind::Undoable, false),
+                offer("empty-trash", OfferKind::Undoable, true),
+                offer("never-published", OfferKind::Read, false),
+            ],
+        }]);
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(Arc::new(installed)),
+                ..tree.services()
+            },
+        );
+        (state, room)
+    }
+
+    /// The catalogue rows `caller` is offered for `action`: provider and
+    /// descriptor.
+    fn offered_rows(
+        host: &Arc<CapnpBrokerState>,
+        caller: &Caller,
+        action: &str,
+    ) -> Vec<(String, tilo_actions::ActionDescriptor)> {
+        host.action_query(
+            caller,
+            &CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .and_then(Result::ok)
+        .map(|page| page.rows)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| {
+            let descriptor = row.action?;
+            (descriptor.address.action == action).then_some((row.provider, descriptor))
+        })
+        .collect()
+    }
+
+    /// An app that never ran in the workspace still lists what its manifest
+    /// offers; invoking one launches it and runs the action there, and once
+    /// it runs its own published action is what is offered.
+    #[test]
+    fn a_closed_apps_manifest_offers_are_listed_and_invoking_one_launches_it() {
+        let (state, room) = broker_with_installed_files(&workspace());
+        let (streams, launches) = app_comes_up_as(&state, 8);
+        let owner = Caller::local_person("owner").in_room(&room);
+        assert!(state.launchable.surfaces().is_empty(), "it never ran here");
+
+        let rows = offered_rows(&state, &owner, "new-window");
+        let [(provider, descriptor)] = rows.as_slice() else {
+            panic!("the manifest's action is offered once: {rows:?}");
+        };
+        assert_eq!(
+            tilo_actions::remote::application_provider(provider),
+            Some((room.as_str(), APP)),
+            "offered as the app in this workspace, whether or not it runs"
+        );
+        assert_eq!(descriptor.action_label, "Label of new-window");
+        assert_eq!(descriptor.resource_label, "Files");
+        assert_eq!(descriptor.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert!(launches.lock().expect("launches").is_empty());
+
+        invoke(&state, &owner, provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        let mut stream = streams.try_recv().expect("the app came up");
+        let delivered = stream.try_recv().expect("the invocation reached the app");
+        assert_eq!(delivered.action, "new-window");
+        assert_eq!(delivered.actor, "owner");
+
+        let rows = offered_rows(&state, &owner, "new-window");
+        assert_eq!(
+            rows.iter()
+                .map(|(provider, _)| provider.as_str())
+                .collect::<Vec<_>>(),
+            ["8"],
+            "the running app's own action supersedes the manifest's"
+        );
+        assert!(
+            offered_rows(&state, &owner, "never-published").is_empty(),
+            "a running app offers only what it publishes"
+        );
+    }
+
+    /// What an app published in the workspace before, retained while it is
+    /// closed, is offered in place of the manifest's copy of that action.
+    #[test]
+    fn a_retained_action_supersedes_the_manifest_offer() {
+        let (state, room) = broker_with_installed_files(&workspace());
+        state.launchable.retain(&surface(7, &room));
+        let owner = Caller::local_person("owner").in_room(&room);
+
+        let rows = offered_rows(&state, &owner, "new-window");
+        let [(provider, _)] = rows.as_slice() else {
+            panic!("offered once: {rows:?}");
+        };
+        assert!(is_launchable_provider(provider), "{provider}");
+        let rows = offered_rows(&state, &owner, "never-published");
+        let [(provider, _)] = rows.as_slice() else {
+            panic!("an action only the manifest names is still offered: {rows:?}");
+        };
+        assert!(tilo_actions::remote::application_provider(provider).is_some());
+    }
+
+    /// A manifest offer takes every check a published action takes: a
+    /// caller who may not launch the app is neither offered nor starts it,
+    /// and a confirmed action asks before anything launches.
+    #[test]
+    fn a_manifest_offer_is_admitted_like_a_published_action() {
+        let (state, room) = broker_with_installed_files(&workspace());
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        let provider = tilo_actions::remote::application_action_target(&room, APP, "", "").provider;
+
+        let stranger = Caller::local_person("stranger").in_room(&room);
+        assert!(offered_rows(&state, &stranger, "new-window").is_empty());
+        assert_eq!(
+            invoke(&state, &stranger, &provider, "new-window", None),
+            Err(ActionHostError::NotPermitted),
+        );
+
+        let owner = Caller::local_person("owner").in_room(&room);
+        let rows = offered_rows(&state, &owner, "empty-trash");
+        let [(_, descriptor)] = rows.as_slice() else {
+            panic!("offered once: {rows:?}");
+        };
+        assert_eq!(
+            descriptor.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            invoke(&state, &owner, &provider, "empty-trash", None),
+            Err(ActionHostError::ConfirmationRequired),
+            "the manifest's confirmation is asked for before the launch"
+        );
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "a refusal never costs a launch"
+        );
+    }
+
+    /// An action the manifest offers that the launched app does not publish
+    /// ends with a refusal naming the app and the action, not a hang.
+    #[test]
+    fn a_manifest_offer_the_launched_app_does_not_publish_says_so() {
+        let (state, room) = broker_with_installed_files(&workspace());
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        // The app comes up at once in this test; the wait it then makes for
+        // the missing action is the only thing this bound shortens.
+        if let Some(launcher) = state.launchable.launcher() {
+            state
+                .launchable
+                .replace_launcher_for_test(launcher, Duration::from_millis(300));
+        }
+        let owner = Caller::local_person("owner").in_room(&room);
+        let rows = offered_rows(&state, &owner, "never-published");
+        let [(provider, _)] = rows.as_slice() else {
+            panic!("offered once: {rows:?}");
+        };
+
+        let refused = invoke(&state, &owner, provider, "never-published", None);
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        match refused {
+            Err(ActionHostError::Unavailable { reason }) => assert!(
+                reason.contains(APP) && reason.contains("did not offer \"never-published\""),
+                "{reason}"
+            ),
+            other => panic!("expected a refusal naming the action, got {other:?}"),
+        }
     }
 
     #[test]

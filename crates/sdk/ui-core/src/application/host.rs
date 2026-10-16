@@ -557,12 +557,6 @@ pub struct ApplicationHost {
     /// Where the person's own records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
     person: RecordOwners,
-    lent_services: Vec<RegisteredLoan>,
-}
-
-struct RegisteredLoan {
-    package_id: String,
-    provide: Box<dyn Fn(&mut HostContext)>,
 }
 
 impl ApplicationHost {
@@ -646,29 +640,7 @@ impl ApplicationHost {
             permissions,
             author,
             action_context,
-            lent_services: Vec::new(),
         })
-    }
-
-    /// Register a host-owned service for one package and the host's exact person.
-    /// Every prepared launch receives a fresh loan; other packages receive none.
-    /// This binds an already authorized service and creates no credential grant.
-    /// # Errors
-    /// Refuses a different principal or empty package.
-    pub fn register_service<T: Clone + 'static>(
-        &mut self,
-        package_id: &str,
-        principal: &str,
-        service: T,
-    ) -> Result<(), LaunchError> {
-        if principal != self.author.0 || package_id.trim().is_empty() {
-            return Err(LaunchError::BindingMismatch);
-        }
-        self.lent_services.push(RegisteredLoan {
-            package_id: package_id.into(),
-            provide: Box::new(move |context| context.lend(service.clone())),
-        });
-        Ok(())
     }
 
     /// Keep the person's own records ([`crate::record::person`]) in `store`
@@ -692,13 +664,6 @@ impl ApplicationHost {
         ) {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
-        }
-        for loan in self
-            .lent_services
-            .iter()
-            .filter(|loan| loan.package_id == package_id)
-        {
-            (loan.provide)(&mut context);
         }
         context
     }
@@ -1651,79 +1616,5 @@ mod native_process_tests {
             foreign_package.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
-    }
-}
-
-#[cfg(test)]
-mod service_loan_tests {
-    use super::*;
-    use crate::record::RecordKind;
-    use crate::widget::IconDescriptor;
-
-    fn definition(app_id: &'static str) -> ApplicationDefinition {
-        ApplicationDefinition {
-            app_id,
-            title: "Service probe",
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("service-probe"),
-            required: Vec::new(),
-            optional: Vec::new(),
-            opens: &[],
-            room_record: false,
-            create: |_, _, _| Err(LaunchError::BindingMismatch),
-        }
-    }
-
-    fn launch_context(host: &mut ApplicationHost, app: &ApplicationDefinition) -> HostContext {
-        let records = host.records_for(app).expect("checked app namespace");
-        let context = HostContext::prepare(
-            app,
-            HostContextInputs {
-                records,
-                views: host.views.clone(),
-                device_id: host.device_id.clone(),
-                instance_id: 1,
-                permissions: host.permissions.clone(),
-                author: host.author.clone(),
-                action_context: host.action_context.clone(),
-            },
-            &LaunchTarget::New,
-        )
-        .expect("checked launch");
-        host.with_person_records(app, context)
-    }
-
-    #[test]
-    fn registered_services_require_exact_person_and_only_reach_the_named_package() {
-        let mut host = ApplicationHost::with_store(
-            Rc::new(durable_store::MemoryStore::default()),
-            "device-a".into(),
-            "room-a",
-            UserId("person-a".into()),
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            tilo_actions::ActionContext::default(),
-        )
-        .expect("host");
-        assert!(
-            host.register_service("so.tilo.messages", "person-b", 7u64)
-                .is_err()
-        );
-        assert!(host.register_service("", "person-a", 7u64).is_err());
-        host.register_service("so.tilo.messages", "person-a", 7u64)
-            .expect("explicit owned service");
-        let mut other = launch_context(&mut host, &definition("so.tilo.other"));
-        assert!(other.take_lent().is_empty());
-        drop(other);
-        let mut messages = launch_context(&mut host, &definition("so.tilo.messages"));
-        let loans = messages.take_lent();
-        assert_eq!(loans.len(), 1);
-        assert_eq!(
-            loans.first().and_then(|loan| loan.downcast_ref::<u64>()),
-            Some(&7)
-        );
-        assert!(
-            messages.take_lent().is_empty(),
-            "a launch loan is taken only once"
-        );
     }
 }

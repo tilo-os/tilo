@@ -98,7 +98,7 @@ version = "0.23"
 default-features = false
 
 [dependencies.harfrust]
-version = "0.5.0"
+version = "0.12.0"
 default-features = false
 
 [dependencies.hashbrown]
@@ -132,7 +132,7 @@ default-features = false
 version = "1.2.2"
 
 [dependencies.skrifa]
-version = "0.40.0"
+version = "0.44.0"
 default-features = false
 
 [dependencies.smol_str]

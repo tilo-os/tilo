@@ -109,7 +109,18 @@ became available; a selection or a find can make new operations available.
 - To write text into a document, work as a person does: type it at your caret (or use an \
 operation that writes a whole paragraph). When the request asks for something to be written \
 or changed in an application, do it there; never put that content in your reply instead.
-- A question or remark that needs no operation is answered with `plan` alone.
+- A question about something (explain it, translate it, define it, summarise it for me, what \
+does it say) is answered in your reply: read what you need with read operations, then call \
+`plan` alone with the whole answer in `reply`. List no parts for a question, and write nothing \
+into an application unless the request asks for that too. A remark is answered the same way.
+- A result too long for one observation shows its first page and a `continues`; read on with \
+`read_result`, only as far as the request needs.
+- To attach, post or place a file, first invoke the operation that hands it over (its result \
+names `tilo.content:` content), then right after it the operation that takes content; that \
+parameter is filled in from the step before, so give only the others. One file per pair.
+- Sending, publishing and deleting for good need the person's own confirmation, which you \
+cannot give, so those operations are not listed for you. Prepare instead (save a draft, attach \
+its files) and say in your reply that it is ready for them to send.
 - The conversation so far, with your own action log, is part of the request: answer \
 questions about what you did or said earlier from it. To undo or change your own earlier \
 work, find it in your action log (the text you wrote is in its arguments), re-read the \
@@ -229,6 +240,8 @@ pub(super) struct LoopState {
     /// Results of in-flight invokes that settled while another call was
     /// handled, by call id, for the turn to take in.
     settled: Vec<(String, Handled)>,
+    /// Results too long for one observation, read on a page at a time.
+    pages: crate::pages::Pages,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -308,6 +321,78 @@ const NOTIFY_WORDS: &[&str] = &[
     "write to",
     "remind",
 ];
+
+/// Words that open a question or a request for an explanation, which is
+/// answered in the reply rather than by an operation.
+const QUESTION_OPENERS: &[&str] = &[
+    "what",
+    "why",
+    "how",
+    "who",
+    "whom",
+    "whose",
+    "when",
+    "where",
+    "which",
+    "is",
+    "are",
+    "does",
+    "do",
+    "did",
+    "can",
+    "could",
+    "would",
+    "should",
+    "explain",
+    "translate",
+    "define",
+    "describe",
+    "summarise",
+    "summarize",
+];
+
+/// Whether `request` (lower-cased) asks a question rather than for
+/// something to be done: it ends in a question mark or opens with a
+/// question word, and asks for nothing to be sent or written anywhere.
+fn asks_question(request: &str) -> bool {
+    let request = request.trim();
+    let opener = request
+        .split(|c: char| !c.is_alphanumeric())
+        .find(|word| !word.is_empty())
+        .unwrap_or("");
+    let questioning = request.ends_with('?')
+        || QUESTION_OPENERS.contains(&opener)
+        || request.starts_with("tell me ");
+    let asks_for_more = [
+        " and send",
+        " and post",
+        " and write",
+        " and save",
+        " and put",
+        " into ",
+        " in a note",
+        " to chat",
+        " in chat",
+    ]
+    .iter()
+    .any(|more| request.contains(more));
+    questioning && !asks_for_more
+}
+
+/// Whether `request` (lower-cased) asks for a message to someone: a
+/// notify word, where "tell me" is the person asking for an answer, not
+/// for a message ("ping me" still is one).
+fn asks_for_message(request: &str) -> bool {
+    let to_me = |rest: &str| {
+        rest.strip_prefix(" me")
+            .is_some_and(|after| !after.starts_with(char::is_alphanumeric))
+    };
+    NOTIFY_WORDS.iter().any(|word| {
+        request
+            .match_indices(word)
+            .any(|(at, _)| *word != "tell" || !request.get(at + word.len()..).is_some_and(to_me))
+    })
+}
 
 /// Whether a part naming `declared` is satisfied by a success in `app_id`.
 fn app_matches(declared: &str, app_id: &str) -> bool {
@@ -498,6 +583,28 @@ fn settle(
     None
 }
 
+/// How long the first run waits for the companions started beside the
+/// agent to publish: long enough for a headless service to start and
+/// connect, short enough that a companion that never comes costs the run
+/// little.
+const COMPANION_WAIT: Duration = Duration::from_secs(15);
+
+/// The `companions` none of whose actions `surfaces` holds yet.
+fn missing_companions(
+    companions: &[String],
+    surfaces: &[ui::collaboration::BrokerActionSurface],
+) -> Vec<String> {
+    companions
+        .iter()
+        .filter(|app| {
+            !surfaces
+                .iter()
+                .any(|surface| surface.app_id == **app && !surface.actions.is_empty())
+        })
+        .cloned()
+        .collect()
+}
+
 /// The report of an invoke that did not succeed, saying why.
 fn refused_report(error: String) -> InvokeReport {
     InvokeReport {
@@ -515,6 +622,44 @@ impl Session {
     ) {
         self.broker_surfaces = surfaces;
         self.broker_revision = self.broker_revision.wrapping_add(1);
+    }
+
+    /// Wait, at most [`COMPANION_WAIT`], until every companion the desktop
+    /// started beside this agent has published its actions; once, before
+    /// the first run plans. A companion starts with the agent, so the first
+    /// run was otherwise planned against a catalogue without it: offered no
+    /// web search, the model opened the browser instead. Events other than
+    /// catalogue republications are kept for the session loop.
+    fn await_companions(&mut self) {
+        if self.awaiting_companions.is_empty() {
+            return;
+        }
+        let deadline = ui::time::now() + COMPANION_WAIT;
+        let mut kept = Vec::new();
+        loop {
+            self.absorb_catalogue_updates();
+            let missing = missing_companions(&self.awaiting_companions, &self.broker_surfaces);
+            if missing.is_empty() {
+                break;
+            }
+            let now = ui::time::now();
+            if now >= deadline {
+                tracing::warn!(
+                    ?missing,
+                    "companions did not publish in time; planning without them"
+                );
+                break;
+            }
+            match self.link.recv(deadline - now) {
+                Ok(Some(CollabEvent::ActionCatalogue { surfaces })) => {
+                    self.set_broker_surfaces(surfaces);
+                }
+                Ok(Some(other)) => kept.push(other),
+                Ok(None) | Err(_) => {}
+            }
+        }
+        self.link.defer(kept);
+        self.awaiting_companions.clear();
     }
 
     /// Apply catalogue republications already queued on the link, without
@@ -647,6 +792,7 @@ impl Session {
             failures: HashSet::new(),
             in_flight: Vec::new(),
             settled: Vec::new(),
+            pages: crate::pages::Pages::new(),
         };
         self.task_deadline = run.execution_budget.map(|budget| {
             ui::time::now()
@@ -710,14 +856,18 @@ impl Session {
                 MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
             )
         };
+        self.await_companions();
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
+        // A question is answered in the reply: nothing is implied of it.
         let request = run.instruction().to_lowercase();
-        if request.contains("chat")
-            && NOTIFY_WORDS.iter().any(|word| request.contains(word))
+        let question = asks_question(&request);
+        if !question
+            && request.contains("chat")
+            && asks_for_message(&request)
             && let Some(chat) = catalogue
                 .offers
                 .iter()
@@ -732,18 +882,11 @@ impl Session {
         // An application the request names (by the title it publishes, e.g.
         // "Writer") requires a successful operation in it — opening it is
         // not enough — whatever parts the model later lists.
-        for (app, title) in catalogue.offers.iter().filter_map(|offer| {
-            tools::opened_app(offer).map(|app| (app, offer.descriptor.resource_label.as_str()))
-        }) {
-            let named = !title.is_empty()
-                && if title.contains(' ') {
-                    request.contains(&title.to_lowercase())
-                } else {
-                    request
-                        .split(|c: char| !c.is_alphanumeric())
-                        .any(|word| word.eq_ignore_ascii_case(title))
-                };
-            if named && !state.parts.iter().any(|part| app_matches(&part.app, app)) {
+        for (app, title) in tools::named_applications(&catalogue, &request)
+            .into_iter()
+            .filter(|_| !question)
+        {
+            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
                 state.parts.push(tools::Part {
                     text: format!("(implied) what the request asks for in {title}"),
                     app: app.to_owned(),
@@ -760,13 +903,14 @@ impl Session {
         // so the next task reads system, tools and catalogue back from the
         // cache rather than prefilling them; an OpenAI-compatible provider
         // caches the same repeated prefix by itself.
+        let request = super::selection_prompt::task_request(run, &catalogue);
+        // The request as the model reads it, the selection it is about and
+        // the operations named for it included, so a run that acted at the
+        // wrong place can be told apart from one that was never told where.
+        tracing::info!(task_id = %run.task_id, %request, "task request");
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!(
-                "{}The request:\n\n{}",
-                self.memory.render(),
-                run.instruction().trim()
-            ),
+            task: format!("{}The request:\n\n{request}", self.memory.render()),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
         for turn in 0..MAX_LOOP_TURNS {
@@ -1034,9 +1178,14 @@ impl Session {
         {
             return Ok(Some(LoopEnd::Cancelled(message)));
         }
+        // Reading on in a long result is reading what was asked for, not
+        // looking for what to do: a turn of only that is not a lookup.
         if calls
             .iter()
             .all(|call| call.name != tools::INVOKE && call.name != tools::PLAN)
+            && calls
+                .iter()
+                .any(|call| call.name != crate::pages::READ_RESULT)
         {
             state.discovery_turns += 1;
         }
@@ -1163,10 +1312,13 @@ impl Session {
                     return Ok(Handled::Cancelled(message));
                 }
                 if *failed && !independent {
-                    return Ok(Handled::Result(tools::invoke_result(&InvokeReport {
-                        skipped: Some("an earlier invoke in this turn did not succeed".into()),
-                        ..InvokeReport::default()
-                    })));
+                    return Ok(Handled::Result(tools::invoke_result(
+                        &InvokeReport {
+                            skipped: Some("an earlier invoke in this turn did not succeed".into()),
+                            ..InvokeReport::default()
+                        },
+                        &mut state.pages,
+                    )));
                 }
                 let (report, cancelled) = self.invoke_from_loop(run, state, &call.input)?;
                 if let Some(message) = cancelled {
@@ -1174,6 +1326,7 @@ impl Session {
                 }
                 Ok(self.conclude_invoke(state, call, report, failed))
             }
+            crate::pages::READ_RESULT => Ok(Handled::Result(state.pages.read(&call.input))),
             name => {
                 let catalogue = self.task_catalogue();
                 let mut answer = tools::answer(name, &call.input, &catalogue, &mut state.revealed);
@@ -1271,13 +1424,13 @@ impl Session {
                        put your reply on the last of those invokes.",
             );
         }
-        let result = tools::invoke_result(&report);
+        let result = tools::invoke_result(&report, &mut state.pages);
         let reply = reply.filter(|_| !navigation);
         match reply {
             Some(reply) if report.succeeded => Handled::ResultFinish(
                 result,
                 tools::Finish {
-                    reply: Some(reply.chars().take(tools::MAX_PLAN_REPLY_CHARS).collect()),
+                    reply: Some(tools::bound_reply(reply)),
                     done: true,
                 },
             ),
@@ -1295,13 +1448,16 @@ impl Session {
         input: &Value,
     ) -> Result<Prepared, Box<InvokeReport>> {
         let refused = |error: String| Box::new(refused_report(error));
-        let invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
+        let mut invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
         if state.step_index >= MAX_TASK_STEPS {
             return Err(refused(format!(
                 "this task has used all {MAX_TASK_STEPS} of its steps"
             )));
         }
         let catalogue = self.task_catalogue();
+        if let Some(offer) = surface::find(&catalogue.offers, &invocation.operation) {
+            tools::decode_structured_arguments(offer, &mut invocation.arguments);
+        }
         // An argument error says what the operation takes, so the next
         // attempt needs no describe turn.
         let with_hint = |why: String| match surface::find(&catalogue.offers, &invocation.operation)
@@ -2020,6 +2176,49 @@ mod tests {
     const DESKTOP_PEER: u64 = 9;
     const SECOND_PEER: u64 = 10;
     const DOC: &str = "word-processor.document";
+
+    /// The first run waits for a companion until it has published actions:
+    /// a surface of the companion's app holding none (still starting) does
+    /// not count, and other apps' surfaces never stand in for it.
+    #[test]
+    fn a_companion_counts_once_it_has_published_actions() {
+        let companions = vec!["so.tilo.web-search".to_owned()];
+        let surface = |app: &str, actions: Vec<ExportedAction>| BrokerActionSurface {
+            peer_id: PEER,
+            provider: None,
+            app_id: app.into(),
+            cluster_id: Uuid::from_u128(1).to_string(),
+            record_id: String::new(),
+            live: true,
+            actions,
+        };
+        let search = || {
+            descriptor(
+                "search",
+                "Search the web",
+                tilo_actions::OperationKind::Effect,
+                vec![],
+                Availability::Available,
+                vec![],
+            )
+        };
+        assert_eq!(missing_companions(&companions, &[]), companions);
+        assert_eq!(
+            missing_companions(&companions, &[surface("so.tilo.notes", vec![search()])]),
+            companions
+        );
+        assert_eq!(
+            missing_companions(&companions, &[surface("so.tilo.web-search", vec![])]),
+            companions
+        );
+        assert!(
+            missing_companions(
+                &companions,
+                &[surface("so.tilo.web-search", vec![search()])]
+            )
+            .is_empty()
+        );
+    }
 
     fn descriptor(
         action: &str,
@@ -2874,6 +3073,7 @@ mod tests {
             task_id: "task:loop".into(),
             title: title.into(),
             instruction: None,
+            subject: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
@@ -2899,6 +3099,8 @@ mod tests {
                     ui::permissions::KindSet::READ_UNDOABLE,
                 ),
                 content: tilo_content::ContentStore::memory(),
+                companions: Vec::new(),
+                provider: None,
             },
             link,
             chooser: Chooser::scripted(
@@ -2912,6 +3114,7 @@ mod tests {
             broker_surfaces: surfaces,
             next_broker_request: 1,
             memory: Memory::default(),
+            awaiting_companions: Vec::new(),
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
@@ -3223,6 +3426,7 @@ mod tests {
                     "list_operations",
                     "describe_operation",
                     "invoke",
+                    "read_result",
                     "plan"
                 ],
                 "only generic tools, never an application-specific one"
@@ -4623,6 +4827,34 @@ mod tests {
         assert!(app_matches("word processor", "so.tilo.word-processor"));
         assert!(!app_matches("so.tilo.notes", "so.tilo.chat"));
         assert!(!app_matches("Chat", "so.tilo.word-processor"));
+    }
+
+    /// A question about a selection is answered in the reply: it implies no
+    /// message and no operation in an application it names, while a request
+    /// to send something still does.
+    #[test]
+    fn a_question_implies_no_parts_and_a_request_to_send_still_does() {
+        for question in [
+            "explain this passage",
+            "what does this paragraph in writer mean?",
+            "translate this to german",
+            "tell me what this chat message says",
+            "summarize this for me",
+        ] {
+            assert!(asks_question(question), "{question}");
+        }
+        for request in [
+            "rewrite this more politely",
+            "post this in chat",
+            "explain this and post it to chat",
+            "summarise this into a note",
+        ] {
+            assert!(!asks_question(request), "{request}");
+        }
+        assert!(asks_for_message("tell melissa in chat"));
+        assert!(asks_for_message("post the summary in chat"));
+        assert!(!asks_for_message("tell me what this chat says"));
+        assert!(asks_for_message("ping me in chat"));
     }
 
     // -- Independent invokes, run alongside each other ---------------------

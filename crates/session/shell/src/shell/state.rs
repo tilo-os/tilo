@@ -1711,59 +1711,6 @@ impl WorkspaceTree {
         Self::admit_into(&mut ws.collaborators, who)
     }
 
-    /// Take `who` off the roster. Needed for the roster to mean
-    /// anything — a list that only ever grows lies just as much as one
-    /// seeded with people who never arrived.
-    pub fn retire_collaborator_in_room(&mut self, room: RoomId, id: &str) -> bool {
-        if room.is_nil() {
-            return false;
-        }
-        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
-            return false;
-        };
-        let before = ws.collaborators.len();
-        ws.collaborators.retain(|c| c.id != id);
-        before != ws.collaborators.len()
-    }
-
-    /// Learn that the session `peer` is in `room` and that `user` is the
-    /// person sitting at it. A session announces itself (via the
-    /// accepted invite) before it can say who is at it, so this
-    /// replaces the session-handle row when the name arrives rather
-    /// than adding a second avatar. Unnamed stays under its handle.
-    pub fn note_peer_present(&mut self, room: RoomId, peer: u64, user: &str) -> bool {
-        if room.is_nil() {
-            return false;
-        }
-        let handle = session_handle(peer);
-        let named = !user.is_empty() && user != handle;
-        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
-            return false;
-        };
-        let mut changed = false;
-        if named {
-            // The same session, previously known only by its handle.
-            // Carry its colour across so a peer does not change hue at
-            // the moment it acquires a name.
-            if let Some(i) = ws.collaborators.iter().position(|c| c.id == handle) {
-                let old = ws.collaborators.remove(i);
-                changed = true;
-                let mut upgraded = Collaborator::new(user, user).with_session(peer);
-                upgraded.cursor_color = old.cursor_color;
-                upgraded.role_id = old.role_id;
-                let _ = Self::admit_into(&mut ws.collaborators, upgraded);
-                return changed;
-            }
-        }
-        let entry = if named {
-            Collaborator::new(user, user).with_session(peer)
-        } else {
-            Collaborator::new(handle.clone(), handle).with_session(peer)
-        };
-        changed |= Self::admit_into(&mut ws.collaborators, entry);
-        changed
-    }
-
     /// Take every person who was here through `peer`'s session off every
     /// roster. Sweeps every workspace, not one: a session can be in
     /// several rooms at once, and it left all of them.
@@ -3707,6 +3654,7 @@ impl WorkspaceTree {
             route,
             status: WorkspaceTaskStatus::Queued,
             resource,
+            subject: None,
             created_at: now,
             updated_at: now,
             audit: vec![WorkspaceTaskAuditEvent::new(
@@ -4084,10 +4032,9 @@ impl WorkspaceTree {
         )
     }
 
-    /// Mirror an `apply_drop`-style insert: append a tab map to the
-    /// active workspace's first strip's first window-group's `tabs`,
-    /// matching where `apply_drop` targets when no group is named.
-    /// No-op if the doc isn't seeded for the active workspace.
+    /// Append a tab map to the active workspace's first strip's first
+    /// window-group's `tabs`. No-op if the doc isn't seeded for the active
+    /// workspace.
     pub fn doc_append_tab_to_first_group_of_active_workspace(
         &mut self,
         tab_id: u64,
@@ -4098,27 +4045,6 @@ impl WorkspaceTree {
             &mut self.doc,
             self.desktop.active,
             None,
-            tab_id,
-            title,
-            tile_blob,
-        )
-    }
-
-    /// Cursor-targeted counterpart of
-    /// [`Self::doc_append_tab_to_first_group_of_active_workspace`], for
-    /// a drop onto a non-first group: scans every strip for `group_id`.
-    /// `false` means cache-only; peer-sync backfills on the next snapshot.
-    pub fn doc_append_tab_to_group_of_active_workspace(
-        &mut self,
-        group_id: u64,
-        tab_id: u64,
-        title: String,
-        tile_blob: Vec<u8>,
-    ) -> bool {
-        tilo_desktop_model::desktop_doc::append_tab(
-            &mut self.doc,
-            self.desktop.active,
-            Some(group_id),
             tab_id,
             title,
             tile_blob,
@@ -4788,12 +4714,11 @@ impl WorkspaceTree {
                             );
                         }
                         (
-                            crate::shell::launcher::installed_apps()
-                                .ok()
-                                .and_then(|apps| {
-                                    apps.into_iter()
-                                        .find(|installed| installed.package_id == *app_id)
-                                })
+                            // Built on the compositor loop: the installed
+                            // apps as last enumerated, never a registry read.
+                            crate::shell::launcher::installed_apps_without_waiting()
+                                .into_iter()
+                                .find(|installed| installed.package_id == *app_id)
                                 .map_or_else(|| app_id.clone(), |installed| installed.display_name),
                             TileContent::PeerWindow {
                                 app_id: app_id.clone(),
@@ -5389,11 +5314,10 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
 /// Present collaborator count for the active workspace, excluding the local
 /// user. Presence is workspace-scoped; the legacy tree-level cache must never
 /// make somebody from another workspace appear here.
-pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
-    // Somebody named but not yet arrived is not counted. This drives the
-    // avatar cluster's `+N` chip and the wheel disc's presence dot, and
-    // both are claims that people are *in* the workspace — an invitation
-    // that has not been redeemed is not one of them.
+#[cfg(test)]
+pub(crate) fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
+    // Somebody named but not yet arrived is not counted: an invitation
+    // that has not been redeemed is not somebody in the workspace.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
     tree.desktop.active_workspace().map_or(0, |workspace| {
         workspace.collaborators.iter().filter(present).count()
@@ -5625,119 +5549,10 @@ mod bootstrap_tests {
                 );
                 assert_eq!(active_workspace_peer_count(&tree), 1);
             }
-
-            // Phase `a_named_presence_frame_replaces_the_session_handle_row`.
-            // A session announces itself before it can say who is at it: the
-            // invite establishes the far end, the first presence frame names
-            // the person — one peer, so the named row replaces the handle row.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let ws = tree.desktop.active;
-                let room = tree.desktop.active_workspace().unwrap().room;
-                let peer = 0x2a_u64;
-                let handle = session_handle(peer);
-                assert!(tree.admit_collaborator(ws, Collaborator::new(handle.clone(), handle)));
-
-                assert!(tree.note_peer_present(room, peer, "alice"));
-                let roster = &tree.desktop.active_workspace().unwrap().collaborators;
-                assert_eq!(
-                    roster.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-                    vec!["alice"],
-                    "the session that joined and the session that just said \
-                     'alice is at me' are the same peer; got {roster:?}"
-                );
-                // And repeating it is idempotent.
-                assert!(!tree.note_peer_present(room, peer, "alice"));
-                assert_eq!(
-                    tree.desktop.active_workspace().unwrap().collaborators.len(),
-                    1
-                );
-            }
-
-            // Phase `an_unnamed_session_stays_under_its_handle`.
-            // A publisher that names nobody keeps its handle — inventing a
-            // name is the same fabrication as seeding the roster.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room;
-                assert!(tree.note_peer_present(room, 0x2a, ""));
-                let roster = &tree.desktop.active_workspace().unwrap().collaborators;
-                assert_eq!(roster.len(), 1);
-                assert_eq!(roster[0].id, "p000000000000002a");
-                assert_eq!(roster[0].name, "p000000000000002a");
-            }
-
-            // Phase `a_presence_frame_teaches_an_existing_row_which_session_it_is`.
-            // A person already on the roster who then publishes presence must
-            // become retirable, not merely renamed — a session-less row (read
-            // back off disk) has `None`, which `retire_session` can't match.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room;
-                let peer = 0x44_u64;
-
-                // A row that got here without a session — what a persisted
-                // roster looks like after a restart.
-                assert!(tree.admit_collaborator_in_room(room, Collaborator::new("erin", "Erin")));
-                assert_eq!(
-                    tree.desktop.active_workspace().unwrap().collaborators[0].session,
-                    None,
-                    "fixture precondition: the row starts with no session"
-                );
-
-                // Erin publishes presence from a live session.
-                tree.note_peer_present(room, peer, "erin");
-                assert_eq!(
-                    tree.desktop.active_workspace().unwrap().collaborators.len(),
-                    1,
-                    "the same person is one row, not two"
-                );
-
-                // That session going quiet must take her off the bar.
-                assert!(
-                    tree.retire_session(peer),
-                    "a row that has published presence must be retirable by the \
-                     session it published from; otherwise the avatar stays on the \
-                     bar for the rest of the session"
-                );
-                assert!(
-                    tree.desktop
-                        .active_workspace()
-                        .unwrap()
-                        .collaborators
-                        .is_empty(),
-                    "got {:?}",
-                    tree.desktop.active_workspace().unwrap().collaborators
-                );
-            }
         }
 
         // Phase `a_peer_leaves_the_roster_when_removed_quiet_or_departed`.
         {
-            // Phase `a_peer_can_be_taken_off_the_roster`.
-            // Leaving has to be expressible, or the roster only ever grows and
-            // says five people are here of a room four of them left.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room;
-                tree.admit_collaborator_in_room(room, Collaborator::new("alice", "Alice"));
-                tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob"));
-                assert_eq!(active_workspace_peer_count(&tree), 2);
-
-                assert!(tree.retire_collaborator_in_room(room, "alice"));
-                assert_eq!(active_workspace_peer_count(&tree), 1);
-                assert!(
-                    !tree.retire_collaborator_in_room(room, "alice"),
-                    "retiring someone already gone changes nothing"
-                );
-                assert!(tree.retire_collaborator_in_room(room, "bob"));
-                assert_eq!(
-                    active_workspace_peer_count(&tree),
-                    0,
-                    "a room everyone left shows nobody"
-                );
-            }
-
             // Phase `a_session_going_quiet_takes_its_person_off_the_roster`.
             // A session that goes quiet takes its person off the roster by
             // whichever name they'd acquired — a departure names a peer, never
@@ -5747,8 +5562,14 @@ mod bootstrap_tests {
                 let room = tree.desktop.active_workspace().unwrap().room;
                 let alice = 0x11_u64;
                 let bob = 0x22_u64;
-                assert!(tree.note_peer_present(room, alice, "alice"));
-                assert!(tree.note_peer_present(room, bob, "bob"));
+                assert!(tree.admit_collaborator_in_room(
+                    room,
+                    Collaborator::new("alice", "alice").with_session(alice)
+                ));
+                assert!(tree.admit_collaborator_in_room(
+                    room,
+                    Collaborator::new("bob", "bob").with_session(bob)
+                ));
                 assert_eq!(active_workspace_peer_count(&tree), 2);
 
                 assert!(tree.retire_session(alice), "alice's session left");
@@ -5780,7 +5601,10 @@ mod bootstrap_tests {
                 );
                 let peer = 0x33_u64;
                 for r in &rooms {
-                    assert!(tree.note_peer_present(*r, peer, "dana"));
+                    assert!(tree.admit_collaborator_in_room(
+                        *r,
+                        Collaborator::new("dana", "dana").with_session(peer)
+                    ));
                 }
                 assert!(tree.retire_session(peer));
                 for ws in &tree.desktop.workspaces {

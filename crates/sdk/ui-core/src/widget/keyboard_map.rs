@@ -295,22 +295,6 @@ impl KeyboardMap {
         self
     }
 
-    /// Show levels 5–8 when the selected XKB layout supplies them.
-    /// Layouts with fewer levels retain their first bank.
-    #[must_use]
-    pub fn with_extra_levels(mut self, extra: bool) -> Self {
-        self.extra_levels = extra && self.level_count() > 4;
-        self
-    }
-
-    /// Inspect any ordered native level while preserving all levels in the
-    /// shared tooltip/accessibility surface. Does not change the live seat.
-    #[must_use]
-    pub fn with_preview_level(mut self, level: usize) -> Self {
-        self.preview_level = level.min(31);
-        self
-    }
-
     /// Select a physical position for a readable inspector without recording
     /// whichever key the person happens to press. Unknown positions are rejected.
     #[must_use]

@@ -214,7 +214,11 @@ fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).at(parent)?;
     }
-    write_atomic(path, (py::dumps(value) + "\n").as_bytes(), mode)
+    write_atomic(
+        path,
+        (py::Dumps::INDENTED.dumps(value) + "\n").as_bytes(),
+        mode,
+    )
 }
 
 fn read_json(path: &Path) -> Map<String, Value> {
@@ -1701,7 +1705,7 @@ fn fetch_and_verify(
         ("base", manifest.base_summary()),
         ("packages", Value::Object(packages)),
     ]))?;
-    Ok(!unchanged || !py::truthy(status.read().get("parts")))
+    Ok(!unchanged || !status.read().get("parts").is_some_and(py::truthy))
 }
 
 /// After activation: the state the owner sees.
@@ -1721,7 +1725,7 @@ fn finish(layout: &Layout, ident: &str) -> Result<()> {
     }
     let reason = [current.get("last_error"), current.get("message")]
         .into_iter()
-        .find(|v| py::truthy(*v))
+        .find(|v| v.is_some_and(py::truthy))
         .flatten()
         .cloned()
         .unwrap_or_else(|| json!("Nothing could be installed for this version of Tilo."));
@@ -1785,7 +1789,7 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
                 ("state", json!("not-installed")),
             ]);
         }
-        println!("{}", py::dumps(&Value::Object(status)));
+        println!("{}", py::Dumps::INDENTED.dumps(&Value::Object(status)));
         return 0;
     }
     if host.euid() != 0 {

@@ -78,6 +78,9 @@ const XSETTINGS_WAIT: Duration = Duration::from_secs(2);
 /// How long publishing the DPI may hold back the composer before it is asked
 /// to connect anyway, and the publisher is abandoned.
 const RESOURCES_TIMEOUT: Duration = Duration::from_secs(3);
+/// The bridge's lifecycle lines go to the session log by default
+/// (`tilo_startup_metrics::log_directives`): they time an X11 app's open.
+const XWAYLAND_LOG: &str = tilo_startup_metrics::XWAYLAND_TARGET;
 
 /// Every workspace display of this session, shared by the host-launch path
 /// (which creates displays) and the compositor-thread supervisor (which
@@ -116,7 +119,7 @@ pub(crate) fn session_for_workspace(workspace: &str) -> Option<X11Session> {
             Some(session)
         }
         Err(error) => {
-            tracing::warn!(%error, "X11 apps unavailable in this workspace");
+            tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps unavailable in this workspace");
             None
         }
     }
@@ -259,7 +262,11 @@ impl Displays {
         }
         let display = WorkspaceDisplay::bind(&self.paths)?;
         let session = display.session();
-        tracing::info!(display = %session.display, "X11 display ready for a workspace");
+        tracing::info!(
+            target: XWAYLAND_LOG,
+            display = %session.display,
+            "X11 display ready for a workspace"
+        );
         self.workspaces.insert(workspace.to_string(), display);
         Ok((session, true))
     }
@@ -407,7 +414,13 @@ impl WorkspaceDisplay {
             match bridge.child.try_wait() {
                 Ok(Some(status)) => {
                     let uptime = now.saturating_duration_since(bridge.started);
-                    tracing::warn!(%status, display = self.number, "Xwayland bridge exited");
+                    tracing::warn!(
+                        target: XWAYLAND_LOG,
+                        %status,
+                        display = self.number,
+                        uptime_ms = uptime.as_millis(),
+                        "Xwayland bridge exited"
+                    );
                     self.stop_bridge();
                     if uptime >= STABLE_UPTIME {
                         self.rapid_exits = 0;
@@ -419,36 +432,16 @@ impl WorkspaceDisplay {
                 Err(error) => {
                     // Do not start a second server when the kernel cannot
                     // tell us whether the first one is alive.
-                    tracing::warn!(%error, "could not inspect Xwayland bridge");
+                    tracing::warn!(
+                        target: XWAYLAND_LOG,
+                        %error,
+                        "could not inspect Xwayland bridge"
+                    );
                     return false;
                 }
             }
             let uptime = now.saturating_duration_since(bridge.started);
-            if let Some(publish) = bridge
-                .resources
-                .take_if(|publish| publish.worker.is_finished())
-            {
-                match publish.worker.join() {
-                    Ok(Ok(dpi)) => {
-                        tracing::info!(display = self.number, dpi, "Xwayland: published Xft.dpi");
-                    }
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, display = self.number, "Xwayland: could not publish Xft.dpi");
-                    }
-                    Err(_) => tracing::warn!(
-                        display = self.number,
-                        "Xwayland: Xft.dpi publisher panicked"
-                    ),
-                }
-            } else if uptime >= RESOURCES_TIMEOUT
-                && let Some(publish) = bridge.resources.take()
-            {
-                tracing::warn!(
-                    display = self.number,
-                    "Xwayland: gave up publishing Xft.dpi"
-                );
-                publish.abandon();
-            }
+            bridge.settle_resources(self.number, uptime);
             if let Some(group) = composer.process_group()
                 && self.composer_asked != Some(group)
                 && uptime >= COMPOSER_CONNECT_DELAY
@@ -477,6 +470,7 @@ impl WorkspaceDisplay {
         match spawn(self) {
             Ok((child, keyboard, resources)) => {
                 tracing::info!(
+                    target: XWAYLAND_LOG,
                     display = self.number,
                     "starting Xwayland bridge for its first client"
                 );
@@ -493,7 +487,12 @@ impl WorkspaceDisplay {
                 false
             }
             Err(error) => {
-                tracing::warn!(%error, display = self.number, "could not start Xwayland bridge");
+                tracing::warn!(
+                    target: XWAYLAND_LOG,
+                    %error,
+                    display = self.number,
+                    "could not start Xwayland bridge"
+                );
                 self.rapid_exits = self.rapid_exits.saturating_add(1);
                 self.rapid_exits >= MAX_RAPID_EXITS
             }
@@ -524,7 +523,15 @@ impl WorkspaceDisplay {
             }
             let idle_since = *self.idle_since.get_or_insert(now);
             if now.saturating_duration_since(idle_since) >= limit {
-                tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                let uptime = self.bridge.as_ref().map_or(Duration::ZERO, |bridge| {
+                    now.saturating_duration_since(bridge.started)
+                });
+                tracing::info!(
+                    target: XWAYLAND_LOG,
+                    display = self.number,
+                    uptime_ms = uptime.as_millis(),
+                    "stopping idle Xwayland bridge"
+                );
                 self.stop_bridge();
             }
         } else {
@@ -580,6 +587,7 @@ impl WorkspaceDisplay {
         match start_keyboard_update(&session, keyboard.clone(), setxkbmap) {
             Ok(update) => bridge.keyboard_update = Some(update),
             Err(error) => tracing::warn!(
+                target: XWAYLAND_LOG,
                 %error,
                 "Xwayland: could not start keyboard settings update; preserving the working keymap"
             ),
@@ -588,6 +596,50 @@ impl WorkspaceDisplay {
 }
 
 impl Bridge {
+    /// Collect the Xft.dpi publisher once it finished, or abandon it after
+    /// [`RESOURCES_TIMEOUT`].
+    fn settle_resources(&mut self, number: u16, uptime: Duration) {
+        if let Some(publish) = self
+            .resources
+            .take_if(|publish| publish.worker.is_finished())
+        {
+            match publish.worker.join() {
+                Ok(Ok(dpi)) => {
+                    // When satellite announced its scale: the bridge is serving.
+                    tracing::info!(
+                        target: XWAYLAND_LOG,
+                        display = number,
+                        dpi,
+                        since_start_ms = uptime.as_millis(),
+                        "Xwayland: published Xft.dpi"
+                    );
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        target: XWAYLAND_LOG,
+                        %error,
+                        display = number,
+                        "Xwayland: could not publish Xft.dpi"
+                    );
+                }
+                Err(_) => tracing::warn!(
+                    target: XWAYLAND_LOG,
+                    display = number,
+                    "Xwayland: Xft.dpi publisher panicked"
+                ),
+            }
+        } else if uptime >= RESOURCES_TIMEOUT
+            && let Some(publish) = self.resources.take()
+        {
+            tracing::warn!(
+                target: XWAYLAND_LOG,
+                display = number,
+                "Xwayland: gave up publishing Xft.dpi"
+            );
+            publish.abandon();
+        }
+    }
+
     fn poll_keyboard_update(&mut self, session: &X11Session) {
         let Some(update) = self.keyboard_update.as_mut() else {
             return;
@@ -611,6 +663,7 @@ impl Bridge {
             Ok(true) => {
                 if let Some(update) = self.keyboard_update.take() {
                     tracing::info!(
+                        target: XWAYLAND_LOG,
                         sources = ?update.requested.source_ids,
                         active = update.requested.active_index,
                         "Xwayland: applied per-user XKB sources"
@@ -621,6 +674,7 @@ impl Bridge {
             Err(error) => {
                 self.keyboard_update = None;
                 tracing::warn!(
+                    target: XWAYLAND_LOG,
                     %error,
                     "Xwayland: could not apply keyboard settings; preserving the working keymap"
                 );
@@ -638,6 +692,7 @@ impl Bridge {
         match start_keyboard_update(session, keyboard, Path::new("/usr/bin/setxkbmap")) {
             Ok(update) => self.keyboard_update = Some(update),
             Err(error) => tracing::warn!(
+                target: XWAYLAND_LOG,
                 %error,
                 "Xwayland: could not start coalesced keyboard settings update"
             ),
@@ -689,7 +744,12 @@ impl<D: 'static> ListenerWatch for LoopHandle<'static, D> {
             self.disable(token)
         };
         if let Err(error) = result {
-            tracing::warn!(%error, watching, "could not update X11 listener wake");
+            tracing::warn!(
+                target: XWAYLAND_LOG,
+                %error,
+                watching,
+                "could not update X11 listener wake"
+            );
         }
     }
 
@@ -714,13 +774,13 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
             Ok(paths) => {
                 let satellite = resolve_satellite();
                 if let Err(error) = &satellite {
-                    tracing::warn!(%error, "X11 apps are unavailable");
+                    tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps are unavailable");
                 }
                 let mut registry = registry();
                 registry.displays = Some(Displays::new(paths, satellite));
                 registry.wake = Some(wake);
             }
-            Err(error) => tracing::warn!(%error, "X11 apps are unavailable"),
+            Err(error) => tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps are unavailable"),
         }
         Self {
             watch,
@@ -777,7 +837,11 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
                 let (child, keyboard) = spawn_satellite(binary, &wayland_socket, display)?;
                 let resources = ResourcePublish::start(display)
                     .inspect_err(|error| {
-                        tracing::warn!(%error, "Xwayland: cannot publish Xft.dpi");
+                        tracing::warn!(
+                            target: XWAYLAND_LOG,
+                            %error,
+                            "Xwayland: cannot publish Xft.dpi"
+                        );
                     })
                     .ok();
                 Ok((child, keyboard, resources))
@@ -808,12 +872,22 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
                         super::xwayland_composer::request_connection(display);
                     }
                 }
-                Err(error) => tracing::warn!(%error, "composer cannot reach X11 displays"),
+                Err(error) => {
+                    tracing::warn!(
+                        target: XWAYLAND_LOG,
+                        %error,
+                        "composer cannot reach X11 displays"
+                    );
+                }
             }
         }
         drop(registry);
         for workspace in exhausted {
-            tracing::warn!(%workspace, "X11 compatibility unavailable in workspace");
+            tracing::warn!(
+                target: XWAYLAND_LOG,
+                %workspace,
+                "X11 compatibility unavailable in workspace"
+            );
             announce_unavailable(chrome);
         }
     }
@@ -857,7 +931,13 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
                     }
                     self.watched.insert(workspace.clone(), (token, wanted));
                 }
-                Err(error) => tracing::warn!(%error, "X11 display cannot wake the compositor"),
+                Err(error) => {
+                    tracing::warn!(
+                        target: XWAYLAND_LOG,
+                        %error,
+                        "X11 display cannot wake the compositor"
+                    );
+                }
             }
         }
         exhausted

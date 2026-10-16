@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use ui::permissions::PermissionScope;
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TaffyTreeExt;
@@ -547,10 +546,6 @@ impl Widget for DesktopBackdrop {
         "DesktopBackdrop"
     }
 
-    fn is_focused(&self) -> bool {
-        false
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
@@ -580,17 +575,9 @@ impl Widget for DesktopBackdrop {
     }
 }
 
-impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-}
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {}
 
-impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-}
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
 
 #[cfg(test)]
 mod tests {

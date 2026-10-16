@@ -16,9 +16,9 @@
  * forwards them to the session; anyone else's canvas takes no input. The
  * keyboard of a window it drives is a visually hidden text area beside the
  * canvas (a canvas is not editable, so no input method composes on it):
- * plain keys go out as keys, and what an input method, dictation or an emoji
- * picker commits there goes out once as text, never as the keys that
- * composed it.
+ * plain keys go out as keys, and what an input method, a dead key, dictation
+ * or an emoji picker commits there goes out once as text, never as the keys
+ * that composed it.
  *
  * A stream whose codec is `tilo-paint` is a page the session's browser
  * shares as a display list (`tilo_paint_stream::wire`): its reassembled
@@ -275,6 +275,10 @@ const KEYS = {
 };
 /** Control, Shift, Alt and Meta, which never repeat. */
 const MODIFIERS = new Set([KEYS.ControlLeft, KEYS.ControlRight, KEYS.ShiftLeft, KEYS.ShiftRight, KEYS.AltLeft, KEYS.AltRight, KEYS.MetaLeft, KEYS.MetaRight]);
+/** `KeyboardEvent.key` of keys that only modify the next one. */
+const MODIFIER_NAMES = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Super', 'Hyper', 'Fn', 'CapsLock', 'NumLock']);
+/** A named `KeyboardEvent.key` (`Enter`, `ArrowLeft`, `F5`), not a character. */
+const NAMED_KEY = /^[A-Z][A-Za-z0-9]+$/;
 
 /**
  * The Linux evdev keycode of a `KeyboardEvent.code`, or null. With `mac`,
@@ -545,6 +549,7 @@ export function createLegacyWindows({
     entry.buttons.clear();
     entry.pasteKey = false;
     entry.composing = false;
+    entry.deadKey = false;
     if (entry.keyboard) entry.keyboard.value = '';
     if (!entry.flushing) void flushInput(entry);
   }
@@ -566,6 +571,7 @@ export function createLegacyWindows({
     entry.focused = false;
     entry.pasteKey = false;
     entry.composing = false;
+    entry.deadKey = false;
     entry.keys = new Set();
     entry.buttons = new Set();
     canvas.tabIndex = -1;
@@ -637,12 +643,29 @@ export function createLegacyWindows({
         }
       }
     };
+    // A dead key (`´`, `^`, `¨` on many layouts) composes with the key after
+    // it. Windows browsers, and Linux ones whose input method shows no
+    // preedit, report it as a `Dead` keydown and insert the composed
+    // character (`é`, or `´` then `x` when the two do not combine) as the
+    // next key's default action. Both keys stay here, uncancelled, so that
+    // insertion reaches the window once as text (`beforeinput`); their
+    // releases are dropped as releases the window never got. A modifier in
+    // between (Shift, for `Ê`) is still a key and keeps the sequence open; a
+    // named key or a shortcut after it is a key as before.
+    const deadKey = event => {
+      if (event.key === 'Dead') { entry.deadKey = true; return true; }
+      if (!entry.deadKey || MODIFIER_NAMES.has(event.key) || MODIFIERS.has(evdevKey(event.code, {mac}))) return false;
+      entry.deadKey = false;
+      const chord = (event.ctrlKey || event.metaKey) && !event.getModifierState?.('AltGraph');
+      return !chord && typeof event.key === 'string' && event.key !== '' && !NAMED_KEY.test(event.key);
+    };
     const key = pressed => event => {
       // An input method's own keystrokes compose; what it commits arrives
       // once as text (`compositionend`), so they never reach the window.
       if (entry.composing || event.isComposing || event.keyCode === 229 || event.key === 'Process') return;
+      if (!entry.control || (pressed && deadKey(event))) return;
       const keysym = evdevKey(event.code, {mac});
-      if (!entry.control || keysym === null) return;
+      if (keysym === null) return;
       if (pressed && event.repeat && !entry.keys.has(keysym)) return;
       // A release whose press the window never got (the key that ended a
       // composition) stays here.
@@ -668,7 +691,7 @@ export function createLegacyWindows({
     };
     onKeyboard('keydown', key(true));
     onKeyboard('keyup', key(false));
-    onKeyboard('compositionstart', () => { if (entry.control) entry.composing = true; });
+    onKeyboard('compositionstart', () => { entry.deadKey = false; if (entry.control) entry.composing = true; });
     onKeyboard('compositionend', event => {
       const composed = entry.composing;
       entry.composing = false;

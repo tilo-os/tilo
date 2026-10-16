@@ -46,13 +46,14 @@ id_token() {
 
 # buildah without a daemon, as root in t's sandbox: chroot isolation and the vfs driver need no
 # user namespace of their own and no writable root. The store lives under $scratch/NAME; `b`
-# runs buildah on it.
+# runs buildah on it. DRIVER `overlay` works in a micro-VM step (its scratch disk is ext4) and
+# doesn't copy every layer whole as vfs does, for images of hundreds of MB.
 use_buildah() {
-  local store=$scratch/${1:-buildah}
-  export STORAGE_DRIVER=vfs BUILDAH_ISOLATION=chroot
+  local store=$scratch/${1:-buildah} driver=${2:-vfs}
+  export STORAGE_DRIVER=$driver BUILDAH_ISOLATION=chroot
   mkdir -p "$store"
   # The image's own storage.conf names an additional image store under its read-only root.
-  printf '[storage]\ndriver = "vfs"\n' > "$store/storage.conf"
+  printf '[storage]\ndriver = "%s"\n' "$driver" > "$store/storage.conf"
   export CONTAINERS_STORAGE_CONF=$store/storage.conf
   buildah_root=$store/root
   buildah_runroot=$store/run

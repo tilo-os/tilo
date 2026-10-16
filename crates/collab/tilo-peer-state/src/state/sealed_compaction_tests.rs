@@ -148,7 +148,7 @@ fn route() -> Route {
 }
 
 fn held(peer: &StatePeer) -> Vec<SignedOp> {
-    peer.core.documents[&route()].sealed.clone()
+    peer.core.documents[&route()].sealed.to_vec()
 }
 
 fn envelope_of(message: &NeighbourMsg) -> SignedOp {
@@ -704,7 +704,7 @@ fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
     let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
     admit(&mut f.host, &f.other, first, now);
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
     let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
     let other = f.other.clone();
     refused_with(
@@ -790,7 +790,8 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     admit(&mut f.host, &f.editor, first, now);
     assert!(f.host.sealed_records_to_compact().is_empty());
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS / 4 * 3];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed =
+        vec![one; MAX_SEALED_OPS / 4 * 3].into();
     assert_eq!(
         f.host.sealed_records_to_compact(),
         vec![(APP.to_owned(), RECORD.to_owned())]
@@ -1202,4 +1203,95 @@ fn bounded_history_replays_compaction_and_requires_all_held_epochs() {
     );
     assert!(f.restore(&misplaced).is_err());
     assert_eq!(f.host.durable().unwrap(), before);
+}
+
+/// Every round of writes a compaction folds leaves one mark per writer,
+/// not an exact entry per write: the index stays the same size however
+/// long the record runs. A folded write sent again is ignored, whatever its
+/// bytes; above the mark a conflicting write is still refused.
+#[test]
+fn a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let mut first = None;
+    let mut sizes = Vec::new();
+    for round in 0..3 {
+        for index in 0..200 {
+            let key = if index % 2 == 0 {
+                f.other.clone()
+            } else {
+                f.editor.clone()
+            };
+            let next = write(
+                &f.host,
+                &key,
+                &keys,
+                &author.edit("value", &format!("{round}.{index}")),
+                now,
+            );
+            first.get_or_insert_with(|| next.clone());
+            admit(&mut f.host, &key, next, now);
+        }
+        mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        sizes.push(f.host.core.exact_admissions.len());
+    }
+    // The first round also keeps the owner's seeded checkpoint; the next
+    // compaction, by the same owner, folds that as well.
+    assert_eq!(
+        sizes,
+        vec![2, 1, 1],
+        "only the latest compaction stays exact"
+    );
+    let index = &f.host.core.exact_admissions;
+    for writer in [&f.other, &f.editor] {
+        let mark = index
+            .marks()
+            .find(|(key, _)| key.author == writer.verifying_key().to_bytes())
+            .map(|(_, mark)| mark);
+        assert_eq!(
+            mark,
+            Some(floor(&f.host, writer)),
+            "a writer's mark is its last folded write"
+        );
+    }
+
+    // The first write again, and a different write at its sequence: both
+    // are in the snapshot already, so both are ignored.
+    let first = first.unwrap();
+    let report = f
+        .host
+        .receive_from_report(origin(&f.other), first.clone(), now)
+        .unwrap();
+    assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
+    let mut rewritten = envelope_of(&first);
+    rewritten.timestamp += Duration::from_secs(1);
+    collab_types::sign_op(&mut rewritten, &f.other).unwrap();
+    let report = f
+        .host
+        .receive_from_report(origin(&f.other), message(rewritten), now)
+        .unwrap();
+    assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
+    assert_eq!(held(&f.host).len(), 1, "nothing folded comes back");
+
+    // Above the mark the evidence is exact again.
+    let above = write(&f.host, &f.other, &keys, &author.edit("value", "late"), now);
+    admit(&mut f.host, &f.other, above.clone(), now);
+    let mut conflicting = envelope_of(&above);
+    conflicting.timestamp += Duration::from_secs(1);
+    collab_types::sign_op(&mut conflicting, &f.other).unwrap();
+    assert!(
+        f.host
+            .receive_from_report(origin(&f.other), message(conflicting), now)
+            .is_err(),
+        "a second write at an unfolded sequence conflicts"
+    );
+
+    // The marks are part of the durable state.
+    let restored = f.restore(&f.host.durable().unwrap()).unwrap();
+    assert_eq!(
+        restored.core.exact_admissions.encode().unwrap(),
+        f.host.core.exact_admissions.encode().unwrap()
+    );
 }

@@ -1434,10 +1434,14 @@ drops and the budget drops anyway) or *replicated* (kept, and
 acknowledged elsewhere). The summary carries counts per workspace and
 never a path, because it is what the device answers the person's other
 devices. Settings' storage area is its client: the `storage-summary`,
-`free-cache` and `keep-here` effects, and one card per device. Collecting
-the other devices' summaries into that view needs the session to route an
-app's invocation to one of the person's own devices and hand back the
-answer; that route is not built yet.
+`free-cache` and `keep-here` effects, and one card per device. The other
+devices' cards are their own answers: Settings lists the person's devices
+through the host, and asks each one that is neither this device nor
+revoked for its `storage-summary` through the host's own-device route
+(`tilo.own-device`, see `docs/device-mesh.md`), which only reaches an
+app's own actions on an enrolled, authenticated device of the same
+person. A device that is offline shows no card; an answer is taken only
+for a device the latest list names.
 
 ### 12.4 Read-ahead and prediction
 
@@ -1449,10 +1453,17 @@ answer; that route is not built yet.
   between the same person's devices**, never with collaborators. They are what
   makes "continue on the desktop what you did on the laptop" instant. The
   "recently used on another device" hint is the `ReplicationIntent` seam
-  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount,
-  in memory and bounded: two files opened within two minutes of each other on
-  two separate occasions predict each other, and a partner is fetched only if
-  the mount's identity may read it. Sharing between devices is still to come.
+  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount
+  and bounded: two files opened within two minutes of each other on two
+  separate occasions predict each other, and a partner is fetched only if the
+  mount's identity may read it at prediction time. The pairs survive restarts
+  in one owner-only file per workspace, `<cache dir>/prefetch-history/<workspace>`
+  (`smart/kept_history.rs`): record ids only, at most 2048 pairs, none older
+  than 30 days, checksummed and replaced atomically (a damaged file is deleted,
+  never partly trusted), written by a keeper 20 s after the last change and
+  never on the request path. Turning prefetching off deletes it and stops
+  learning; a mount deletes the files of workspaces its cache directory no
+  longer serves. Sharing between devices is still to come.
 - **Directory locality:** opening a file hydrates the directory's next
   siblings of the same type in natural order (`page-9` before `page-10`): two
   ahead, or four once three files were opened in order, forwards or

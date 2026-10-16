@@ -1439,6 +1439,31 @@ impl TryFrom<PlaceWire> for Place {
     }
 }
 
+// A selection carried to an agent is the place an action takes, in the
+// same wire form, so the agent can hand it back unchanged.
+impl From<Place> for tilo_actions::SelectionPlace {
+    fn from(place: Place) -> Self {
+        match place {
+            Place::Item(item) => Self::item(item),
+            Place::Caret { item, at } => Self::caret(item, at),
+            Place::Range { item, start, end } => Self::range(item, start, end),
+        }
+    }
+}
+
+impl TryFrom<tilo_actions::SelectionPlace> for Place {
+    type Error = String;
+
+    fn try_from(place: tilo_actions::SelectionPlace) -> Result<Self, String> {
+        Self::try_from(PlaceWire {
+            item: place.item,
+            at: place.at,
+            start: place.start,
+            end: place.end,
+        })
+    }
+}
+
 /// Builds a resource's action from arguments already bound against the
 /// declaration's parameters. `now_ms` is the origin's clock, captured once so
 /// replay is deterministic.
@@ -2729,5 +2754,36 @@ mod schema_sharing_tests {
         assert_eq!(old_build["minimum"], 2);
         assert_eq!(current["minimum"], 3);
         assert!(!Arc::ptr_eq(&first, &current));
+    }
+}
+
+#[cfg(test)]
+mod selection_place_tests {
+    use super::Place;
+    use tilo_actions::SelectionPlace;
+
+    #[test]
+    fn a_selection_place_is_the_place_an_action_takes() {
+        for place in [
+            Place::Item("p1".into()),
+            Place::Caret {
+                item: "p1".into(),
+                at: 3,
+            },
+            Place::Range {
+                item: "p1".into(),
+                start: 2,
+                end: 7,
+            },
+        ] {
+            let selection = SelectionPlace::from(place.clone());
+            assert_eq!(
+                serde_json::to_value(&selection).unwrap(),
+                serde_json::to_value(&place).unwrap(),
+                "both travel in one wire form"
+            );
+            assert_eq!(Place::try_from(selection).unwrap(), place);
+        }
+        assert!(Place::try_from(SelectionPlace::item("")).is_err());
     }
 }

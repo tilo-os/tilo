@@ -770,8 +770,12 @@ pub struct PageCanvas<'a> {
 }
 
 impl PageRenderer {
+    /// A renderer for a page about to be shown. Where the image decoder is
+    /// fetched on first use, this starts fetching it, so it is in by the time
+    /// the page's first frame arrives rather than after its first image.
     #[must_use]
     pub fn new() -> Self {
+        let _ = image_decoder::decoder();
         Self::default()
     }
 
@@ -1032,16 +1036,85 @@ impl PageRenderer {
         if let Some(cached) = self.images.get(hash) {
             return cached.clone();
         }
+        // Not cached while the decoder is still to come: the page is drawn
+        // again once it is in.
+        let decode = image_decoder::decoder()?;
         let bytes = blobs.blob(hash)?;
-        let decoded = image::load_from_memory(&bytes).ok().map(|img| {
-            let img = img.to_rgba8();
-            let (width, height) = img.dimensions();
-            crate::raster::rgba8(img.into_raw(), width, height)
-        });
+        let decoded = decode(&bytes);
         self.images.insert(*hash, decoded.clone());
         decoded
     }
 }
+
+/// Decodes a page image's encoded bytes (PNG, JPEG, WebP) to RGBA.
+pub type DecodePageImage = fn(&[u8]) -> Option<ImageData>;
+
+/// Hands over the decoder's [`DecodePageImage`], for
+/// [`install_page_image_decoder`].
+pub type MakePageImageDecoder = fn() -> DecodePageImage;
+
+/// The `image` crate's decoders.
+#[must_use]
+pub fn builtin_page_image_decoder() -> DecodePageImage {
+    fn decode(bytes: &[u8]) -> Option<ImageData> {
+        let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        let (width, height) = img.dimensions();
+        Some(crate::raster::rgba8(img.into_raw(), width, height))
+    }
+    decode
+}
+
+#[cfg(not(feature = "lazy-image-decode"))]
+mod image_decoder {
+    use super::DecodePageImage;
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the lazy-image-decode build has none until it is fetched"
+    )]
+    pub(super) fn decoder() -> Option<DecodePageImage> {
+        Some(super::builtin_page_image_decoder())
+    }
+}
+
+/// The decoder is fetched the first time a page draws an image: the program
+/// hands over a loader ([`defer_page_image_decoder`]) that fetches its code
+/// and passes back [`builtin_page_image_decoder`]
+/// ([`install_page_image_decoder`]). Until then images are left out and the
+/// program draws again once the decoder is in.
+#[cfg(feature = "lazy-image-decode")]
+mod image_decoder {
+    use super::{DecodePageImage, MakePageImageDecoder};
+    use crate::deferred::Deferred;
+
+    static DECODER: Deferred<DecodePageImage> = Deferred::new();
+
+    pub(super) fn decoder() -> Option<DecodePageImage> {
+        DECODER.get()
+    }
+
+    /// How the program fetches the decoder's code: `load` starts the fetch
+    /// and, once the code is in, calls [`install_page_image_decoder`] (or
+    /// [`page_image_decoder_load_failed`]).
+    pub fn defer_page_image_decoder(load: fn()) {
+        DECODER.defer(load);
+    }
+
+    /// The decoder's code is in: pages draw their images from now on.
+    pub fn install_page_image_decoder(make: MakePageImageDecoder) {
+        DECODER.install(make());
+    }
+
+    /// The fetch failed: the next page image fetches again.
+    pub fn page_image_decoder_load_failed() {
+        DECODER.load_failed();
+    }
+}
+
+#[cfg(feature = "lazy-image-decode")]
+pub use image_decoder::{
+    defer_page_image_decoder, install_page_image_decoder, page_image_decoder_load_failed,
+};
 
 fn draw_border(
     scene: &mut Scene,
@@ -1145,6 +1218,36 @@ mod tests {
             frame.blobs().all(|b| matches!(b, BlobRef::Hash(_))),
             "no URL leaves the host"
         );
+    }
+
+    /// A new renderer starts fetching the decoder; before it is in, an image
+    /// is left out and not remembered as undecodable; once it is in, the same
+    /// image decodes.
+    #[cfg(feature = "lazy-image-decode")]
+    #[test]
+    fn images_wait_for_a_deferred_decoder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        fn load() {
+            LOADS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let hash = [7_u8; 32];
+        let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
+        defer_page_image_decoder(load);
+        let mut renderer = PageRenderer::new();
+        assert_eq!(
+            LOADS.load(Ordering::SeqCst),
+            1,
+            "a page about to be shown starts fetching it"
+        );
+        assert!(renderer.image(&blobs, &hash).is_none());
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
+        install_page_image_decoder(builtin_page_image_decoder);
+        let image = renderer
+            .image(&blobs, &hash)
+            .expect("decoded once it is in");
+        assert_eq!((image.width, image.height), (800, 600));
     }
 
     #[test]

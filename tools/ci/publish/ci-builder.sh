@@ -3,9 +3,8 @@
 # the toolchain rust-toolchain.toml pins baked in.
 #
 #   ci-builder.sh build ARCH OUT   build it natively into OUT/image.oci.tar (buildah image)
-#   ci-builder.sh canary           what every job needs from it, run inside the candidate: the
-#                                  workspace's build-environment check, the pinned toolchain and
-#                                  a compile with the CI linker
+# Its canaries are tools/ci/publish/ci-builder-canary.sh, kept apart so that changing them
+# doesn't rebuild the image.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -42,13 +41,5 @@ case ${1:-} in
       --platform "$platform" --build-context "github-assets=$assets" \
       --build-arg "RUST_CHANNEL=$channel"
     ;;
-  canary)
-    channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
-    tilo-check-build-env
-    rustc --version | grep -F " $channel " >/dev/null || die "the builder's rustc is not $channel"
-    target=$scratch/builder-canary-target
-    CARGO_TARGET_DIR=$target cargo build --locked -p tilo-advisory-lock
-    rm -rf "$target"
-    ;;
-  *) die 'usage: ci-builder.sh build|canary ...' ;;
+  *) die 'usage: ci-builder.sh build ARCH OUT' ;;
 esac

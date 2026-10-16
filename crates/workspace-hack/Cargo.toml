@@ -19,7 +19,8 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes = { version = "0.9", default-features = false, features = ["zeroize"] }
-aes-gcm = { version = "0.10" }
+aes-gcm-93f6ce9d446188ac = { package = "aes-gcm", version = "0.10" }
+aes-gcm-a6292c17cd707f01 = { package = "aes-gcm", version = "0.11", default-features = false, features = ["aes", "zeroize"] }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -100,7 +101,6 @@ hayro = { version = "0.7" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
-hex = { version = "0.4" }
 hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
@@ -165,7 +165,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -173,7 +174,6 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
@@ -192,7 +192,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -253,7 +254,8 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes = { version = "0.9", default-features = false, features = ["zeroize"] }
-aes-gcm = { version = "0.10" }
+aes-gcm-93f6ce9d446188ac = { package = "aes-gcm", version = "0.10" }
+aes-gcm-a6292c17cd707f01 = { package = "aes-gcm", version = "0.11", default-features = false, features = ["aes", "zeroize"] }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -337,7 +339,6 @@ hayro = { version = "0.7" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
-hex = { version = "0.4" }
 hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
@@ -402,7 +403,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -410,7 +412,6 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
@@ -429,7 +430,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -494,7 +496,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -509,7 +511,7 @@ object = { version = "0.39", default-features = false, features = ["read", "std"
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -526,7 +528,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -541,7 +543,7 @@ object = { version = "0.39", default-features = false, features = ["read", "std"
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -558,7 +560,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -573,7 +575,7 @@ object = { version = "0.39", default-features = false, features = ["read", "std"
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -590,7 +592,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -605,7 +607,7 @@ object = { version = "0.39", default-features = false, features = ["read", "std"
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

@@ -109,7 +109,7 @@ impl Participation {
             check(view)?;
             view.peer()
                 .permissions(view.device().device_public_key, SystemTime::now())?;
-            let binding = view.peer().resolve_media_binding(
+            let binding = view.peer().media().resolve_media_binding(
                 &channel.app,
                 &channel.record,
                 &channel.channel,

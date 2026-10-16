@@ -298,3 +298,67 @@ fn empty_search_reveals_its_message_and_query_correction_restores_selection() {
         assert!(picker.take_commits().is_empty());
     }
 }
+
+/// The armed emoji is the panel's overlay lift, like a menu's armed row,
+/// with no ring in your colour: that colour is for the focus ring and the
+/// caret alone (HIG 9.3, 9.4). Rendered, so a ring painted by any path
+/// shows up in the pixels.
+#[test]
+fn the_armed_emoji_is_a_lift_without_a_ring_in_your_colour() {
+    let (w, h) = (960_u32, 640_u32);
+    let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
+    for theme in [Theme::dark(), Theme::light()] {
+        let mut picker = EmojiPicker::new();
+        picker.open(viewport, "en-US");
+        for c in "thumbs up".chars() {
+            send(&mut picker, Key::Character(c.to_string().into()));
+        }
+        let mut scene = Scene::new();
+        picker.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+            viewport,
+        );
+        let cell = picker
+            .screen_cell(picker.selected)
+            .expect("the armed emoji is laid out");
+        let ground = theme.tokens.colors.surfaces.base;
+        let rgba = renderer.render(&scene, ground);
+        let at = |x: f64, y: f64| -> [u8; 3] {
+            let px = |v: f64| u32::try_from(usize_of_f64(v)).expect("on screen");
+            let (red, green, blue, _) =
+                ui::offscreen::OffscreenRenderer::sample(&rgba, w, px(x), px(y));
+            [red, green, blue]
+        };
+        let near = |got: [u8; 3], want: vello::peniko::Color| {
+            let want = want.to_rgba8();
+            got[0].abs_diff(want.r) <= 3
+                && got[1].abs_diff(want.g) <= 3
+                && got[2].abs_diff(want.b) <= 3
+        };
+        // The highlight's outline sits 2 px inside the cell (`inset(-2.0)`),
+        // where the old ring was stroked: every pixel across that edge is a
+        // grey of the panel or the lift, never a hue, and just inside it is
+        // the overlay lift.
+        for dx in [0.0, 1.0, 2.0, 3.0, 4.0] {
+            let edge = at(cell.x0 + dx, cell.center().y);
+            let high = edge.iter().copied().max().unwrap_or(0);
+            let low = edge.iter().copied().min().unwrap_or(0);
+            assert!(
+                high.abs_diff(low) <= 10,
+                "the armed emoji wears a coloured ring: {edge:?} at +{dx}"
+            );
+        }
+        let (lift, _) = ui::widget::floating_surface::armed_row(&theme);
+        let inside = at(cell.x0 + 4.0, cell.center().y);
+        assert!(
+            near(inside, lift),
+            "the armed emoji's ground is the overlay lift {:?}, got {inside:?}",
+            lift.to_rgba8()
+        );
+    }
+}

@@ -73,3 +73,13 @@ mime = [
 ext  = [
     "ics",
 ]
+
+# Actions Calendar offers while it is not running: the action catalogue lists
+# them, and invoking one starts Calendar. The running app's published action
+# admits the invocation (a test checks the two agree).
+[[offers]]
+resource  = "calendar.calendar"
+action    = "show-tasks"
+label     = "Show tasks"
+kind      = "read"
+operation = "view"

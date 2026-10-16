@@ -49,7 +49,7 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
                     std::time::SystemTime::now(),
                 )?
                 .standing();
-            Ok((standing, view.peer().governed_sandbox()?))
+            Ok((standing, view.peer().governance().governed_sandbox()?))
         })
         .unwrap();
     let person = standing.person.clone();

@@ -7,7 +7,7 @@ license.workspace = true
 description = "The one OAuth 2.0 client for installed apps: authorization code with PKCE over a loopback redirect, token exchange, refresh and revocation."
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # PKCE S256 challenge (RFC 7636) and its URL-safe base64.
 sha2.workspace = true
 base64.workspace = true

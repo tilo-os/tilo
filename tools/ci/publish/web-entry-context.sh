@@ -17,3 +17,5 @@ TILO_MOQ_BROWSER_DIR=$moq crates/browser/tilo-browser-runtime/scripts/build.sh "
 container=crates/browser/tilo-browser-runtime/container
 python3 -I "$container/layout.py" "$bundle" "$out/site"
 cp "$container/Containerfile" "$container/Caddyfile" "$container/entrypoint.sh" "$out/"
+# The image's revision label (the Containerfile's SOURCE_REVISION).
+git rev-parse HEAD > "$out/source-revision"

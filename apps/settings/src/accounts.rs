@@ -72,6 +72,69 @@ pub struct AccountRoot {
     explicit: Option<PathBuf>,
     /// The person's accounts, when a host opened their record.
     person: Option<PersonAccountsRecord>,
+    /// What opening the vault waits for first (tests).
+    #[cfg(test)]
+    vault_gate: VaultGate,
+}
+
+/// What a test makes every opening of the vault wait for: a Secret Service
+/// that does not answer.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct VaultGate(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for VaultGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VaultGate")
+    }
+}
+
+/// A root is told apart by where its files live, not by what its vault
+/// waits for.
+#[cfg(test)]
+impl PartialEq for VaultGate {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+impl Eq for VaultGate {}
+
+/// What reaching the credential vault needs of an [`AccountRoot`]: where it
+/// lives, without the person's record, which stays on the UI thread. A
+/// worker opens the vault through it, since opening and saving it ask the
+/// Secret Service for its key, a round trip that may take seconds.
+#[derive(Clone)]
+pub(crate) struct VaultOpener {
+    explicit: Option<PathBuf>,
+    #[cfg(test)]
+    gate: VaultGate,
+}
+
+impl VaultOpener {
+    /// Open the vault: a Secret Service round trip for its key on the live
+    /// root.
+    pub(crate) fn open(&self) -> accounts::SecretVault {
+        crate::device_read::off_ui_thread();
+        #[cfg(test)]
+        {
+            if let Some(gate) = &self.gate.0 {
+                gate();
+            }
+        }
+        match &self.explicit {
+            Some(root) => accounts::SecretVault::open_in(root),
+            None => accounts::SecretVault::open(),
+        }
+    }
+
+    /// Credential custody over the same stores, which opens the vault
+    /// itself when it publishes.
+    pub(crate) fn custodian(&self) -> account_custody::Custodian {
+        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    }
 }
 
 /// The person's record of their accounts, as [`AccountRoot`] keeps it.
@@ -105,8 +168,17 @@ impl AccountRoot {
     pub fn at(config_root: impl Into<PathBuf>) -> Self {
         Self {
             explicit: Some(config_root.into()),
-            person: None,
+            ..Self::default()
         }
+    }
+
+    /// The same root, whose vault opens only once `gate` returns: a stalled
+    /// Secret Service (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_vault_gate(mut self, gate: impl Fn() + Send + Sync + 'static) -> Self {
+        self.vault_gate = VaultGate(Some(std::sync::Arc::new(gate)));
+        self
     }
 
     /// The same root, with the person's accounts kept in `record`.
@@ -358,11 +430,18 @@ impl AccountRoot {
         statuses.save_in(&self.require_io()?)
     }
 
-    /// The encrypted credential vault.
+    /// The encrypted credential vault. Opening it asks the Secret Service
+    /// for its key: never on the UI thread.
     pub fn vault(&self) -> accounts::SecretVault {
-        match &self.explicit {
-            Some(root) => accounts::SecretVault::open_in(root),
-            None => accounts::SecretVault::open(),
+        self.vault_opener().open()
+    }
+
+    /// What a worker opens the vault with.
+    pub(crate) fn vault_opener(&self) -> VaultOpener {
+        VaultOpener {
+            explicit: self.explicit.clone(),
+            #[cfg(test)]
+            gate: self.vault_gate.clone(),
         }
     }
 

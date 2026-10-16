@@ -156,6 +156,34 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     })
     .await;
 
+    // A page writes its records as commits: the governor follows those too.
+    let bob_client = bob_session.into_client();
+    let message = sealed(
+        write(&mut bob_peer, "reply", "again", &phone.sk),
+        &group,
+        &phone.sk,
+    );
+    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+    let delta = tilo_relay::CoeditPayload::RetainedDelta {
+        channel,
+        body: postcard::to_stdvec(&message).unwrap(),
+    }
+    .encode()
+    .unwrap();
+    bob_client
+        .send(Envelope::Commit {
+            workspace_id: room.workspace_id,
+            op: [5; 16],
+            author_device_public_key: phone.device_pubkey(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta,
+        })
+        .unwrap();
+    tilo_test_env::within("the governor follows Bob's sealed commit", async {
+        while followed.recv().await.unwrap().app != APP {}
+    })
+    .await;
+
     // The next person is let in, by a governance change published after it.
     let carol = TestUser::fresh("Carol");
     let tablet = carol.enrol("carol-tablet", DeviceCapabilities::member());
@@ -174,7 +202,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
 
     // Reopened, the governor replays the sealed write and still lets people in.
     alice_session.close().await;
-    bob_session.close().await;
+    drop(bob_client);
     relay.shutdown().await;
     let relay = start(state.path(), &alice, &host).await;
     let dan = TestUser::fresh("Dan");

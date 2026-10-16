@@ -390,20 +390,67 @@ fn scenario(desktop: &Desktop) {
     );
 }
 
+/// Most of one core an untouched desktop may use over the idle window.
+///
+/// The window is read with the liveness monitor holding its pings. Each
+/// heartbeat wakes the main loop, and every wake is a whole loop turn
+/// whether or not anything changed, so with the monitor asking every 50 ms
+/// the window read the probe instead of the desktop: 16.5% with it and
+/// 0.0% without on the same CI run, the loop turning 39 times in 2 s for
+/// heartbeats and painting nothing. Against the old 25% bound that probe
+/// decided the result by how loaded the runner was (25-31% in 31 of the 36
+/// runs it failed over two days, the desktop doing nothing).
+///
+/// Without the probe, nine 2 s windows over both variants on one CI run
+/// read 0.0-3.0%, and 6.0% once under the pressure variant. Most of that was
+/// the Files app's Nearby snapshot poll, every 2 s, each a loop turn whose
+/// pump took 50-160 ms on that runner; Files now asks only when the shell
+/// announces a Nearby change, and an idle desktop announces none.
+///
+/// What the bound must still catch is a loop that turns on its own with
+/// nothing to do: the probe's 20 turns a second read 16-31%, so a loop
+/// woken half as often for nothing crosses it. The window is 4 s so that
+/// one slow turn, or the top bar's minute repaint (up to 135 ms on a loaded
+/// runner), cannot carry it over on its own.
+const IDLE_SHARE_BOUND: f64 = 0.10;
+
+/// How long the idle window lasts.
+const IDLE_WINDOW: Duration = Duration::from_secs(4);
+
 /// Left alone, the desktop is idle. A widget that reports a wake deadline
 /// nothing can satisfy makes the loop pump every app on every pass: the Files
-/// app did, while its nearby-transfer snapshot went unanswered. Measured on a
-/// machine nothing else is loading, after the backlog the scenario left has
-/// drained.
+/// app did, while its nearby-transfer snapshot went unanswered. Measured
+/// after the backlog the scenario left has drained.
 fn assert_idle(desktop: &Desktop) {
     desktop.pause(Duration::from_secs(2));
-    let share = desktop.idle_cpu_share(Duration::from_secs(2));
-    assert!(
-        share < 0.25,
-        "an untouched desktop used {:.0}% of a core; it is spinning on a wake deadline that \
-         never clears",
-        share * 100.0
+    let idle = desktop.without_heartbeats(|| desktop.idle(IDLE_WINDOW));
+    // A loop that froze while the monitor held its pings fails at the first
+    // heartbeat after them.
+    desktop.pause(crate::support::desktop::HEARTBEAT_BUDGET.saturating_mul(2));
+    // Every run logs its reading by thread, so a failure names what woke the
+    // loop, and a drift toward the bound shows before a run crosses it.
+    eprintln!(
+        "[desktop-smoke] idle: {:.1}% of a core (bound {:.0}%)\n{}\n{}",
+        idle.share * 100.0,
+        IDLE_SHARE_BOUND * 100.0,
+        idle.threads,
+        idle_log(&idle)
     );
+    assert!(
+        idle.share < IDLE_SHARE_BOUND,
+        "an untouched desktop used {:.1}% of a core (bound {:.0}%); something wakes its loop \
+         with nothing to do, or it is spinning on a wake deadline that never clears (the \
+         [desktop-smoke] idle reading above names the threads)",
+        idle.share * 100.0,
+        IDLE_SHARE_BOUND * 100.0,
+    );
+}
+
+/// What the compositor said in an idle window: what woke its loop and what
+/// it painted (`TILO_PAINT_STATS`), and anything it logged.
+fn idle_log(idle: &crate::support::desktop::Idle) -> String {
+    let lines: Vec<&str> = idle.log.iter().map(String::as_str).take(40).collect();
+    format!("  compositor in the window:\n    {}", lines.join("\n    "))
 }
 
 /// A shorter pointer pass: the corners, the edges and the top bar.

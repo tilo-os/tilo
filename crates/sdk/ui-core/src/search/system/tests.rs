@@ -230,69 +230,6 @@ fn typed_registry_routes_scope_and_kinds_and_discards_stale_pages() {
 }
 
 #[test]
-fn the_chip_strip_places_every_chip_however_narrow_the_band() {
-    use super::filters::lay_out_chip_strip;
-    use vello::kurbo::Rect;
-    let band = Rect::new(0.0, 0.0, 240.0, 36.0);
-    let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
-    for rows_available in [1usize, 2, 3] {
-        let strip = lay_out_chip_strip(
-            &natural,
-            band,
-            band.x1 - 100.0,
-            rows_available,
-            36.0,
-            24.0,
-            8.0,
-        );
-        assert_eq!(
-            strip.rects.len(),
-            natural.len(),
-            "every chip gets a rect at {rows_available} row(s)"
-        );
-        assert!(
-            strip.rows_needed >= 1,
-            "the strip always needs at least one row"
-        );
-        for (i, r) in strip.rects.iter().enumerate() {
-            assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "chip {i} of {} is not clickable at {rows_available} \
-                     row(s): {r:?}",
-                natural.len()
-            );
-            assert!(
-                r.x0 >= band.x0 - 0.001,
-                "chip {i} starts left of the band: {r:?}"
-            );
-        }
-        for i in 0..strip.rects.len() {
-            for j in (i + 1)..strip.rects.len() {
-                assert!(
-                    strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
-                    "chips {i} and {j} overlap at {rows_available} \
-                         row(s): {:?} / {:?}",
-                    strip.rects[i],
-                    strip.rects[j]
-                );
-            }
-        }
-    }
-    // And when there is room, nothing is squeezed: the chips keep
-    // their natural widths.
-    let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
-    let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
-    assert_eq!(strip.rows_needed, 1);
-    for (i, r) in strip.rects.iter().enumerate() {
-        assert_eq!(
-            r.width(),
-            natural[i],
-            "chip {i} was squeezed with room to spare"
-        );
-    }
-}
-
-#[test]
 fn a_narrow_band_keeps_one_row_and_a_more_chip() {
     use super::filters::{lay_out_chip_row_with_more, lay_out_more_menu};
     use vello::kurbo::{Point, Rect};

@@ -86,36 +86,8 @@ pub fn extensions_dir() -> PathBuf {
 /// A CRX package must carry a valid CRX3 signature; its extension identifier
 /// is the one its signing key names and its public key is written into the
 /// unpacked manifest as `key`, so the unpacked copy keeps that identifier.
-/// Plain zips (`.xpi`, `.zip`) are accepted as unsigned packages.
-///
-/// # Errors
-///
-/// Returns [`ExtensionError::Archive`] if `archive` isn't a valid CRX/zip
-/// package or fails verification, [`ExtensionError::Manifest`] if it has no
-/// valid `manifest.json`, or [`ExtensionError::Io`] if unpacking it under
-/// `root` fails.
-pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
-    install_package(archive, root, None)
-}
-
-/// Like [`install_from_bytes`], for a package that must be the Web Store item
-/// `expected_id`: a signed package for any other identifier is refused.
-///
-/// # Errors
-///
-/// As [`install_from_bytes`], plus [`ExtensionError::Archive`] when the
-/// verified identifier is not `expected_id`.
-pub fn install_verified_crx(
-    archive: &[u8],
-    root: &Path,
-    expected_id: &str,
-) -> Result<ExtensionInfo, ExtensionError> {
-    if !crate::crx::is_crx(archive) {
-        return Err(ExtensionError::Archive("not a CRX package".into()));
-    }
-    install_package(archive, root, Some(expected_id))
-}
-
+/// Plain zips (`.xpi`, `.zip`) are accepted as unsigned packages. With
+/// `expected_id`, a package signed for any other identifier is refused.
 fn install_package(
     archive: &[u8],
     root: &Path,
@@ -366,6 +338,21 @@ fn slug(name: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    /// Stage `archive` as a picked file and install it, as the browser does.
+    fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
+        stage_file(archive.to_vec())?.install(root)
+    }
+
+    /// Stage `archive` as the Web Store item `expected_id` and install it, as
+    /// the browser does.
+    fn install_verified_crx(
+        archive: &[u8],
+        root: &Path,
+        expected_id: &str,
+    ) -> Result<ExtensionInfo, ExtensionError> {
+        stage_package(archive.to_vec(), expected_id)?.install(root)
+    }
 
     const MANIFEST: &str = r#"{
         "manifest_version": 2,
@@ -760,7 +747,9 @@ impl StagedPackage {
     /// Unpack the staged package under `root`.
     ///
     /// # Errors
-    /// As [`install_from_bytes`].
+    /// Returns [`ExtensionError::Archive`] if the package fails verification,
+    /// [`ExtensionError::Manifest`] if its manifest is invalid, or
+    /// [`ExtensionError::Io`] if unpacking it under `root` fails.
     pub fn install(&self, root: &Path) -> Result<ExtensionInfo, ExtensionError> {
         install_package(&self.bytes, root, self.signed_id.as_deref())
     }
@@ -855,28 +844,21 @@ pub fn chrome_id(extension: &ExtensionInfo) -> Option<String> {
     Some(crate::crx::extension_id(&bytes))
 }
 
-/// Chromium derives an unpacked extension identity from its key, or its absolute path.
-pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_str(&read_manifest(&extension.path.join("manifest.json")).ok()?).ok()?;
-    let popup = manifest.get("action")?.get("default_popup")?.as_str()?;
-    if popup.starts_with('/')
-        || popup.split('/').any(|part| part == "..")
-        || popup.contains(['\\', ':', '#', '?'])
-    {
-        return None;
-    }
-    Some(format!(
-        "chrome-extension://{}/{popup}",
-        chrome_id(extension)?
-    ))
-}
-
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
     use crate::crx::fixtures::{Signer, crx};
     use std::io::{Cursor, Write};
+
+    /// Stage `archive` as the Web Store item `expected_id` and install it, as
+    /// the browser does.
+    fn install_verified_crx(
+        archive: &[u8],
+        root: &Path,
+        expected_id: &str,
+    ) -> Result<ExtensionInfo, ExtensionError> {
+        stage_package(archive.to_vec(), expected_id)?.install(root)
+    }
 
     fn fixture_zip_only() -> Vec<u8> {
         let mut buf = Cursor::new(Vec::new());

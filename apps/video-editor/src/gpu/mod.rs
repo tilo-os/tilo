@@ -1145,7 +1145,9 @@ mod tests {
             ]
             .into();
             let gray_then_sepia = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
-            p.clip_mut(cid).unwrap().move_effect_down(0);
+            let clip = p.clip_mut(cid).unwrap();
+            let gray = clip.effects[0].id;
+            clip.move_effect_id(gray, false);
             let sepia_then_gray = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
             assert!(
                 gray_then_sepia.r - gray_then_sepia.b > 0.08,

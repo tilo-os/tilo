@@ -8,7 +8,7 @@ use crate::animation::{Curve, Transition};
 use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
     Style, TaffyTree,
@@ -37,6 +37,33 @@ const MOVE_SETTLED_PX: f64 = 0.25;
 const MOVE_SETTLED_PX_PER_S: f64 = 4.0; // rest velocity in px/s, not a Theme gap
 /// Two pan targets closer than this are the same place on screen.
 const SNAP_SETTLED_PX: f64 = 0.5;
+
+/// How far behind the frame a direct pan reads the fingers. A touchpad
+/// reports at its own rate (about 125 Hz) and the display refreshes at
+/// another (60, 90 or 120 Hz), so showing the newest report moves the strip
+/// by one report on some frames and by two on others: a steady swipe judders
+/// at the beat of the two clocks. Reading the finger path a little in the
+/// past, interpolated between the reports around that moment, gives every
+/// frame the distance the fingers covered in one frame.
+const PAN_RESAMPLE_LATENCY: Duration = Duration::from_millis(5);
+/// Furthest a direct pan extrapolates past the newest report, when the next
+/// one is late; never more than half the last report interval either.
+const PAN_MAX_PREDICTION: Duration = Duration::from_millis(8);
+/// Reports further apart than this are not a steady motion to extrapolate:
+/// the fingers paused, and the newest report is where they are.
+const PAN_MAX_REPORT_GAP: Duration = Duration::from_millis(20);
+/// Shortest time a report is taken to span when reading a release velocity:
+/// a burst of reports drained together must not read as an instant throw.
+const PAN_MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
+/// Finger history a direct pan keeps: enough to resample between reports
+/// and to read the release velocity over.
+const PAN_SAMPLE_WINDOW: Duration = Duration::from_millis(100);
+/// Release velocity (px/s) below which lifted fingers leave the strip where
+/// it is rather than throwing it.
+const FLING_MIN_VELOCITY: f64 = 60.0;
+/// Ceiling on a release velocity (px/s): a bad timestamp must not send the
+/// strip across the whole canvas.
+const FLING_MAX_VELOCITY: f64 = 6_000.0;
 
 /// A tab dragged over a window body gets a generous before/after target at
 /// each outer edge. The target follows the window size, but stays useful on a
@@ -149,6 +176,53 @@ fn spring_omega(params: crate::tokens::SpringParams) -> f64 {
     (f64::from(params.stiffness) / f64::from(params.mass.max(0.0001))).sqrt()
 }
 
+/// Rate (1/s) at which a thrown strip slows: the inverse of the gesture
+/// token's coast time, so the glide covers `velocity × coast` and its
+/// velocity decays exponentially from the fingers' own.
+fn fling_omega() -> f64 {
+    1000.0 / f64::from(crate::tokens::Gesture::default().fling_projection_ms.max(1))
+}
+
+/// The pan travelling on its own toward `to` on a critically damped spring:
+/// a thrown strip coasting, an overpull settling, a reveal. Carries its
+/// velocity, so a retarget (the next wheel notch, fingers landing again)
+/// continues the motion instead of restarting a curve from rest.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    to: f64,
+    /// Offset from `to` and its velocity when the glide started.
+    motion: GroupMove,
+    omega: f64,
+}
+
+impl Glide {
+    fn start(from: f64, velocity: f64, to: f64, omega: f64, now: Instant) -> Self {
+        Self {
+            to,
+            motion: GroupMove {
+                from: from - to,
+                velocity,
+                started: now,
+            },
+            omega,
+        }
+    }
+
+    /// Position and velocity (px/s) at `now`.
+    fn at(self, now: Instant) -> (f64, f64) {
+        let (offset, velocity) = self.motion.at(
+            now.saturating_duration_since(self.motion.started),
+            self.omega,
+        );
+        (self.to + offset, velocity)
+    }
+
+    fn settled_at(self, now: Instant) -> bool {
+        let (position, velocity) = self.at(now);
+        (position - self.to).abs() < MOVE_SETTLED_PX && velocity.abs() < MOVE_SETTLED_PX_PER_S
+    }
+}
+
 /// In-flight snap animation; cleared when the curve settles or the user
 /// starts wheeling again.
 #[derive(Clone, Copy, Debug)]
@@ -156,6 +230,20 @@ struct SnapAnim {
     from: f64,
     to: f64,
     started: Instant,
+}
+
+impl SnapAnim {
+    /// Position and velocity (px/s) of the cubic-out curve at `now`.
+    fn at(self, now: Instant) -> (f64, f64) {
+        let total = f64::from(SNAP_ANIM_MS) / 1000.0;
+        let raw =
+            (now.saturating_duration_since(self.started).as_secs_f64() / total).clamp(0.0, 1.0);
+        let span = self.to - self.from;
+        let position = self.from + span * crate::ease_out(raw);
+        // d/dt of 1 - (1 - t)³.
+        let velocity = span * 3.0 * (1.0 - raw).powi(2) / total;
+        (position, velocity)
+    }
 }
 
 /// Press displacement (px) before a tab-bar-background press becomes a
@@ -307,6 +395,10 @@ pub struct GroupRow {
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
+    /// Transient: the display another strip's fullscreen covers. This
+    /// strip's lane there collapses; its lanes on other displays stay. A
+    /// row with no lanes spans every display and collapses whole.
+    covered_output: Option<u32>,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an inter-group resize drag).
     group_drag: Option<GroupDrag>,
@@ -378,6 +470,71 @@ pub struct GroupRow {
     /// again while the strip pans ([`Self::draw_group_apart`]). Emptied once
     /// the row is drawn in screen space again.
     apart_drawings: Vec<ApartDrawing>,
+    /// While frames only move the strip drawn in screen space
+    /// ([`crate::retained_present::pan_replay`]): the last drawing of each
+    /// window at rest, which the next such frame replays where the window
+    /// is now ([`Self::draw_group_replaying`]). Any other frame empties it.
+    pan_drawings: Vec<ApartDrawing>,
+    /// Windows at rest the current draw drew or replayed: their drawings
+    /// are kept, every other one is dropped.
+    pan_kept: Vec<u64>,
+    /// Windows the last draw replayed. Like a culled window, each keeps its
+    /// state for its next real draw; unlike one, it was shown.
+    replayed_groups: Vec<u64>,
+    /// The theme [`Self::pan_drawings`] were drawn in.
+    pan_theme: Option<Theme>,
+    /// The frame ([`crate::retained_present::pan_frame`]) this row was last
+    /// drawn in.
+    pan_drawn_frame: Option<u64>,
+    /// Windows whose drawing cannot be kept (it carries a blurred material
+    /// or pixels living outside it) while frames only move: drawn plainly.
+    pan_unkept: Vec<u64>,
+    /// Windows that put anything on the top layer in the last frame
+    /// ([`Widget::draw_overlay`]): an open menu or popover may hang on
+    /// where the window's widgets last drew, so such a window is drawn,
+    /// never replayed.
+    overlay_groups: Vec<u64>,
+}
+
+/// What of a group at `rect` the draw viewport shows across, measured from
+/// the group's left edge and limited to the group, which is what its
+/// widgets cull against the viewport; `None` with no viewport (nothing is
+/// culled).
+fn seen_across(presence: &PresenceCtx, rect: Rect) -> Option<(f64, f64)> {
+    presence.viewport.get().map(|viewport| {
+        (
+            (viewport.x0 - rect.x0).max(0.0),
+            (viewport.x1 - rect.x0).min(rect.width()),
+        )
+    })
+}
+
+/// A group's drawing just made ([`GroupRow::record_group`]), not yet
+/// appended to the frame.
+struct GroupDrawing(ApartDrawing);
+
+impl GroupDrawing {
+    /// Append the drawing to `scene` as drawn, carrying the floating
+    /// surfaces drawn into it; returns how many it carried.
+    fn append_to(&self, scene: &mut Scene) -> usize {
+        let drawing = &self.0;
+        crate::scene_parts::append_with(
+            scene,
+            drawing.parts.as_ref(),
+            Some(Affine::IDENTITY),
+            |scene| crate::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY),
+        )
+    }
+
+    /// The drawing, when it may be kept for a replay: one that carried a
+    /// blurred material (`carried` surfaces) is drawn every frame, since
+    /// replayed, the material would lose its backdrop. So is one that draws
+    /// pixels living outside it (a client's GPU buffer): those are valid
+    /// only for the frame that drew them, and a replay could read a buffer
+    /// its client already got back.
+    fn keep(self, carried: usize) -> Option<ApartDrawing> {
+        (carried == 0 && !draws_external_pixels(&self.0.scene)).then_some(self.0)
+    }
 }
 
 /// What of a strip drawn in canvas coordinates the screen shows this draw.
@@ -416,6 +573,10 @@ struct ApartDrawing {
     parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
+    /// What of the group the drawing culled nothing in, across: the draw
+    /// viewport's `(x0, x1)` measured from the group's left edge. `None`
+    /// when nothing was culled. A replay must show no more of the group.
+    seen: Option<(f64, f64)>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -475,6 +636,13 @@ pub struct Pan {
     /// gesture. Gesture updates carry total travel, so this remains fixed
     /// until End.
     strip_pan_origin: Option<f64>,
+    /// The current gesture's finger path: when each report arrived and the
+    /// total travel it carried, oldest first, over [`PAN_SAMPLE_WINDOW`].
+    /// The frame tick resamples it ([`Self::resampled_travel`]); release
+    /// reads its velocity ([`Self::release_velocity`]).
+    finger_path: VecDeque<(Instant, f64)>,
+    /// A throw, overpull settle or reveal in flight.
+    glide: Option<Glide>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -521,22 +689,24 @@ impl Pan {
 
     fn begin_strip_pan(&mut self) {
         self.strip_pan_origin = Some(self.scroll_x);
+        self.finger_path.clear();
         self.snap_anim = None;
+        self.glide = None;
         self.last_wheel_at = None;
     }
 
+    /// Where a direct pan asking for `requested` is shown: 1:1 within the
+    /// legal canvas, against the shared rubber band past either end.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
                   f64 values are safely representable at sub-pixel precision and the result is \
                   immediately widened back into the row's f64 geometry"
     )]
-    fn update_strip_pan(&mut self, travel: f64) -> bool {
-        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
-        let requested = origin + travel;
+    fn rubber_banded(&self, requested: f64) -> f64 {
         let max = self.pan_max_scroll_x();
         let reach = self.viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
-        let next = if requested < 0.0 {
+        if requested < 0.0 {
             -f64::from(crate::tokens::rubber_band(
                 (-requested) as f32,
                 reach as f32,
@@ -548,29 +718,161 @@ impl Pan {
             ))
         } else {
             requested
+        }
+    }
+
+    /// The gesture's total travel where the fingers were
+    /// [`PAN_RESAMPLE_LATENCY`] before `now`: interpolated between the two
+    /// reports around that moment, extrapolated a little past the newest
+    /// when the next is late, or the first report before the path has
+    /// history. `None` without a report.
+    fn resampled_travel(&self, now: Instant) -> Option<f64> {
+        let &(last_at, last) = self.finger_path.back()?;
+        let at = now.checked_sub(PAN_RESAMPLE_LATENCY).unwrap_or(now);
+        if at >= last_at {
+            let Some(&(prev_at, prev)) = self.finger_path.iter().rev().nth(1) else {
+                return Some(last);
+            };
+            let interval = last_at.saturating_duration_since(prev_at);
+            if interval.is_zero() || interval > PAN_MAX_REPORT_GAP {
+                return Some(last);
+            }
+            let ahead = at
+                .saturating_duration_since(last_at)
+                .min(interval / 2)
+                .min(PAN_MAX_PREDICTION);
+            return Some(last + (last - prev) * ahead.as_secs_f64() / interval.as_secs_f64());
+        }
+        let mut later = (last_at, last);
+        for &(sample_at, travel) in self.finger_path.iter().rev().skip(1) {
+            if sample_at <= at {
+                let span = later.0.saturating_duration_since(sample_at).as_secs_f64();
+                let into = at.saturating_duration_since(sample_at).as_secs_f64();
+                return Some(if span > 0.0 {
+                    travel + (later.1 - travel) * into / span
+                } else {
+                    later.1
+                });
+            }
+            later = (sample_at, travel);
+        }
+        Some(later.1)
+    }
+
+    /// Velocity (travel px/s) of the fingers as they lift at `now`: the
+    /// travel over the reports of the last [`PAN_SAMPLE_WINDOW`], over the
+    /// time from the oldest of them to the release, so fingers that paused
+    /// before lifting throw nothing. Zero with fewer than two reports.
+    fn release_velocity(&self, now: Instant) -> f64 {
+        let Some(&(last_at, last)) = self.finger_path.back() else {
+            return 0.0;
         };
+        let end = now.max(last_at);
+        let Some(&(first_at, first)) = self
+            .finger_path
+            .iter()
+            .find(|(at, _)| end.saturating_duration_since(*at) <= PAN_SAMPLE_WINDOW)
+        else {
+            return 0.0;
+        };
+        let reports = self
+            .finger_path
+            .iter()
+            .filter(|(at, _)| *at > first_at)
+            .count();
+        let span = end
+            .saturating_duration_since(first_at)
+            .max(PAN_MIN_REPORT_INTERVAL.saturating_mul(u32::try_from(reports).unwrap_or(u32::MAX)))
+            .as_secs_f64();
+        if first_at >= last_at || span <= 0.0 {
+            return 0.0;
+        }
+        let velocity = (last - first) / span;
+        if velocity.abs() < FLING_MIN_VELOCITY {
+            0.0
+        } else {
+            velocity.clamp(-FLING_MAX_VELOCITY, FLING_MAX_VELOCITY)
+        }
+    }
+
+    /// Whether a frame at `now` would show a direct pan somewhere else
+    /// than the strip is: fingers down and the resampled path not yet where
+    /// the last frame put it. Fingers resting on the pad ask for nothing.
+    fn direct_pan_moving(&self, now: Instant) -> bool {
+        let Some(origin) = self.strip_pan_origin else {
+            return false;
+        };
+        self.resampled_travel(now).is_some_and(|travel| {
+            (self.rubber_banded(origin + travel) - self.scroll_x).abs() > f64::EPSILON
+        })
+    }
+
+    /// Record the fingers' total `travel` reported `at`. The strip shows it
+    /// at once; the next frame tick then places it where the fingers were
+    /// at that frame ([`Self::resampled_travel`]).
+    fn update_strip_pan(&mut self, travel: f64, at: Instant) -> bool {
+        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
+        // Reports arrive in order; a clock that steps back must not fold
+        // the path over itself.
+        let at = self
+            .finger_path
+            .back()
+            .map_or(at, |&(last, _)| at.max(last));
+        self.finger_path.push_back((at, travel));
+        while self.finger_path.len() > 2
+            && self
+                .finger_path
+                .front()
+                .is_some_and(|&(first, _)| at.saturating_duration_since(first) > PAN_SAMPLE_WINDOW)
+        {
+            self.finger_path.pop_front();
+        }
+        let next = self.rubber_banded(origin + travel);
+        self.snap_anim = None;
+        self.glide = None;
+        self.last_wheel_at = None;
         if (next - self.scroll_x).abs() <= f64::EPSILON {
             return false;
         }
         self.scroll_x = next;
-        self.snap_anim = None;
-        self.last_wheel_at = None;
         true
     }
 
-    fn end_strip_pan(&mut self, now: Instant) -> bool {
+    /// The fingers lifted at `now`. With `throw`, a strip still moving
+    /// keeps the fingers' velocity and coasts to a stop; one released in
+    /// elastic overpull, or thrown past an end, settles on that end on
+    /// `settle_omega`. A strip released at rest within the canvas stays
+    /// exactly where it is.
+    fn end_strip_pan(&mut self, now: Instant, throw: bool, settle_omega: f64) -> bool {
+        let from = match (self.strip_pan_origin, self.resampled_travel(now)) {
+            (Some(origin), Some(travel)) => self.rubber_banded(origin + travel),
+            _ => self.scroll_x,
+        };
+        let velocity = if throw {
+            self.release_velocity(now)
+        } else {
+            0.0
+        };
         self.strip_pan_origin = None;
-        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
-        if (target - self.scroll_x).abs() <= 0.5 {
-            self.scroll_x = target;
+        self.finger_path.clear();
+        self.last_wheel_at = None;
+        self.scroll_x = from;
+        let max = self.pan_max_scroll_x();
+        let coast = from + velocity / fling_omega();
+        let to = coast.clamp(0.0, max);
+        if velocity.abs() < FLING_MIN_VELOCITY && (to - from).abs() <= SNAP_SETTLED_PX {
+            self.scroll_x = to;
             return false;
         }
-        self.snap_anim = Some(SnapAnim {
-            from: self.scroll_x,
-            to: target,
-            started: now,
-        });
-        self.last_wheel_at = None;
+        // Within the canvas the glide's velocity decays exponentially, the
+        // coast the gesture token describes. Past an end it lands on that
+        // end at the settle rate, a short give rather than a long crawl.
+        let omega = if (coast - to).abs() <= f64::EPSILON {
+            fling_omega()
+        } else {
+            settle_omega
+        };
+        self.glide = Some(Glide::start(from, velocity, to, omega, now));
         true
     }
 
@@ -613,27 +915,42 @@ impl Pan {
     fn jump_to(&mut self, sx: f64) {
         self.scroll_x = sx;
         self.snap_anim = None;
+        self.glide = None;
         self.last_wheel_at = None;
     }
 
-    /// Restarting an ease that already heads for `sx` would begin its curve
-    /// again from here, and a caller asking every frame would chase the
-    /// target for seconds; nor is a sub-pixel move worth a frame.
-    fn ease_to(&mut self, sx: f64, now: Instant) {
+    /// Whether the pan is travelling on its own (a snap or a glide).
+    fn animating(&self) -> bool {
+        self.snap_anim.is_some() || self.glide.is_some()
+    }
+
+    /// Glide to `sx` on `omega`, from where the pan is at `now` and at the
+    /// speed it is moving, so a stream of retargets (one per wheel notch)
+    /// reads as one continuous motion rather than a curve restarting from
+    /// rest at every step. Re-asking for the target already in flight
+    /// changes nothing, and a sub-pixel move is not worth a frame.
+    fn ease_to(&mut self, sx: f64, now: Instant, omega: f64) {
+        if let Some(glide) = self.glide
+            && (glide.to - sx).abs() <= SNAP_SETTLED_PX
+        {
+            return;
+        }
         if let Some(anim) = self.snap_anim
             && (anim.to - sx).abs() <= SNAP_SETTLED_PX
         {
             return;
         }
-        if self.snap_anim.is_none() && (sx - self.scroll_x).abs() <= SNAP_SETTLED_PX {
+        let (from, velocity) = match (self.glide, self.snap_anim) {
+            (Some(glide), _) => glide.at(now),
+            (None, Some(anim)) => anim.at(now),
+            (None, None) => (self.scroll_x, 0.0),
+        };
+        if !self.animating() && (sx - from).abs() <= SNAP_SETTLED_PX {
             self.jump_to(sx);
             return;
         }
-        self.snap_anim = Some(SnapAnim {
-            from: self.scroll_x,
-            to: sx,
-            started: now,
-        });
+        self.snap_anim = None;
+        self.glide = Some(Glide::start(from, velocity, sx, omega, now));
         self.last_wheel_at = None;
     }
 
@@ -734,7 +1051,7 @@ impl Pan {
     /// True while a snap is in flight, or the user just wheeled (within
     /// the idle threshold); keeps the shell's redraw chain pumping.
     fn snap_in_flight(&self) -> bool {
-        if self.snap_anim.is_some() {
+        if self.animating() || self.direct_pan_moving(crate::time::now()) {
             return true;
         }
         // Pending snap: idle gate hasn't fired yet. Keep redraws pumping
@@ -787,6 +1104,22 @@ impl Pan {
     /// on the tick it starts. Returns whether `scroll_x` moved.
     fn tick_snap_at(&mut self, now: Instant, reduce_motion: bool) -> bool {
         let before = self.scroll_x;
+        // Fingers down: show where they were at this frame.
+        if let Some(origin) = self.strip_pan_origin {
+            if let Some(travel) = self.resampled_travel(now) {
+                self.scroll_x = self.rubber_banded(origin + travel);
+            }
+            return (self.scroll_x - before).abs() > f64::EPSILON;
+        }
+        if let Some(glide) = self.glide {
+            if reduce_motion || glide.settled_at(now) {
+                self.scroll_x = glide.to;
+                self.glide = None;
+            } else {
+                self.scroll_x = glide.at(now).0;
+            }
+            return (self.scroll_x - before).abs() > f64::EPSILON;
+        }
         // Kicking a fresh snap off here, before the curve-advance branch
         // below, lets this same call both start it and apply its first
         // eased frame.
@@ -863,7 +1196,7 @@ impl Pan {
         if geometry_moved
             && steady
             && !self.absolute
-            && self.snap_anim.is_none()
+            && !self.animating()
             && let Some(target) = self.strip_frame_target(&self.laid_spans)
         {
             self.scroll_x = target;
@@ -999,6 +1332,7 @@ impl GroupRow {
             promotion_keeps_gutter: false,
             promotion_keeps_controls: false,
             hidden: false,
+            covered_output: None,
             group_drag: None,
             touch_pan: None,
             group_reorder_target: None,
@@ -1022,6 +1356,13 @@ impl GroupRow {
             apart_window: None,
             apart_spans: Vec::new(),
             apart_drawings: Vec::new(),
+            pan_drawings: Vec::new(),
+            pan_kept: Vec::new(),
+            replayed_groups: Vec::new(),
+            pan_theme: None,
+            pan_drawn_frame: None,
+            overlay_groups: Vec::new(),
+            pan_unkept: Vec::new(),
         }
     }
 
@@ -1245,6 +1586,25 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Collapse this strip's lane on display `output`, which another
+    /// strip's fullscreen covers, and keep its lanes on the other displays;
+    /// `None` shows every lane again.
+    pub fn set_covered_output(&mut self, output: Option<u32>) {
+        if self.covered_output != output {
+            self.covered_output = output;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The lane collapsed under another strip's fullscreen, if this row
+    /// has one on the covered display.
+    fn covered_lane(&self) -> Option<usize> {
+        let output = self.covered_output?;
+        self.lanes
+            .iter()
+            .position(|lane| lane.spec.output == output)
     }
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
@@ -1976,6 +2336,18 @@ impl GroupRow {
         self.lane_canvas_pad(self.leading_pan())
     }
 
+    /// A frame was presented: each group may step its width spring once
+    /// more. The token a step spends returns when the group is marked
+    /// drawn, but a host that presents frames without marking its content
+    /// drawn (the compositor) must say so here, or every width spring it
+    /// does not snap stops after its first step while its group keeps
+    /// asking for animation frames.
+    pub fn frame_presented(&mut self) {
+        for group in &mut self.groups {
+            group.frame_presented();
+        }
+    }
+
     /// Have the parent's draw skip this row, recording only its transform,
     /// so its owner draws it into a scene of its own with
     /// [`Self::draw_apart`]: a presenter that pans each strip on its own
@@ -2015,7 +2387,7 @@ impl GroupRow {
         pan.absolute = true;
         let next = requested.clamp(0.0, pan.max_scroll_x());
         let changed = (next - pan.scroll_x).abs() > f64::EPSILON
-            || pan.snap_anim.is_some()
+            || pan.animating()
             || pan.last_wheel_at.is_some();
         if changed {
             pan.jump_to(next);
@@ -2122,22 +2494,41 @@ impl GroupRow {
 
     /// Track a three-finger horizontal gesture in direct-manipulation space.
     /// `travel` is total signed scroll travel since Begin (positive moves
-    /// toward later groups). Legal canvas tracks 1:1; beyond either end the
-    /// shared iOS-style curve supplies continuously increasing resistance.
-    pub fn update_strip_pan(&mut self, travel: f64) -> bool {
+    /// toward later groups), reported `at` (the input event's own time, so
+    /// a batch drained late keeps its spacing). Legal canvas tracks 1:1;
+    /// beyond either end the shared iOS-style curve supplies continuously
+    /// increasing resistance. Each frame shows the travel resampled at the
+    /// frame's time, so a steady swipe moves the strip evenly whatever the
+    /// touchpad's report rate.
+    pub fn update_strip_pan(&mut self, travel: f64, at: Instant) -> bool {
         let moved = self
             .pan_of_lane_mut(self.focus_lane)
-            .update_strip_pan(travel);
+            .update_strip_pan(travel, at);
         if moved {
             self.scroll_dirty = true;
         }
         moved
     }
 
-    /// Release/cancel direct manipulation. In-range positions remain exactly
-    /// where the fingers left them; only elastic overpull settles to an end.
+    /// Release direct manipulation at `now`. A strip released at rest
+    /// stays exactly where the fingers left it; a thrown one coasts on with
+    /// their velocity (not under reduced motion); elastic overpull settles
+    /// to its end.
     pub fn end_strip_pan(&mut self, now: Instant) -> bool {
-        let settling = self.pan_of_lane_mut(self.focus_lane).end_strip_pan(now);
+        self.finish_strip_pan(now, !self.reduce_motion)
+    }
+
+    /// Cancel direct manipulation at `now`: the strip stays where it is,
+    /// thrown nowhere, and only elastic overpull settles to its end.
+    pub fn cancel_strip_pan(&mut self, now: Instant) -> bool {
+        self.finish_strip_pan(now, false)
+    }
+
+    fn finish_strip_pan(&mut self, now: Instant, throw: bool) -> bool {
+        let omega = self.move_omega;
+        let settling = self
+            .pan_of_lane_mut(self.focus_lane)
+            .end_strip_pan(now, throw, omega);
         if settling {
             self.scroll_dirty = true;
         }
@@ -2179,15 +2570,17 @@ impl GroupRow {
         true
     }
 
-    /// Same target as [`Self::scroll_group_into_view`], eased on the
-    /// wheel-snap curve instead of teleporting, so a focus jump reads as
-    /// motion rather than a cut.
+    /// Same target as [`Self::scroll_group_into_view`], glided on the
+    /// group-move spring instead of teleporting, so a focus jump reads as
+    /// motion rather than a cut, and a run of jumps (a spun wheel) as one
+    /// motion that keeps its speed.
     pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
         self.pan_of_group_mut(group_id).absolute = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
-        self.pan_of_group_mut(group_id).ease_to(sx, now);
+        let omega = self.move_omega;
+        self.pan_of_group_mut(group_id).ease_to(sx, now, omega);
         self.scroll_dirty = true;
         true
     }
@@ -2300,9 +2693,39 @@ impl GroupRow {
             .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight())
     }
 
+    /// The time the pan's motion is read at for a frame at `now`: a capture
+    /// hold freezes it with the group moves it started alongside.
+    fn snap_clock(&self, now: Instant) -> Instant {
+        match (self.shift_hold, self.moves.first()) {
+            (Some(hold), Some(&(_, m))) => m.started.checked_add(hold).unwrap_or(now),
+            _ => now,
+        }
+    }
+
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;
+    }
+
+    /// The groups presented as children ([`Widget::children_mut`]): none
+    /// while hidden, the promoted one while one is fullscreen or
+    /// maximized, otherwise all of them.
+    fn shown_group_indices(&self) -> Vec<usize> {
+        if self.hidden {
+            return Vec::new();
+        }
+        match self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            Some(index) => vec![index],
+            None => (0..self.groups.len()).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replayed_groups_for_test(&self) -> &[u64] {
+        &self.replayed_groups
     }
 
     #[cfg(test)]
@@ -2918,7 +3341,7 @@ impl GroupRow {
         let dy = at.y - pan.start.y;
         if self.finger_crossed_display(pan.start, at) {
             if pan.engaged {
-                let _ = self.end_strip_pan(crate::time::now());
+                let _ = self.cancel_strip_pan(crate::time::now());
                 pan.engaged = false;
                 self.touch_pan = Some(pan);
             }
@@ -2943,7 +3366,7 @@ impl GroupRow {
             self.begin_strip_pan();
             pan.engaged = true;
         }
-        let _ = self.update_strip_pan(travel);
+        let _ = self.update_strip_pan(travel, crate::time::now());
         self.touch_pan = Some(pan);
         true
     }
@@ -3330,19 +3753,39 @@ impl Widget for GroupRow {
             .collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.hidden {
-            return vec![];
-        }
-        if let Some(index) = self
-            .fullscreen_idx()
-            .or_else(|| self.groups.iter().position(|g| g.maximized))
-        {
-            return vec![&mut self.groups[index]];
-        }
+        let shown = self.shown_group_indices();
         self.groups
             .iter_mut()
-            .map(|group| group as &mut dyn Widget)
+            .enumerate()
+            .filter(|(index, _)| shown.contains(index))
+            .map(|(_, group)| group as &mut dyn Widget)
             .collect()
+    }
+
+    /// Each window's top layer, in [`Self::children_mut`]'s order as the
+    /// default draws it, noting which windows put anything there
+    /// ([`Self::overlay_groups`]).
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        fn drawn(scene: &Scene) -> (usize, usize) {
+            let encoding = scene.encoding();
+            (encoding.path_tags.len(), encoding.draw_tags.len())
+        }
+        self.overlay_groups.clear();
+        for index in self.shown_group_indices() {
+            let before = drawn(scene);
+            let group = &mut self.groups[index];
+            group.draw_overlay(scene, transform, text_renderer, theme, presence);
+            if drawn(scene) != before {
+                self.overlay_groups.push(group.id);
+            }
+        }
     }
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
@@ -3377,9 +3820,15 @@ impl Widget for GroupRow {
     }
 
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
-        // Animation needs one layout refresh per host frame, not an endless
-        // structural invalidation inside bounded composition settlement.
-        self.structure_dirty |= self.snap_in_flight();
+        // A pan in motion (a throw, a settle, a reveal, fingers resampled at
+        // the frame clock) advances here, once per host frame. Moving marks
+        // the row `scroll_dirty`, a layout pass that re-applies the windows'
+        // positions; it never rebuilds or re-measures the strip, which a
+        // structural invalidation per animation frame used to do.
+        if !self.hidden {
+            let now = self.snap_clock(crate::time::now());
+            self.tick_snap_at(now);
+        }
         let mut any = false;
         for g in &mut self.groups {
             if g.update(state, root) {
@@ -3524,11 +3973,14 @@ impl Widget for GroupRow {
         // viewport and `draw` clips to it. `flex_shrink: 1.0` was tried
         // and rejected — it silently shrinks siblings on every spawn,
         // violating the infinite-strip invariant.
+        let covered_lane = self.covered_lane();
         for (i, &node) in group_nodes.iter().enumerate() {
             let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.flex_shrink = 0.0;
             let lane = lane_of.get(i).copied().unwrap_or(0);
-            if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
+            if covered_lane == Some(lane) {
+                style.display = Display::None;
+            } else if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
                 if i == max_i {
                     // `maximized` already carries this grow style from
                     // `WindowGroup::build_layout`; a fullscreen-promoted
@@ -3575,7 +4027,8 @@ impl Widget for GroupRow {
         // A strip owning no part of the current fullscreen surface
         // collapses away entirely, so the promoted group in another strip
         // is the only thing painted.
-        let row_display = if self.hidden {
+        let row_display = if self.hidden || (self.covered_output.is_some() && self.lanes.is_empty())
+        {
             Display::None
         } else {
             Display::Flex
@@ -3625,7 +4078,8 @@ impl Widget for GroupRow {
                 let hn = h.build_layout(taffy, theme, node_map);
                 self.handle_node_ids.push(hn);
                 let same_lane = lane_of.get(i.saturating_add(1)).copied() == Some(lane);
-                let collapsed = maximized_in.get(lane).copied().flatten().is_some();
+                let collapsed = maximized_in.get(lane).copied().flatten().is_some()
+                    || covered_lane == Some(lane);
                 if same_lane && !collapsed {
                     if let Some(run) = lane_children.get_mut(lane) {
                         run.push(hn);
@@ -3771,7 +4225,7 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
-            if !edge_resizing && pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+            if !edge_resizing && pan.strip_pan_origin.is_none() && !pan.animating() {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {
@@ -3782,7 +4236,7 @@ impl Widget for GroupRow {
             // own moves are measured on screen against this eased pan.
             if ease_reframe
                 && pan.strip_pan_origin.is_none()
-                && pan.snap_anim.is_none()
+                && !pan.animating()
                 && (pan.scroll_x - before).abs() > 0.5
             {
                 pan.ease_scroll_from(before, now);
@@ -3794,10 +4248,7 @@ impl Widget for GroupRow {
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased. A capture hold freezes the
         // re-frame with the moves it started alongside.
-        let snap_now = match (self.shift_hold, self.moves.first()) {
-            (Some(hold), Some(&(_, m))) => m.started.checked_add(hold).unwrap_or(now),
-            _ => now,
-        };
+        let snap_now = self.snap_clock(now);
         self.tick_snap_at(snap_now);
         // Panning stays in lock-step with the wheel-disc's own
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
@@ -3853,13 +4304,32 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Drawings are replayed only into the frame right after the one
+        // that drew or replayed them, and only while frames only pan: any
+        // frame between may have changed a window.
+        let frame = crate::retained_present::pan_frame();
+        let consecutive = self
+            .pan_drawn_frame
+            .is_some_and(|last| last.wrapping_add(1) == frame);
+        self.pan_drawn_frame = Some(frame);
+        self.pan_kept.clear();
+        self.replayed_groups.clear();
+        let only_moved =
+            crate::retained_present::pan_frame_kind() != crate::retained_present::PanFrame::Drawn;
+        if !only_moved || !consecutive || self.pan_theme.as_ref() != Some(theme) {
+            self.pan_drawings.clear();
+            self.pan_unkept.clear();
+            self.pan_theme = only_moved.then(|| theme.clone());
+        }
         if self.drawn_apart {
             self.apart_transform = Some(transform);
+            self.pan_drawings.clear();
             return;
         }
         self.reduce_motion = theme.reduce_motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
+            self.pan_drawings.clear();
             return;
         }
         self.scroll_dirty = false;
@@ -3961,6 +4431,12 @@ impl Widget for GroupRow {
             self.apart_drawings.clear();
             self.apart_spans.clear();
         }
+        // A window this frame did not draw or replay at rest may change
+        // before it is shown again, and a frame that is not only a pan may
+        // have changed any of them.
+        let kept = &self.pan_kept;
+        self.pan_drawings
+            .retain(|drawing| kept.contains(&drawing.id));
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
     }
@@ -4191,8 +4667,9 @@ impl Widget for GroupRow {
 
     fn mark_drawn(&mut self) {
         let culled = std::mem::take(&mut self.culled_groups);
+        let replayed = self.replayed_groups.clone();
         for group in &mut self.groups {
-            if culled.contains(&group.id) {
+            if culled.contains(&group.id) || replayed.contains(&group.id) {
                 group.next_frame();
             } else {
                 group.mark_drawn();
@@ -4381,7 +4858,14 @@ impl GroupRow {
         // closing a gap rather than having always had one.
         let now = crate::time::now();
         let fade_alpha = self.sibling_fade.value(now);
-        let fade_hero = self.fade_hero;
+        // Only the hero's own run fades: on a strip spread across displays
+        // the others keep their windows.
+        let fade_hero = self.fade_hero.filter(|&hero| {
+            self.groups
+                .iter()
+                .position(|group| group.id == hero)
+                .is_some_and(|i| in_run.get(i).copied().unwrap_or(false))
+        });
         for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
                 continue;
@@ -4435,7 +4919,27 @@ impl GroupRow {
                 {
                     self.draw_group_apart(i, window, scene, t, (tr, theme, presence));
                 }
-                _ => self.groups[i].draw(scene, t, tr, theme, presence),
+                // Only a group at rest in its slot, as above.
+                None if crate::retained_present::pan_replay()
+                    && !source_is_lifted
+                    && !fading_sibling
+                    && dx.abs() <= f64::EPSILON =>
+                {
+                    self.draw_group_replaying(i, scene, t, (tr, theme, presence));
+                }
+                _ => {
+                    // A frame that only moved but draws every window keeps
+                    // the drawings of the windows at rest it draws: nothing in
+                    // them changed.
+                    if crate::retained_present::pan_frame_kind()
+                        == crate::retained_present::PanFrame::Kept
+                        && dx.abs() <= f64::EPSILON
+                        && self.group_at_rest(i, now)
+                    {
+                        self.pan_kept.push(id);
+                    }
+                    self.groups[i].draw(scene, t, tr, theme, presence);
+                }
             }
             if source_is_lifted {
                 scene.pop_layer();
@@ -4541,39 +5045,134 @@ impl GroupRow {
             self.culled_groups.push(id);
             return;
         }
-        let mut local = kept
+        let local = kept
             .map(|index| self.apart_drawings.swap_remove(index).scene)
             .unwrap_or_default();
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried =
+            crate::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
+        if let Some(drawing) = drawing.keep(carried) {
+            self.apart_drawings.push(drawing);
+        }
+    }
+
+    /// Draw group `i` on its own into `local`, a scene of its own that is
+    /// nested so floating chrome drawn into it waits for it, and keep what
+    /// a replay of the drawing needs.
+    fn record_group(
+        &mut self,
+        i: usize,
+        mut local: Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) -> GroupDrawing {
         local.reset();
         crate::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
+        let (id, rect) = (group.id, group.get_rect());
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
             group.draw(local, transform, tr, theme, presence);
         });
-        let shows_secret = secrets.finish();
-        // A drawing that carries a blurred material is drawn every frame:
-        // replayed, the material would lose its backdrop. So is one that
-        // draws pixels living outside it (a client's GPU buffer): those are
-        // valid only for the frame that drew them, and a replay could read a
-        // buffer its client already got back.
-        let carries_material = crate::scene_parts::part(scene, key, bounds, |scene| {
-            crate::scene_parts::append_with(
-                scene,
-                parts.as_ref(),
-                Some(Affine::IDENTITY),
-                |scene| crate::backdrop::append_nested(scene, &local, Affine::IDENTITY),
-            )
-        }) > 0;
-        if !carries_material && !draws_external_pixels(&local) {
-            self.apart_drawings.push(ApartDrawing {
-                id,
-                rect,
-                transform,
-                scene: local,
-                parts,
-                shows_secret,
-            });
+        GroupDrawing(ApartDrawing {
+            id,
+            rect,
+            transform,
+            scene: local,
+            parts,
+            shows_secret: secrets.finish(),
+            seen: seen_across(presence, rect),
+        })
+    }
+
+    /// Whether group `i` is at rest for a frame that only moves laid-out
+    /// content: not keyboard focused, nothing on the top layer last frame,
+    /// and no animation frame, unfinished visual work or due wake asked for.
+    /// Such a frame follows one in which nothing reached a widget, the
+    /// document, focus or presence, so only time could change the window,
+    /// and it asks for none. Its dirty flag is no sign either way: a widget
+    /// that does not track one reports itself dirty on every frame.
+    fn group_at_rest(&self, i: usize, now: Instant) -> bool {
+        let group = &self.groups[i];
+        !group.focused()
+            && !self.overlay_groups.contains(&group.id)
+            && !group.needs_animation_frame()
+            && !group.has_pending_visual_work()
+            && group
+                .next_wake_deadline()
+                .is_none_or(|deadline| deadline > now)
+    }
+
+    /// Draw group `i` of a strip drawn in screen space on a frame that only
+    /// moves laid-out content ([`crate::retained_present::pan_replay`]).
+    ///
+    /// A window at rest ([`Self::group_at_rest`]) whose last drawing was made
+    /// at its size, height and transform, in the frame just before, and
+    /// culled none of what the screen shows of it now, replays that drawing
+    /// moved by how far the strip panned since. Any other window at rest is
+    /// drawn, culled as on any frame, and its drawing kept. A window not at
+    /// rest, or whose drawing cannot be kept, is drawn as on any frame.
+    ///
+    /// What the window's widgets note while drawing still describes where it
+    /// was drawn; the host draws again before input or a semantics read
+    /// reaches them ([`crate::retained_present::PanReplay`]). Like a culled
+    /// window, a replayed one keeps its dirty state for its next real draw.
+    fn draw_group_replaying(
+        &mut self,
+        i: usize,
+        scene: &mut Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) {
+        let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+        if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
+            self.groups[i].draw(scene, transform, tr, theme, presence);
+            return;
+        }
+        let kept = self
+            .pan_drawings
+            .iter()
+            .position(|drawing| drawing.id == id);
+        self.pan_kept.push(id);
+        // The drawing culled what its draw viewport did not show; the
+        // screen may show no more of the window now.
+        let shows = seen_across(presence, rect);
+        let covers = |seen: Option<(f64, f64)>| match (seen, shows) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(seen), Some(shows)) => {
+                shows.0 >= shows.1 || (seen.0 <= shows.0 && shows.1 <= seen.1)
+            }
+        };
+        if let Some(drawing) = kept.and_then(|index| self.pan_drawings.get(index))
+            && drawing.transform == transform
+            && drawing.rect.size() == rect.size()
+            && drawing.rect.y0.to_bits() == rect.y0.to_bits()
+            && covers(drawing.seen)
+        {
+            // The drawing's layout moved by `dx`; in the scene that is the
+            // same move through the draw transform.
+            let dx = rect.x0 - drawing.rect.x0;
+            let moved =
+                Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
+            if drawing.shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
+            self.replayed_groups.push(id);
+            crate::retained_present::note_replayed();
+            return;
+        }
+        let local = kept
+            .map(|index| self.pan_drawings.swap_remove(index).scene)
+            .unwrap_or_default();
+        // Culled as on any frame: a window the pan brings further on screen
+        // is drawn again until it shows no more than a drawing of it saw.
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried = drawing.append_to(scene);
+        match drawing.keep(carried) {
+            Some(drawing) => self.pan_drawings.push(drawing),
+            None => self.pan_unkept.push(id),
         }
     }
 
@@ -5100,7 +5699,7 @@ mod tests {
         t.checked_sub(Duration::from_millis(ms)).unwrap_or(t)
     }
 
-    fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {
+    pub(super) fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = tab_ids
             .iter()
             .map(|t| {
@@ -5806,7 +6405,10 @@ mod tests {
         fn update(&mut self, state: &crate::widget::AppModel, path: &ModelPath) -> bool {
             if let Some(travel) = self.travel.take() {
                 self.row.begin_strip_pan();
-                assert!(self.row.update_strip_pan(travel), "the strip moves");
+                assert!(
+                    self.row.update_strip_pan(travel, crate::time::now()),
+                    "the strip moves"
+                );
                 self.row.end_strip_pan(crate::time::now());
             }
             self.row.update(state, path)
@@ -6510,7 +7112,8 @@ mod tests {
                 mid > 0.0 && mid < expected,
                 "halfway through the curve scroll_x must be between 0 and {expected}, got {mid}"
             );
-            anim.tick_snap_at(t0 + Duration::from_millis(u64::from(SNAP_ANIM_MS + 50)));
+            // The group-move spring has come to rest well inside a second.
+            anim.tick_snap_at(t0 + Duration::from_secs(1));
             assert_eq!(
                 anim.scroll_x(),
                 expected,
@@ -7631,6 +8234,122 @@ mod tests {
         );
     }
 
+    /// On frames that only pan a strip drawn in screen space, a window at
+    /// rest shows its last drawing moved by the pan instead of drawing again,
+    /// and the frame renders as one that drew every window does, in every
+    /// theme and at fractional pans. A keyboard-focused window draws; a
+    /// frame that is not only a pan draws every window and drops the
+    /// drawings, so the next pan frame replays nothing; a pan frame that
+    /// draws every window anyway keeps them.
+    #[test]
+    fn a_pan_frame_replays_windows_at_rest_and_renders_as_a_drawn_frame() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::retained_present::{PanFrame, PanReplay, take_replayed};
+        fn draw(row: &mut GroupRow, text: &mut TextRenderer, theme: &Theme, replay: bool) -> Scene {
+            draw_as(
+                row,
+                text,
+                theme,
+                if replay {
+                    PanFrame::Replayed
+                } else {
+                    PanFrame::Drawn
+                },
+            )
+        }
+        fn draw_as(
+            row: &mut GroupRow,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            frame: PanFrame,
+        ) -> Scene {
+            thread_local! {
+                static FRAMES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+            }
+            let number = FRAMES.with(|frames| {
+                frames.set(frames.get().wrapping_add(1));
+                frames.get()
+            });
+            let _frame = PanReplay::begin(frame, number);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::empty();
+            let previous = presence.push_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            row.draw(&mut scene, Affine::IDENTITY, text, theme, &presence);
+            presence.pop_viewport(previous);
+            row.mark_drawn();
+            scene
+        }
+        let text = &mut TextRenderer::new();
+        let mut renderer = OffscreenRenderer::new(800, 600);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let mut row = strip_at(5, 800.0, 0.0, 400);
+            relayout_strip(&mut row, 800.0);
+            take_replayed();
+            let _ = draw(&mut row, text, &theme, true);
+            assert_eq!(take_replayed(), 0, "the first pan frame draws every window");
+            for scroll in [37.0, 210.5, 333.25, 0.0] {
+                row.set_scroll_x_for_test(scroll);
+                relayout_strip(&mut row, 800.0);
+                let replayed = draw(&mut row, text, &theme, true);
+                let windows = take_replayed();
+                assert!(windows > 0, "a pan to {scroll} replays the windows at rest");
+                assert_eq!(windows, row.replayed_groups_for_test().len());
+                // The same pan drawn by a frame that is not only a pan.
+                let drawn = draw(&mut row, text, &theme, false);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "a frame that is not only a pan draws every window"
+                );
+                let replayed = renderer.render(&replayed, vello::peniko::Color::BLACK);
+                let drawn = renderer.render(&drawn, vello::peniko::Color::BLACK);
+                assert_eq!(
+                    OffscreenRenderer::pixels_differing_beyond_aa(&replayed, &drawn),
+                    0,
+                    "a pan to {scroll} replayed renders as drawn"
+                );
+                // That frame dropped the drawings: the next pan frame draws.
+                let _ = draw(&mut row, text, &theme, true);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "drawings do not outlive a frame that is not only a pan"
+                );
+            }
+            // A keyboard-focused window is drawn on every frame.
+            let shown = row.onscreen_group_ids();
+            let focused = shown[0];
+            let index = row
+                .groups
+                .iter()
+                .position(|group| group.id == focused)
+                .unwrap();
+            let _ = row.groups[index].set_focused(true);
+            let _ = draw(&mut row, text, &theme, false);
+            let _ = draw(&mut row, text, &theme, true);
+            row.set_scroll_x_for_test(120.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(take_replayed() > 0);
+            assert!(
+                !row.replayed_groups_for_test().contains(&focused),
+                "the focused window draws: {:?}",
+                row.replayed_groups_for_test()
+            );
+            // A pan frame that draws every window keeps the drawings: the
+            // one after replays again.
+            let _ = draw_as(&mut row, text, &theme, PanFrame::Kept);
+            assert_eq!(take_replayed(), 0, "a kept frame draws every window");
+            row.set_scroll_x_for_test(140.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(
+                take_replayed() > 0,
+                "drawings outlive a pan frame that drew every window"
+            );
+        }
+    }
+
     /// Each window group of a strip drawn in canvas coordinates is a damage
     /// part of the strip's drawing: drawn again, panned (groups off screen
     /// replaying their drawings) or held still, the strip shows no damage,
@@ -7808,25 +8527,27 @@ mod tests {
             row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
             row.set_content_w_for_test(2200.0);
 
-            assert!(row.update_strip_pan(450.0));
+            let t0 = crate::time::now();
+            let at = |ms: u64| t0 + Duration::from_millis(ms);
+            assert!(row.update_strip_pan(450.0, at(0)));
             assert!((row.scroll_x() - 450.0).abs() < 0.01);
-            assert!(row.update_strip_pan(320.0));
+            assert!(row.update_strip_pan(320.0, at(500)));
             assert!(
                 (row.scroll_x() - 320.0).abs() < 0.01,
                 "total gesture travel must reverse without rebasing its origin"
             );
             assert!(
-                !row.end_strip_pan(crate::time::now()),
-                "an in-range release must not snap away from the fingers"
+                !row.end_strip_pan(at(600)),
+                "an in-range release at rest must not move away from the fingers"
             );
             assert!((row.scroll_x() - 320.0).abs() < 0.01);
 
             // A new physical stream explicitly rebases, so a missing End at a
             // lock/session boundary cannot carry old total travel into it.
             row.begin_strip_pan();
-            assert!(row.update_strip_pan(10.0));
+            assert!(row.update_strip_pan(10.0, at(700)));
             assert!((row.scroll_x() - 330.0).abs() < 0.01);
-            let _ = row.end_strip_pan(crate::time::now());
+            let _ = row.end_strip_pan(at(800));
         }
 
         fn direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end() {
@@ -7835,11 +8556,14 @@ mod tests {
             row.set_content_w_for_test(2200.0);
             let end = row.pan_max_scroll_x();
 
-            assert!(row.update_strip_pan(end));
+            let t0 = crate::time::now();
+            assert!(row.update_strip_pan(end, t0));
             let mut previous = row.scroll_x();
             let mut previous_gain = f64::INFINITY;
+            let mut at = t0;
             for extra in [100.0, 200.0, 300.0, 400.0] {
-                assert!(row.update_strip_pan(end + extra));
+                at += Duration::from_millis(16);
+                assert!(row.update_strip_pan(end + extra, at));
                 let gain = row.scroll_x() - previous;
                 assert!(
                     gain > 0.0 && gain < previous_gain,
@@ -7853,9 +8577,15 @@ mod tests {
                 previous_gain = gain;
             }
 
-            let now = crate::time::now();
+            let now = at + Duration::from_millis(8);
             assert!(row.end_strip_pan(now));
-            row.tick_snap_at(now + Duration::from_millis(u64::from(SNAP_ANIM_MS) + 1));
+            row.tick_snap_at(now + Duration::from_millis(100));
+            assert!(
+                row.scroll_x() > end && row.scroll_x() < end + 280.0,
+                "the settle stays inside the rubber band on its way back: {}",
+                row.scroll_x()
+            );
+            row.tick_snap_at(now + Duration::from_secs(1));
             assert!(
                 (row.scroll_x() - end).abs() < 0.01,
                 "release must return exactly to the legal trailing rest"
@@ -8045,7 +8775,7 @@ mod tests {
             assert!(!row.snap_in_flight(), "and nothing is left in flight");
 
             row.begin_strip_pan();
-            assert!(row.update_strip_pan(-800.0));
+            assert!(row.update_strip_pan(-800.0, base));
             assert!(row.scroll_x() < 0.0, "fixture: the pan overpulls");
             assert!(row.end_strip_pan(base));
             row.tick_snap_at(base);
@@ -9323,3 +10053,6 @@ mod tests {
         assert!(last.x1 <= 1800.5 && last.x0 >= 1000.0, "{last:?}");
     }
 }
+#[cfg(test)]
+#[path = "group_row_pacing_tests.rs"]
+mod pacing_tests;

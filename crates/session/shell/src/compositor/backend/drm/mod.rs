@@ -3721,6 +3721,13 @@ impl Backend for DrmBackend {
         }
     }
 
+    fn poll_input(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
+        self.inner.dispatch_pending();
+        for ev in self.inner.dispatch.events.drain(..) {
+            callback(ev);
+        }
+    }
+
     fn outputs(&self) -> &[Output] {
         &self.outputs
     }

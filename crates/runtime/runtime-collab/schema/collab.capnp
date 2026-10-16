@@ -446,6 +446,15 @@ interface ChannelHandle {
   # Final receipt remains authoritative. No fallback to raw execution or @58.
   approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
 
+  # Resolves once what `nearbyTransferCommand`'s snapshot would show this
+  # connection (devices online, transfers and their phases) may have changed
+  # since `after`: 0 at first, then the `change` the previous call returned.
+  # It carries no device, transfer or handle; the endpoint asks for a fresh
+  # snapshot through `nearbyTransferCommand`, which re-checks the route and
+  # the person's continuity policy on every answer. An endpoint keeps one
+  # call pending instead of asking on a timer. Only the certified Files
+  # route is answered; a host without Nearby Send answers unimplemented.
+  nearbyTransferChanged @62 (after :UInt64) -> (change :UInt64);
 
 }
 

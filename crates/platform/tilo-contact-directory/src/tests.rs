@@ -362,8 +362,8 @@ fn shared_phone_hints_suggest_all_people_without_linking_anyone() {
 }
 
 #[test]
-fn multiple_sender_accounts_require_a_choice_and_preserve_provenance() {
-    use crate::routing::{AccountChoice, SenderAccount, routes, select_route};
+fn multiple_sender_accounts_each_route_and_preserve_provenance() {
+    use crate::routing::{SenderAccount, routes};
     let mut record = fixture().expect("fixture operation succeeds");
     record
         .apply_confirmed(ContactDirectory::CONFIRM_ACCOUNT.with((
@@ -385,28 +385,14 @@ fn multiple_sender_accounts_require_a_choice_and_preserve_provenance() {
     let mut senders = vec![sender("personal"), sender("work")];
     let candidates = routes(&state, &first(), "signal", &senders);
     assert_eq!(candidates.len(), 2);
-    assert_eq!(
-        select_route(&candidates, None),
-        AccountChoice::SelectionRequired(candidates.clone())
-    );
     let selected = candidates.first().expect("two routes");
-    assert_eq!(
-        select_route(&candidates, Some(selected)),
-        AccountChoice::Ready(selected.clone())
-    );
     assert_eq!(selected.person, first());
     assert_eq!(selected.association.as_str(), "signal-key");
     assert_eq!(selected.revision, "key-1");
     for sender in &mut senders {
         sender.enabled = false;
     }
-    assert_eq!(
-        select_route(
-            &routes(&state, &first(), "signal", &senders),
-            Some(selected)
-        ),
-        AccountChoice::Unavailable
-    );
+    assert!(routes(&state, &first(), "signal", &senders).is_empty());
     assert!(routes(&state, &first(), "whatsapp", &senders).is_empty());
 }
 

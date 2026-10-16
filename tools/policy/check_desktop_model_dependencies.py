@@ -16,11 +16,13 @@ through the toolkit and the other shared crates it uses, which own them.
 crate, tokio by feature unification — so the rule is on its own edges.)
 
 Each graph is resolved the way a build of the crate alone resolves it
-(``cargo tree -p``), for the host and for ``wasm32-unknown-unknown``, so a
+(``cargo tree -p``), for both Linux architectures and for
+``wasm32-unknown-unknown``, so a
 default feature that pulls a host stack into a shared dependency is caught
 too. The generated ``workspace-hack`` crate only unifies compilation features;
 prune its artificial edges while retaining all real paths to forbidden stacks.
-Resolving a graph does not need the wasm32 target installed.
+Each target is named rather than left to the host, so the result is the same
+on any machine. Resolving a graph does not need the targets installed.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WASM = "wasm32-unknown-unknown"
+NATIVE = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,7 @@ class Boundary:
     forbidden: frozenset[str]
     # Never a direct dependency of the package itself.
     not_direct: frozenset[str] = frozenset()
-    targets: tuple[str | None, ...] = (None,)
+    targets: tuple[str, ...] = NATIVE
 
 
 BOUNDARIES = (
@@ -61,13 +64,13 @@ BOUNDARIES = (
                 "winit",
             }
         ),
-        targets=(None, WASM),
+        targets=(*NATIVE, WASM),
     ),
     Boundary(
         package="tilo-desktop",
         forbidden=frozenset({"iroh", "smithay"}),
         not_direct=frozenset({"dirs", "libc", "settings-store", "tokio"}),
-        targets=(None, WASM),
+        targets=(*NATIVE, WASM),
     ),
 )
 

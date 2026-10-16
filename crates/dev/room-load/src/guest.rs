@@ -50,6 +50,54 @@ pub struct Shared {
     pub spectator_stats: Arc<Stats>,
     pub started: Instant,
     pub stop: tokio::sync::watch::Receiver<bool>,
+    /// Set once the run winds down: guests post nothing more, so what they
+    /// posted can settle.
+    pub quiet: tokio::sync::watch::Receiver<bool>,
+    /// The change hash (hex) of every chat message a guest posted.
+    pub sent: std::sync::Mutex<Vec<String>>,
+}
+
+/// Posts one historian has sent and not yet seen committed.
+const HISTORY_IN_FLIGHT: usize = 8;
+
+/// The chat record every guest writes, in the last room it joined.
+pub const CHAT_RECORD: &str = "general";
+/// The field of the chat record a guest's message sets.
+const MESSAGE: &str = "message";
+
+/// One chat message as a guest's page writes it: an Automerge change of the
+/// chat record setting [`MESSAGE`] to the time it was sent (milliseconds
+/// since the run started, big-endian) and `padding` bytes, by an actor of
+/// its own, so it applies to the record whatever else the record holds.
+fn chat_message(sent_ms: u64, padding: usize) -> Option<(Vec<u8>, String)> {
+    use automerge::transaction::Transactable as _;
+    use collab_types::CommitNamed as _;
+    let mut message = sent_ms.to_be_bytes().to_vec();
+    message.extend((0..padding).map(|_| rand::random::<u8>()));
+    let mut change = automerge::AutoCommit::new();
+    change
+        .put(
+            automerge::ROOT,
+            MESSAGE,
+            automerge::ScalarValue::Bytes(message),
+        )
+        .ok()?;
+    let hash = change.commit_edit("chat", MESSAGE)?;
+    Some((change.save_incremental(), hex::encode(hash.0)))
+}
+
+/// When the chat message `change` was sent, as [`chat_message`] wrote it.
+fn chat_sent_ms(change: &[u8]) -> Option<u64> {
+    use automerge::ReadDoc as _;
+    let mut document = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut document, change).ok()?;
+    let (automerge::Value::Scalar(value), _) = document.get(automerge::ROOT, MESSAGE).ok()?? else {
+        return None;
+    };
+    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+        return None;
+    };
+    Some(u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?))
 }
 
 fn exponential(mean_ms: f64) -> Duration {
@@ -143,6 +191,75 @@ pub async fn admit(
     Ok((key, cert, joined.rooms))
 }
 
+/// One guest who wrote the room's chat before the run's guests arrive: it
+/// joins, posts `count` messages as fast as its page sends them, waits until
+/// each is committed, and leaves. The chat's long history a later guest is
+/// sent when it joins.
+///
+/// # Errors
+///
+/// It was not admitted, not ready, or its posts were not all committed in
+/// time.
+pub async fn historian(shared: Arc<Shared>, index: usize, count: usize) -> Result<(), String> {
+    let name = format!("Historian {index}");
+    let request = serde_json::json!({ "userPublicKey": "", "displayName": name });
+    let (key, cert, rooms) = admit(&shared, "/join", request, &name).await?;
+    let peer = PeerHandle::start(
+        PeerConfig {
+            host: Host::Https(shared.relay.clone()),
+            cert,
+            host_cert: shared.host_cert.clone(),
+            revocations: RevocationList::new(),
+            watching: false,
+        },
+        Arc::new(key),
+        Arc::new(MemoryPeerStore::default()),
+    );
+    for room in &rooms {
+        peer.join(room.workspace_id)?;
+    }
+    let route = rooms
+        .last()
+        .map(|room| DocumentRoute {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: room.room.clone(),
+            record: CHAT_RECORD.into(),
+        })
+        .ok_or("no room")?;
+    let deadline = Instant::now() + Duration::from_secs(3600);
+    let (mut ready, mut committed, mut sent) = (0usize, 0usize, 0usize);
+    while committed < count {
+        for event in peer.drain() {
+            match event {
+                PeerEvent::Ready { .. } => ready += 1,
+                PeerEvent::Committed { .. } => committed += 1,
+                _ => {}
+            }
+        }
+        if Instant::now() > deadline {
+            peer.close();
+            return Err(format!(
+                "{name}: {committed} of {count} posts committed in time"
+            ));
+        }
+        // A few in flight at a time: a page with hundreds outstanding sends them
+        // all again on every reconnect, and the host spends itself on copies.
+        while ready >= rooms.len() && sent < count && sent < committed + HISTORY_IN_FLIGHT {
+            let (message, hash) = chat_message(0, shared.args.chat_bytes).ok_or("a message")?;
+            peer.publish(route.clone(), &DocumentMutation::Incremental(message))?;
+            shared
+                .sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(hash);
+            sent += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    peer.close();
+    Ok(())
+}
+
 /// Run one guest until the run stops.
 #[allow(
     clippy::too_many_lines,
@@ -205,7 +322,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     let chat = rooms.last().map(|room| DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
-        record: "general".into(),
+        record: CHAT_RECORD.into(),
     });
 
     // The cursor: a fallback live session on the desktop room.
@@ -261,14 +378,20 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
         }
         if let (Some(at), Some(route)) = (next_chat, chat.as_ref())
             && now >= at
+            && !*shared.quiet.borrow()
+            && let Some((message, hash)) =
+                chat_message(now_ms(shared.started), shared.args.chat_bytes)
         {
-            let mut message = now_ms(shared.started).to_be_bytes().to_vec();
-            message.extend((0..shared.args.chat_bytes).map(|_| rand::random::<u8>()));
             if peer
                 .publish(route.clone(), &DocumentMutation::Incremental(message))
                 .is_ok()
             {
                 stats.chat_tx.fetch_add(1, Ordering::Relaxed);
+                shared
+                    .sent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(hash);
             }
             next_chat = Some(now + exponential(shared.args.chat_every * 1000.0));
         }
@@ -330,10 +453,8 @@ pub fn take_events(
     for event in peer.drain() {
         match event {
             PeerEvent::Document(document) => match document.mutation() {
-                Some(DocumentMutation::Incremental(bytes)) if bytes.len() >= 8 => {
-                    let mut at = [0u8; 8];
-                    at.copy_from_slice(bytes.get(..8).unwrap_or(&[0; 8]));
-                    let sent = u64::from_be_bytes(at);
+                Some(DocumentMutation::Incremental(bytes)) if chat_sent_ms(&bytes).is_some() => {
+                    let sent = chat_sent_ms(&bytes).unwrap_or_default();
                     if sent < joined_at {
                         stats.chat_history();
                     } else {
@@ -341,6 +462,9 @@ pub fn take_events(
                         stats.chat(sent, latency as f64);
                     }
                 }
+                // The governor's compaction of the chat's history: messages
+                // the page already holds, as one snapshot.
+                Some(DocumentMutation::Snapshot(_)) => stats.chat_history(),
                 other => stats.fail(format!(
                     "document without a readable change (sealed: {}, mutation: {})",
                     document.decrypted_payload.is_some(),

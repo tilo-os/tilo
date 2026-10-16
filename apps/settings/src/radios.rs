@@ -87,9 +87,9 @@ impl Radios {
         let (again, asked) = std::sync::mpsc::channel::<()>();
         let wake = ui::WakeHandle::new();
         let reading = Arc::clone(&latest);
-        let started = std::thread::Builder::new()
-            .name("settings-radios".into())
-            .spawn(move || {
+        let started = crate::device_read::thread(
+            "settings-radios",
+            Box::new(move || {
                 loop {
                     let now = Some(probe());
                     let changed = reading.lock().is_ok_and(|mut latest| {
@@ -105,7 +105,8 @@ impl Radios {
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
-            });
+            }),
+        );
         if let Err(error) = started {
             // Unknown radios keep every action offered, as before Settings
             // could tell.

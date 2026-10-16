@@ -1450,34 +1450,6 @@ impl App {
         })
     }
 
-    /// Construct a live app without discovering workspace services or identity.
-    ///
-    /// Local effects and wake ownership remain available. The caller still owns
-    /// storage policy; private windows must supply memory-only state/autosave.
-    pub fn from_scoped_parts_local(
-        wake_scope: crate::wake::WakeScope,
-        state: State,
-        root_widget: Box<dyn Widget>,
-    ) -> Self {
-        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
-            let identity = uuid::Uuid::new_v4();
-            let author = crate::permissions::UserId(format!("local:{identity}"));
-            let mut presence = PresenceCtx::empty();
-            presence.set_own_identity([author.0.clone()]);
-            let mut inputs = AppConstructionInputs::production(CollaborationManager::disabled());
-            inputs.local_author = ConstructionValue::Ready(author);
-            inputs.presence_ctx = ConstructionValue::Ready(presence);
-            inputs.surface_id = ConstructionValue::Ready(format!("local-surface:{identity}"));
-            inputs.pending_continuation_restore = || None;
-            inputs.floating_surface_client = || None;
-            inputs.startup_presence_scope = || None;
-            // An ephemeral identity wears the default colour, not the
-            // person's.
-            inputs.your_colour = || None;
-            inputs
-        })
-    }
-
     fn from_scoped_parts_with_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -2969,11 +2941,6 @@ mod document_routes;
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
-
-#[cfg(test)]
-#[cfg(feature = "local-daemons")]
-#[path = "app/local_privacy_tests.rs"]
-mod local_privacy_tests;
 
 #[cfg(test)]
 #[path = "app/participant_invocation_tests.rs"]

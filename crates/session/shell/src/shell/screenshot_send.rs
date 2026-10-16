@@ -8,9 +8,11 @@
 //! it like anything else placed there.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ui::widget::{ScreenshotSendDevice, ScreenshotSendTarget};
 
+use crate::shell::device_fabric_runtime::PreparedNearbyDrop;
 use crate::shell::i18n::{t, t_args};
 
 /// Folder inside the workspace files that sent screenshots land in.
@@ -53,11 +55,12 @@ impl SendReceipt {
 pub trait ScreenshotSendBridge {
     /// Your other devices that are online now.
     fn devices(&self) -> Vec<ScreenshotSendDevice>;
-    /// Offer `path` to device `id` through Nearby Send.
+    /// Offer the screenshot [`prepare_device_send`] read to device `id`
+    /// through Nearby Send. Reads no file.
     ///
     /// # Errors
-    /// Why the fabric refused (offline, policy, unreadable source).
-    fn offer_to_device(&mut self, id: &str, path: &Path) -> Result<(), String>;
+    /// Why the fabric refused (offline, policy).
+    fn offer_to_device(&mut self, id: &str, screenshot: PreparedNearbyDrop) -> Result<(), String>;
     /// Copy `path` into the workspace files; returns where it landed.
     ///
     /// # Errors
@@ -76,25 +79,100 @@ pub fn route(
     target: &ScreenshotSendTarget,
     bridge: &mut dyn ScreenshotSendBridge,
 ) -> Result<SendReceipt, String> {
-    if !path.is_file() {
-        return Err(t_args(
+    match target {
+        ScreenshotSendTarget::Workspace => {
+            exists(path)?;
+            bridge.save_to_workspace(path).map(SendReceipt::Saved)
+        }
+        ScreenshotSendTarget::Device(id) => offer(id, prepare_device_send(path), bridge),
+    }
+}
+
+/// Refuse a screenshot that is no longer where it was saved.
+fn exists(path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(t_args(
             "screenshot-send-gone",
             &[("path", path.display().to_string().into())],
-        ));
+        ))
     }
-    match target {
-        ScreenshotSendTarget::Workspace => bridge.save_to_workspace(path).map(SendReceipt::Saved),
-        ScreenshotSendTarget::Device(id) => {
-            let device = bridge
-                .devices()
-                .into_iter()
-                .find(|device| &device.id == id)
-                .ok_or_else(|| t("screenshot-send-device-offline"))?;
-            bridge.offer_to_device(id, path)?;
-            Ok(SendReceipt::Offered {
-                device: device.label,
-            })
-        }
+}
+
+/// Read the screenshot at `path` for a device send, as far as Nearby Send
+/// needs before it offers: a small one whole, a large one opened for its
+/// staging worker. Reads the disk: the capture worker calls it, and the
+/// loop then [`offer`]s what it read.
+///
+/// # Errors
+/// A message for the person when the screenshot is gone or unreadable.
+pub(crate) fn prepare_device_send(path: &Path) -> Result<PreparedNearbyDrop, String> {
+    exists(path)?;
+    let folder = path.parent().ok_or_else(|| {
+        t_args(
+            "screenshot-send-no-folder",
+            &[("path", path.display().to_string().into())],
+        )
+    })?;
+    let source = crate::shell::nearby_transfer::SecureNearbySource::open_beneath(folder, path)?;
+    crate::shell::device_fabric_runtime::prepare_nearby_drop(source)
+}
+
+/// Offer a screenshot [`prepare_device_send`] read to device `id`. The
+/// device must still be online and yours: the id is re-resolved here, never
+/// trusted from the picker that offered it. Reads no file.
+///
+/// # Errors
+/// A message for the person when the read failed, the device is gone or
+/// the transport refused.
+pub(crate) fn offer(
+    id: &str,
+    screenshot: Result<PreparedNearbyDrop, String>,
+    bridge: &mut dyn ScreenshotSendBridge,
+) -> Result<SendReceipt, String> {
+    let screenshot = screenshot?;
+    let device = bridge
+        .devices()
+        .into_iter()
+        .find(|device| device.id == id)
+        .ok_or_else(|| t("screenshot-send-device-offline"))?;
+    bridge.offer_to_device(id, screenshot)?;
+    Ok(SendReceipt::Offered {
+        device: device.label,
+    })
+}
+
+/// A device send [`prepare_device_send`] read on the capture worker, on its
+/// way to the loop that offers it. Shared, so the capture outcome carrying
+/// it can be cloned and compared; the offer takes it once.
+#[derive(Clone)]
+pub struct PreparedScreenshot(Arc<Mutex<Option<Result<PreparedNearbyDrop, String>>>>);
+
+impl PreparedScreenshot {
+    pub(crate) fn new(read: Result<PreparedNearbyDrop, String>) -> Self {
+        Self(Arc::new(Mutex::new(Some(read))))
+    }
+
+    /// What was read, the first time it is asked for.
+    pub(crate) fn take(&self) -> Result<PreparedNearbyDrop, String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or_else(|| Err(t("screenshot-send-device-offline")))
+    }
+}
+
+impl PartialEq for PreparedScreenshot {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for PreparedScreenshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreparedScreenshot")
     }
 }
 
@@ -182,24 +260,42 @@ impl ScreenshotSendBridge for FabricSendBridge<'_> {
         self.network.map_or_else(Vec::new, online_devices)
     }
 
-    fn offer_to_device(&mut self, id: &str, path: &Path) -> Result<(), String> {
+    fn offer_to_device(&mut self, id: &str, screenshot: PreparedNearbyDrop) -> Result<(), String> {
         let network = self.network.ok_or_else(|| t("screenshot-send-sync-off"))?;
         let device = crate::shell::personal_continuity::DeviceId::new(id)
             .map_err(|_| t("screenshot-send-device-offline"))?;
-        let folder = path.parent().ok_or_else(|| {
-            t_args(
-                "screenshot-send-no-folder",
-                &[("path", path.display().to_string().into())],
-            )
-        })?;
-        let source = crate::shell::nearby_transfer::SecureNearbySource::open_beneath(folder, path)?;
-        crate::shell::device_fabric_runtime::request_nearby_drop_secure(
+        crate::shell::device_fabric_runtime::request_prepared_nearby_drop(
             network,
             &device,
-            source,
+            screenshot,
             "capture:screenshot",
         )
         .map(|_| ())
+    }
+
+    fn save_to_workspace(&mut self, path: &Path) -> Result<PathBuf, String> {
+        copy_into_workspace(path, &self.workspace_root)
+    }
+}
+
+/// "Save to this workspace's files" alone, for the capture worker: the copy
+/// writes to the workspace mount, which may be remote, so it never runs on
+/// the compositor loop. It reaches no device.
+pub struct WorkspaceFilesBridge {
+    pub workspace_root: PathBuf,
+}
+
+impl ScreenshotSendBridge for WorkspaceFilesBridge {
+    fn devices(&self) -> Vec<ScreenshotSendDevice> {
+        Vec::new()
+    }
+
+    fn offer_to_device(
+        &mut self,
+        _id: &str,
+        _screenshot: PreparedNearbyDrop,
+    ) -> Result<(), String> {
+        Err(t("screenshot-send-device-offline"))
     }
 
     fn save_to_workspace(&mut self, path: &Path) -> Result<PathBuf, String> {
@@ -248,11 +344,17 @@ mod tests {
         fn devices(&self) -> Vec<ScreenshotSendDevice> {
             self.devices.clone()
         }
-        fn offer_to_device(&mut self, id: &str, path: &Path) -> Result<(), String> {
-            self.calls.push(format!(
-                "offer {id} {}",
-                path.file_name().unwrap().to_string_lossy()
-            ));
+        fn offer_to_device(
+            &mut self,
+            id: &str,
+            screenshot: PreparedNearbyDrop,
+        ) -> Result<(), String> {
+            let bytes = match &screenshot {
+                PreparedNearbyDrop::Inline { bytes, .. } => bytes.len(),
+                PreparedNearbyDrop::Staged(_) => 0,
+            };
+            self.calls
+                .push(format!("offer {id} {} {bytes}", screenshot.file_name()));
             self.refuse.clone().map_or(Ok(()), Err)
         }
         fn save_to_workspace(&mut self, path: &Path) -> Result<PathBuf, String> {
@@ -289,7 +391,7 @@ mod tests {
             &mut bridge,
         )
         .unwrap();
-        assert_eq!(bridge.calls, vec!["offer device-phone Screenshot 1.png"]);
+        assert_eq!(bridge.calls, vec!["offer device-phone Screenshot 1.png 3"]);
         assert_eq!(
             receipt,
             SendReceipt::Offered {

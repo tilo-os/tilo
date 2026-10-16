@@ -204,6 +204,7 @@ impl PcmCapture {
 
     /// Wait until more audio arrives or is rendered, or `timeout` passes,
     /// returning the latest record either way.
+    #[cfg(test)]
     pub fn wait_for_more(&self, timeout: std::time::Duration) -> CapturedPcm {
         let (state, changed) = &*self.0;
         let pcm = state.lock_recover();
@@ -761,7 +762,8 @@ impl AudioEngine {
         )
     }
 
-    /// Bounded test/probe helper; production frames call `pump` instead.
+    /// Bounded test helper; production frames call `pump` instead.
+    #[cfg(test)]
     #[cfg(feature = "audio")]
     pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {
         let deadline = ui::time::now() + timeout;

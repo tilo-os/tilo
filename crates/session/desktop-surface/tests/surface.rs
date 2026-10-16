@@ -1016,6 +1016,7 @@ fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
             route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
             status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
             resource: None,
+            subject: None,
             created_at: 1,
             updated_at: 2,
             audit: vec![],

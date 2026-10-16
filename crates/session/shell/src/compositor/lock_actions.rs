@@ -114,7 +114,10 @@ pub(super) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositor::lock_auth::{GreetdVerifier, UnavailableVerifier};
+    #[cfg(target_os = "linux")]
+    use crate::compositor::lock_auth::GreetdVerifier;
+    use crate::compositor::lock_auth::UnavailableVerifier;
+    #[cfg(target_os = "linux")]
     use crate::compositor::lock_controller::UnlockOutcome;
     use std::sync::Arc;
 
@@ -178,6 +181,8 @@ mod tests {
         );
     }
 
+    /// Linux only: the greetd verifier exists only beside the Linux greeter.
+    #[cfg(target_os = "linux")]
     #[test]
     fn unlock_action_drives_normal_greetd_verification_and_denial_keeps_lock() {
         use std::io::{Read, Write};

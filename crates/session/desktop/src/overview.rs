@@ -475,31 +475,6 @@ pub fn room_presence_label(card: &RoomCard) -> Option<String> {
     }
 }
 
-/// Collaboration-only summary for the spatial overview. A private workspace
-/// returns `None`, so the solo state does not announce the local person back
-/// to themselves.
-pub fn overview_people_label(card: &RoomCard) -> Option<String> {
-    let present: Vec<&RoomPerson> = card.others().filter(|person| person.present).collect();
-    match present.len() {
-        0 if card.is_private() => None,
-        0 => Some(room_access_label(card)),
-        1 => Some(t_args(
-            "overview-presence-one",
-            &[(
-                "name",
-                present
-                    .first()
-                    .map_or("", |person| person.name.as_str())
-                    .into(),
-            )],
-        )),
-        n => Some(t_args(
-            "overview-collaborators-here",
-            &[("count", n.into())],
-        )),
-    }
-}
-
 /// What began a press on the overview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PressSource {
@@ -848,20 +823,6 @@ mod room_tests {
             );
         }
 
-        fn private_overview_stays_quiet_but_shared_overview_names_presence() {
-            let private_tree = tree_with(vec![ws("Home")]);
-            assert_eq!(overview_people_label(&room_cards(&private_tree)[0]), None);
-
-            let mut shared = ws("Design");
-            shared.admit("ada", collab_types::Role::Editor);
-            shared.collaborators.push(Collaborator::new("ada", "Ada"));
-            let shared_tree = tree_with(vec![shared]);
-            assert_eq!(
-                overview_people_label(&room_cards(&shared_tree)[0]).as_deref(),
-                Some("Ada is here")
-            );
-        }
-
         fn spatial_projection_preserves_strip_group_and_tab_nesting() {
             let mut w = ws("Design");
             let strip_id = StripId(fresh_id());
@@ -960,7 +921,6 @@ mod room_tests {
 
         presence_is_who_is_here_now_not_who_is_a_member();
         a_room_you_are_not_in_does_not_report_you_as_here();
-        private_overview_stays_quiet_but_shared_overview_names_presence();
         spatial_projection_preserves_strip_group_and_tab_nesting();
         collaborator_focus_is_attached_to_the_tab_not_the_workspace_header();
     }

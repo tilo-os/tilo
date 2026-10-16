@@ -349,7 +349,11 @@ impl GrayjaySession {
     ///
     /// Returns an error for malformed frames, rejected peers, a failed Noise
     /// handshake, or a socket read/write failure.
-    pub fn accept_responder(
+    ///
+    /// The app only ever dials out; tests use this as the peer half of the
+    /// handshake.
+    #[cfg(test)]
+    fn accept_responder(
         stream: impl Into<Stream>,
         device: &DeviceKey,
         device_name: &str,

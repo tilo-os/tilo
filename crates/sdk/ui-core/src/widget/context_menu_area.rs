@@ -77,6 +77,23 @@ impl MenuEntry {
     }
 }
 
+/// "Ask agent…" about what is selected under `content` right now, while a
+/// desktop agent can be asked. The selection is taken when the menu opens,
+/// so it is what the person saw selected when they asked.
+pub fn ask_agent_entry(content: &dyn Widget) -> Option<MenuEntry> {
+    if !crate::shared_selection::agent_host_available() {
+        return None;
+    }
+    let selection = crate::shared_selection::subtree_selection(content)?;
+    Some(
+        MenuEntry::new(
+            crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
+            move || crate::shared_selection::ask_agent(Some(selection.clone())),
+        )
+        .with_icon(crate::icons::Icon::Sparkles),
+    )
+}
+
 /// The entries a menu offers where it opens, at the pointer in window
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
@@ -128,9 +145,13 @@ impl ContextMenuArea {
     /// Open the menu at `at` (window coordinates) with what is offered
     /// there now; whether there was anything to offer.
     pub fn open_at(&mut self, at: Point, pointer: bool) -> bool {
-        let entries = (self.entries)(pointer.then_some(at));
+        let mut entries = (self.entries)(pointer.then_some(at));
         if entries.iter().all(|entry| entry.run.is_none()) {
             return false;
+        }
+        if let Some(entry) = ask_agent_entry(self.content.as_ref()) {
+            entries.push(MenuEntry::separator());
+            entries.push(entry);
         }
         let mut menu = ContextMenu::new();
         self.runs.clear();

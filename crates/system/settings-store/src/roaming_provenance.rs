@@ -65,11 +65,14 @@ impl Default for RoamingProvenance {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ProvenanceError {
     UnsupportedSchema(u16),
     Invalid,
-    Io(String),
+    /// Syntax or field-type failure, retaining the decoder's diagnostic.
+    Json(serde_json::Error),
+    /// Retains OS error kinds and atomic-write publication/durability state.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for ProvenanceError {
@@ -79,12 +82,21 @@ impl std::fmt::Display for ProvenanceError {
                 write!(formatter, "unsupported roaming provenance schema {version}")
             }
             Self::Invalid => formatter.write_str("invalid roaming provenance"),
+            Self::Json(error) => write!(formatter, "roaming provenance JSON failed: {error}"),
             Self::Io(error) => write!(formatter, "roaming provenance I/O failed: {error}"),
         }
     }
 }
 
-impl std::error::Error for ProvenanceError {}
+impl std::error::Error for ProvenanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::UnsupportedSchema(_) | Self::Invalid => None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,11 +125,12 @@ impl RoamingProvenance {
     ///
     /// # Errors
     ///
-    /// Returns [`ProvenanceError::Invalid`] for malformed or out-of-policy
-    /// data, or [`ProvenanceError::UnsupportedSchema`] for a future schema.
+    /// Returns [`ProvenanceError::Json`] for malformed JSON or mismatched field types,
+    /// [`ProvenanceError::Invalid`] for out-of-policy data, or
+    /// [`ProvenanceError::UnsupportedSchema`] for a future schema.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ProvenanceError> {
         let value: serde_json::Value =
-            serde_json::from_slice(bytes).map_err(|_| ProvenanceError::Invalid)?;
+            serde_json::from_slice(bytes).map_err(ProvenanceError::Json)?;
         let version = value
             .get("schema_version")
             .and_then(serde_json::Value::as_u64)
@@ -126,7 +139,7 @@ impl RoamingProvenance {
         let mut projection = match version {
             1 => {
                 let legacy: LegacyV1 =
-                    serde_json::from_value(value).map_err(|_| ProvenanceError::Invalid)?;
+                    serde_json::from_value(value).map_err(ProvenanceError::Json)?;
                 Self {
                     schema_version: SCHEMA_VERSION,
                     generated_unix_ms: legacy.generated_unix_ms,
@@ -150,9 +163,7 @@ impl RoamingProvenance {
                     wifi: Vec::new(),
                 }
             }
-            SCHEMA_VERSION => {
-                serde_json::from_value(value).map_err(|_| ProvenanceError::Invalid)?
-            }
+            SCHEMA_VERSION => serde_json::from_value(value).map_err(ProvenanceError::Json)?,
             other => return Err(ProvenanceError::UnsupportedSchema(other)),
         };
         projection.normalise()?;
@@ -166,7 +177,8 @@ impl RoamingProvenance {
     /// Returns an I/O error when no configuration directory is available or
     /// the sidecar cannot be read, and forwards decoding and validation errors.
     pub fn load() -> Result<Self, ProvenanceError> {
-        let path = path().ok_or_else(|| ProvenanceError::Io("no config directory".into()))?;
+        let path = path()
+            .ok_or_else(|| ProvenanceError::Io(std::io::Error::other("no config directory")))?;
         Self::load_at(&path)
     }
 
@@ -177,7 +189,7 @@ impl RoamingProvenance {
     /// Returns an I/O error when `path` cannot be read, and forwards decoding
     /// and validation errors from [`Self::from_slice`].
     pub fn load_at(path: &Path) -> Result<Self, ProvenanceError> {
-        let bytes = std::fs::read(path).map_err(|error| ProvenanceError::Io(error.to_string()))?;
+        let bytes = std::fs::read(path).map_err(ProvenanceError::Io)?;
         Self::from_slice(&bytes)
     }
 
@@ -186,10 +198,11 @@ impl RoamingProvenance {
     /// # Errors
     ///
     /// Returns an I/O error when no configuration directory is available or
-    /// the sidecar cannot be replaced, and returns an invalid-data error when
-    /// the projection cannot be normalized or serialized.
+    /// the sidecar cannot be replaced. Validation returns [`ProvenanceError::Invalid`];
+    /// serialization returns [`ProvenanceError::Json`].
     pub fn save(&mut self) -> Result<(), ProvenanceError> {
-        let path = path().ok_or_else(|| ProvenanceError::Io("no config directory".into()))?;
+        let path = path()
+            .ok_or_else(|| ProvenanceError::Io(std::io::Error::other("no config directory")))?;
         self.save_at(&path)
     }
 
@@ -197,15 +210,15 @@ impl RoamingProvenance {
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when `path` cannot be replaced, and returns an
-    /// invalid-data error when the projection cannot be normalized or serialized.
+    /// Returns an I/O error when `path` cannot be replaced. Validation returns
+    /// [`ProvenanceError::Invalid`]; serialization returns [`ProvenanceError::Json`].
     pub fn save_at(&mut self, path: &Path) -> Result<(), ProvenanceError> {
         self.schema_version = SCHEMA_VERSION;
         self.normalise()?;
-        let mut bytes = serde_json::to_vec_pretty(self).map_err(|_| ProvenanceError::Invalid)?;
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(ProvenanceError::Json)?;
         bytes.push(b'\n');
         tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o600)
-            .map_err(|error| ProvenanceError::Io(error.to_string()))
+            .map_err(ProvenanceError::Io)
     }
 
     fn normalise(&mut self) -> Result<(), ProvenanceError> {
@@ -286,6 +299,82 @@ mod tests {
     }
 
     #[test]
+    fn load_preserves_json_syntax_and_field_errors() {
+        use std::error::Error as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        for (bytes, category, detail) in [
+            (
+                b"{\n  \"schema_version\": ".as_slice(),
+                serde_json::error::Category::Eof,
+                "line 2",
+            ),
+            (
+                br#"{"schema_version":2,"generated_unix_ms":"yesterday","settings":[],"wifi":[]}"#
+                    .as_slice(),
+                serde_json::error::Category::Data,
+                "expected u64",
+            ),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let error = RoamingProvenance::load_at(&path).unwrap_err();
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<serde_json::Error>()
+                .unwrap();
+            assert_eq!(cause.classify(), category);
+            assert!(error.to_string().contains(detail), "{error}");
+        }
+    }
+
+    #[test]
+    fn load_preserves_io_error_kind() {
+        use std::error::Error as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let error = RoamingProvenance::load_at(&dir.path().join(FILE_NAME)).unwrap_err();
+        let cause = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_atomic_publication_state() {
+        use std::error::Error as _;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::{PublicationState, publication_state};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        for (checkpoint, expected) in [
+            (Checkpoint::BeforePublish, PublicationState::NotPublished),
+            (
+                Checkpoint::AfterPublish,
+                PublicationState::PublicationUnknown,
+            ),
+            (
+                Checkpoint::BeforeCommit,
+                PublicationState::PublishedDurabilityUnknown,
+            ),
+        ] {
+            let mut projection = RoamingProvenance::default();
+            let error = with_failure(checkpoint, || projection.save_at(&path)).unwrap_err();
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert_eq!(publication_state(cause), Some(expected));
+        }
+    }
+
+    #[test]
     fn roaming_provenance_migrates_round_trips_and_fails_closed() {
         // Phase `v1_migrates_without_inventing_wifi_or_conflicts`.
         {
@@ -301,10 +390,10 @@ mod tests {
         }
         // Phase `future_schema_fails_closed`.
         {
-            assert_eq!(
+            assert!(matches!(
                 RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
                 Err(ProvenanceError::UnsupportedSchema(99))
-            );
+            ));
         }
         // Phase `round_trip_is_deterministic_bounded_and_secret_free`.
         {
@@ -346,7 +435,10 @@ mod tests {
                 ..RoamingProvenance::default()
             };
             let path = tempfile::tempdir().unwrap().path().join(FILE_NAME);
-            assert_eq!(projection.save_at(&path), Err(ProvenanceError::Invalid));
+            assert!(matches!(
+                projection.save_at(&path),
+                Err(ProvenanceError::Invalid)
+            ));
         }
     }
 }

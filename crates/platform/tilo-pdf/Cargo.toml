@@ -22,7 +22,7 @@ default = []
 fixture-gen = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets"]
 
 [dependencies]
-tilo-lock = { path = "../tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
@@ -60,8 +60,8 @@ pdfium-render = { version = "0.8.37", default-features = false, features = ["pdf
 # Appearance text: shaping, subset embedding and object writing for the
 # annotations pdfium cannot draw, and reading back its output to finish them
 # — all inside the sandboxed helper.
-harfrust = "0.5.2"
-skrifa = "0.40.0"
+harfrust = "0.12.0"
+skrifa = "0.44.0"
 subsetter = { version = "0.2.6", features = ["variable-fonts"] }
 pdf-writer = "0.15.0"
 flate2.workspace = true

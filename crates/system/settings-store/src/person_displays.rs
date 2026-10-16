@@ -830,49 +830,6 @@ impl Layout {
             .collect::<Vec<_>>();
         pinned.with_changes(respaced)
     }
-
-    /// One of `device`'s displays recorded at `(x, y)` and taking the lead
-    /// of its group, so the group resolves around it. Used when a device
-    /// rearranges its own screens: the moved screen stays where it was
-    /// dropped and the rest follow the device's layout.
-    #[must_use]
-    pub fn anchor_display(
-        &self,
-        previous: &Arrangement,
-        device: &str,
-        output: &str,
-        x: i32,
-        y: i32,
-    ) -> Arrangement {
-        let pinned = previous.with_changes(self.pin_missing(previous));
-        let Some(display) = self.find(device, output) else {
-            return pinned;
-        };
-        let mut changes = Vec::new();
-        let mut entry = Self::pin(display, &pinned, 0);
-        entry.x = x;
-        entry.y = y;
-        // Take the lead by swapping order keys with the current one.
-        let lead = self
-            .displays
-            .iter()
-            .filter(|other| other.device == device && !other.is(device, output))
-            .filter_map(|other| {
-                pinned
-                    .entry(&other.device, &other.output)
-                    .filter(|other| other.placed && other.order < entry.order)
-            })
-            .min_by_key(|other| other.order);
-        if let Some(lead) = lead {
-            changes.push(ArrangedDisplay {
-                order: entry.order,
-                ..lead.clone()
-            });
-            entry.order = lead.order;
-        }
-        changes.push(entry);
-        pinned.with_changes(changes)
-    }
 }
 
 /// Current version of [`PersonDisplays`].
@@ -1232,21 +1189,6 @@ mod tests {
         let on = Layout::resolve(&devices, &arrangement);
         assert!(!on.find("pi", "pi-dp").unwrap().enabled);
         assert_eq!(on.find("pi", "pi-hdmi").unwrap().rect.x, 3360);
-    }
-
-    #[test]
-    fn a_rearranged_screen_anchors_its_device_where_it_was_dropped() {
-        let devices = laptop_and_pi();
-        let layout = Layout::resolve(&devices, &Arrangement::default());
-        // The laptop rearranges: HDMI now sits left of the panel locally.
-        let mut rearranged = devices;
-        rearranged[0].outputs[1].x = -1920;
-        let arrangement =
-            layout.anchor_display(&Arrangement::default(), "laptop", "hdmi", -1920, 0);
-        let after = Layout::resolve(&rearranged, &arrangement);
-        assert_eq!(after.find("laptop", "hdmi").unwrap().rect.x, -1920);
-        assert_eq!(after.find("laptop", "panel").unwrap().rect.x, 0);
-        assert_eq!(after.find("pi", "pi-hdmi").unwrap().rect.x, 3360);
     }
 
     #[test]

@@ -7,7 +7,7 @@ license.workspace = true
 description = "A scriptable stand-in for Discord's REST API, CDN and gateway on loopback, for the Discord connector's tests"
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 bytes.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 http-body-util = "0.1.3"

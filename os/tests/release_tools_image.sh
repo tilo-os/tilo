@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
+# The release-tools image (os/Containerfile.release-tools) before it is published: small, every
+# publication tool present and no compiler, since the release jobs that run in it hold
+# credentials.
+#
+# usage: release_tools_image.sh ARCHIVE
+# ARCHIVE is an OCI archive as tools/ci/publish/oci-build.sh writes it (the t checks
+# image-release-tools-<arch>), tested in the buildah image without a daemon.
 set -euo pipefail
 
-image=${1:?usage: release_tools_image.sh IMAGE}
+archive=${1:?usage: release_tools_image.sh ARCHIVE}
 max_image_bytes=536870912
 
-image_bytes=$(docker image inspect --format '{{.Size}}' "$image")
-[[ $image_bytes =~ ^[0-9]+$ ]]
-(( image_bytes <= max_image_bytes )) || {
-  printf 'release-tools image is unexpectedly large: %s bytes\n' "$image_bytes" >&2
-  exit 1
-}
-printf 'release-tools image size: %s bytes\n' "$image_bytes"
-
-docker run --rm --entrypoint bash "$image" -euo pipefail -c '
+# What every publication needs and no compiler, run inside the image.
+contents='
   for compiler in cargo rustc cc gcc clang; do
     ! command -v "$compiler" || { echo "unexpected compiler: $compiler" >&2; exit 1; }
   done
@@ -20,3 +20,14 @@ docker run --rm --entrypoint bash "$image" -euo pipefail -c '
     command -v "$tool" >/dev/null || { echo "missing release tool: $tool" >&2; exit 1; }
   done
 '
+
+[[ -f $archive ]] || { echo "not an OCI archive: $archive" >&2; exit 1; }
+run=$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/oci-run.sh
+bash "$run" "$archive" bash -euo pipefail -c '
+  image_bytes=$(du -sxb / | cut -f1)
+  (( image_bytes <= '"$max_image_bytes"' )) || {
+    printf "release-tools image is unexpectedly large: %s bytes\n" "$image_bytes" >&2
+    exit 1
+  }
+  printf "release-tools image size: %s bytes\n" "$image_bytes"
+'"$contents"

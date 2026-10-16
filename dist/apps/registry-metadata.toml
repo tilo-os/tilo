@@ -152,6 +152,9 @@ tagline = "A direct line to your system"
 [apps.themes]
 description = "Explore and shape the colors and appearance of your desktop."
 tagline = "Set the tone"
+[apps.thumbnails]
+description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
+tagline = "Thumbnails made where it is fastest"
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
 tagline = "Codes when you need them"
@@ -173,6 +176,9 @@ tagline = "A safer way through"
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 tagline = "Look ahead"
+[apps.web-search]
+description = "Search the web and read pages from your device, for your agents and shortcuts. No account or API key."
+tagline = "Find it, read it"
 [apps.windows]
 description = "Run supported Windows applications in a contained Tilo experience."
 tagline = "A bridge for the apps you still need"

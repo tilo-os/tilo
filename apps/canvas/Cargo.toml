@@ -15,9 +15,17 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Paint and find subjects through the painting engines' library in the runtime
+# bundle (libtilo_paint_engine.so, crates/runtime/engines/paint) instead of
+# the executable. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links the engines statically, because the engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-paint-engine/thin"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-paint-engine = { path = "../../crates/runtime/engines/paint", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Oil and watercolour layers are painted by the shared media simulation.
 tilo-wet-media = { path = "../../crates/media/wet-media" }

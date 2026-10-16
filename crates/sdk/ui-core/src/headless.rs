@@ -332,6 +332,18 @@ pub struct FrameHarness {
     history_settled: bool,
     /// Quiet frames that took that answer from the frame before them.
     settled_history_frames: u64,
+    /// The last frame showed a window at rest by replaying its drawing
+    /// ([`crate::retained_present::PanReplay`]): what that window's widgets
+    /// noted while drawing still describes where it was drawn.
+    replayed_draws: bool,
+    /// Windows shown by replaying their drawing, since construction.
+    replayed_window_draws: u64,
+    /// The frame being run draws every window ([`Self::settle_replayed_draws`]).
+    suppress_pan_replay: bool,
+    /// The host lets pan frames replay windows ([`Self::set_pan_replay`]).
+    pan_replay_allowed: bool,
+    /// Frames drawn, numbered for [`crate::retained_present::PanReplay`].
+    pan_frames: u64,
     /// The host drives frames through [`Self::poll_frame`], so a witness can
     /// make one quiet. A host that only calls [`Self::relayout`] never reads
     /// one and does not pay for taking it.
@@ -387,8 +399,6 @@ pub struct FrameHarness {
     pending_app_activation: Option<crate::application::InstanceId>,
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
-    input_sequence: std::cell::Cell<u64>,
-    observed_input_owner: std::cell::RefCell<Option<String>>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
@@ -1513,6 +1523,11 @@ impl FrameHarness {
             quiet_frames: 0,
             history_settled: false,
             settled_history_frames: 0,
+            replayed_draws: false,
+            replayed_window_draws: 0,
+            suppress_pan_replay: false,
+            pan_replay_allowed: true,
+            pan_frames: 0,
             polls_frames: false,
             history_layout: None,
             history_focus_pending: false,
@@ -1543,8 +1558,6 @@ impl FrameHarness {
             active_input_instance: None,
             pending_app_activation: None,
             saved_instance_focus: HashMap::new(),
-            input_sequence: std::cell::Cell::new(0),
-            observed_input_owner: std::cell::RefCell::new(None),
             focus_before_trap: None,
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
@@ -1751,6 +1764,7 @@ impl FrameHarness {
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
         self.invalidate_local();
+        self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
             tracing::warn!(
                 ?error,
@@ -2072,6 +2086,58 @@ impl FrameHarness {
     #[must_use]
     pub fn settled_history_frames(&self) -> u64 {
         self.settled_history_frames
+    }
+
+    /// Windows a frame that only moved laid-out content showed by replaying
+    /// their last drawing where they are now, instead of drawing them
+    /// ([`crate::retained_present::PanReplay`]), since construction.
+    #[must_use]
+    pub fn replayed_window_draws(&self) -> u64 {
+        self.replayed_window_draws
+    }
+
+    /// Whether the last frame replayed a window at rest instead of drawing
+    /// it ([`Self::settle_replayed_draws`]).
+    #[must_use]
+    pub const fn replayed_draws(&self) -> bool {
+        self.replayed_draws
+    }
+
+    /// Draw the last frame again if it replayed windows at rest, so what
+    /// their widgets note while drawing (where a control was painted, where
+    /// a caret is) describes where they are now. Input does this before it
+    /// reaches a widget; a host calls it before it reads the frame's
+    /// semantics. Does nothing after a frame that replayed nothing.
+    pub fn settle_replayed_draws(&mut self) {
+        if !self.replayed_draws {
+            return;
+        }
+        let _phase = tilo_resource::profiling::Phase::start("ui.settle_replayed_draws");
+        self.suppress_pan_replay = true;
+        let settled = self.try_relayout();
+        self.suppress_pan_replay = false;
+        if let Err(error) = settled {
+            tracing::error!(
+                ?error,
+                "headless: widget layout did not settle; replayed windows not drawn again"
+            );
+        }
+    }
+
+    /// Let the frames that follow replay windows at rest when they only
+    /// move laid-out content (the default), or draw every window. A host
+    /// that is about to read a frame's semantics forbids it for that frame,
+    /// which then needs no [`Self::settle_replayed_draws`].
+    pub fn set_pan_replay(&mut self, allowed: bool) {
+        self.pan_replay_allowed = allowed;
+    }
+
+    /// A wheel coalesced into the next frame that only pans: it reaches no
+    /// widget that drew, so it needs no window drawn again.
+    fn pans_without_drawing(&self, event: &WindowEvent) -> bool {
+        self.coalesce_wheel_frames
+            && matches!(event, WindowEvent::MouseWheel { .. })
+            && self.is_view_only_scroll(event)
     }
 
     /// Whether the witness follows everything this frame's bookkeeping
@@ -3534,6 +3600,29 @@ impl FrameHarness {
         // Logical layout, rasterised at the capture's device scale, as the
         // live host draws at its window's scale factor.
         let transform = self.capture_draw_transform();
+        // A quiet frame that only re-applied positions moved laid-out
+        // content and nothing else; nothing in presence fades or animates.
+        // Its windows at rest may show their last drawing, moved.
+        // One drawing every window anyway (a host about to read what they
+        // note) keeps their drawings for the frames after.
+        let replay_now = crate::time::now();
+        let only_moved = quiet
+            && !stats.measured
+            && !self.presence.has_active_typing(replay_now)
+            && !self
+                .presence
+                .interaction_animation_demand(replay_now, &self.theme)
+            && !self.presence.has_visible_interactions(replay_now);
+        let pan_frame = if !only_moved {
+            crate::retained_present::PanFrame::Drawn
+        } else if self.suppress_pan_replay || !self.pan_replay_allowed {
+            crate::retained_present::PanFrame::Kept
+        } else {
+            crate::retained_present::PanFrame::Replayed
+        };
+        crate::retained_present::take_replayed();
+        self.pan_frames = self.pan_frames.wrapping_add(1);
+        let replay_scope = crate::retained_present::PanReplay::begin(pan_frame, self.pan_frames);
         self.scene_capture_protected = true;
         let protected_paint = crate::secret_paint::SecretPaint::begin();
         self.scene.reset();
@@ -3699,6 +3788,12 @@ impl FrameHarness {
             );
         }
         self.presence.pop_viewport(previous_viewport);
+        drop(replay_scope);
+        let replayed = crate::retained_present::take_replayed();
+        self.replayed_draws = replayed > 0;
+        self.replayed_window_draws = self
+            .replayed_window_draws
+            .saturating_add(u64::try_from(replayed).unwrap_or(u64::MAX));
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
@@ -4339,8 +4434,6 @@ impl FrameHarness {
             }
         }
         self.set_focused(target);
-        self.input_sequence
-            .set(self.input_sequence.get().wrapping_add(1));
         self.remember_app_focus();
         self.pending_app_activation = Some(instance);
         self.relayout();
@@ -4434,58 +4527,6 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Mount-local token for asynchronous input. Includes changes that do not
-    /// pass through explicit activation (pointer, semantics, modal, removal).
-    pub fn input_ownership_sequence(&self) -> u64 {
-        let owner = if self.global_search_query().is_some() {
-            Some("system-search".into())
-        } else if self.caller_palette.palette.is_some() {
-            Some("caller-palette".into())
-        } else {
-            self.focused.and_then(|node| {
-                self.inspect_node(node, |widget| {
-                    fn focused_semantics(node: &crate::a11y::AccessNode, keys: &mut Vec<String>) {
-                        if node.state.focused {
-                            if let Some(key) = node
-                                .action_target
-                                .as_ref()
-                                .or(node.semantic_key.as_ref())
-                                .or(node.name.as_ref())
-                            {
-                                keys.push(key.clone());
-                            }
-                        }
-                        for child in &node.children {
-                            focused_semantics(child, keys);
-                        }
-                    }
-                    let semantics = widget.accessibility();
-                    let control = widget
-                        .test_id()
-                        .map(str::to_owned)
-                        .or_else(|| semantics.as_ref().and_then(|a| a.semantic_key.clone()))
-                        .unwrap_or_else(|| widget.name().to_owned());
-                    let mut focused = Vec::new();
-                    if let Some(semantics) = semantics {
-                        focused_semantics(&semantics, &mut focused);
-                    }
-                    let control = format!("{control}:{focused:?}");
-                    self.bindings.binding_for(node).map_or_else(
-                        || control.clone(),
-                        |binding| format!("{}:{control}", binding.lifetime_id),
-                    )
-                })
-                .ok()
-            })
-        };
-        if *self.observed_input_owner.borrow() != owner {
-            *self.observed_input_owner.borrow_mut() = owner;
-            self.input_sequence
-                .set(self.input_sequence.get().wrapping_add(1));
-        }
-        self.input_sequence.get()
-    }
-
     /// The taffy node holding keyboard focus, if any.
     pub fn focused(&self) -> Option<NodeId> {
         self.drain_component_wakes();
@@ -4507,8 +4548,6 @@ impl FrameHarness {
     fn set_focused(&mut self, node: Option<NodeId>) {
         if self.focused != node {
             self.remember_app_focus();
-            self.input_sequence
-                .set(self.input_sequence.get().wrapping_add(1));
         }
         if self.active_input_instance.is_some()
             && let Some(binding) = node.and_then(|node| self.bindings.binding_for(node))
@@ -4817,6 +4856,7 @@ impl FrameHarness {
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
         self.invalidate_local();
+        self.settle_replayed_draws();
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
@@ -5956,6 +5996,9 @@ impl FrameHarness {
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
+        if !self.pans_without_drawing(event) {
+            self.settle_replayed_draws();
+        }
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {
@@ -8014,6 +8057,8 @@ impl FrameHarness {
     /// component wakes have landed.
     fn named_center(&mut self, name: &str) -> Result<Point, String> {
         self.pump_component_wakes();
+        // Where a control was painted is what a replayed window did not note.
+        self.settle_replayed_draws();
         let rect = self
             .targets()
             .get(name)
@@ -12447,32 +12492,6 @@ mod tests {
             driver.inspection().root.semantics.unwrap().value.as_deref(),
             Some("unchanged")
         );
-    }
-
-    #[test]
-    fn input_ownership_token_changes_for_control_focus_but_not_passive_layout() {
-        let mut driver = FrameHarness::new_with_controlled_inputs(
-            State::new(),
-            Box::new(
-                Column::new()
-                    .push(Box::new(TextInput::local().with_id("first")))
-                    .push(Box::new(TextInput::local().with_id("second"))),
-            ),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
-        );
-        driver
-            .perform_named("first", &crate::a11y::Action::Focus)
-            .unwrap();
-        let first = driver.input_ownership_sequence();
-        driver.relayout();
-        assert_eq!(driver.input_ownership_sequence(), first);
-        driver
-            .perform_named("second", &crate::a11y::Action::Focus)
-            .unwrap();
-        assert_ne!(driver.input_ownership_sequence(), first);
     }
 
     #[test]

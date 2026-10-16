@@ -199,9 +199,6 @@ impl Widget for LiveWidget {
     ) -> NodeId {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![]
-    }
     fn name(&self) -> &'static str {
         "live-widget"
     }

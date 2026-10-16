@@ -12,6 +12,7 @@
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
 
 pub(crate) mod cpu_trace;
+pub(crate) mod profile;
 mod trace_writer;
 pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
 use trace_writer::TraceWriter;
@@ -545,7 +546,12 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
 /// call [`FrameRecorder::begin_tick`] at the top of each iteration, the `mark_*` setters as
 /// phases complete, and [`FrameRecorder::end_tick`] at the bottom — with no env var enabled, every call is a `bool` check.
 pub struct FrameRecorder {
+    /// Recording this tick: asked for by the environment, or by a profile.
     enabled: bool,
+    /// Asked for by the environment (`TILO_FRAME_TRACE` and friends).
+    env_enabled: bool,
+    /// A [`profile`] is recording this tick.
+    profiling: bool,
     start: Instant,
     seq: u64,
     prev_start_us: Option<u64>,
@@ -617,6 +623,8 @@ impl FrameRecorder {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
+            env_enabled: false,
+            profiling: false,
             start: Instant::now(),
             seq: 0,
             prev_start_us: None,
@@ -667,6 +675,7 @@ impl FrameRecorder {
         });
         let mut me = Self::disabled();
         me.enabled = true;
+        me.env_enabled = true;
         me.cpu_trace = cpu_path.and_then(|path| {
             match cpu_trace::CpuTrace::open(std::path::Path::new(&path)) {
                 Ok(trace) => Some(trace),
@@ -701,8 +710,26 @@ impl FrameRecorder {
 
     /// Start a new tick. `now` is the loop's own tick-start instant, so the recorder doesn't take a second clock reading.
     pub fn begin_tick(&mut self, now: Instant) {
+        // The admin can start a profile at any time; while none records and
+        // the environment asked for nothing, this load is the whole cost.
+        let profiling = profile::active();
+        if profiling != self.profiling {
+            self.profiling = profiling;
+            if !self.env_enabled {
+                // A profile's recording begins and ends without carrying an
+                // input measurement across the gap.
+                self.prev_start_us = None;
+                self.pending_input = None;
+                self.pending_retirement = None;
+                self.completed_retirement_latency_us = None;
+            }
+        }
+        self.enabled = self.env_enabled || profiling;
         if !self.enabled {
             return;
+        }
+        if profiling {
+            profile::begin_tick(self.seq);
         }
         let start_us =
             u64::try_from(now.duration_since(self.start).as_micros()).unwrap_or(u64::MAX);
@@ -936,7 +963,13 @@ impl FrameRecorder {
             }
             self.next_trace_flush_us = sample.start_us.saturating_add(TRACE_FLUSH_INTERVAL_US);
         }
-        if sample.start_us >= self.warmup_us && self.samples.len() < MAX_RETAINED {
+        if self.profiling {
+            profile::record_tick(&sample, self.target_period_us);
+        }
+        if self.env_enabled
+            && sample.start_us >= self.warmup_us
+            && self.samples.len() < MAX_RETAINED
+        {
             self.samples.push(sample);
         }
         self.trace_rows = self
@@ -987,10 +1020,14 @@ impl FrameRecorder {
 
     /// Flush the trace and write the JSON summary. Called from `Drop`, and directly by the loop's shutdown path (which `process::exit`s past destructors).
     pub fn finish(&mut self) {
+        if self.profiling {
+            profile::shutdown();
+            self.profiling = false;
+        }
         if let Some(trace) = self.cpu_trace.as_mut() {
             trace.finish();
         }
-        if !self.enabled {
+        if !self.env_enabled {
             return;
         }
         if let Some(t) = self.trace.as_mut() {
@@ -1387,6 +1424,7 @@ mod tests {
             // Drive the real recorder (not the summariser) so the note_input → mark_submit handshake is what's under test.
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
+            r.env_enabled = true;
             let base = Instant::now();
             r.begin_tick(base);
             r.note_input(base);
@@ -1417,6 +1455,7 @@ mod tests {
             // Input arrives, then two ticks pass without painting; latency must be measured from the *original* input, not the tick that happened to paint.
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
+            r.env_enabled = true;
             let base = Instant::now();
             r.begin_tick(base);
             r.note_input(base);
@@ -1455,6 +1494,7 @@ mod tests {
             // another key paints. That frame answers the later key only.
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
+            r.env_enabled = true;
             let base = Instant::now();
             r.begin_tick(base);
             r.note_input(base);
@@ -1483,6 +1523,7 @@ mod tests {
         {
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
+            r.env_enabled = true;
             let base = Instant::now();
             r.note_input(base);
             r.note_input(base + Duration::from_millis(4));
@@ -1496,6 +1537,7 @@ mod tests {
         {
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
+            r.env_enabled = true;
             let base = Instant::now();
             r.begin_tick(base);
             r.note_input(base);
@@ -1541,6 +1583,7 @@ mod tests {
         assert_eq!(step.slowest(), ("persist", Duration::from_millis(88)));
         let mut recorder = FrameRecorder::disabled();
         recorder.enabled = true;
+        recorder.env_enabled = true;
         recorder.begin_tick(base);
         recorder.mark_input_step(step);
         recorder.end_tick();
@@ -1628,6 +1671,7 @@ mod tests {
             writeln!(file, "{CSV_HEADER}").expect("write trace header");
             let mut recorder = FrameRecorder::disabled();
             recorder.enabled = true;
+            recorder.env_enabled = true;
             recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
             let base = Instant::now();
             recorder.begin_tick(base + Duration::from_secs(1));
@@ -1645,6 +1689,7 @@ mod tests {
         {
             let mut recorder = FrameRecorder::disabled();
             recorder.enabled = true;
+            recorder.env_enabled = true;
             recorder.begin_tick(Instant::now());
             let spin_from = thread_cpu_time().expect("unix has a per-thread CPU clock");
             let mut acc = 0_u64;
@@ -1679,6 +1724,7 @@ mod startup_trace_tests {
         writeln!(file, "{CSV_HEADER}").expect("write trace header");
         let mut recorder = FrameRecorder::disabled();
         recorder.enabled = true;
+        recorder.env_enabled = true;
         recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
 
         // Real end_tick path, before its one-second periodic flush deadline.

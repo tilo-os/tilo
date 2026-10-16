@@ -1165,3 +1165,69 @@ fn overview_window_identity_interruption_reconciles_shared_focus_and_native_navi
     assert!(h.handle_shell_escape_chord(&mut handled));
     assert!(!h.overlay_flags().overview);
 }
+
+/// "You are here" is a label, so its chip is the quiet neutral pill and
+/// never a wash of your colour: that colour is for the focus ring, the caret
+/// and your presence among other people (HIG 9.4). Rendered, and the name
+/// line of the "here" block is searched for the tinted pill's body.
+#[test]
+fn the_you_are_here_chip_is_neutral_not_your_colour() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    use ui::widget::{ChipStyle, Tone};
+    let (w, h) = (1600_u32, 900_u32);
+    for theme in [Theme::dark(), Theme::light()] {
+        let mut host = host();
+        let mut scene = Scene::new();
+        host.draw_overview(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+        );
+        let colors = &theme.tokens.colors;
+        let content = colors.surfaces.content;
+        let tinted = ChipStyle::Tinted(Tone::Presence(colors.you))
+            .colors(&theme, content, false, false)
+            .fill
+            .to_rgba8();
+        let tinted = [tinted.r, tinted.g, tinted.b];
+        let neutral = ChipStyle::Neutral
+            .colors(&theme, content, false, false)
+            .fill
+            .to_rgba8();
+        let neutral = [neutral.r, neutral.g, neutral.b];
+        let pixels = OffscreenRenderer::new(w, h).render_resilient(&scene, colors.surfaces.base);
+        let here = host.overview_here_rect();
+        let line = Rect::new(
+            here.x0,
+            here.y0,
+            here.x1,
+            here.y0 + host.overview_metrics.name_lh,
+        );
+        let (mut tinted_px, mut neutral_px) = (0_usize, 0_usize);
+        let x_range = ui::num::usize_of_f64(line.x0)..ui::num::usize_of_f64(line.x1);
+        for y in ui::num::usize_of_f64(line.y0)..ui::num::usize_of_f64(line.y1) {
+            for x in x_range.clone() {
+                let (red, green, blue, _) = OffscreenRenderer::sample(
+                    &pixels,
+                    w,
+                    u32::try_from(x).expect("x on screen"),
+                    u32::try_from(y).expect("y on screen"),
+                );
+                let near = |c: [u8; 3]| {
+                    red.abs_diff(c[0]) <= 2 && green.abs_diff(c[1]) <= 2 && blue.abs_diff(c[2]) <= 2
+                };
+                tinted_px = tinted_px.saturating_add(usize::from(near(tinted)));
+                neutral_px = neutral_px.saturating_add(usize::from(near(neutral)));
+            }
+        }
+        assert_eq!(
+            tinted_px, 0,
+            "the here chip is washed with your colour ({neutral_px} neutral pixels)"
+        );
+        assert!(
+            neutral_px > 40,
+            "the here chip is painted as the neutral pill: {neutral_px} pixels"
+        );
+    }
+}

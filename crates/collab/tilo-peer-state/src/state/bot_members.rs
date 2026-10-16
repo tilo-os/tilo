@@ -7,6 +7,7 @@
 //! it already has. Updates, renewals and every later bot command are
 //! governed changes too; none of them is host-local state.
 
+use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use tilo_action_policy::{
     Context, Grant, GrantId, RoomPolicy, bot,
@@ -395,11 +396,12 @@ impl StatePeer {
         doc.commit();
         self.apply_governance_doc(doc, &before, key, now)
     }
-
+}
+impl PeerGovernance<'_> {
     /// The program installation rows name by `hash`, as the room keeps it.
     #[must_use]
-    pub fn bot_program(&self, hash: &str) -> Option<String> {
-        let doc = self.core.room_doc.as_ref()?;
+    pub fn bot_program(self, hash: &str) -> Option<String> {
+        let doc = self.peer.core.room_doc.as_ref()?;
         let (_, programs) = doc.get(ROOT, PROGRAMS).ok()??;
         match doc.get(&programs, hash).ok()?? {
             (automerge::Value::Scalar(value), _) => match value.as_ref() {
@@ -409,16 +411,16 @@ impl StatePeer {
             _ => None,
         }
     }
-
     /// Every installed bot on this room's roster, acting or not at `now`,
     /// withdrawn rows included so history stays attributed.
     ///
     /// # Errors
     /// Room governance is missing or malformed.
-    pub fn installations(&self, now: SystemTime) -> Result<Vec<InstalledBot>, String> {
+    pub fn installations(self, now: SystemTime) -> Result<Vec<InstalledBot>, String> {
         let mut out = Vec::new();
-        for identity in self.bot_identities()? {
+        for identity in self.peer.bot_identities()? {
             let acting = self
+                .peer
                 .permissions(identity.device_cert.device_public_key, now)
                 .is_ok();
             let Some(row) = identity.delegate else {
@@ -441,11 +443,10 @@ impl StatePeer {
         });
         Ok(out)
     }
-
     /// Installation `id` as of `now`: its live row, else its last withdrawn
     /// one.
     #[must_use]
-    pub fn installation(&self, id: &str, now: SystemTime) -> Option<InstalledBot> {
+    pub fn installation(self, id: &str, now: SystemTime) -> Option<InstalledBot> {
         let rows = self.installations(now).ok()?;
         let mut matching = rows
             .into_iter()

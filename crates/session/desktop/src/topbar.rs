@@ -653,7 +653,13 @@ pub struct TopBarChrome {
     activity_unread: usize,
     activity_pulse: u64,
     activity_started: Option<Instant>,
+    /// The centre selector as painted and hit-tested: as wide as its
+    /// content needs, never wider than [`Self::center_lane`].
     center_rect: Rect,
+    /// The centre lane the bar reserves for the selector (see
+    /// [`Self::center_band_width`]). Its neighbours lay out against the
+    /// lane, so they hold still while the selector changes widget.
+    center_lane: Rect,
     center_dot_rects: [Rect; 3],
     widget_config: TopBarWidgets,
     widget_editing: bool,
@@ -1000,6 +1006,7 @@ impl TopBarChrome {
             activity_pulse: 0,
             activity_started: None,
             center_rect: Rect::ZERO,
+            center_lane: Rect::ZERO,
             center_dot_rects: [Rect::ZERO; 3],
             widget_config: TopBarWidgets::default(),
             widget_editing: false,
@@ -2638,10 +2645,12 @@ impl TopBarChrome {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
+        text_renderer: &mut TextRenderer,
         center_y: f64,
     ) -> (f64, f64, f64) {
         let colors = &theme.tokens.colors;
-        let band_w = self.center_band_width(theme);
+        let lane_w = self.center_band_width(theme);
+        let band_w = self.center_pill_width(theme, text_renderer, lane_w);
         // The same height as every other bar control, so the band's top
         // and bottom edges line up with the pills either side of it.
         let band_h = BAR_CONTROL_PX;
@@ -2653,6 +2662,12 @@ impl TopBarChrome {
             center_y + band_h / 2.0,
         );
         self.center_rect = band;
+        self.center_lane = Rect::new(
+            band_cx - lane_w / 2.0,
+            band.y0,
+            band_cx + lane_w / 2.0,
+            band.y1,
+        );
         // A Selector: you scroll between its three widgets.
         let band_rr = RoundedRect::from_rect(
             band,
@@ -3193,19 +3208,10 @@ impl TopBarChrome {
         (band.x0 + CENTER_DOT_LANE_PX, band.x1 - CENTER_DOT_LANE_PX)
     }
 
-    fn draw_clock_widget(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        content_cx: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let s = self
-            .chrome
+    /// What the clock widget reads: the time, or the running Clocks
+    /// timer or stopwatch with its label.
+    fn clock_widget_text(&self) -> String {
+        self.chrome
             .as_ref()
             .and_then(|chrome| chrome.snapshot().clock_activity)
             .map_or_else(
@@ -3219,7 +3225,58 @@ impl TopBarChrome {
                         format!("{}  {mins:02}:{secs:02}", activity.label)
                     }
                 },
-            );
+            )
+    }
+
+    /// The painted width of the centre selector inside its `lane_w` lane.
+    /// The calendar and the system monitor fill the lane; the clock is a
+    /// five-character reading, so its pill hugs it: the time, `s2` of air
+    /// either side and the dot column with its mirror, which keeps the
+    /// time on the pill's centre. The time is measured with every digit set
+    /// as the widest one, so the pill does not change width minute to
+    /// minute.
+    fn center_pill_width(&self, theme: &Theme, text: &mut TextRenderer, lane_w: f64) -> f64 {
+        if self.activity_is_visible() || self.center_widget != CenterWidget::Clock {
+            return lane_w;
+        }
+        let style = theme
+            .tokens
+            .typography
+            .style(TextRole::Body)
+            .with_weight(self.clock_text_weight());
+        let widest_digit = ('0'..='9')
+            .map(|digit| {
+                (
+                    text.measure_style(&digit.to_string(), None, &style).0,
+                    digit,
+                )
+            })
+            .fold((0.0_f32, '0'), |widest, next| {
+                if next.0 > widest.0 { next } else { widest }
+            })
+            .1;
+        let reading: String = self
+            .clock_widget_text()
+            .chars()
+            .map(|c| if c.is_ascii_digit() { widest_digit } else { c })
+            .collect();
+        let (width, _) = text.measure_style(&reading, None, &style);
+        let air = f64::from(theme.tokens.spacing.s2);
+        (f64::from(width) + 2.0 * (air + CENTER_DOT_LANE_PX)).min(lane_w)
+    }
+
+    fn draw_clock_widget(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        content_cx: f64,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let s = self.clock_widget_text();
         let style = tokens.typography.style(TextRole::Body);
         // Measured at the draw weight — Bold advances wider
         // than Regular, so centering would drift otherwise.
@@ -4159,7 +4216,7 @@ impl TopBarChrome {
             colors.intent.inverted
         };
         let style = tokens.typography.style(TextRole::Caption);
-        let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
+        let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
         let label = text_renderer.elide_to_width_style(
             &label,
             ui::num::f32_of_f64(available),
@@ -4490,7 +4547,7 @@ impl TopBarChrome {
         center_y: f64,
     ) {
         let (content_x0, content_x1, content_cx) =
-            self.draw_center_band(scene, transform, theme, center_y);
+            self.draw_center_band(scene, transform, theme, text_renderer, center_y);
         if self.activity_is_visible() {
             self.draw_activity_widget(scene, transform, theme, text_renderer, center_y, content_cx);
             return;
@@ -4986,7 +5043,7 @@ impl TopBarChrome {
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = 24.0;
         let right = self.avatar_stack_rect.x0 - f64::from(theme.tokens.spacing.s3);
-        let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
+        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
         let natural = ChipFace::intrinsic_width(label, lead, false, text_renderer, theme);
@@ -7374,7 +7431,7 @@ mod tests {
     fn narrow_topbar_releases_center_width_for_workspace_identity() {
         let mut short = sample_chrome();
         lay_out_and_draw(&mut short, 800.0);
-        assert_eq!(short.center_rect.width(), 220.0);
+        assert_eq!(short.center_lane.width(), 220.0);
 
         let mut long = sample_chrome();
         long.workspace_name =
@@ -7457,6 +7514,57 @@ mod tests {
         assert!(dots[0].radius <= 3.5);
         assert!((f64::midpoint(top, bottom) - band.center().y).abs() < 1e-9);
         assert!(dots[0].center.x < x0, "the dots stay left of the content");
+    }
+
+    /// The clock's pill hugs the time instead of spanning the 360 px lane,
+    /// keeps the time on its centre and holds its width as the minutes
+    /// change; the widgets that fill the lane keep it, and the bar's
+    /// neighbours lay out against the lane either way.
+    #[test]
+    fn the_clock_pill_hugs_the_time_and_holds_its_width() {
+        let pill_at = |clock: &str, widget: CenterWidget| {
+            let mut bar = sample_chrome();
+            bar.clock = ClockSnapshot {
+                clock: clock.into(),
+                ..ClockSnapshot::default()
+            };
+            bar.center_widget = widget;
+            lay_out_and_draw(&mut bar, 1600.0);
+            (bar.center_rect, bar.center_lane, bar.ws_pill_rect)
+        };
+        let (clock, lane, ws) = pill_at("11:11", CenterWidget::Clock);
+        assert_eq!(lane.width(), 360.0);
+        assert!(
+            clock.width() < lane.width() / 2.0,
+            "a time is not a 360 px pill: {clock:?}"
+        );
+        assert!((clock.center().x - lane.center().x).abs() < 1e-9);
+        let (later, _, _) = pill_at("20:08", CenterWidget::Clock);
+        assert_eq!(
+            later.width(),
+            clock.width(),
+            "the pill holds still minute to minute"
+        );
+        let (monitor, monitor_lane, monitor_ws) = pill_at("11:11", CenterWidget::SystemMonitor);
+        assert_eq!(monitor, monitor_lane, "the system monitor fills the lane");
+        assert_eq!(monitor_lane, lane);
+        assert_eq!(
+            monitor_ws, ws,
+            "neighbours do not move when the widget changes"
+        );
+        let (x0, x1) = TopBarChrome::center_content_lane(clock);
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let (time, _) = text.measure_style(
+            "11:11",
+            None,
+            &theme
+                .tokens
+                .typography
+                .style(TextRole::Body)
+                .with_weight(sample_chrome().clock_text_weight()),
+        );
+        assert!(x1 - x0 >= f64::from(time), "the time fits its content lane");
     }
 
     #[test]

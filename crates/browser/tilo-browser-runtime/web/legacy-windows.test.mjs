@@ -420,6 +420,138 @@ test('committed text is bounded like the session bounds it and goes only to the 
   watcher.layer.close();
 });
 
+/**
+ * One keystroke as a browser delivers it to the hidden text area: `keydown`;
+ * then, unless the page cancelled that keydown, the browser's default action
+ * inserts what the platform produced for it, one `beforeinput`/`input` pair
+ * per character it reports (a cancelled `beforeinput` leaves the area empty);
+ * then `keyup`.
+ */
+function stroke(keyboard, down, inserted = [], up = {...down, key: down.key === 'Dead' ? 'Dead' : down.key?.toLowerCase()}) {
+  let prevented = false;
+  keyboard.dispatch('keydown', {...down, preventDefault() { prevented = true; }});
+  if (!prevented) {
+    for (const data of inserted) {
+      let cancelled = false;
+      keyboard.dispatch('beforeinput', {inputType: 'insertText', data, preventDefault() { cancelled = true; }});
+      if (!cancelled) keyboard.value = `${keyboard.value ?? ''}${data}`;
+      keyboard.dispatch('input', {inputType: 'insertText', data});
+    }
+  }
+  keyboard.dispatch('keyup', up);
+}
+const modifiersOff = {shiftKey: false, ctrlKey: false, altKey: false, metaKey: false};
+/**
+ * A dead key as Chromium and Firefox on Windows report it, and Linux browsers
+ * whose input method commits without a preedit: a `keydown` with
+ * `key: 'Dead'` and no composition. Nothing is inserted until the next key,
+ * whose default action inserts the composed character (`insertText`).
+ */
+const dead = (code, keyCode, extra = {}) => ({code, key: 'Dead', keyCode, ...modifiersOff, ...extra});
+
+test('a dead key in a Windows or Linux browser reaches the focused window as the composed character, once', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  await tick();
+  const before = m.sent.flatMap(request => request.events).length;
+  // German layout: ´ (the Equal key) then e is é; ^ (Backquote) then o is ô.
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'KeyE', key: 'é', keyCode: 69, ...modifiersOff}, ['é'], {code: 'KeyE', key: 'e', keyCode: 69, ...modifiersOff});
+  stroke(m.keyboard, dead('Backquote', 220));
+  stroke(m.keyboard, {code: 'KeyO', key: 'ô', keyCode: 79, ...modifiersOff}, ['ô'], {code: 'KeyO', key: 'o', keyCode: 79, ...modifiersOff});
+  // A dead key then Space is the accent itself.
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'Space', key: '´', keyCode: 32, ...modifiersOff}, ['´'], {code: 'Space', key: ' ', keyCode: 32, ...modifiersOff});
+  // A dead key then a key it does not combine with is both characters, as
+  // the browser reports them (Windows produces two).
+  stroke(m.keyboard, dead('Equal', 221));
+  stroke(m.keyboard, {code: 'KeyX', key: 'x', keyCode: 88, ...modifiersOff}, ['´', 'x']);
+  // French layout: ^ (BracketLeft), then Shift+e is Ê; the Shift edges still reach the window.
+  stroke(m.keyboard, dead('BracketLeft', 221));
+  m.keyboard.dispatch('keydown', {code: 'ShiftLeft', key: 'Shift', keyCode: 16, ...modifiersOff, shiftKey: true});
+  stroke(m.keyboard, {code: 'KeyE', key: 'Ê', keyCode: 69, ...modifiersOff, shiftKey: true}, ['Ê'], {code: 'KeyE', key: 'E', keyCode: 69, ...modifiersOff, shiftKey: true});
+  m.keyboard.dispatch('keyup', {code: 'ShiftLeft', key: 'Shift', keyCode: 16, ...modifiersOff});
+  // Plain keys after it are keys again, and so is a shortcut chord pressed after a dead key.
+  stroke(m.keyboard, {code: 'KeyA', key: 'a', keyCode: 65, ...modifiersOff});
+  stroke(m.keyboard, dead('Equal', 221));
+  m.keyboard.dispatch('keydown', {code: 'ControlLeft', key: 'Control', keyCode: 17, ...modifiersOff, ctrlKey: true});
+  stroke(m.keyboard, {code: 'KeyL', key: 'l', keyCode: 76, ...modifiersOff, ctrlKey: true});
+  m.keyboard.dispatch('keyup', {code: 'ControlLeft', key: 'Control', keyCode: 17, ...modifiersOff});
+  stroke(m.keyboard, {code: 'KeyB', key: 'b', keyCode: 66, ...modifiersOff});
+  for (let i = 0; i < 8; i++) await tick();
+  assert.equal(m.keyboard.value ?? '', '', 'nothing is left in the hidden target');
+  const key = (keysym, pressed) => ({Key: {keysym, pressed, modifiers: 0}});
+  assert.deepEqual(m.sent.flatMap(request => request.events).slice(before), [
+    {Text: {text: 'é'}},
+    {Text: {text: 'ô'}},
+    {Text: {text: '´'}},
+    {Text: {text: '´'}},
+    {Text: {text: 'x'}},
+    key(42, true),
+    {Text: {text: 'Ê'}},
+    key(42, false),
+    key(30, true), key(30, false),
+    key(29, true), key(38, true), key(38, false), key(29, false),
+    key(48, true), key(48, false),
+  ], 'one Text per composed character, never the dead key or the key that completed it');
+  m.layer.close();
+});
+
+test('a dead key that opens a composition (Linux preedit, Firefox on macOS) leaves no key held in the window', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  await tick();
+  const before = m.sent.flatMap(request => request.events).length;
+  // Firefox with a GTK input method that shows the accent as a preedit: the
+  // dead keydown arrives before the composition starts.
+  m.keyboard.dispatch('keydown', dead('Equal', 0));
+  m.keyboard.dispatch('compositionstart', {data: ''});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: '´', isComposing: true});
+  m.keyboard.dispatch('keyup', {...dead('Equal', 0), isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyE', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('beforeinput', {inputType: 'insertCompositionText', data: 'é', isComposing: true});
+  m.keyboard.dispatch('compositionend', {data: 'é'});
+  m.keyboard.dispatch('keyup', {code: 'KeyE', key: 'e', keyCode: 69});
+  // Firefox on macOS: Option+e is a dead key reported with its keyCode, then a composition.
+  m.keyboard.dispatch('keydown', {code: 'AltLeft', key: 'Alt', keyCode: 18, ...modifiersOff, altKey: true});
+  m.keyboard.dispatch('keydown', dead('KeyE', 69, {altKey: true}));
+  m.keyboard.dispatch('compositionstart', {data: ''});
+  m.keyboard.dispatch('keyup', {...dead('KeyE', 69, {altKey: true}), isComposing: true});
+  m.keyboard.dispatch('keyup', {code: 'AltLeft', key: 'Alt', keyCode: 18, ...modifiersOff, isComposing: true});
+  m.keyboard.dispatch('keydown', {code: 'KeyU', key: 'Process', keyCode: 229, isComposing: true});
+  m.keyboard.dispatch('compositionend', {data: 'ú'});
+  m.keyboard.dispatch('keyup', {code: 'KeyU', key: 'u', keyCode: 85});
+  m.keyboard.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const events = m.sent.flatMap(request => request.events).slice(before);
+  assert.deepEqual(events.filter(event => 'Text' in event), [{Text: {text: 'é'}}, {Text: {text: 'ú'}}]);
+  assert.deepEqual(events.filter(event => 'Key' in event && event.Key.keysym !== 56), [],
+    'neither dead key is pressed in the window, so blur has none to release');
+  m.layer.close();
+});
+
+test('dead-key text goes only to the focused window of a member who drives it', async () => {
+  const typeAcute = keyboard => {
+    stroke(keyboard, dead('Equal', 221));
+    stroke(keyboard, {code: 'KeyE', key: 'é', keyCode: 69, ...modifiersOff}, ['é']);
+  };
+  const m = await controlled({control: true});
+  typeAcute(m.keyboard);
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events).filter(event => 'Text' in event || 'Key' in event), [],
+    'a window that does not hold the keyboard gets neither text nor keys');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  typeAcute(watcher.keyboard);
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher sends nothing');
+  watcher.layer.close();
+});
+
 test('closing a window a member drives closes it at its source', async () => {
   let closedKeys = [];
   const options = {dismissed: () => { const keys = closedKeys; closedKeys = []; return keys; }};

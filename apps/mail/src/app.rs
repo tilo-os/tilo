@@ -289,8 +289,6 @@ pub struct MailApp {
     menu_target: Option<MenuTarget>,
     /// A row menu to open once the list has been laid out (a capture).
     pending_menu: Option<MessageId>,
-    /// Open the sidebar drawer once the window has its size (a capture).
-    pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
     /// verb of the mailbox, only after the person confirms.
@@ -516,7 +514,6 @@ impl MailApp {
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
-            pending_drawer: false,
             bulk_purge_confirmation: None,
             search: SearchOpener::new(),
             setup: None,
@@ -779,13 +776,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Open the sidebar drawer once the window has its size (narrow drawer
-    /// shot).
-    pub fn prime_drawer_shot(&mut self) {
-        self.pending_drawer = true;
-        self.dirty = true;
     }
 
     // ---- window shell -----------------------------------------------------
@@ -2881,6 +2871,28 @@ fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
 }
 
 /// Reconstruct an editable [`Draft`] from a Drafts-folder message.
+/// What `message` says, for a caller with no screen: its people, subject,
+/// time, text and attachments' names.
+fn message_read(message: &Message) -> serde_json::Value {
+    let person = |addr: &crate::model::Addr| match &addr.name {
+        Some(name) if !name.trim().is_empty() => format!("{name} <{}>", addr.email),
+        _ => addr.email.clone(),
+    };
+    serde_json::json!({
+        "from": person(&message.from),
+        "to": message.to.iter().map(person).collect::<Vec<_>>(),
+        "cc": message.cc.iter().map(person).collect::<Vec<_>>(),
+        "subject": message.subject,
+        "sent_minutes_since_epoch": message.timestamp_min,
+        "text": message.body,
+        "attachments": message.attachments.iter().map(|attachment| serde_json::json!({
+            "name": attachment.filename,
+            "type": attachment.mime,
+            "size": attachment.size,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn draft_from_message(m: &Message) -> Draft {
     let join = |addrs: &[Addr]| {
         addrs
@@ -3562,10 +3574,6 @@ impl Widget for MailApp {
                 // Rest the shell for this width before the first frame.
                 self.nav.snap();
                 self.first_layout = false;
-                if std::mem::take(&mut self.pending_drawer) {
-                    self.nav.open_sidebar();
-                    self.nav.snap();
-                }
                 self.nav.apply_layout(taffy, nav_node, inner);
             }
             self.publish_shell_flags();
@@ -3980,6 +3988,20 @@ impl MailApp {
     /// # Errors
     /// Why the effect does not apply to what this window has loaded now: a
     /// message, folder or account that is gone, no connected account.
+    /// What the loaded message `message` says.
+    fn read_message(&self, message: &str) -> Result<serde_json::Value, String> {
+        let id = message
+            .parse::<MessageId>()
+            .map_err(|_| "invalid message id")?;
+        self.shared
+            .borrow()
+            .mailbox
+            .messages
+            .get(&id)
+            .map(message_read)
+            .ok_or_else(|| "message is no longer loaded".into())
+    }
+
     pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4059,6 +4081,9 @@ impl MailApp {
                 self.process_intents();
                 Ok(done)
             }
+            MailEffect::ReadMessage { message } => self
+                .read_message(&message)
+                .map(ui::framework::Effected::value),
             MailEffect::Reply { message } => {
                 self.compose_from(&message, Intent::Reply).map(|()| done)
             }
@@ -5486,7 +5511,8 @@ mod tests {
         // layout still settles (it panics in `layout_for_test` otherwise).
         {
             let (mut app, _doc) = app();
-            app.prime_drawer_shot();
+            app.nav.open_sidebar();
+            app.nav.snap();
             app.layout_for_test(560.0, 860.0);
             assert!(app.shared.borrow().narrow);
         }

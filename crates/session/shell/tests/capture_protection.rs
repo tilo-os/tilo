@@ -22,12 +22,11 @@
 )]
 
 use shell::compositor::capture::CaptureExecutor;
-use shell::compositor::foreign::{self, store};
+use shell::compositor::foreign::store;
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::lock_screen::{self, LockOutput, LockView};
 use shell::compositor::tab_binding;
 use shell::shell::capture_protection;
-use shell::shell::state::WorkspaceTree;
 use ui::num::u32_of_f64;
 use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
@@ -157,16 +156,11 @@ fn solid(width: u32, height: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
 /// A `FrameBuilder` whose rendered tree carries the client's tab, focused,
 /// reached the way the native loop reaches it.
 fn adopt(surface_id: u64, app_id: &str) -> FrameBuilder {
-    let mut protocol_tree = WorkspaceTree::bootstrap_demo();
-    tab_binding::adopt_toplevel(&mut protocol_tree, surface_id, Some(app_id.to_string()));
     let mut fb = FrameBuilder::new((W, H));
     {
         let chrome = fb.chrome();
         let mut rendered = chrome.tree_mut();
-        assert!(foreign::reconcile_foreign_tabs(
-            &protocol_tree,
-            &mut rendered
-        ));
+        tab_binding::adopt_toplevel(&mut rendered, surface_id, Some(app_id.to_string()));
         let (strip_id, group_id) = rendered
             .desktop
             .workspaces

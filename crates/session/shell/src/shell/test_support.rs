@@ -175,6 +175,21 @@ pub(crate) fn with_scratch_event_ctx<R>(f: impl FnOnce(&mut ui::widget::EventCtx
     })
 }
 
+/// When pan step `step` of a fixture that does not model input timing was
+/// reported: well before the frame and far apart from the step before, so
+/// the strip's frame-time resampling has nothing to interpolate and each
+/// frame shows exactly the travel last reported, and a release throws
+/// nothing.
+#[cfg(test)]
+pub(crate) fn settled_pan_report(step: u32) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_sub(std::time::Duration::from_secs(30))
+        .and_then(|base| {
+            base.checked_add(std::time::Duration::from_millis(50).saturating_mul(step))
+        })
+        .unwrap_or(now)
+}
+
 #[cfg(test)]
 pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
 

@@ -164,6 +164,37 @@ mod tests {
     }
 
     #[test]
+    fn a_login_on_an_established_identity_rewrites_no_fleet() {
+        // Every login provisions again. A rewrite that changes nothing would
+        // make each login on a full disk fail.
+        let fixture = Fixture::new();
+        let fleet = fixture.fleet_file();
+        settle(&fleet);
+        let before = std::fs::metadata(&fleet)
+            .expect("fleet")
+            .modified()
+            .expect("mtime");
+        let system_root = fixture
+            .identity_dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("fixture root")
+            .join("system");
+        crate::provisioning::ensure_collaboration_identity(
+            &fixture.identity_dir,
+            &IdentityPaths::under(&system_root),
+            crate::provisioning::IdentityStorage::Files,
+        )
+        .expect("provisioning an established identity again");
+        let after = std::fs::metadata(&fleet)
+            .expect("fleet")
+            .modified()
+            .expect("mtime");
+        assert_eq!(before, after, "the unchanged fleet was not written again");
+    }
+
+    #[test]
     fn authorize_join_loads_fleet_once() {
         let fixture = Fixture::new();
         settle(&fixture.fleet_file());

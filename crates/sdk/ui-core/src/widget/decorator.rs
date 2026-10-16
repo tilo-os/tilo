@@ -369,6 +369,7 @@ decorator_trait! {
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;

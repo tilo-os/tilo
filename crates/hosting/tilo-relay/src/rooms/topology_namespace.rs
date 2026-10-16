@@ -26,7 +26,7 @@ impl Rooms {
         let state = self.room(room).await?;
         let mut room = state.lock().await;
         let mut candidate = room.peer().clone();
-        let changed = candidate.claim_topology_namespace(
+        let changed = candidate.governance_mut().claim_topology_namespace(
             caller,
             salt,
             &self.inner.host.key,

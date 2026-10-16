@@ -326,9 +326,14 @@ struct Pending {
 /// start a local instance of each one it may. Returns whether anything
 /// was decided, so the caller can repaint only when needed.
 ///
-/// At most one unanswered launch per app id, across reconciliation passes:
-/// the launcher correlates each arriving window with its app's FIFO placement.
-/// Wait for that claim, failure or expiry before starting a saved sibling.
+/// One saved window opens at a time, across reconciliation passes: the next
+/// is started once the previous one's window has mapped, its launch failed,
+/// or its placement expired. Started together after a login, seven apps
+/// fought over CPU, disk and memory and each one took several times longer
+/// to show its window; one after another, the first saved window is up
+/// soonest and the next starts on a quieter machine. The active workspace's
+/// windows go first. Waiting for the claim also keeps each arriving window
+/// matched to its own app's FIFO placement.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
     #[cfg(test)]
     EXAMINE_PASSES.with(|passes| passes.set(passes.get().saturating_add(1)));
@@ -337,16 +342,20 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let reread = reread_missing_apps(tree);
     let retried = start_requested_retries(tree);
     let interrupted = settle_orphaned_local_restores(tree);
-    let todo = pending(tree);
+    let mut todo = pending(tree);
     if todo.is_empty() {
         return released || installing || reread || retried || interrupted;
     }
-    let mut started: Vec<String> = Vec::new();
+    active_workspace_first(tree, &mut todo);
+    let mut started = false;
     let mut decided = false;
     for item in todo {
-        if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id))
-            || launcher::has_unclaimed_launch(&item.app_id)
-        {
+        if started || launcher::has_unclaimed_restore_launch() {
+            break;
+        }
+        // Any other unanswered launch of this app (a palette open) would
+        // take this window's FIFO placement.
+        if launcher::has_unclaimed_launch(&item.app_id) {
             continue;
         }
         let Some(workspace) = tree.desktop.workspaces.get(item.workspace) else {
@@ -378,7 +387,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         let (note, missing) = match open_for(tree, &item) {
             Ok(()) => {
-                started.push(item.app_id.clone());
+                started = true;
                 (OPENING.to_string(), None)
             }
             Err(Refusal::Said(refusal)) => (refusal, None),
@@ -672,6 +681,17 @@ pub(crate) fn settle_local_restore(
         tree.queue_save();
     }
     changed
+}
+
+/// Put the active workspace's windows first, keeping saved order otherwise:
+/// the workspace on screen is restored before the ones behind it.
+fn active_workspace_first(tree: &WorkspaceTree, todo: &mut [Pending]) {
+    let active = tree
+        .desktop
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == tree.desktop.active);
+    todo.sort_by_key(|item| Some(item.workspace) != active);
 }
 
 /// Every peer window with no note on it yet.
@@ -1439,6 +1459,49 @@ mod tests {
         launcher::clear_pending_placements();
     }
 
+    /// Two saved windows of different apps on different workspaces: the
+    /// visible workspace's opens first, and the other starts only once that
+    /// window has mapped.
+    #[test]
+    fn saved_windows_of_different_apps_open_one_at_a_time_visible_workspace_first() {
+        let behind_app = "dev.tilo.restore-behind";
+        let visible_app = "dev.tilo.restore-visible";
+        let (mut tree, behind_tab) = tree_with_local_app(behind_app);
+        let (visible, visible_tab) = tree_with_local_app(visible_app);
+        let visible_ws = visible.desktop.workspaces[0].id;
+        tree.desktop.workspaces.extend(visible.desktop.workspaces);
+        tree.desktop.active = visible_ws;
+
+        let mut todo = pending(&tree);
+        assert_eq!(todo.len(), 2, "fixture: both saved windows are pending");
+        active_workspace_first(&tree, &mut todo);
+        assert_eq!(
+            todo.iter().map(|item| item.tab).collect::<Vec<_>>(),
+            vec![visible_tab, behind_tab],
+            "the workspace on screen is restored first"
+        );
+
+        // The visible window's launch is in flight.
+        launcher::set_pending_placement(visible_app, Placement::IntoTab(visible_tab));
+        set_note(&mut tree, visible_tab, OPENING.into());
+        for _ in 0..3 {
+            assert!(
+                !examine(&mut tree),
+                "another app's saved window waits while one is still starting"
+            );
+            assert_eq!(local_app_note(&tree, behind_tab), "");
+        }
+
+        assert_eq!(
+            launcher::placement_for_toplevel(visible_app, 4712),
+            Some(Placement::IntoTab(visible_tab)),
+            "the visible window maps into its saved tab"
+        );
+        assert!(examine(&mut tree), "a mapped window releases the next one");
+        assert_eq!(local_app_note(&tree, behind_tab), NOT_INSTALLED);
+        launcher::clear_pending_placements();
+    }
+
     #[test]
     fn restored_window_waits_for_a_live_launch_but_not_a_failed_or_unrelated_one() {
         let app = "dev.tilo.restore-launch-lifetime";
@@ -1450,20 +1513,23 @@ mod tests {
         );
         assert_eq!(local_app_note(&tree, tab), "");
 
-        let other = "dev.tilo.unrelated-restore";
-        let (mut other_tree, other_tab) = tree_with_local_app(other);
-        assert!(
-            examine(&mut other_tree),
-            "other apps are examined independently"
-        );
-        assert_eq!(local_app_note(&other_tree, other_tab), NOT_INSTALLED);
-
         launcher::clear_pending_placement(app);
         assert!(
             examine(&mut tree),
             "a failed launch must release its sibling"
         );
         assert_eq!(local_app_note(&tree, tab), NOT_INSTALLED);
+
+        // A palette launch of another app is no saved window: restore does
+        // not wait for it.
+        let other = "dev.tilo.unrelated-restore";
+        let (mut other_tree, other_tab) = tree_with_local_app(other);
+        launcher::set_pending_placement("dev.tilo.palette-open", Placement::NewGroup);
+        assert!(
+            examine(&mut other_tree),
+            "an unrelated non-restore launch does not hold restore back"
+        );
+        assert_eq!(local_app_note(&other_tree, other_tab), NOT_INSTALLED);
         launcher::clear_pending_placements();
     }
 

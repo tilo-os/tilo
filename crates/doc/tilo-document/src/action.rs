@@ -509,6 +509,20 @@ pub enum RichTextAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body: Vec<ClipBlock>,
     },
+    /// Replace characters `start..end` of `block` with `text` (insert when
+    /// they are equal), leaving the rest of the block, its kind and its
+    /// marks as they are. With `markdown`, `text` is inline Markdown whose
+    /// marks (**bold**, _italic_, `code`, [link](url)) cover what it writes.
+    /// The edit stays inside the block, so the body keeps its blocks: what a
+    /// person selected and asked an agent to change.
+    ReplaceBlockRange {
+        block: String,
+        start: usize,
+        end: usize,
+        text: String,
+        #[serde(default)]
+        markdown: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,6 +583,7 @@ impl RichTextAction {
             Self::InsertBlocks { .. }
             | Self::InsertMarkdown { .. }
             | Self::SetBlockText { .. }
+            | Self::ReplaceBlockRange { .. }
             | Self::SetBlockShape { .. }
             | Self::SetBlockDone { .. }
             | Self::ShiftIndent { .. }

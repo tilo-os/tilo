@@ -517,6 +517,13 @@ impl Default for CaptureStudio {
     }
 }
 
+/// The screenshot receipt's buttons are the minimum pointer target wide
+/// (HIG §9.6), `s1` apart; it keeps `s2` off the screen edge. Compile-time
+/// like the receipt's own geometry, which has no theme.
+const RECEIPT_BUTTON_W: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+const RECEIPT_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
 impl CaptureStudio {
     /// Capture status belongs to compositor space, not to the picker node's
     /// current layout parent. The latter can move back into the content area
@@ -620,20 +627,29 @@ impl CaptureStudio {
         let mut targets = Vec::new();
         menu.push(MenuItem::icon_action(
             Icon::FolderOpen,
-            "Save to this workspace's files",
+            crate::i18n::widget_format("widget-screenshot-send-workspace", &[]),
             || {},
         ));
         targets.push(Some(ScreenshotSendTarget::Workspace));
         menu.push(MenuItem::separator());
         targets.push(None);
         if self.send_devices.is_empty() {
-            menu.push(MenuItem::action("No other device is online", || {}).with_enabled(false));
+            menu.push(
+                MenuItem::action(
+                    crate::i18n::widget_format("widget-screenshot-send-no-device", &[]),
+                    || {},
+                )
+                .with_enabled(false),
+            );
             targets.push(None);
         }
         for device in &self.send_devices {
             menu.push(MenuItem::icon_action(
                 Icon::Send,
-                format!("Send to {}", device.label),
+                crate::i18n::widget_format(
+                    "widget-screenshot-send-device",
+                    &[("device", device.label.as_str().into())],
+                ),
                 || {},
             ));
             targets.push(Some(ScreenshotSendTarget::Device(device.id.clone())));
@@ -1925,7 +1941,11 @@ impl CaptureStudio {
         };
         let bounds = self.status_rect();
         let compact = bounds.width() < 1000.0;
-        let final_width = if compact { 394.0 } else { 354.0 };
+        // Never wider than the bounds less the receipt's edge margin, so a
+        // narrow output shrinks it (its dimensions line gives way first)
+        // rather than pushing it past the screen edge.
+        let final_width = (if compact { 394.0 } else { 354.0_f64 })
+            .min((bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0));
         // Begin as a recognizable thumbnail rather than a nearly empty tiny
         // capsule. The object compresses vertically while it gains enough
         // horizontal room for metadata and actions in the top bar.
@@ -1942,7 +1962,7 @@ impl CaptureStudio {
         } else {
             clock_right + 12.0 + final_width / 2.0
         };
-        let edge_inset = final_width / 2.0 + 6.0;
+        let edge_inset = final_width / 2.0 + RECEIPT_EDGE_MARGIN;
         let final_x = requested_x
             .min(bounds.x1 - edge_inset)
             .max(bounds.x0 + edge_inset);
@@ -1958,20 +1978,22 @@ impl CaptureStudio {
         let pill = Rect::from_center_size(center, (width, height));
         let inset = 4.0 + if compact { 0.0 } else { 2.0 * p };
         let dismiss = Rect::new(
-            pill.x1 - 28.0 - inset,
+            pill.x1 - RECEIPT_BUTTON_W - inset,
             pill.y0 + inset,
             pill.x1 - inset,
             pill.y1 - inset,
         );
-        let reveal = Rect::new(dismiss.x0 - 34.0, dismiss.y0, dismiss.x0 - 4.0, dismiss.y1);
-        let copy = Rect::new(reveal.x0 - 34.0, reveal.y0, reveal.x0 - 4.0, reveal.y1);
-        let pin = Rect::new(copy.x0 - 34.0, copy.y0, copy.x0 - 4.0, copy.y1);
+        let reveal = Self::screenshot_receipt_send_rect(dismiss);
+        let copy = Self::screenshot_receipt_send_rect(reveal);
+        let pin = Self::screenshot_receipt_send_rect(copy);
         (pill, pin, copy, reveal, dismiss)
     }
 
-    /// The receipt's Send button, left of Pin.
-    fn screenshot_receipt_send_rect(pin: Rect) -> Rect {
-        Rect::new(pin.x0 - 34.0, pin.y0, pin.x0 - 4.0, pin.y1)
+    /// The receipt button left of `next` (Send is the one left of Pin):
+    /// each the minimum pointer target wide, `s1` apart.
+    fn screenshot_receipt_send_rect(next: Rect) -> Rect {
+        let x1 = next.x0 - RECEIPT_BUTTON_GAP;
+        Rect::new(x1 - RECEIPT_BUTTON_W, next.y0, x1, next.y1)
     }
 
     fn fit_screenshot_preview(
@@ -4336,7 +4358,15 @@ impl CaptureStudio {
         } else {
             Self::screenshot_receipt_send_rect(pin).x0
         };
-        let status = if receipt.copied { "Copied" } else { "Saved" };
+        let status = crate::i18n::widget_format(
+            if receipt.copied {
+                "widget-screenshot-copied"
+            } else {
+                "widget-screenshot-saved"
+            },
+            &[],
+        );
+        let status = status.as_str();
         let dimensions = format!("{} × {}", receipt.width, receipt.height);
         let (status_width, status_height) = text_renderer.measure_style(
             status,

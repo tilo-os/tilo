@@ -84,7 +84,8 @@ pub fn unreachable_door(path: &Path, error: &io::Error) -> io::Error {
     )
 }
 
-/// The longest `initialize` line the door reads before it is admitted.
+/// The most the door reads from a client before it is admitted: its
+/// `initialize` and any discovery probe before it.
 const MAX_HELLO: usize = 64 * 1024;
 /// The most of a client's own name the person is shown.
 const MAX_CLIENT_NAME: usize = 64;
@@ -118,6 +119,12 @@ pub enum HelloError {
     /// The client sent something before, or instead of, `initialize`: it is
     /// answered with this JSON-RPC id, then the connection closes.
     NotInitialize(serde_json::Value),
+    /// The client asked whether the server speaks a newer protocol before
+    /// it initializes (MCP's `server/discover`). The door does not, so this
+    /// request with this id is answered "method not found", and the client
+    /// goes on to `initialize` on the same connection, as the protocol has
+    /// it fall back. Nothing is asked of the person and nothing runs.
+    Discover(serde_json::Value),
     /// The line was unreadable, over [`MAX_HELLO`], or the client left.
     Io(io::Error),
 }
@@ -133,12 +140,19 @@ fn bounded_text(value: Option<&serde_json::Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Parse a connection's first line. Only an `initialize` request opens the
-/// door; anything else — a tool call, a notification, junk — is refused
-/// before the person is asked, and nothing it asked for runs.
+/// The request a client may send before `initialize` to learn whether the
+/// server speaks a newer protocol revision.
+const DISCOVER: &str = "server/discover";
+
+/// Parse a line a connection sends before it is admitted. Only an
+/// `initialize` request opens the door; a `server/discover` probe is
+/// answered as unsupported; anything else — a tool call, a notification,
+/// junk — is refused before the person is asked, and nothing it asked for
+/// runs.
 ///
 /// # Errors
-/// Returns [`HelloError::NotInitialize`] for anything but `initialize`.
+/// Returns [`HelloError::Discover`] for a discovery probe and
+/// [`HelloError::NotInitialize`] for anything else but `initialize`.
 pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
     let request: serde_json::Value = serde_json::from_slice(line)
         .map_err(|_| HelloError::NotInitialize(serde_json::Value::Null))?;
@@ -149,10 +163,13 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
     let Some(id) = id else {
         return Err(HelloError::NotInitialize(serde_json::Value::Null));
     };
-    if request.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
-        || request.get("method").and_then(serde_json::Value::as_str) != Some("initialize")
-    {
+    if request.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0") {
         return Err(HelloError::NotInitialize(id));
+    }
+    match request.get("method").and_then(serde_json::Value::as_str) {
+        Some("initialize") => {}
+        Some(DISCOVER) => return Err(HelloError::Discover(id)),
+        _ => return Err(HelloError::NotInitialize(id)),
     }
     let info = request.pointer("/params/clientInfo");
     Ok(Hello {
@@ -165,7 +182,10 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
 
 /// Read exactly one line from `reader`, a byte at a time, so nothing the
 /// client sent after it is consumed before the connection is admitted.
-fn read_hello_line(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {
+/// `budget` is what is left of [`MAX_HELLO`] for everything the client sends
+/// before its `initialize`, so probes cannot keep an unadmitted connection
+/// reading without end.
+fn read_hello_line(reader: &mut impl io::Read, budget: &mut usize) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
     loop {
@@ -181,18 +201,28 @@ fn read_hello_line(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {
                 if byte == b'\n' {
                     return Ok(line);
                 }
-                if line.len() >= MAX_HELLO {
+                let Some(left) = budget.checked_sub(1) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "the initialize request is too long",
                     ));
-                }
+                };
+                *budget = left;
                 line.push(byte);
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
     }
+}
+
+/// The JSON-RPC "method not found" answer to a `server/discover` probe.
+fn not_found_reply(id: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {"code": -32601, "message": format!("Method not found: {DISCOVER}")}
+    })
 }
 
 /// A JSON-RPC error reply the door sends before it closes.
@@ -282,24 +312,32 @@ where
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let hello = match read_hello_line(&mut stream)
-        .map_err(HelloError::Io)
-        .and_then(|line| parse_hello(&line))
-    {
-        Ok(hello) => hello,
-        Err(HelloError::NotInitialize(id)) => {
-            write_line(
-                &mut stream,
-                &error_reply(
-                    &id,
-                    "the agent door opens with initialize; nothing else is answered before the \
+    let mut budget = MAX_HELLO;
+    let hello = loop {
+        match read_hello_line(&mut stream, &mut budget)
+            .map_err(HelloError::Io)
+            .and_then(|line| parse_hello(&line))
+        {
+            Ok(hello) => break hello,
+            Err(HelloError::Discover(id)) => {
+                // A client that does not read its answers is not waited on.
+                use std::io::Write as _;
+                stream.write_all(format!("{}\n", not_found_reply(&id)).as_bytes())?;
+            }
+            Err(HelloError::NotInitialize(id)) => {
+                write_line(
+                    &mut stream,
+                    &error_reply(
+                        &id,
+                        "the agent door opens with initialize; nothing else is answered before the \
                      person admits this client",
-                ),
-            );
-            finish_refusal(&mut stream);
-            return Ok(());
+                    ),
+                );
+                finish_refusal(&mut stream);
+                return Ok(());
+            }
+            Err(HelloError::Io(error)) => return Err(error),
         }
-        Err(HelloError::Io(error)) => return Err(error),
     };
     stream.set_read_timeout(None)?;
     let id = hello.request.get("id").cloned().unwrap_or_default();
@@ -411,6 +449,10 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(refused("not json"), serde_json::Value::Null);
+        assert!(matches!(
+            parse_hello(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#),
+            Err(HelloError::Discover(id)) if id == "probe"
+        ));
         let hello = parse_hello(
             br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"  Claude\u0007 Code ","version":"2.1"}}}"#,
         )
@@ -541,6 +583,69 @@ mod tests {
         assert_eq!(replies.len(), 1, "{replies:?}");
         assert_eq!(replies[0]["id"], 2);
         assert!(replies[0]["error"].is_object());
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(host.0.lock().unwrap().is_empty());
+    }
+
+    /// Claude Code (and any client of MCP's 2026-07-28 revision) probes with
+    /// `server/discover` before `initialize`, and falls back to `initialize`
+    /// on the same connection when told the method is not found. Refusing
+    /// and closing on the probe left such a client unable to connect at all.
+    #[test]
+    fn a_discovery_probe_is_answered_unsupported_and_the_client_goes_on_to_initialize() {
+        const DISCOVER_PROBE: &str = r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+        let (near, served, host, asked) = door(
+            &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
+            Consent::Admit {
+                room: "room".into(),
+                agent: "claude-code".into(),
+            },
+        );
+        near.shutdown(std::net::Shutdown::Write).unwrap();
+        let replies = lines(near);
+        served.join().unwrap().unwrap();
+        assert_eq!(replies.len(), 3, "{replies:?}");
+        assert_eq!(replies[0]["id"], "server-discover-probe-1");
+        assert_eq!(replies[0]["error"]["code"], -32601, "{}", replies[0]);
+        assert!(
+            replies[1]["result"]["serverInfo"].is_object(),
+            "{}",
+            replies[1]
+        );
+        assert_eq!(replies[2]["id"], 2);
+        assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!host.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn probes_alone_never_admit_and_cannot_keep_the_door_reading() {
+        const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
+        let flood = format!("{PROBE}\n").repeat(MAX_HELLO / PROBE.len() + 1);
+        let (near, served, host, asked) = door(
+            &flood,
+            Consent::Admit {
+                room: "room".into(),
+                agent: "claude-code".into(),
+            },
+        );
+        // Read the door's answers as a client would, so only the budget
+        // ends the connection. The door closes with probes still unread,
+        // so the end may read as a reset.
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+            std::io::BufReader::new(near)
+                .lines()
+                .map_while(Result::ok)
+                .count()
+        });
+        let ended = served.join().unwrap();
+        assert_eq!(
+            ended.unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+            "past the hello budget the door stops reading"
+        );
+        assert!(reader.join().unwrap() > 0, "each probe was answered");
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(host.0.lock().unwrap().is_empty());
     }

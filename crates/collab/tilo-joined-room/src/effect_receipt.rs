@@ -82,7 +82,7 @@ pub(crate) fn validate_history(
     view: &crate::NativeCommittedView,
     store: &dyn crate::Store,
 ) -> Result<(), String> {
-    let signed_root = view.peer().workspace_effect_history_root()?;
+    let signed_root = view.peer().workspace().workspace_effect_history_root()?;
     let Some(root) = view.record.effect_history_root else {
         if signed_root.is_some() && view.device() == view.governor() {
             return Err("native governor history index is missing from its owner record".into());
@@ -129,6 +129,7 @@ fn archive_one(
     validate_fact(view, &fact, &effects)?;
     let root = crate::effect_history::insert(store, view.record.effect_history_root, fact)?;
     view.peer
+        .workspace_mut()
         .set_workspace_effect_history_root(root, key, now)?;
     view.record.effect_history_root = Some(root);
     // Older readers must refuse an archived owner record, not ignore the
@@ -149,7 +150,10 @@ fn decode(
     else {
         return Err("unsupported native effect commit family".into());
     };
-    tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(*invocation, redacted)
+    tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
+        *invocation,
+        redacted,
+    )
 }
 
 #[cfg(test)]
@@ -219,13 +223,23 @@ impl NativeWorkspaceOwner {
             else {
                 return Err("member request is not an effect receipt".into());
             };
-            checked.apply_member_effect_receipt(caller, *invocation, redacted, key, now)?
+            checked.workspace_mut().apply_member_effect_receipt(
+                caller,
+                *invocation,
+                redacted,
+                key,
+                now,
+            )?
         } else {
-            checked.apply_workspace_effect_receipt(&effect, key, now)?
+            checked
+                .workspace_mut()
+                .apply_workspace_effect_receipt(&effect, key, now)?
         };
         // A received signed root without its exact retained owner history is not
         // an empty index. No creator authority is inferred from an unknown UUID.
-        if candidate.peer.workspace_effect_history_root()? != candidate.record.effect_history_root {
+        if candidate.peer.workspace().workspace_effect_history_root()?
+            != candidate.record.effect_history_root
+        {
             return Err("native effect index is unavailable for the signed governance root".into());
         }
         if let Some(existing) = candidate.record.effect_receipts.get(&id) {
@@ -252,7 +266,8 @@ impl NativeWorkspaceOwner {
             archive_one(&mut candidate, self.0.store.as_ref(), key, now)?;
         }
         let mut peer = candidate.peer.clone();
-        peer.apply_workspace_effect_receipt(&effect, key, now)?;
+        peer.workspace_mut()
+            .apply_workspace_effect_receipt(&effect, key, now)?;
         let generation = candidate
             .generation()
             .checked_add(1)
