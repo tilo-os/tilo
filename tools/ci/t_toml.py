@@ -50,8 +50,9 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba
 # history gets a .git whose HEAD is the commit under test. A `prepare` command
 # runs before the group's suites.
 GROUP_FIELDS = {
-    "os": {"why": "writes fixtures next to its sources and reads Git history",
-           "writable_sources": True, "git": True},
+    "os": {"why": "writes fixtures next to its sources and reads Git history, and as root builds bubblewrap "
+                  "namespaces and gives fixtures other owners, which the capability-less job sandbox cannot",
+           "writable_sources": True, "git": True, "isolation": "vm"},
     "dist": {"why": "writes under target/ in the source tree and reads Git history",
              "writable_sources": True, "git": True},
     "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
