@@ -73,8 +73,11 @@ splash-segments = ["bin/video-editor[0x0:0x400000]"]
 splash-budget   = 250
 
 # Formats the importer probes (see `probe.rs`): ISOBMFF, Matroska/WebM, MP3,
-# WAV, and the two still-image formats.
+# WAV, and the two still-image formats. Opening one of these means watching or
+# listening to it, so the Video Player, Music and Photos open them by default
+# and the editor is offered under Open with.
 [providers]
+secondary = true
 mime = [
     "video/mp4",
     "video/quicktime",

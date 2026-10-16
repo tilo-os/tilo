@@ -779,6 +779,7 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            opens_secondary: false,
             offers: Vec::new(),
         };
         let room = RoomId::new();

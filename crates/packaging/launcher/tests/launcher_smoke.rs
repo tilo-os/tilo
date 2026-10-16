@@ -73,6 +73,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        opens_secondary: false,
         continuity: launcher::manifest::ContinuityContract::default(),
     }
 }
@@ -471,6 +472,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             opens_ext: Vec::new(),
             opens_mime: Vec::new(),
             opens_schemes: Vec::new(),
+            opens_secondary: false,
             continuity: launcher::manifest::ContinuityContract::default(),
         };
         // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
@@ -597,6 +599,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             opens_ext: Vec::new(),
             opens_mime: Vec::new(),
             opens_schemes: Vec::new(),
+            opens_secondary: false,
             continuity: launcher::manifest::ContinuityContract::default(),
         };
 

@@ -18,7 +18,9 @@ schemes: local files use the capability-granting file-open path, while inline
 active content must stay inside an already-authorized application.
 
 A manifest containing only `[providers].ext` is valid; `mime` and `schemes`
-are optional.
+are optional. `secondary = true` keeps every claim but ranks the app after
+other claimants when nobody chose a default, so a video editor that imports
+`.mp4` does not open videos ahead of the player.
 
 The launcher exposes validated extension, MIME, and scheme claims when it
 enumerates installed GUI apps. Personal Settings and Workspace Settings build
