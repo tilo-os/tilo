@@ -71,6 +71,15 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn("optional_needs", c["publish-tool"])
         self.assertIn("oci-anonymous.sh r/tool /target/publish/tool", c["publish-tool"]["run"])
 
+    def test_dispatched_products_publish_development_tags_only_when_asked(self):
+        c = checks({"family": "f", "name": "big", "repository": "r/big", "dev": ["{commit}"],
+                    "release": ["sha-{commit}"], "dispatch": True, "build": {"run": "build {out}"}})
+        self.assertEqual(c["publish-big"]["on"], ["dispatch", "stable"])
+        self.assertEqual(c["sign-big"]["on"], ["stable"])
+        c = checks({"family": "f", "name": "dev", "repository": "r/dev", "dev": ["{commit}"],
+                    "dispatch": True, "build": {"run": "build {out}"}})
+        self.assertEqual(c["publish-dev"]["on"], ["dispatch"])
+
     def test_release_only_products_need_their_signature(self):
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
                     "release_on": ["tag:v*"], "tlog": True, "gates": ["rel-e2e"],
