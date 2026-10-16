@@ -244,6 +244,9 @@ def run_checks(service, checks):
     first = threading.Thread(target=call, args=('POST', admit, {'ticket': ticket, 'pairingCode': '111111'}),
                              kwargs={'timeout': 90}, daemon=True)
     first.start()
+    # Asked before the first reaches the service, the probe would take the
+    # ticket itself and wait out the minute instead: let the first go ahead.
+    time.sleep(2)
     busy, deadline = None, time.monotonic() + 10
     while time.monotonic() < deadline:
         busy = call('POST', admit, {'ticket': ticket, 'pairingCode': '222222'})
