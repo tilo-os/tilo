@@ -388,3 +388,101 @@ default = false
 cpus = 4
 memory = "8G"
 only = ["x86_64"]
+
+[[matrix]]
+family = "apps"
+about = """
+Apps (tools/apps/t-release.sh; docs/publishing-on-t.md). Every app of the default collection
+is built, packaged with throwaway keys and smoke-tested per architecture without credentials:
+`t test apps-build-x86_64` is what a release builds. On each new head of stable the release
+nodes sign those exact binaries with the publisher identities (sign-apps-*, which compile
+nothing), upload the tapps, collections and runtime objects with the package token
+(publish-apps, which sets the `app-collection` pointer to the collections an OS build takes:
+`reads_pointers = ["stable:app-collection"]`) and submit
+the publisher-signed registry entries (submit-apps). Main publishes no apps."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
+
+[[matrix.check]]
+name = "apps-build-{arch}"
+run = "bash tools/apps/t-release.sh build {arch} /target/apps-release/{arch}"
+outputs = ["/target/apps-release/{arch}/compiled/**"]
+requires = ["{node}"]
+timeout_secs = 10800
+cost = "heavy"
+default = false
+
+[[matrix.check]]
+name = "sign-apps-{arch}"
+run = "bash tools/apps/t-release.sh sign {arch} /target/apps-release/{arch} /target/apps-release/{arch}/signed"
+needs = ["apps-build-{arch}"]
+outputs = ["/target/apps-release/{arch}/signed/**"]
+requires = ["{node}"]
+# The release sequence is the commit's time.
+git = true
+secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "publish-apps"
+run = "bash tools/apps/t-release.sh publish /target/apps-release/channel /target/apps-release/x86_64/signed /target/apps-release/aarch64/signed"
+needs = ["sign-apps-x86_64", "sign-apps-aarch64"]
+outputs = ["/target/apps-release/channel/channel.json"]
+# The collections an OS build takes its apps from, per reference: `stable:app-collection`.
+pointers = { app-collection = "/target/apps-release/channel/channel.json" }
+requires = ["arch=x86_64"]
+# Assembles the collections under release/ and dist/app-collections/, and reads the commit's time.
+writable_sources = true
+git = true
+secrets = ["REGISTRY_TOKEN"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "submit-apps"
+run = "bash tools/apps/t-release.sh submit /target/apps-release/x86_64/signed /target/apps-release/aarch64/signed"
+needs = ["sign-apps-x86_64", "sign-apps-aarch64", "publish-apps"]
+requires = ["arch=x86_64"]
+writable_sources = true
+git = true
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix]]
+family = "desktop"
+about = """
+Every distribution userspace of one architecture, built and install-tested in its own
+container (dist/ci/package-lane.sh): `t outputs desktop-package-amd64` gives the packages and
+the OS desktop payload. The containers need a privileged node."""
+each = [{ arch = "x86_64", deb = "amd64", node = "arch=x86_64" }, { arch = "aarch64", deb = "arm64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "desktop-package-{deb}"
+run = "bash dist/ci/package-lane.sh {deb}"
+inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
+outputs = ["dist/ci-output/**"]
+requires = ["{node}"]
+privileged = true
+writable_sources = true
+# Packages record their source commit and time; the Nix lane reads the tree through Git.
+git = true
+timeout_secs = 14400
+cost = "heavy"
+default = false
+
+[[matrix.check]]
+name = "publish-desktop-payload"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
+inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
+needs = ["desktop-package-amd64", "desktop-package-arm64"]
+outputs = ["/target/publish/desktop/payload.json"]
+pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
+secrets = ["REGISTRY_TOKEN"]
+on = ["stable"]
+comment = """
+The OS desktop payload from stable: the Fedora lanes' payloads as immutable generic packages,
+and the `desktop-payload` pointer to them, which an OS build reads
+(`reads_pointers = ["stable:desktop-payload"]`)."""
