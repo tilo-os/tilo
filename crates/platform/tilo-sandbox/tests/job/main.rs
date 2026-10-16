@@ -23,6 +23,8 @@ mod seccomp;
 mod startup;
 #[cfg(target_os = "linux")]
 mod support;
+#[cfg(target_os = "linux")]
+mod vm;
 
 #[cfg(not(target_os = "linux"))]
 #[test]

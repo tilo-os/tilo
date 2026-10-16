@@ -50,6 +50,7 @@ on:
       - crates/hosting/tilo-relay/tests/legacy_on_kvm.rs
       - scripts/legacy-vm-e2e.py
       - os/dev/legacy-vm-e2e.sh
+      - os/scripts/verify-no-cisco-openh264.sh
       - .forgejo/workflows/build-legacy-guest.yml
 
 concurrency:

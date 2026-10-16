@@ -890,12 +890,19 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a
 wake. One it does not acknowledge within the budget is a stall, and the answer
-carries every thread's state, kernel wait channel and backtrace. The harness
-(`tests/support/desktop.rs`) polls it every 50 ms from a monitor thread and fails
-the test within the budget, whichever call it is blocked in, with that report.
+carries every thread's state and kernel wait channel. When the main thread is
+blocked it also carries the backtraces of the threads blocked in a system
+call; a main thread still working (slow, not stuck) is not interrupted, and
+neither is any thread that is running, faulting in a page or inside the
+allocator's memory calls, because a backtrace is captured by a signal handler
+that allocates, and a thread interrupted inside the allocator never comes back
+out. The harness (`tests/support/desktop.rs`) polls it every 50 ms from a
+monitor thread; a heartbeat overdue past the budget holds whichever call or
+wait the test is in until the report arrives (symbolizing the stacks can take
+many seconds under the pressure variant), then fails it with that report.
 Every control call has a hard deadline of its own, and a call that outlives it
-says whether the loop was frozen or still turning (slow). The same report is
-written to the compositor's stderr.
+on a loop that kept acknowledging wakes is reported as slow. The same report
+is written to the compositor's stderr.
 
 Each heartbeat is also a whole main-loop turn, which costs the loop the same
 whether or not anything changed. Twenty a second read 16-31% of a core on CI

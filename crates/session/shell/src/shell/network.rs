@@ -3509,16 +3509,6 @@ impl ShellNetwork {
     ) -> Result<(), String> {
         let device = decode_lower_hex_32(device_hex)
             .ok_or_else(|| "device is not an enrolled device id".to_string())?;
-        let local = self
-            .personal_continuity_device
-            .as_ref()
-            .and_then(|device| decode_lower_hex_32(device.as_str()));
-        let enrolled = self.enrolled_personal_devices(local);
-        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
-            return Err("device is not an enrolled device".into());
-        }
-        let endpoint = iroh::EndpointId::from_bytes(&device)
-            .map_err(|_| "device is not an enrolled device id".to_string())?;
         // A named workspace is sent on that room's topic: the device confines
         // the caller to the room a request arrives on. Otherwise use the
         // first shared room where the device is actually present.
@@ -3526,11 +3516,7 @@ impl ShellNetwork {
             .provider
             .strip_prefix("workspace:")
             .and_then(RoomId::parse);
-        let shared = self.online_enrolled_room(endpoint, named)?;
-        let topic = room_topic_id(shared);
-        if !self.join_topic(topic) {
-            return Err("the shared workspace is not joined".into());
-        }
+        let (endpoint, _, topic) = self.enrolled_device_route(device, named)?;
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
                 on_behalf_of: None,
@@ -3549,6 +3535,78 @@ impl ShellNetwork {
         } else {
             Err("the action could not be handed to the enrolled device".into())
         }
+    }
+
+    /// Where an enrolled device is reached: its endpoint, and the shared
+    /// workspace (room and topic) it is present in — `named` when given. A
+    /// device that is not in the enrolment list is refused, so this cannot
+    /// address an arbitrary endpoint.
+    fn enrolled_device_route(
+        &self,
+        device: [u8; 32],
+        named: Option<RoomId>,
+    ) -> Result<(iroh::EndpointId, RoomId, u64), String> {
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .and_then(|device| decode_lower_hex_32(device.as_str()));
+        let enrolled = self.enrolled_personal_devices(local);
+        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
+            return Err("device is not an enrolled device".into());
+        }
+        let endpoint = iroh::EndpointId::from_bytes(&device)
+            .map_err(|_| "device is not an enrolled device id".to_string())?;
+        let shared = self.online_enrolled_room(endpoint, named)?;
+        let topic = room_topic_id(shared);
+        if !self.join_topic(topic) {
+            return Err("the shared workspace is not joined".into());
+        }
+        Ok((endpoint, shared, topic))
+    }
+
+    /// Invoke an application's action on another of this device's person's
+    /// own devices for `person`, and follow it there: the answer is the
+    /// other device's outcome, when it reports one. Nothing waits for it.
+    ///
+    /// Only the person this device belongs to reaches their devices, and
+    /// only a device that is enrolled, authenticated to this shell as one of
+    /// theirs, unexpired and unrevoked, and present in a workspace both
+    /// share. The other device decides the request for this device as its
+    /// transport authenticates it, as it does any request of the person's.
+    ///
+    /// # Errors
+    ///
+    /// Why the invocation cannot be sent.
+    pub fn invoke_own_device(
+        self: &Arc<Self>,
+        person: &str,
+        checked: &tilo_actions::remote::own_device::Checked,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>, String>
+    {
+        let user = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device holds no identity".to_string())?;
+        if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
+            return Err("only the person this device belongs to reaches their devices".into());
+        }
+        if !self
+            .authenticated_devices_of(&user)
+            .iter()
+            .any(|cert| cert.device_public_key == checked.device)
+        {
+            return Err("the device is not one of the person's authenticated devices".into());
+        }
+        let (endpoint, room, topic) = self.enrolled_device_route(checked.device, None)?;
+        let forwarded = checked.forwarded(&room.to_string(), request);
+        let peer = Arc::new(crate::shell::remote_action_link::PeerActionHost::new(
+            Arc::clone(self),
+            topic,
+            endpoint,
+        ));
+        Ok(peer
+            .invoke_until_settled(forwarded, crate::shell::remote_action_link::FOLLOW_DEADLINE)
+            .map(own_device_outcome))
     }
 
     fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
@@ -8349,6 +8407,47 @@ pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
     );
 }
 
+/// How an own-device invocation ended, from the other device's last word
+/// on it: its output, or why it failed there or never ran.
+fn own_device_outcome(
+    settled: Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
+) -> tilo_action_broker::services::OwnDeviceOutcome {
+    use tilo_actions::InvocationUpdate;
+    let failure = |code: &str, message: String, retryable: bool| {
+        Box::new(tilo_actions::ActionFailure {
+            code: code.to_owned(),
+            message,
+            details: None,
+            retryable,
+        })
+    };
+    match settled {
+        Ok(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+        Ok(InvocationUpdate::Failed { error, .. }) => Err(Box::new(error)),
+        Ok(InvocationUpdate::Cancelled { message, .. }) => Err(failure(
+            "cancelled",
+            message.unwrap_or_else(|| "the other device cancelled the action".into()),
+            false,
+        )),
+        Ok(
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. },
+        ) => Err(failure(
+            "unsettled",
+            "the other device did not finish the action".into(),
+            true,
+        )),
+        Err(error) => {
+            let retryable = matches!(
+                error,
+                tilo_actions::remote::ActionHostError::Unavailable { .. }
+            );
+            Err(failure(error.code(), error.to_string(), retryable))
+        }
+    }
+}
+
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
     fn request(
         &self,
@@ -9026,6 +9125,161 @@ mod tests {
             std::iter::from_fn(|| commands.try_recv().ok())
                 .all(|command| !matches!(command, NetCmd::PublishRemoteAction { .. }))
         );
+    }
+
+    /// An application's action reaches another device only when that device
+    /// is the person's own: enrolled, authenticated to this shell under the
+    /// person's root, unrevoked, and asked for by the person this device
+    /// belongs to. Every refusal sends nothing; the one that passes is an
+    /// ordinary invocation of the app's action in the shared room, under
+    /// the original invocation's id.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn own_device_invocations_reach_only_the_persons_own_authenticated_devices() {
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+            sign_device_cert, sign_revocation_entry,
+        };
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let user = root.verifying_key().to_bytes();
+        let device = iroh::SecretKey::from_bytes(&[0x63; 32]).public();
+        let certified = |root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.as_bytes(),
+                device_label: "Desktop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).expect("certified device");
+            cert
+        };
+
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device.as_bytes())]).unwrap(),
+        )
+        .unwrap();
+        let room = "11111111-1111-4111-8111-111111111111";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let net = Arc::new(net);
+        assert!(net.join_default_workspace());
+        let topic = room_topic_id(RoomId::parse(room).expect("room"));
+        net.live_room_peers
+            .lock()
+            .expect("live peers")
+            .insert((topic, device));
+        while commands.try_recv().is_ok() {}
+
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(user);
+        let checked = tilo_actions::remote::own_device::Invocation {
+            device: hex::encode(device.as_bytes()),
+            app: "so.tilo.settings".into(),
+            resource: "settings.root".into(),
+            action: "storage-summary".into(),
+            arguments: None,
+        }
+        .check()
+        .expect("valid");
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::own_device::target(),
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let sent = |commands: &mut mpsc::Receiver<NetCmd>| {
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter_map(|command| match command {
+                    NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "an enrolled device that has not authenticated as the person's is refused"
+        );
+        let origin = crate::shell::state::PeerOrigin::peer(&device);
+        net.peer_identities
+            .insert(origin.clone(), certified(&stranger_root), 2)
+            .expect("stranger's device");
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "the same endpoint certified by another person is not the person's device"
+        );
+        net.peer_identities
+            .insert(origin, certified(&root), 2)
+            .expect("own device");
+        assert!(
+            net.invoke_own_device(&hex::encode([0x70; 32]), &checked, &request)
+                .is_err(),
+            "only the person this device belongs to reaches their devices"
+        );
+        let mut unenrolled = checked.clone();
+        unenrolled.device = *iroh::SecretKey::from_bytes(&[0x64; 32]).public().as_bytes();
+        assert!(
+            net.invoke_own_device(&person, &unenrolled, &request)
+                .is_err()
+        );
+        assert!(sent(&mut commands).is_empty(), "no refusal sent anything");
+
+        let _answer = net
+            .invoke_own_device(&person, &checked, &request)
+            .expect("the person's own authenticated device");
+        let delivered = sent(&mut commands);
+        let [(ws, target, NeighbourMsg::RemoteAction { frame })] = delivered.as_slice() else {
+            panic!("exactly one remote action frame, not {}", delivered.len());
+        };
+        assert_eq!((*ws, *target), (topic, device));
+        let decoded = tilo_actions::remote::RemoteActionFrame::decode(frame).expect("frame");
+        let tilo_actions::remote::RemoteActionMessage::Invoke(forwarded) = decoded.message else {
+            panic!("expected an invocation");
+        };
+        assert_eq!(forwarded.invocation, request.invocation);
+        assert_eq!(
+            tilo_actions::remote::application_provider(&forwarded.target.provider),
+            Some((room, "so.tilo.settings"))
+        );
+        assert_eq!(forwarded.target.address.action, "storage-summary");
+
+        let mut revoked = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: *device.as_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        let mut list = RevocationList::new();
+        list.insert(revoked).expect("listed");
+        net.peer_identities.set_revocations(user, &list);
+        let mut retry = request;
+        retry.invocation = tilo_actions::InvocationId::new();
+        assert!(
+            net.invoke_own_device(&person, &checked, &retry).is_err(),
+            "a revoked device is refused"
+        );
+        assert!(sent(&mut commands).is_empty());
     }
 
     #[test]

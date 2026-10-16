@@ -547,10 +547,15 @@ pub fn run() -> std::process::ExitCode {
 
     // RUST_LOG as `fmt::init` reads it, with the per-launch timing lines kept:
     // the open-latency gate reads them from the session log.
+    // Before anything logs: a failed write to stderr (the session's flight
+    // recorder) must never panic the compositor.
+    shell::stderr_guard::install();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
         ))
+        // Its fallback for a failed write is `eprintln!`, which panics.
+        .log_internal_errors(false)
         .init();
     shell::crash_log::install("tilo shell panic");
     // After the crash log: a panic outside a helper's panic boundary still

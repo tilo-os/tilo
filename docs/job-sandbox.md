@@ -200,9 +200,10 @@ with `nested_sandboxes`, and runs those checks as uid 1000 inside the job, so
 bubblewrap creates its namespaces as for any unprivileged user.
 
 **The privileged profile** (`CiProfile::Privileged`) keeps everything above
-except the namespace and mount rules. It exists for checks that genuinely need
-rootful podman, buildah's chroot isolation, loop devices or KVM. Those run only
-on [a node pool of their own](#node-pools), never next to ordinary jobs.
+except the namespace and mount rules. Checks that genuinely need real root
+(rootful podman, buildah's chroot isolation, loop devices, mounts) no longer
+need it or a pool of their own: they run as [micro-VM steps](#micro-vm-steps),
+root in a guest kernel, with QEMU itself an ordinary strict job.
 
 ### cgroup per job
 
@@ -289,6 +290,46 @@ in Tilo's identity and wire types. It now has a crate of its own,
 `tilo-net-grants`, that `collab-types` re-exports. t can depend on egress
 without the collaboration stack.
 
+### Micro-VM steps
+
+The third tier, after the strict default and nested sandboxes: a command that
+needs real root runs as root in a guest kernel of its own, and the virtual
+machine is an ordinary job. `job::vm` builds it:
+
+- **QEMU in the strict sandbox**: the host's `/usr`, `/dev/kvm` as its only
+  device, the CI seccomp filter, Landlock, no network namespace of its own but
+  an empty one, and the step's files at fixed paths under `/vm`. Nothing runs
+  as root on the host; the job's cgroup bounds QEMU, guest memory included.
+- **Machine**: `microvm` on x86-64 (no ACPI, PIT, PIC, RTC or serial port; a
+  triple fault resets it, which ends QEMU), `virt` on arm64; virtio-mmio
+  devices only. The guest gets the step's cores and memory, and its own
+  `/dev/kvm` (nested virtualisation) only when the step asks for KVM.
+- **Guest**: a kernel and a static busybox, pinned by digest (t builds them
+  reproducibly as a check's outputs, from the Kata guest kernel's
+  configuration with the RAID6 benchmark off, which alone halved boot). Per step, `prepare` writes an
+  initramfs with busybox, `vm/init.sh` and a generated job file.
+- **Disks, virtio-blk only**: the step's image as a read-only ext4 (made by
+  `make_image`: `mkfs.ext4 -d` in a user namespace of its own that maps the
+  caller to root, so the files are root's and unreadable ones still copy), copy-on-write onto a sparse scratch ext4
+  that also holds `/tmp`, `/var/tmp` and `/var/lib/containers`; more read-only
+  images mounted read-only or copy-on-write (sources, earlier steps' outputs);
+  and a raw output disk on which the guest writes a status line and a tar of
+  the files matching the step's output patterns. The host never mounts what a
+  guest wrote; `finish` reads the tar as untrusted, keeping only regular files
+  and directories below its destination. virtio-fs is avoided: it is slow and
+  breaks SQLite's write-ahead log. IO is QEMU's thread pool, since io_uring is
+  refused.
+- **Output**: the command's stdout and stderr on a virtio serial port (not a
+  terminal), the guest's console next to it, both QEMU's stdout.
+- **Network**: passt outside the sandbox, as the caller, reached on a unix
+  socket (`-netdev stream`): outbound connections and DNS, nothing forwarded
+  in, no address leading to the node's loopback.
+
+Measured on a laptop and a CI node: a step boots in about 0.25 s to its
+command once the RAID6 benchmark is off; it holds 0.2 to 0.4 GB besides what
+its command uses; a rootful `podman build` and `podman run` inside take 1 to
+2.4 s.
+
 ## The cgroup provider: direct or broker
 
 Creating cgroups, delegating them and setting quotas needs either a writable,
@@ -340,8 +381,7 @@ sets are capped by its pod's budget, and every job sits under its pod's
 
 | Pool | Runs | Seccomp | Notes |
 |---|---|---|---|
-| **workers** | untrusted and trusted checks of `main`, branches, working copies | CI | many jobs per node, warm build directories |
-| **privileged** | checks that declare `privileged` (rootful podman, buildah, loop devices, KVM) | privileged | separate nodes; one such job never shares a kernel with an ordinary job, because it can create user namespaces and mount |
+| **workers** | untrusted and trusted checks of `main`, branches, working copies, micro-VM steps included | CI | many jobs per node, warm build directories |
 | **release** | jobs of trusted runs of `stable` and tags, which may receive secrets and identity tokens | CI | same sandbox, nodes that take nothing else |
 
 Release nodes use the same sandbox as everyone else. What separates them is
@@ -410,8 +450,11 @@ t's worker builds a `JobSpec` from a check:
   ranges denied
 - **limits**: from the check's size: `memory.max`, `cpu.weight`, `pids.max`,
   `io.max`
-- **seccomp**: CI, or privileged for checks that ask, which only the
-  privileged pool takes
+- **seccomp**: CI, or nested for checks that start sandboxes of their own
+- **micro-VM steps** (`vm = true`, or `privileged = true`): the check's image
+  as the guest's root disk, made once per image and node; its sources, and the
+  outputs of the checks it needs, as a read-only disk per step, copy-on-write
+  in the guest; its outputs back through the output disk
 
 t selects the runner with `sandbox = "job"` in the worker's configuration, with
 `"bwrap"` (the previous runner) as the fallback. A worker that can't create the
@@ -462,4 +505,8 @@ skipped. Limits tests also need a delegated cgroup; quota tests need
   daemons; quotas return `EDQUOT` where available;
 - seccomp: every refused call returns `EPERM` (`clone3`: `ENOSYS`), while
   threads, `fork` and `ptrace` of its own children work;
-- startup: the benchmark above.
+- startup: the benchmark above;
+- vm: a micro-VM step loop-mounts a disk as root, returns its exit code and
+  outputs, and leaves its copy-on-write sources unchanged on the host. It
+  needs `/dev/kvm`, QEMU, `mkfs.ext4` and `TILO_VM_GUEST`, a directory holding
+  guest's `kernel` and `busybox`.

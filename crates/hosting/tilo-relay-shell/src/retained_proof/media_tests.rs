@@ -360,7 +360,8 @@ fn retained_room_governed_revocation_fence_cannot_be_removed_by_higher_revision(
     };
     tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[101; 32]))
         .unwrap();
-    peer.publish_governed_revocations(&[revocation], &key, now)
+    peer.governance_mut()
+        .publish_governed_revocations(&[revocation], &key, now)
         .unwrap();
     let before = peer.admitted_room().unwrap().clone();
     let authority = RetentionAuthority::new(ROOM, peer.authority().clone()).unwrap();

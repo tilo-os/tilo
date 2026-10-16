@@ -2811,3 +2811,11 @@ search-kw-settings-updates = update, upgrade, software update, system update, fi
 search-settings-page-about = About
 search-settings-page-about-subtitle = Device identity and transfer
 search-kw-settings-about = about, device name, hostname, version, specs, system info, serial number, hardware, os version, identity
+
+storage-app-name = Storage
+storage-volume-home = your files
+storage-volume-system = the system
+storage-low-title = Storage is almost full
+storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
+storage-full-title = Storage is full
+storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.

@@ -496,4 +496,4 @@ windows-vm = { path = "../../windows/windows-vm" }
 ush = { path = "../../runtime/ush" }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }

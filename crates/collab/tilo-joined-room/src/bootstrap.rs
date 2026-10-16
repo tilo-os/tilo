@@ -55,6 +55,7 @@ impl CommittedWorkspace for NativeCommittedView {
     fn is_member_device(&self, device: &[u8; 32], now: SystemTime) -> Result<bool, String> {
         Ok(self
             .peer
+            .governance()
             .governed_access(now)?
             .member_devices
             .contains(device))

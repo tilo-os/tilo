@@ -2321,9 +2321,6 @@ mod tests {
             fn owes_retirement(&self) -> bool {
                 self.0.owes
             }
-            fn retire_owed(&mut self, _wait: Duration) -> Vec<OwedRetirement> {
-                Vec::new()
-            }
         }
         let rendered = Arc::new(AtomicU64::new(0));
         let (_flip, flips) = channel();

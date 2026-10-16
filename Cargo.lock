@@ -513,6 +513,7 @@ dependencies = [
  "registry-types",
  "reqwest 0.13.4",
  "runtime-bundle",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

@@ -23,7 +23,11 @@ fn signed_governance(
             let mut candidate = before.clone();
             match change {
                 Governed::Grant(grant) => {
-                    candidate.put_governed_grants(std::slice::from_ref(grant), &key, now)?;
+                    candidate.governance_mut().put_governed_grants(
+                        std::slice::from_ref(grant),
+                        &key,
+                        now,
+                    )?;
                 }
             }
             candidate.durable_mutation_messages(
@@ -148,11 +152,13 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
             assert!(view.peer().certificates().contains(&viewer));
             assert!(
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(viewer.device_public_key, now)
                     .is_err()
             );
             assert!(
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(view.governor().device_public_key, now)
                     .is_ok()
             );
@@ -250,7 +256,11 @@ fn admit_viewer(
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            assert!(candidate.admit_invited_member(&redemption, &governor_key, now)?);
+            assert!(candidate.governance_mut().admit_invited_member(
+                &redemption,
+                &governor_key,
+                now
+            )?);
             candidate.durable_mutation_messages(
                 &before,
                 &governor_key,

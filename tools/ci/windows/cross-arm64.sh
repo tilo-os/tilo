@@ -32,10 +32,10 @@ case $what in
     # A file-backed firmware handoff test binary, not the optimized public imager release: skip
     # workspace fat LTO, which links for minutes.
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-    # Clang treats the SDK's __prefetch declaration as a conflicting builtin in zstd-sys and
-    # OpenH264, so rename that unused declaration while compiling those vendored sources. Zstd's
-    # NEON path emits unresolved helper calls with this MSVC cross toolchain; use its portable
-    # decoder for the Windows ARM64 host helper.
+    # Clang treats the SDK's __prefetch declaration as a conflicting builtin in zstd-sys, so
+    # rename that unused declaration while compiling its vendored sources. Zstd's NEON path emits
+    # unresolved helper calls with this MSVC cross toolchain; use its portable decoder for the
+    # Windows ARM64 host helper.
     TILO_REAL_CLANG=$(command -v clang-18 || command -v clang)
     export TILO_REAL_CLANG
     wrapper=$(mktemp -d "${TMPDIR:-/tmp}/tilo-clang.XXXXXX")
@@ -43,7 +43,6 @@ case $what in
 #!/bin/sh
 case " $* " in
   *zstd/lib/*) exec "$TILO_REAL_CLANG" -D__prefetch=__tilo_sdk_prefetch -DZSTD_NO_INTRINSICS "$@" ;;
-  *upstream/codec/*) exec "$TILO_REAL_CLANG" -D__prefetch=__tilo_sdk_prefetch "$@" ;;
   *) exec "$TILO_REAL_CLANG" "$@" ;;
 esac
 SH

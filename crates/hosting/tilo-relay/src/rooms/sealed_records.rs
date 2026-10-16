@@ -130,6 +130,31 @@ pub(super) fn publish_changes(
     }
 }
 
+/// Publish `changes` a bot's device `bot` made to a sealed record into
+/// `candidate`: decided as the bot's own sealed write, sealed with `keys`
+/// and published under the governor's `key`, which the room's members take
+/// it from, as they take a bot's changes to a record in the clear from the
+/// governor's checkpoint.
+#[cfg(feature = "agents")]
+pub(super) fn publish_changes_for(
+    candidate: &mut StatePeer,
+    keys: &RecordKeys,
+    bot: &SigningKey,
+    route: (&str, &str),
+    changes: Vec<u8>,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<NeighbourMsg, String> {
+    candidate.publish_sealed_incremental_for(
+        bot,
+        route,
+        changes,
+        &mut keys.seal(ContentRetention::Delta),
+        key,
+        now,
+    )
+}
+
 impl Rooms {
     /// Compact every sealed record history of `room` that has used most of
     /// its bound into one sealed checkpoint, and commit and publish the
@@ -188,4 +213,4 @@ impl Rooms {
 }
 
 #[cfg(all(test, feature = "agents"))]
-mod tests;
+pub(crate) mod tests;

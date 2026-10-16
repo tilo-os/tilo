@@ -106,7 +106,7 @@ fn held(peer: &StatePeer) -> Vec<SignedOp> {
         record: RECORD.into(),
     }]
         .sealed
-        .clone()
+        .to_vec()
 }
 
 /// The governor admits `message` and records, in governance `member`
@@ -183,6 +183,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     let later = expired(fixture.now);
     let renewal = fixture
         .member
+        .outbox_mut()
         .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
         .unwrap()
         .expect("an expired unretired sealed write renews");
@@ -222,6 +223,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     assert_eq!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(&renewal, &mut identical, &fixture.key, later)
             .unwrap(),
         None,
@@ -230,6 +232,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     assert!(
         !fixture
             .member
+            .outbox()
             .retained_local_document_retired(&renewal, author)
             .unwrap()
     );
@@ -239,6 +242,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
         assert!(
             fixture
                 .member
+                .outbox()
                 .retained_local_document_retired(message, author)
                 .unwrap(),
             "the governor's watermark over the renewal retires both"
@@ -247,6 +251,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     assert_eq!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
             .unwrap(),
         None,
@@ -261,6 +266,7 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     let current = metadata(&fixture.member, 2);
     let renewal = fixture
         .member
+        .outbox_mut()
         .renew_local_sealed(
             &fixture.write,
             &mut |_| Ok((current, b"resealed under epoch 2".to_vec())),
@@ -279,6 +285,7 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     assert!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(
                 &fixture.write,
                 &mut |_| Ok((foreign, b"another channel".to_vec())),
@@ -299,6 +306,7 @@ fn a_refused_reseal_or_a_fresh_write_changes_nothing() {
     assert_eq!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(
                 &fixture.write,
                 &mut |_| {
@@ -316,6 +324,7 @@ fn a_refused_reseal_or_a_fresh_write_changes_nothing() {
     assert!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(
                 &fixture.write,
                 &mut |_| Err("this device holds no current key".into()),
@@ -360,6 +369,7 @@ fn a_revoked_author_renews_nothing() {
     assert!(
         fixture
             .member
+            .outbox_mut()
             .renew_local_sealed(
                 &fixture.write,
                 &mut |op| {
@@ -381,6 +391,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
     let later = expired(fixture.now);
     let renewal = fixture
         .member
+        .outbox_mut()
         .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
         .unwrap()
         .unwrap();
@@ -397,6 +408,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
     for message in [&fixture.write, &renewal] {
         assert!(
             restored
+                .outbox()
                 .lookup_retained_local_document(message, author)
                 .unwrap()
                 .is_some()
@@ -405,6 +417,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
     assert_eq!(held(&restored), held(&fixture.member));
     assert_eq!(
         restored
+            .outbox_mut()
             .renew_local_sealed(&renewal, &mut identical, &fixture.key, later)
             .unwrap(),
         None,
@@ -415,6 +428,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
     assert!(
         fixture
             .member
+            .outbox()
             .retained_local_document_retired(&renewal, author)
             .unwrap()
     );
