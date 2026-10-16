@@ -584,7 +584,11 @@ mod tests {
             );
             // The exit is scaled by the distance left: 30% of the 1 s exit.
             let halfway = flip + Duration::from_millis(150);
-            assert!((t.value(halfway) - 0.15).abs() < 1e-3, "{}", t.value(halfway));
+            assert!(
+                (t.value(halfway) - 0.15).abs() < 1e-3,
+                "{}",
+                t.value(halfway)
+            );
             let settled = flip + Duration::from_millis(300);
             assert!(!t.is_visible(settled));
         }
