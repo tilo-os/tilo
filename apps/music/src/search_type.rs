@@ -141,8 +141,7 @@ impl SearchHit {
 }
 
 /// A parsed deep link identifying which entity a global-search hit opens. The
-/// app's router ([`crate::MusicApp::open_deep_link`]) turns this into the real
-/// navigation / play action.
+/// app's launch handling turns this into the real navigation / play action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeepLink {
     /// Play a track by id.
@@ -336,7 +335,7 @@ fn playlist_subtitle(owner: &str, tracks: u64) -> String {
 // song / album / artist / playlist appears in the one Ctrl+K palette
 // [`ui::app::App`] drives, ranked on an even footing with every other app's
 // hits, and activating a row routes onto Music's real play/navigate path
-// (see [`crate::MusicApp::open_deep_link`]). This is the reference wiring the
+// (the app's launch handling). This is the reference wiring the
 // [`apps/contacts`] `SearchProvider` pins, applied to Music's four types.
 // ---------------------------------------------------------------------------
 
