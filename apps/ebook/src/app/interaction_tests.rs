@@ -3862,6 +3862,39 @@ fn annotation_cards_delete_and_jump_to_their_location() {
     }
 }
 
+/// Chapter destinations start at the beginning and never reuse another
+/// chapter's selection for annotation actions.
+#[test]
+fn chapter_navigation_discards_previous_passage_and_seek() {
+    for mode in [ReadMode::Paged, ReadMode::Continuous] {
+        let mut app = app_with_sample();
+        let mut doc = library_doc();
+        let chapter = app.library[0].chapters[0].clone();
+        Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0])
+            .chapters
+            .push(chapter);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        dispatch(&mut app, &mut doc, Action::SetMode(mode));
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let point = page_point(&app);
+        dbl_click(&mut app, &mut doc, point);
+        assert!(app.sel.is_some_and(|selection| !selection.is_empty()));
+
+        // A queued seek must not win over the later chapter destination.
+        app.pending_seek_fraction = Some(0.9);
+        app.scroll_y = 200.0;
+        dispatch(&mut app, &mut doc, Action::GotoChapter(1));
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_eq!(app.chapter, 1);
+        assert_eq!(app.page, 0);
+        assert_eq!(app.scroll_y, 0.0);
+        assert!(app.sel.is_none());
+        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Green));
+        dispatch(&mut app, &mut doc, Action::AddNote);
+        assert!(TestLibrary::list_annotations(&doc).is_empty());
+    }
+}
+
 // ---- single source of truth: affordance == palette ActionSpec -----------
 
 /// Deliver a library action with the typed loan native callbacks receive.
