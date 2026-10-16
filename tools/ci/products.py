@@ -157,10 +157,10 @@ class Product:
         self.release_on: list[str] = data.get("release_on", ["stable"])
         self.dir: str = data.get("dir", f"/target/publish/{self.name}")
         self.gates: list[str] = data.get("gates", [])
-        # Development tags are pushed when main changes, or with `dispatch = true` only when
-        # someone asks (`t dispatch publish-<name> --ref main`): for builds too costly to run
-        # on every change of their inputs.
-        self.dev_on: list[str] = ["dispatch"] if data.get("dispatch") else ["main"]
+        # Development tags are pushed when main changes, and whenever someone asks (`t dispatch
+        # publish-<name> --ref main`, for a head whose run could not build it); with `dispatch =
+        # true` only when asked: for builds too costly to run on every change of their inputs.
+        self.dev_on: list[str] = ["dispatch"] if data.get("dispatch") else ["main", "dispatch"]
         # Sign and publish each architecture's image too, not only the index naming them, for
         # consumers that verify every image they run (the CI builder's).
         self.children: bool = data.get("children", False)

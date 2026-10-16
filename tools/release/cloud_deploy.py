@@ -111,6 +111,9 @@ class Target:
     rollout: bool
     timeout: int
     settle: int
+    # The tag each image of a commit is published under: stable's releases, unless a
+    # development deploy takes main's `dev-<commit>` images (--tag).
+    tag: str = "sha-{commit}"
 
     def service(self, name: str) -> Service:
         return next(each for each in self.services if each.name == name)
@@ -412,7 +415,7 @@ def deployable(registry: Registry, git: Git, head: str, target: Target, limit: i
     """The newest first-parent commit with every service's release image published, or None."""
     tags = [registry.tags(service) for service in target.services]
     for revision in git.first_parents(head, limit):
-        if all(f"sha-{revision}" in each for each in tags):
+        if all(target.tag.format(commit=revision) in each for each in tags):
             return revision
     return None
 
@@ -429,11 +432,11 @@ def verified_images(registry: Registry, git: Git, revision: str, receipts: Mappi
     for service in target.services:
         receipt = receipts.get(service.name)
         published = receipt.revision if receipt else revision
-        image = registry.image(service, receipt.digest if receipt else f"sha-{revision}")
+        image = registry.image(service, receipt.digest if receipt else target.tag.format(commit=revision))
         if receipt:
-            tagged = registry.image(service, f"sha-{published}").digest
+            tagged = registry.image(service, target.tag.format(commit=published)).digest
             if tagged != receipt.digest:
-                raise PromotionError(f"{service.image}:sha-{published} is {tagged}, "
+                raise PromotionError(f"{service.image}:{target.tag.format(commit=published)} is {tagged}, "
                                      f"not the receipt's {receipt.digest}")
         if image.built and image.built != published and not git.contains(image.built, published):
             raise PromotionError(f"{image.reference(service)} is labelled {image.built}, not {published}")
@@ -686,7 +689,8 @@ def read_source(args, transport: Transport) -> Source:
     if args.infra:
         root = Path(args.infra)
         try:
-            target = load_target((root / args.config).read_text(encoding="utf-8"), f"{root}/{args.config}")
+            target = dataclasses.replace(load_target((root / args.config).read_text(encoding="utf-8"),
+                                                     f"{root}/{args.config}"), tag=args.tag)
             texts = {service.manifest: (root / service.manifest).read_text(encoding="utf-8")
                      for service in target.services}
         except OSError as error:
@@ -697,7 +701,8 @@ def read_source(args, transport: Transport) -> Source:
         raise PromotionError(f"reading the deploy target needs {TOKEN_ENV} and {REPO_ENV} (or --repo), "
                              "or an --infra checkout")
     forge = Forge(transport, token, args.repo)
-    target = load_target(forge.file(args.config)[0], f"{args.repo}:{args.config}")
+    target = dataclasses.replace(load_target(forge.file(args.config)[0], f"{args.repo}:{args.config}"),
+                                 tag=args.tag)
     texts, blobs = {}, {}
     for service in target.services:
         texts[service.manifest], blobs[service.manifest] = forge.file(service.manifest)
@@ -865,6 +870,8 @@ def parser() -> argparse.ArgumentParser:
         each.add_argument("--receipt", action="append", default=[], help="a publishing check's receipt")
         each.add_argument("--require-signed", action="store_true", help="refuse receipts of unsigned images")
         each.add_argument("--allow-rollback", action="store_true", help="allow deploying an older revision")
+        each.add_argument("--tag", default="sha-{commit}",
+                          help="the tag a commit's images are published under (main's: dev-{commit})")
         each.add_argument("--out", help="directory for plan.json, message.txt and infra.diff")
     commands.choices["plan"].add_argument("--apply", action="store_true", help="edit the --infra checkout")
     commands.choices["deploy"].add_argument("--dry-run", action="store_true", help="stop before committing")
