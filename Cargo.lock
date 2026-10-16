@@ -14126,6 +14126,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-vello",
+ "tilo-wallpapers",
  "tilo-winit",
  "tokio",
  "tokio-rustls",
@@ -14479,6 +14480,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-vello",
  "tilo-vello-encoding",
+ "tilo-wallpapers",
  "tilo-winit",
  "tokio",
  "tokio-util",
@@ -19297,6 +19299,19 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "tilo-lock",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wallpapers"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "tempfile",
+ "tilo-image-codec",
+ "tilo-paths",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 
