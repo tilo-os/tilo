@@ -69,6 +69,21 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches typst-assets", found[0])
         self.assertIn("libtilo_typst_engine.so", found[0])
 
+    def test_the_youtube_client_back_in_the_runtime_fails(self) -> None:
+        # Music and Tube load rustypipe from libtilo_youtube_engine.so; the
+        # runtime depending on it again maps it into every app process.
+        tree = CLEAN.replace(
+            "4serde v1.0.228\n",
+            "4serde v1.0.228\n2rustypipe v0.11.4\n",
+        ).replace(
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1rustypipe v0.11.4 (*)\n0store",
+        )
+        found = checker.violations(tree, ["notes", "store"], TARGET)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("reaches rustypipe", found[0])
+        self.assertIn("libtilo_youtube_engine.so", found[0])
+
     def test_a_crate_no_app_reaches_fails(self) -> None:
         tree = CLEAN.replace(
             "4serde v1.0.228\n",

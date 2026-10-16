@@ -1382,6 +1382,7 @@ mod tests {
             tabs,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }
     }
 

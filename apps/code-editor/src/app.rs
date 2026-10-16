@@ -71,7 +71,6 @@ use crate::editor_view::{EditorView, LspAsk};
 use crate::explorer::{self, Explorer, ExplorerEvent, ExplorerEvents};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
-use crate::sample_project;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
 use ui::time::Instant;
@@ -828,11 +827,13 @@ impl CodeApp {
         Self::from_session(Session::new(Project::new("No project")), None)
     }
 
-    /// The editor over the bundled demo project. Reserved for `--shots` and the
-    /// demo — the shipped app never fabricates files.
-    pub fn with_sample() -> Self {
-        let project = sample_project::build();
-        let default = sample_project::default_open(&project);
+    /// The editor over the bundled sample project, held in memory. Shots and
+    /// the demo write the sample to disk and open it like any folder; tests
+    /// that only need a populated editor start here.
+    #[cfg(test)]
+    pub(crate) fn with_sample() -> Self {
+        let project = crate::sample_project::build();
+        let default = crate::sample_project::default_open(&project);
         let mut session = Session::new(project);
         if let Some(node) = default {
             session.open_file(node);
@@ -1024,16 +1025,11 @@ impl CodeApp {
         self.drawer.layout_for(self.last_width)
     }
 
-    /// Seed the width used to resolve the responsive layout on the first frame,
-    /// before the window has been measured. The `--shots` renderer calls this
-    /// with the viewport width so a single offscreen frame picks the correct
-    /// docked/drawer layout (the live app self-corrects from `apply_layout`).
-    ///
-    /// Because a single offscreen frame never runs the animation `tick`, also
-    /// settle the drawer to this layout's resting state (docked ⇒ open, drawer
-    /// ⇒ closed) so the captured frame is the settled layout, not one frozen
-    /// mid-slide. An explicit `shots_snap_sidebar(true)` after this still wins.
-    pub fn set_width_hint(&mut self, width: f64) {
+    /// Seed the width the responsive layout resolves against, as the first
+    /// laid-out frame would, and settle the drawer to that layout's resting
+    /// state so tests read the layout without running frames.
+    #[cfg(test)]
+    pub(crate) fn set_width_hint(&mut self, width: f64) {
         self.last_width = width;
         self.drawer.resolve(Rect::new(0.0, 0.0, width, 1.0));
         self.drawer.snap(self.drawer.is_open());

@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,9 +120,7 @@ impl LocalSessionLifecycle {
 
     pub(crate) fn watch(&self, callback: &Arc<dyn Fn() + Send + Sync>) {
         if let Some(state) = self.state.upgrade() {
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state.lock_recover();
             state
                 .listeners
                 .retain(|listener| listener.strong_count() != 0);
@@ -154,9 +153,7 @@ impl LocalSessionLifecycle {
         let Some(state) = self.state.upgrade() else {
             return;
         };
-        let mut state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = state.lock_recover();
         if state.liveness == LocalSessionLiveness::Closed {
             return;
         }
@@ -202,9 +199,7 @@ fn reconcile(state: &mut LocalSessionState) {
 }
 
 fn close_state(state: &Mutex<LocalSessionState>) {
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = state.lock_recover();
     if state.liveness == LocalSessionLiveness::Closed {
         return;
     }

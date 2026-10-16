@@ -21,7 +21,7 @@ use ui::widget::{AppModel, ModelPath};
 #[cfg(test)]
 use automerge::AutoCommit;
 use automerge::ObjId;
-use taffy::{NodeId, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -2679,14 +2679,7 @@ impl Widget for GitClientApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The app draws itself; a single full-size leaf node carries it.
-        let node = taffy.widget_leaf(
-            Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         // The list column's breakpoint and widths grow with the text scale.
         self.drawer.scale_for(theme);
         node

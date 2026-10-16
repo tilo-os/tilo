@@ -77,7 +77,10 @@ history.
 - **Granularity: per channel.** A channel is one document route (app,
   workspace room, record), so per-channel keys are already per-resource. A
   finer split would add key-management state without narrowing who can read
-  what, because channel membership is the access boundary.
+  what, because channel membership is the access boundary. Membership is
+  decided per record: a Read Deny on a record, its app or any pattern over it
+  keeps the denied devices out of that record's channel alone
+  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
 
 ### Security properties
 
@@ -186,7 +189,8 @@ plaintext path.
   broker admitted it before the gate closed. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
-  - every person on the room's roster whose role can read, through each of
+  - every person on the room's roster, or named by a grant (a share, a
+    time-limited reader), who may Read the room node now, through each of
     their certified devices (root-signed, unexpired, not revoked, admitted
     by the room's governor);
   - the governing identity's own fleet;
@@ -314,9 +318,16 @@ If the lost machine was the room's governor, see the known limit above.
 
 - **External commit / external join.** Only Welcome-based joins are
   supported.
-- **Route-scoped service members.** A service member reads every channel of
-  its room. Narrowing a grant to single documents needs the steward to know
-  which route a channel belongs to.
+- **Below-record reads.** Admission is per record: a steward learns which
+  record a channel carries from a grant naming it or from the route a device
+  proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
+  admits a device, or a service member, only while the same read decision
+  allows that record; a channel whose record it cannot name is withheld from
+  whoever a Deny over a pattern of records could keep out. A Deny below a
+  record (an item, a field) still binds only honest clients and doors: one key
+  opens the whole record, so against a modified client the record is the
+  confidentiality boundary
+  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite

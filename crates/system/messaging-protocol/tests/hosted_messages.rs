@@ -28,6 +28,14 @@ use ui::prelude::Id;
 const ACI: &str = "01234567-89ab-cdef-0123-456789abcdef";
 const OWN_ACI: &str = "11111111-1111-4111-8111-111111111111";
 const SCOPE: &str = "signal:11111111-1111-4111-8111-111111111111";
+/// How long a fixture daemon waits for the broker's next line before failing.
+///
+/// The wait for the per-contact identity probe spans opening two live
+/// `TestApp`s and confirming the contact, which on a saturated nextest shard
+/// has taken longer than five seconds; the daemon then gave up and the send
+/// failed as "This contact is unavailable.". The bound only has to stop a
+/// hung exchange, not measure the broker.
+const DAEMON_READ_DEADLINE: ui::time::Duration = ui::time::Duration::from_secs(30);
 fn revision() -> String {
     format!("signal-identity:05{}", "42".repeat(32))
 }
@@ -240,7 +248,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     let root = tempfile::tempdir().expect("private history");
     let revoked = Arc::new(AtomicBool::new(false));
     let (stream, peer) = UnixStream::pair().expect("actual protocol streams");
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("bounded daemon fixture");
     let daemon = daemon_with_revocation(peer, None, Some(revoked.clone()));
     let service = broker(
@@ -324,7 +332,7 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
         revoked: Arc::new(AtomicBool::new(false)),
     };
     let (stream, peer) = UnixStream::pair().expect("daemon fixture");
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("deadline");
     let daemon = daemon(peer);
     let service = broker(root.path(), stream, authority.clone());
@@ -661,7 +669,7 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
         revoked: Arc::new(AtomicBool::new(false)),
     };
     let (stream, peer) = UnixStream::pair().expect("owned daemon fixture");
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("deadline");
     let receipt = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{"account":"+15555550101",
         "envelope":{"sourceUuid":ACI,"receiptMessage":{"when":44,"isDelivery":false,"isRead":true,"isViewed":false,"timestamps":[43]}}}});
@@ -719,7 +727,7 @@ fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery(
             revoked: Arc::new(AtomicBool::new(false)),
         };
         let (stream, peer) = UnixStream::pair().expect("owned daemon fixture");
-        peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+        peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
             .expect("deadline");
         let receipt = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{"account":"+15555550101",
             "envelope":{"sourceUuid":sender,"receiptMessage":{"when":44,"isDelivery":false,"isRead":true,"isViewed":false,"timestamps":timestamps}}}});
@@ -751,7 +759,7 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
         revoked: Arc::new(AtomicBool::new(false)),
     };
     let (sender, peer) = UnixStream::pair().expect("sender fixture");
-    peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
+    peer.set_read_timeout(Some(DAEMON_READ_DEADLINE))
         .expect("deadline");
     let sent = daemon(peer);
     let service = broker(root.path(), sender, authority);

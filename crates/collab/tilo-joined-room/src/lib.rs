@@ -53,6 +53,7 @@ pub use record::{
     StoredPendingEnrollment,
 };
 
+use neighbour_wire::NeighbourMsg;
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -61,7 +62,7 @@ use std::{
 };
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
-use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{AdmissionReport, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
 
 /// Where an owner's record is durable.
@@ -435,7 +436,7 @@ impl NativeWorkspaceOwner {
             {
                 return Err("workspace task action lease is stale".into());
             }
-            view.peer().check_task_execution_actor(
+            view.peer().workspace().check_task_execution_actor(
                 agent_id,
                 run.approval.as_ref(),
                 std::time::SystemTime::now(),
@@ -481,10 +482,6 @@ impl NativeWorkspaceOwner {
             _observer: observer,
         }
     }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "fence observers are notified in order under the continuity write lock"
-    )]
     pub fn invalidate_identity(&self, room: RoomId) {
         let mut current = self.0.current.write();
         if !current.denied.insert(room) {

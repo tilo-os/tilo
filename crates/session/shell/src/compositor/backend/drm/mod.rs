@@ -47,6 +47,7 @@ use crate::compositor::present::Presenter;
 use crate::shell::hdr_surface::{CpuComposite, HdrLayer};
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
+use tilo_lock::MutexRecover as _;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] (libseat session + udev + libinput) plus a [`paint::VelloDrmBridge`] for the vello → RGBA bytes path.
 pub struct DrmBackend {
@@ -171,6 +172,10 @@ impl DrmBackend {
 /// hardware cursor (`CursorPlanes`) owns its own dup of the card
 /// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent presenter state flags, each set by its own event"
+)]
 pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
@@ -213,6 +218,35 @@ pub struct DrmPresenter {
     /// Frames admitted behind the one presenting while vblank-paced: 0, or 1
     /// under [`PIPELINED_ENV`].
     paced_queue_depth: usize,
+    /// Rendering may overlap the previous frame's flip ([`OVERLAP_ENV`]).
+    overlap_enabled: bool,
+    /// The frame just presented rendered in the overlapped mode
+    /// ([`Self::overlap_eligible`]).
+    overlapping: bool,
+    /// The flip the last overlapped frame queued, until it retires.
+    owed: Option<OwedFlip>,
+    /// The frame just presented left [`Self::owed`] behind.
+    frame_owes: bool,
+    /// Owed flips retired since the pipe last asked ([`Presenter::retire_owed`]).
+    owed_retired: Vec<crate::shell::present::OwedRetirement>,
+}
+
+/// Env var that, set to `0`, keeps every frame waiting for its own page flip
+/// before the presenter returns, as before rendering overlapped the previous
+/// frame's flip. A hardware A/B knob for frame rate and input-to-photon.
+pub const OVERLAP_ENV: &str = "TILO_PRESENT_OVERLAP";
+
+/// A page flip an overlapped frame queued and returned without waiting for.
+#[derive(Clone, Copy, Debug)]
+struct OwedFlip {
+    device_id: u64,
+    crtc: smithay::reexports::drm::control::crtc::Handle,
+    queued_at: Instant,
+    /// The scanout's flip count once it was queued: a later flip on the output means
+    /// this one retired, whether or not this presenter read its event.
+    submission: u64,
+    /// The output's refresh interval, to estimate the vblank it retires on.
+    interval: Option<Duration>,
 }
 
 /// Env var that keeps the vblank-paced presenter admitting one frame behind
@@ -295,7 +329,108 @@ impl DrmPresenter {
             paced_queue_depth: usize::from(
                 std::env::var_os(PIPELINED_ENV).is_some_and(|value| value == "1"),
             ),
+            overlap_enabled: std::env::var_os(OVERLAP_ENV).is_none_or(|value| value != "0"),
+            overlapping: false,
+            owed: None,
+            frame_owes: false,
+            owed_retired: Vec::new(),
         }
+    }
+
+    /// Whether this frame renders while the previous frame's flip is pending: one
+    /// powered output, vblank-paced, on its own card's event stream. Several outputs
+    /// keep waiting for each flip, since a flip wait inside one output's frame would
+    /// have to route its siblings' completions as well.
+    fn overlap_eligible(&self) -> bool {
+        self.overlap_enabled && self.scanouts.len() == 1 && self.vblank_paced()
+    }
+
+    /// Retire the owed flip if it has, waiting at most `wait`. A flip that never
+    /// retires within [`DIRECT_RETIREMENT_TIMEOUT`] of being queued demotes its
+    /// output, as a flip the presenter waited for does.
+    fn collect_owed(&mut self, wait: Duration) {
+        let Some(owed) = self.owed else {
+            return;
+        };
+        let index = self.scanouts.iter().position(|entry| {
+            entry.device_id == owed.device_id && entry.scanout.crtc() == owed.crtc
+        });
+        let pending = index.is_some_and(|index| {
+            self.scanouts.get(index).is_some_and(|entry| {
+                entry.scanout.flip_submission() == owed.submission
+                    && entry
+                        .direct_targets
+                        .as_ref()
+                        .is_some_and(scanout::DirectScanoutTargets::flip_pending)
+            })
+        });
+        let Some(index) = index.filter(|_| pending) else {
+            // Retired with no event this presenter read: the output went, paused, or
+            // was demoted, which restores the dumb front. Nothing proves when.
+            self.resolve_owed(owed, None);
+            return;
+        };
+        let budget = DIRECT_RETIREMENT_TIMEOUT.saturating_sub(owed.queued_at.elapsed());
+        let (retirement, proof) = self.await_flip(index, wait.min(budget));
+        match retirement {
+            scanout::DirectRetirement::Complete => self.resolve_owed(owed, proof),
+            scanout::DirectRetirement::TimedOut if wait >= budget => {
+                self.retire_timed_out(index);
+                self.resolve_owed(owed, None);
+            }
+            scanout::DirectRetirement::TimedOut => {}
+        }
+    }
+
+    /// The owed flip retired: publish its outcome to the pipe.
+    fn resolve_owed(
+        &mut self,
+        owed: OwedFlip,
+        physical: Option<crate::shell::present::PhysicalPresentation>,
+    ) {
+        if physical.is_none() {
+            // A vblank read on the way belongs to no proven flip of this frame.
+            self.flip_vblanks.clear();
+        }
+        let display = self.frame_display_timing(Some(owed.queued_at));
+        self.owed = None;
+        self.owed_retired
+            .push(crate::shell::present::OwedRetirement { physical, display });
+    }
+
+    /// Queue the frame rendered beside the owed flip once that flip retired: KMS
+    /// takes one flip per CRTC at a time. Returns whether a flip was queued, and how
+    /// long the render thread waited for the previous one.
+    fn submit_overlapped(&mut self, output: OutputId, render: DirectRender) -> (bool, u128) {
+        let started = Instant::now();
+        self.collect_owed(DIRECT_RETIREMENT_TIMEOUT);
+        let Some(index) = self.scanouts.iter().position(|entry| entry.id == output) else {
+            return (false, started.elapsed().as_micros());
+        };
+        // A flip still pending here was not the owed one (a session pause drained before
+        // its event): it retires the way every flip did before frames overlapped.
+        if self.scanouts.get(index).is_some_and(|entry| {
+            entry
+                .direct_targets
+                .as_ref()
+                .is_some_and(scanout::DirectScanoutTargets::flip_pending)
+        }) {
+            let _ = self.retire_physical_flip(index, DIRECT_RETIREMENT_TIMEOUT);
+            self.flip_vblanks.clear();
+        }
+        let waited = started.elapsed().as_micros();
+        let (Some(entry), Some(bridge)) = (self.scanouts.get_mut(index), self.paint.as_mut())
+        else {
+            return (false, waited);
+        };
+        let view = output_view(entry, &self.outputs);
+        let outcome =
+            submit_direct_render(entry, bridge, &view, render, Some(&mut self.phase_window));
+        entry.present_by_readback = outcome == DirectOutcome::Readback;
+        (
+            matches!(outcome, DirectOutcome::Submitted { queued: true, .. }),
+            waited,
+        )
     }
 
     /// Every powered output renders straight into its own scanout target and
@@ -1027,15 +1162,24 @@ impl DrmPresenter {
         if let Some(bridge) = &mut self.paint {
             let _ = bridge.take_phase_timing();
         }
-        self.pointer = *self
-            .shared_pointer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.pointer = *self.shared_pointer.lock_recover();
+        self.frame_owes = false;
         let present_gate = self.present_gate.clone();
         let _quiesced = quiesce_presentations(present_gate.as_ref());
         self.drain_commands();
+        let overlap = !self.blanked && !self.paused && self.overlap_eligible();
+        if self.owed.is_some() && (!overlap || frame.scanout.is_some()) {
+            // Leaving the overlapped mode, or a client buffer may take the CRTC (nothing
+            // renders that could overlap the wait): the owed flip retires first, as every
+            // flip did before frames overlapped.
+            self.collect_owed(DIRECT_RETIREMENT_TIMEOUT);
+        }
+        self.overlapping = overlap;
         if self.blanked || self.paused {
             return None;
+        }
+        if overlap {
+            return self.submit_overlapping(frame);
         }
         let before = self
             .scanouts
@@ -1098,6 +1242,85 @@ impl DrmPresenter {
         physical
     }
 
+    /// [`Self::submit`] for one vblank-paced output whose rendering overlaps the previous
+    /// frame's flip: render into the spare slot while that flip is pending, queue this frame
+    /// once it retired, and return without waiting for this frame's own flip, which the pipe
+    /// collects through [`Presenter::retire_owed`]. The GPU-completion wait stays: vello's
+    /// bump-allocator counters must be read back before a frame may be shown, and a legacy
+    /// page flip takes no in-fence (an atomic `IN_FENCE_FD` would need the atomic API and a
+    /// sync-file export wgpu does not offer).
+    fn submit_overlapping(
+        &mut self,
+        frame: ScanoutFrame<'_>,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
+        // The vblank may already have passed: retire the owed flip from its event, before
+        // the frame's own non-blocking drain consumes it without its timestamp.
+        self.collect_owed(Duration::ZERO);
+        for entry in &mut self.scanouts {
+            if let Some(targets) = entry.direct_targets.as_mut() {
+                targets.set_overlap(true);
+            }
+        }
+        let mut sample = paint_scanouts(
+            &mut self.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            &mut self.cpu,
+            self.pointer,
+            frame,
+            Some(&mut self.phase_window),
+        );
+        let mut kms_wait_us = 0;
+        if let Some((output, render)) = sample.overlapped.take() {
+            let (queued, waited) = self.submit_overlapped(output, render);
+            sample.direct_queued |= queued;
+            kms_wait_us = waited;
+        }
+        for entry in &mut self.scanouts {
+            if let Some(targets) = entry.direct_targets.as_mut() {
+                targets.set_overlap(false);
+            }
+        }
+        if sample.direct_queued {
+            // An owed flip still unresolved here retired unseen: a newer one is queued.
+            if let Some(owed) = self.owed {
+                self.resolve_owed(owed, None);
+            }
+            self.owed = self.scanouts.first().map(|entry| OwedFlip {
+                device_id: entry.device_id,
+                crtc: entry.scanout.crtc(),
+                queued_at: Instant::now(),
+                submission: entry.scanout.flip_submission(),
+                interval: refresh_of(&self.outputs, entry.id)
+                    .and_then(|rate| 1_000_000_000_000_u64.checked_div(u64::from(rate)))
+                    .map(Duration::from_nanos),
+            });
+            self.frame_owes = self.owed.is_some();
+        }
+        if self.profile_phases {
+            self.frame_phases = self
+                .paint
+                .as_ref()
+                .and_then(paint::VelloDrmBridge::last_phase_timing)
+                .map(|paint| crate::shell::present::FramePhaseTiming {
+                    paint,
+                    // The render thread's wait for the previous flip, the part of KMS
+                    // retirement still on the critical path.
+                    kms_retirement_us: kms_wait_us,
+                });
+        }
+        // A frame that queued nothing (an unchanged frame) retires at once; the pipe
+        // holds it behind the owed flip it is shown with.
+        self.flip_vblanks.clear();
+        self.display_timing = self.frame_display_timing(None);
+        self.emit_phase_profile(sample);
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
+        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        None
+    }
+
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS page-flip events of
     /// the outputs that pace the loop: those at the fastest refresh (`flip_wait`).
     /// `PresentPipe` only frees producer capacity after this method returns, so the loop
@@ -1157,12 +1380,54 @@ impl DrmPresenter {
         index: usize,
         timeout: Duration,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
-        let single_output = self.scanouts.len() == 1;
-        let entry = self.scanouts.get_mut(index)?;
-        let (retirement, completions) = entry.scanout.wait_flip_completions(timeout);
-        if retirement != scanout::DirectRetirement::Complete {
-            entry.scanout.invalidate_physical_feedback();
+        let (retirement, proof) = self.await_flip(index, timeout);
+        if retirement == scanout::DirectRetirement::TimedOut {
+            self.retire_timed_out(index);
         }
+        proof
+    }
+
+    /// A flip on `scanouts[index]` did not retire in time: its completion can no
+    /// longer prove a frame, and a direct output goes to the readback presenter.
+    fn retire_timed_out(&mut self, index: usize) {
+        let Some(entry) = self.scanouts.get_mut(index) else {
+            return;
+        };
+        entry.scanout.invalidate_physical_feedback();
+        if entry.direct_targets.is_some() {
+            let hdr = entry
+                .direct_targets
+                .as_ref()
+                .is_some_and(|targets| targets.format().is_hdr());
+            demote_direct(
+                entry,
+                hdr,
+                "retire",
+                &format!(
+                    "page flip did not retire within {} ms",
+                    DIRECT_RETIREMENT_TIMEOUT.as_millis()
+                ),
+            );
+        }
+    }
+
+    /// Wait up to `timeout` for the page flip queued on `scanouts[index]`, recording
+    /// the vblank of every completion read on the way and routing each to the scanout
+    /// it belongs to. A timeout here is only an answer: [`Self::retire_physical_flip`]
+    /// decides what an overdue flip costs.
+    fn await_flip(
+        &mut self,
+        index: usize,
+        timeout: Duration,
+    ) -> (
+        scanout::DirectRetirement,
+        Option<crate::shell::present::PhysicalPresentation>,
+    ) {
+        let single_output = self.scanouts.len() == 1;
+        let Some(entry) = self.scanouts.get_mut(index) else {
+            return (scanout::DirectRetirement::TimedOut, None);
+        };
+        let (retirement, completions) = entry.scanout.wait_flip_completions(timeout);
         // Every completion read here comes from this card's event stream. A
         // driver without monotonic event stamps leaves the wakeup as the vblank.
         let woke = Instant::now();
@@ -1202,23 +1467,7 @@ impl DrmPresenter {
             .map(|event| (device_id, event.crtc))
             .collect();
         route_flip_completions(&mut self.scanouts, &completed);
-        let entry = self.scanouts.get_mut(index)?;
-        if retirement == scanout::DirectRetirement::TimedOut && entry.direct_targets.is_some() {
-            let hdr = entry
-                .direct_targets
-                .as_ref()
-                .is_some_and(|targets| targets.format().is_hdr());
-            demote_direct(
-                entry,
-                hdr,
-                "retire",
-                &format!(
-                    "page flip did not retire within {} ms",
-                    DIRECT_RETIREMENT_TIMEOUT.as_millis()
-                ),
-            );
-        }
-        proof
+        (retirement, proof)
     }
 
     fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
@@ -1346,6 +1595,9 @@ impl DrmPresenter {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PaintScanoutSample {
     direct_queued: bool,
+    /// The output that rendered beside its pending flip, and its render, still to be
+    /// queued ([`DirectOutcome::Rendered`]).
+    overlapped: Option<(OutputId, DirectRender)>,
     legacy_attempted: bool,
     bridge_us: u128,
     scanout_us: u128,
@@ -1531,10 +1783,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
 /// through here, so one of them waits for the other. A poisoned gate still quiesces: the frame that panicked is over, and
 /// refusing the lock would let master drop under the next one.
 fn quiesce_presentations(gate: Option<&Arc<Mutex<()>>>) -> Option<std::sync::MutexGuard<'_, ()>> {
-    gate.map(|gate| {
-        gate.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    })
+    gate.map(|gate| gate.lock_recover())
 }
 
 /// Swizzle one already-encoded clip into an XRGB scanout. Pixels outside
@@ -1783,9 +2032,19 @@ fn paint_scanouts_with(
     // handles are only meaningful inside that card. Drain exactly one representative per
     // device and route only to siblings from the same device, direct or dumb: draining per
     // scanout would hand one output its sibling's completion and wedge the sibling.
-    let completions = drain_page_flip_completions(scanouts);
-    if let Some(window) = phase_window.as_deref_mut() {
-        window.record_flip_completions(completions);
+    // An output overlapping its flip leaves that flip to the presenter, which reads its
+    // event for the vblank it retired on; draining it here would lose that.
+    let overlapping = scanouts.iter().any(|entry| {
+        entry
+            .direct_targets
+            .as_ref()
+            .is_some_and(scanout::DirectScanoutTargets::overlaps)
+    });
+    if !overlapping {
+        let completions = drain_page_flip_completions(scanouts);
+        if let Some(window) = phase_window.as_deref_mut() {
+            window.record_flip_completions(completions);
+        }
     }
 
     // Every output that can is rendered on the GPU straight into its own scanout target
@@ -1829,6 +2088,11 @@ fn paint_scanouts_with(
                 DirectOutcome::ScannedOut => {
                     direct.direct_queued = true;
                     entry.readback_current = false;
+                }
+                DirectOutcome::Rendered(render) => {
+                    render_totals.add(render.render_us, render.sparse);
+                    entry.readback_current = false;
+                    direct.overlapped = Some((entry.id, render));
                 }
                 // The output keeps its current image.
                 DirectOutcome::Dropped | DirectOutcome::Kept | DirectOutcome::Deferred => {
@@ -2022,6 +2286,26 @@ enum DirectOutcome {
     ScannedOut,
     /// The output is not eligible, or its direct frame failed: the readback presents it.
     Readback,
+    /// Rendered into the spare slot while the previous frame's flip is still pending
+    /// ([`scanout::DirectScanoutTargets::overlaps`]). KMS takes one flip per CRTC at a
+    /// time, so the presenter queues it once that flip retired
+    /// ([`DrmPresenter::submit_overlapped`]).
+    Rendered(DirectRender),
+}
+
+/// One output's finished direct render, not yet handed to KMS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirectRender {
+    /// The swapchain slot it rendered into.
+    index: usize,
+    /// The GPU frame's wall time.
+    render_us: u128,
+    /// It repaired damage only.
+    sparse: bool,
+    revision: u64,
+    render_attempts: usize,
+    /// It rendered into HDR targets.
+    hdr: bool,
 }
 
 /// The direct renders of one frame, recorded as one frame however many outputs it took.
@@ -2245,11 +2529,17 @@ fn present_direct(
     if keeps_shown_image(bridge, view, frame, shown, sharing) {
         return DirectOutcome::Kept;
     }
-    // A queued imported-buffer flip retires before a new render target is selected. With
-    // two slots, a pending flip owns both. Only the outputs pacing the loop are waited for
+    // A queued imported-buffer flip retires before a new render target is selected, unless
+    // the presenter overlaps rendering with it: then the spare slot renders and is queued
+    // once the flip retired. Only the outputs pacing the loop are waited for
     // (`DrmPresenter::retire_direct_flips`), so a slower output arrives here until its flip
     // retires on its own vblank, and renders at most once per vblank.
-    let Some((index, target)) = targets.render_slot() else {
+    let slot = if targets.flip_pending() && targets.overlaps() {
+        targets.overlap_slot()
+    } else {
+        targets.render_slot()
+    };
+    let Some((index, target)) = slot else {
         if own_pixels && let Some(damage) = frame.damage {
             bridge.defer_output(view, damage);
         }
@@ -2292,7 +2582,40 @@ fn present_direct(
             return DirectOutcome::Readback;
         }
     };
-    let render_us = render_started.elapsed().as_micros();
+    let render = DirectRender {
+        index,
+        render_us: render_started.elapsed().as_micros(),
+        sparse: stats.sparse_attempts > 0 && stats.full_attempts == 0,
+        revision: stats.revision,
+        render_attempts: stats.render_attempts,
+        hdr: want_hdr,
+    };
+    if targets.flip_pending() {
+        return DirectOutcome::Rendered(render);
+    }
+    submit_direct_render(entry, bridge, view, render, phase_window)
+}
+
+/// Hand one output's finished render to KMS: a queued flip, or the first HDR frame's modeset.
+fn submit_direct_render(
+    entry: &mut ScanoutEntry,
+    bridge: &mut paint::VelloDrmBridge,
+    view: &paint::OutputView,
+    render: DirectRender,
+    mut phase_window: Option<&mut PhaseWindow>,
+) -> DirectOutcome {
+    let DirectRender {
+        index,
+        render_us,
+        sparse,
+        revision,
+        render_attempts,
+        hdr: want_hdr,
+    } = render;
+    let Some(targets) = entry.direct_targets.as_mut() else {
+        // The targets went while the frame waited for the previous flip (a demotion).
+        return DirectOutcome::Readback;
+    };
     match entry.scanout.submit_direct_target(targets, index) {
         submitted @ (scanout::DirectSubmit::Queued | scanout::DirectSubmit::Presented) => {
             if let Some(window) = phase_window.as_deref_mut()
@@ -2308,8 +2631,8 @@ fn present_direct(
             degradation.record_presented(Instant::now());
             tracing::trace!(
                 output = entry.id.0,
-                revision = stats.revision,
-                render_attempts = stats.render_attempts,
+                revision,
+                render_attempts,
                 render_us,
                 "DRM direct frame submitted"
             );
@@ -2317,7 +2640,7 @@ fn present_direct(
             DirectOutcome::Submitted {
                 queued: matches!(submitted, scanout::DirectSubmit::Queued),
                 render_us,
-                sparse: stats.sparse_attempts > 0 && stats.full_attempts == 0,
+                sparse,
             }
         }
         scanout::DirectSubmit::Busy => {
@@ -3199,6 +3522,32 @@ impl Presenter for DrmPresenter {
         self.display_timing
     }
 
+    fn overlaps_presentation(&self) -> bool {
+        self.overlapping
+    }
+
+    fn owes_retirement(&self) -> bool {
+        self.frame_owes
+    }
+
+    /// The vblank after the owed flip was queued is at most one refresh away.
+    fn owed_retirement_due(&self) -> Option<Instant> {
+        let owed = self.owed?;
+        owed.queued_at.checked_add(owed.interval?)
+    }
+
+    fn retire_owed(&mut self, wait: Duration) -> Vec<crate::shell::present::OwedRetirement> {
+        if self.owed.is_some() {
+            // An overdue flip demotes its output, which reprograms the CRTC: not while
+            // master is being dropped.
+            let present_gate = self.present_gate.clone();
+            let _quiesced = quiesce_presentations(present_gate.as_ref());
+            self.flip_vblanks.clear();
+            self.collect_owed(wait);
+        }
+        std::mem::take(&mut self.owed_retired)
+    }
+
     /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
     /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
     fn prepare(&mut self) {
@@ -3236,6 +3585,9 @@ impl Presenter for DrmPresenter {
     fn set_dpms(&mut self, on: bool) {
         let present_gate = self.present_gate.clone();
         let _quiesced = quiesce_presentations(present_gate.as_ref());
+        // The owed flip shows the last frame before the blank: it retires first.
+        self.flip_vblanks.clear();
+        self.collect_owed(DIRECT_RETIREMENT_TIMEOUT);
         self.blanked = !on;
         for e in &mut self.scanouts {
             e.scanout.set_dpms(on && !e.powered_off);
@@ -3369,6 +3721,13 @@ impl Backend for DrmBackend {
         }
     }
 
+    fn poll_input(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
+        self.inner.dispatch_pending();
+        for ev in self.inner.dispatch.events.drain(..) {
+            callback(ev);
+        }
+    }
+
     fn outputs(&self) -> &[Output] {
         &self.outputs
     }
@@ -3390,9 +3749,7 @@ impl Backend for DrmBackend {
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
         let shared_pointer = self.inner.dispatch.hw_cursor.shared_position();
-        *shared_pointer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.inner.dispatch.pointer;
+        *shared_pointer.lock_recover() = self.inner.dispatch.pointer;
         // Any inline bridge in `self.paint` stays behind and is dropped with
         // the backend: `PresenterParts` has no field to carry it across.
         Some(Box::new(DrmPresenter::new(PresenterParts {
@@ -3788,6 +4145,10 @@ mod tests {
                 crate::shell::present::DisplayTiming::default()
             );
             assert_eq!(presenter.queue_depth(), crate::shell::present::QUEUE_DEPTH);
+            assert!(
+                !presenter.overlaps_presentation() && !presenter.owes_retirement(),
+                "only a vblank-paced output renders beside its pending flip"
+            );
         }
     }
 

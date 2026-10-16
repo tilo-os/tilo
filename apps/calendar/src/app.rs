@@ -4240,6 +4240,14 @@ impl Widget for CalendarApp {
             || self.tasks.is_layout_dirty()
     }
 
+    /// The calendar fills its node and places its views in `apply_layout`;
+    /// the layout solver sizes only the notes editor. So only the editor can
+    /// ask for a measure, and a frame that only moves the window (a strip
+    /// pan) solves none.
+    fn layout_needs_measure(&self) -> bool {
+        self.notes_editor.layout_needs_measure()
+    }
+
     /// While the event/task editor is open it OWNS the keyboard. Reporting the
     /// editor's box here makes the host [`ui::App`] stand down: it stops running
     /// its built-in Tab focus cycling (which would otherwise cycle to the notes

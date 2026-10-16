@@ -17,7 +17,7 @@ pub enum SheetsEffect {
     /// Import CSV
     ///
     /// Adds a CSV file as a new sheet.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, opens_path = "csv")]
     ImportCsv {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -25,7 +25,7 @@ pub enum SheetsEffect {
     /// Import Excel workbook
     ///
     /// Adds every sheet of an `.xlsx` workbook.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, opens_path = "xlsx")]
     ImportXlsx {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -35,6 +35,7 @@ pub enum SheetsEffect {
         job,
         cancellable,
         device_only,
+        opens_path = "ods",
         label = "Import OpenDocument spreadsheet"
     )]
     ImportOds {

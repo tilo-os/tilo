@@ -5,7 +5,7 @@
 //! must survive renames and moves.  This module records policy and evidence;
 //! the content store remains responsible for retaining or deleting bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -479,6 +479,27 @@ impl AvailabilityRegistry {
         self.persists.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Content ids of current versions another device acknowledged holding
+    /// with a signed replica receipt: what the cache budget gives up first,
+    /// because a host keeps them to fetch again. A receipt counts after it
+    /// expires; content ids are immutable, and this only orders the cache,
+    /// it never permits dropping what the budget or a pin would keep.
+    #[must_use]
+    pub fn held_elsewhere(&self) -> HashSet<[u8; 32]> {
+        self.records
+            .values()
+            .filter_map(|record| {
+                let version = record.current_version?;
+                record
+                    .replica_observations
+                    .iter()
+                    .find(|receipt| receipt.version_id == version)?
+                    .content_hash
+                    .map(|hash| hash.0)
+            })
+            .collect()
+    }
+
     /// Whether any record explicitly promises offline residency. Descendants
     /// inherit that promise, so one explicit row is enough to require a
     /// namespace reconciliation; with none, the periodic worker can stay
@@ -542,6 +563,42 @@ impl AvailabilityRegistry {
             return Err(error);
         }
         Ok(true)
+    }
+
+    /// Set `policy` on a record, given its `ancestry`: every record from the
+    /// workspace root down to it, with its kind and parent. Each ancestor's
+    /// kind and parent are recorded too, so a directory's pin reaches what is
+    /// created in it later. Unpinning cancels the automatic transfers below
+    /// the record. An empty ancestry changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ancestry is invalid or state cannot persist.
+    pub fn set_policy_along(
+        &mut self,
+        ancestry: &[(FileRecordId, RecordKind, Option<FileRecordId>)],
+        policy: AvailabilityPolicy,
+    ) -> Result<(), AvailabilityError> {
+        let Some(&(target, ..)) = ancestry.last() else {
+            return Ok(());
+        };
+        for &(id, kind, parent) in ancestry {
+            let mut record = self
+                .records
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| RecordAvailability::new(id, kind));
+            record.kind = kind;
+            record.parent = parent;
+            if id == target {
+                record.policy = policy;
+            }
+            self.put(record)?;
+        }
+        if policy == AvailabilityPolicy::Automatic {
+            self.clear_automatic_transfer_subtree(target)?;
+        }
+        Ok(())
     }
 
     /// Install the authenticated current revision before accepting replica
@@ -925,28 +982,29 @@ fn validate_records(
     Ok(())
 }
 
+/// Signed replica receipts for tests across the crate.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_receipts {
+    use super::{RecordAvailability, ReplicaEvidence, ReplicaObservation};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
-    use fs_protocol::projection::{MAX_AVAILABILITY_XATTR_BYTES, ProjectionError};
+    use fs_protocol::{ContentHash, FileActor, FileVersionId};
     use getrandom::{SysRng, rand_core::UnwrapErr};
-    use tempfile::TempDir;
 
-    fn file(id: FileRecordId, version: FileVersionId) -> RecordAvailability {
-        let mut record = RecordAvailability::new(id, RecordKind::File);
-        record.current_version = Some(version);
-        record.residency = Residency::Resident { bytes: 1024 };
-        record
-    }
-
-    fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
+    /// Give `record` a signed receipt from a fresh device for `version`,
+    /// whose content is `content`, observed at `now_ms`.
+    pub(crate) fn acknowledge(
+        record: &mut RecordAvailability,
+        version: FileVersionId,
+        content: ContentHash,
+        now_ms: u64,
+    ) {
         let device = SigningKey::generate(&mut UnwrapErr(SysRng));
         let revision = fs_protocol::ContentRevisionV1 {
             schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: record.record_id,
             version_id: version,
-            content_hash: Some(ContentHash([4; 32])),
+            content_hash: Some(content),
             byte_len: 10,
             metadata_hash: ContentHash([5; 32]),
         };
@@ -980,6 +1038,51 @@ mod tests {
             observed_at_ms: now_ms,
             signature: receipt.signature,
         }];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs_protocol::projection::{MAX_AVAILABILITY_XATTR_BYTES, ProjectionError};
+    use tempfile::TempDir;
+
+    fn file(id: FileRecordId, version: FileVersionId) -> RecordAvailability {
+        let mut record = RecordAvailability::new(id, RecordKind::File);
+        record.current_version = Some(version);
+        record.residency = Residency::Resident { bytes: 1024 };
+        record
+    }
+
+    fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
+        super::test_receipts::acknowledge(record, version, ContentHash([4; 32]), now_ms);
+    }
+
+    #[test]
+    fn content_is_held_elsewhere_only_for_a_receipt_of_its_current_version() {
+        let temp = TempDir::new().unwrap();
+        let mut registry =
+            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+        let (held, replaced, unacknowledged) = (
+            FileRecordId::new(),
+            FileRecordId::new(),
+            FileRecordId::new(),
+        );
+        // A receipt for a version that has since been replaced names
+        // content the host may no longer keep for this record.
+        let mut record = file(replaced, FileVersionId::new());
+        safe_evidence(&mut record, FileVersionId::new(), 1_000);
+        registry.put(record).unwrap();
+        registry
+            .put(file(unacknowledged, FileVersionId::new()))
+            .unwrap();
+        assert!(registry.held_elsewhere().is_empty());
+
+        let version = FileVersionId::new();
+        let mut record = file(held, version);
+        safe_evidence(&mut record, version, 1_000);
+        registry.put(record).unwrap();
+        assert_eq!(registry.held_elsewhere(), HashSet::from([[4; 32]]));
     }
 
     #[test]

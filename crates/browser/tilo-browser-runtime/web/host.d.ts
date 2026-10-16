@@ -34,6 +34,8 @@ export interface RuntimeStatus {
   /** Native semantic command receipt lifecycle; signed room state owns rendering. */
   desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
   desktopErrors?: string[];
+  /** A desktop mount's active workspace, as its top bar names it. */
+  workspaceName?: string | null;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
@@ -75,6 +77,17 @@ export interface MountOptions {
   onHostAction?: (id: string) => void;
   /** The workspace name a desktop this mount seeds starts with. */
   workspaceName?: string;
+  /**
+   * The host of the room shown (`example.org`), which the top bar names in
+   * a quiet pill beside the workspace; leave it out on the person's own
+   * desktop.
+   */
+  host?: string;
+  /**
+   * The links the desktop's About sheet (behind the Tilo mark in its top
+   * bar) offers; an empty or missing one is not offered.
+   */
+  about?: {notify?: string; source?: string; community?: string};
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
@@ -150,8 +163,15 @@ export interface DesktopMount {
    * confirmation and `confirm` is not set. On a desktop it addresses one
    * window's app, as `actions` does. Through a certified peer the action
    * claims the mount's live presence only if it moved the mount's caret.
+   *
+   * Through a certified peer in a room, the room's own membership actions
+   * are the host's, not an app's: `remove-member`, `ban` and `unban` on the
+   * room's governance resource (`workspace.permissions:<room>`), each
+   * `{person}` (a root key, hex). They return a promise, settled once the
+   * host decided by the room's policy and rejected `code: reason` when it
+   * refused; removing and banning need `confirm`.
    */
-  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
+  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult | Promise<ActionResult>;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;
@@ -186,4 +206,6 @@ export interface HostAction {
   id: string;
   title: string;
   subtitle?: string;
+  /** What the action is about, shown as the source of a banner offering it. */
+  source?: 'identity' | 'devices';
 }

@@ -19,6 +19,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["app-files", "clipboard", "files.open", "files.save", "files.paths", "threads", "media.decode"]
 
+[resources]
+kinds = ["print-centre.defaults"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

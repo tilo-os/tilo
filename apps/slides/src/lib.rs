@@ -1,7 +1,6 @@
 #![allow(
     clippy::many_single_char_names,
     clippy::redundant_clone,
-    clippy::similar_names,
     clippy::single_match_else,
     clippy::too_many_lines,
     reason = "migration stack lint debt is scoped to this target"
@@ -31,15 +30,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod actions;
 pub mod app;
 pub mod assets;
@@ -58,7 +48,7 @@ pub mod sample;
 pub mod search;
 pub mod strings;
 
-pub use app::{PresentSurface, SlidesApp};
+pub use app::SlidesApp;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

@@ -39,6 +39,7 @@ use super::live::Live;
 use super::root::ResourceRoot;
 use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
+use tilo_lock::MutexRecover as _;
 
 /// A framework app: one resource type and a view of it.
 ///
@@ -80,7 +81,11 @@ pub trait ResourceApp: 'static {
     /// The app keeps one record per room, the room's own, rather than one
     /// per window: every window of the app in the room opens that record,
     /// and the first one creates it (and applies [`Self::seed`]). A room's
-    /// conversation is such a record.
+    /// conversation is such a record, and so is a notebook. Without it, each
+    /// window a launcher opens has a record of its own: right for an editor
+    /// whose windows are different documents, wrong for an app whose windows
+    /// are views of one collection. An app that switches to it brings its
+    /// windows' records along in its seed ([`SeedCx::window_records`]).
     const ROOM_RECORD: bool = false;
     /// The app's own command-line options that take a value
     /// (`--purpose number` or `--purpose=number`): how this window runs
@@ -323,6 +328,18 @@ impl SeedCx<'_> {
     pub fn host(&self) -> Option<&HostContext> {
         self.host
     }
+
+    /// What the app's windows in this room kept, one record each, from
+    /// before it [kept one record per room](ResourceApp::ROOM_RECORD): every
+    /// window default record of its kind on this device, read-only and in
+    /// id order. The room's record is created once, so a seed that copies
+    /// these into it migrates them exactly once; the records themselves are
+    /// left as they were. Empty for any other record, and without a host.
+    pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
+        self.host
+            .map(HostContext::window_records)
+            .unwrap_or_default()
+    }
 }
 
 type Leaked = &'static (dyn std::any::Any + Send + Sync);
@@ -333,9 +350,7 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
 ) -> &'static T {
     static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
     let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut table = table.lock_recover();
     let entry = *table
         .entry(key)
         .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);
@@ -1123,6 +1138,13 @@ pub(crate) fn hand_launch(
 ///
 /// # Errors
 /// A file of a type the app opens that cannot be read.
+#[cfg_attr(
+    not(tilo_native_runner),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only a device with paths reads a file"
+    )
+)]
 fn hand_launch_to(
     definition: &ApplicationDefinition,
     arguments: &[String],

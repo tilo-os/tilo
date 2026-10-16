@@ -25,6 +25,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.open", "app-files", "settings", "media.decode", "open-uri"]
 
+[resources]
+kinds = ["video-player.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

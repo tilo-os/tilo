@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 mod execution;
@@ -105,8 +104,7 @@ fn exact_directory(path: &Path) -> Result<(), String> {
 
 fn owned_private_directory(path: &Path) -> Result<(), String> {
     let scratch = path.symlink_metadata().map_err(|e| e.to_string())?;
-    // SAFETY: geteuid has no pointer inputs and cannot fail.
-    if scratch.uid() != unsafe { libc::geteuid() } || scratch.mode() & 0o077 != 0 {
+    if !tilo_files::native::private::private_to_me(&scratch) {
         return Err(
             "approved private scratch must be owned and inaccessible to other users".into(),
         );

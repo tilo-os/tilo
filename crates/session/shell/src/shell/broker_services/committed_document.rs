@@ -8,6 +8,7 @@
 use super::{
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeOwnerCommitService,
 };
+use std::sync::Arc;
 use tilo_action_broker::services::HeldRevision;
 impl NativeDocumentReads for NativeOwnerCommitService {
     fn prepare_application(
@@ -18,10 +19,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         if owner.with_current(room, |view| {
             Ok(view
                 .peer()
@@ -52,23 +50,21 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         if !created {
             return Ok(None);
         }
-        let name = self
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room == room)
-            .map(|workspace| workspace.name.clone())
-            .filter(|name| {
-                !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
-            })
-            .unwrap_or_else(|| room.to_string());
-        Ok(Some(
-            runtime_collab::committed_document::CreationWorkspace {
-                id: room.to_string(),
-                name,
-            },
+        Ok(Some(creation_workspace(&self.tree, room)))
+    }
+    fn prepare_application_elsewhere(
+        &self,
+        context: &NativeDocumentReadContext,
+    ) -> Option<tilo_action_broker::services::PreparingElsewhere> {
+        let room = super::super::state::RoomId::parse(&context.route().cluster_id)?;
+        if !self.host_governs(room) {
+            return None;
+        }
+        Some(preparing_at_host(
+            Arc::clone(self.network.as_ref()?),
+            self.opened_owner("").ok()?,
+            (context.clone(), self.tree.clone()),
+            room,
         ))
     }
     fn initialize_application(
@@ -100,9 +96,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .as_ref()
             .ok_or("native selected custody unavailable")?
             .initialize_native_application(
-                self.owner
-                    .as_ref()
-                    .ok_or("native document owner unavailable")?,
+                &self.opened_owner("native document owner unavailable")?,
                 room,
                 context.certificate(),
                 tilo_joined_room::ApplicationInitialization {
@@ -123,10 +117,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         self.network
             .as_ref()
             .ok_or("native selected custody unavailable")?
@@ -155,10 +146,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
             match view.read_document_with_history(
                 context.certificate().device_public_key,
@@ -187,7 +175,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 }
                 Err(error) => Err(error),
             }
-        })?;
+        });
+        let read = read.inspect_err(|error| self.note_unreadable(context, room, error))?;
         self.authorize(context)?;
         let Some(read) = read else {
             return Ok(NativeDocumentRead::Pending);
@@ -213,10 +202,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
             view.read_changes(
                 context.certificate().device_public_key,
@@ -254,10 +240,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         owner.with_current(room, |view| {
             view.holds_revision(
                 context.certificate().device_public_key,
@@ -276,15 +259,12 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native document owner unavailable")?;
+        let owner = &self.opened_owner("native document owner unavailable")?;
         let second = tilo_action_broker::policy_schedule::second_at_or_after;
         // The room's own governance (its grants' and capabilities' expiries)
         // and this host's custody certificate (`check_native_custody`).
         let committed = owner.with_current(room, |view| {
-            let grants = tilo_peer_state::owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
+            let grants = tilo_owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
                 .next_expiry_after(after);
             let custody = view
                 .device()
@@ -300,6 +280,185 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             super::super::channel_policy::next_policy_change(&self.tree.read(), room, after, &[]);
         Ok(committed.into_iter().chain(projected).min())
     }
+}
+
+impl NativeOwnerCommitService {
+    /// Whether another device governs `room` and it is a host (a home
+    /// relay), which creates the room's records on a member's request.
+    fn host_governs(&self, room: super::super::state::RoomId) -> bool {
+        self.network
+            .as_ref()
+            .is_some_and(|network| network.governed_elsewhere(room))
+            && self.opened_owner("").is_ok_and(|owner| {
+                owner
+                    .with_current(room, |view| {
+                        Ok(view.governor().capabilities.can_act_as_host)
+                    })
+                    .unwrap_or(false)
+            })
+    }
+    /// Say why an app's first read of a record its room does not hold
+    /// failed: whether its launch carried the signed original's creation
+    /// evidence, and who governs the room. Only a failed read logs.
+    fn note_unreadable(
+        &self,
+        context: &NativeDocumentReadContext,
+        room: super::super::state::RoomId,
+        error: &str,
+    ) {
+        let route = context.route();
+        let Ok(owner) = self.opened_owner("") else {
+            return;
+        };
+        let Ok((missing, host_governs)) = owner.with_current(room, |view| {
+            Ok((
+                view.peer()
+                    .document(&route.app_id, &route.record_id)
+                    .is_none(),
+                view.governor().capabilities.can_act_as_host,
+            ))
+        }) else {
+            return;
+        };
+        if !missing {
+            return;
+        }
+        tracing::error!(
+            app = %route.app_id,
+            record = %route.record_id,
+            %room,
+            %error,
+            creation_evidence = context
+                .application_creation()
+                .is_some_and(tilo_action_broker::services::ApplicationCreationEvidence::valid),
+            record_kind = context.record_kind().is_some(),
+            governed_elsewhere = self
+                .network
+                .as_ref()
+                .is_some_and(|network| network.governed_elsewhere(room)),
+            host_governs,
+            "committed read of a record the room does not hold"
+        );
+    }
+}
+
+/// How long the record a host created may take to reach this device's
+/// admitted room. With the host's own answer (at most the room-admin
+/// timeout) it stays inside what a launching app waits for its first read.
+const HOST_RECORD_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The workspace a record created in `room` names to the app initializing
+/// it: the room's id and its workspace's name.
+fn creation_workspace(
+    tree: &super::super::state::WorkspaceTreeHandle,
+    room: super::super::state::RoomId,
+) -> runtime_collab::committed_document::CreationWorkspace {
+    let name = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| workspace.name.clone())
+        .filter(|name| !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control))
+        .unwrap_or_else(|| room.to_string());
+    runtime_collab::committed_document::CreationWorkspace {
+        id: room.to_string(),
+        name,
+    }
+}
+
+/// [`prepare_at_host`] as the broker awaits it: logged, and answered as the
+/// workspace a created record names.
+fn preparing_at_host(
+    network: Arc<super::super::network::ShellNetwork>,
+    owner: super::super::native_workspace_owner::NativeWorkspaceOwner,
+    (context, tree): (
+        NativeDocumentReadContext,
+        super::super::state::WorkspaceTreeHandle,
+    ),
+    room: super::super::state::RoomId,
+) -> tilo_action_broker::services::PreparingElsewhere {
+    Box::pin(async move {
+        let prepared = prepare_at_host(&network, &owner, &context, room).await;
+        let route = context.route();
+        match &prepared {
+            Ok(created) => tracing::info!(
+                app = %route.app_id, record = %route.record_id, %room, created,
+                "the room's host holds the app's record"
+            ),
+            Err(error) => tracing::error!(
+                app = %route.app_id, record = %route.record_id, %room, %error,
+                "the room's host did not prepare the app's record"
+            ),
+        }
+        prepared.map(|created| created.then(|| creation_workspace(&tree, room)))
+    })
+}
+
+/// In a room a host governs (a home relay), have the host create the
+/// channel's missing record, empty and signed by the host, then wait until
+/// it is in this device's admitted room. The same original launch evidence
+/// and declared kind a local creation requires are checked first; the host
+/// checks the caller's membership and the app's authorship again. Answers
+/// whether the host created the record for this caller, which then
+/// initializes it as its own change.
+async fn prepare_at_host(
+    network: &super::super::network::ShellNetwork,
+    owner: &super::super::native_workspace_owner::NativeWorkspaceOwner,
+    context: &NativeDocumentReadContext,
+    room: super::super::state::RoomId,
+) -> Result<bool, String> {
+    context.revalidate()?;
+    let route = context.route();
+    let holds = || {
+        owner.with_current(room, |view| {
+            Ok(view
+                .peer()
+                .document(&route.app_id, &route.record_id)
+                .is_some())
+        })
+    };
+    if holds()? {
+        return Ok(false);
+    }
+    let evidence = context
+        .application_creation()
+        .filter(|evidence| evidence.valid())
+        .ok_or("application creation requires original signed launch declarations")?;
+    tilo_joined_room::ApplicationRecord::declared(
+        &route.app_id,
+        &route.record_id,
+        context
+            .record_kind()
+            .ok_or("application creation requires SDK resource kind")?,
+        &evidence.declared_kinds,
+    )?;
+    network.check_native_custody(owner, room)?;
+    let created = network
+        .prepare_application_record_at_host(
+            room,
+            context.certificate(),
+            &route.app_id,
+            &route.record_id,
+        )
+        .await
+        .ok_or("no host governs the room")??;
+    // The host's answer is not this device's barrier: wait until the record
+    // it published is in this device's admitted room.
+    tokio::time::timeout(HOST_RECORD_ADMISSION_TIMEOUT, async {
+        loop {
+            network.check_native_custody(owner, room)?;
+            if holds()? {
+                return Ok::<(), String>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .map_err(|_| "the host created the app's record but it did not reach this device in time")??;
+    context.revalidate()?;
+    Ok(created)
 }
 
 /// The bytes of one bounded capture, held until the broker has sent them.

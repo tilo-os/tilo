@@ -72,6 +72,16 @@ pub struct PersistentArgs {
         value_parser = crate::room_seed::channel_name
     )]
     pub chat_channels: Vec<String>,
+    /// A strip, by name, the room's shared desktop has in its first
+    /// workspace; repeatable, in order. Added at start where missing; the
+    /// strips people made are kept.
+    #[arg(
+        long = "strip",
+        value_name = "NAME",
+        requires = "persistent",
+        value_parser = crate::room_strips::strip_name
+    )]
+    pub strips: Vec<String>,
     /// The room's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
@@ -82,6 +92,11 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
+    /// Visitors watching the room at once. Each watching page reads the
+    /// room as its spectator person and writes nothing; past this many the
+    /// relay refuses the next one's subscription.
+    #[arg(long = "max-spectators", default_value_t = 1000)]
+    pub max_spectators: usize,
     /// A person (user public key, hex) made an Owner of the room once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -754,6 +769,26 @@ pub(crate) async fn settle_chat(
         .map_err(|error| anyhow::anyhow!("name the chat and open its channels: {error}"))
 }
 
+/// Give the room's shared desktop the operator's `strips` where missing.
+pub(crate) async fn settle_strips(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    shown: &str,
+    strips: &[String],
+) -> anyhow::Result<()> {
+    if strips.is_empty() {
+        return Ok(());
+    }
+    rooms
+        .author_room_record(room, cert, crate::room_strips::DESKTOP, |doc| {
+            crate::room_strips::settle_strips(doc, room, shown, strips)
+        })
+        .await
+        .map(drop)
+        .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
+}
+
 /// Snapshot each seeded app with starting content under
 /// `<state>/snapshots/<app>/`, then reset it to that content. Chat has no
 /// starting content and is never touched.
@@ -900,6 +935,25 @@ pub(crate) async fn run(
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
+    let workspace_id = rooms
+        .summary(&room)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .workspace_id;
+    hosted
+        .relay
+        .admit_spectators(
+            workspace_id,
+            tilo_relay::Spectators {
+                root: spectator.verifying_key().to_bytes(),
+                seats: persistent.max_spectators,
+                // Every visitor may join this room as a guest, and so read
+                // its channels: one who only watches may read them too.
+                public: true,
+            },
+        )
+        .await
+        .context("let visitors watch the room")?;
     seed_apps(
         &rooms,
         &room,
@@ -916,6 +970,7 @@ pub(crate) async fn run(
         (&shown, &persistent.chat_channels),
     )
     .await?;
+    settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
     ensure_guest_policy(&rooms, &room, &host_cert).await?;
     let web = hosted
         .relay
@@ -1262,7 +1317,8 @@ async fn reset_now(context: &PersistentRoom, governance: &Governance) {
     }
 }
 
-/// Removes guests idle past the horizon, in batches.
+/// Removes guests idle past the horizon, in batches. A batch the room
+/// refuses stays seated until the next call.
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
@@ -1284,7 +1340,7 @@ async fn prune_idle(
         // should cool their address down for.
         removed.extend(batch.iter().copied());
         let first = batch.first().copied().unwrap_or_default();
-        context
+        if let Err(error) = context
             .rooms
             .prune_members(
                 &context.room,
@@ -1293,7 +1349,17 @@ async fn prune_idle(
                 &batch,
             )
             .await
-            .map_err(|error| anyhow::anyhow!("prune {} guests: {error}", batch.len()))?;
+        {
+            // They keep their seats until the next tick tries again, and
+            // the room goes on serving, as after a failed reset: ending
+            // here dropped every visitor's session and turned each new one
+            // away while the room service restarted it.
+            for key in &batch {
+                removed.remove(key);
+            }
+            tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
+            break;
+        }
         for key in &batch {
             last_seen.remove(key);
         }
@@ -1335,7 +1401,13 @@ async fn serve_operator(
             _ = online_tick.tick() => {
                 let sessions = context.web.online_users();
                 let people = sessions.keys().filter(|user| **user != spectator).count();
-                let spectators = sessions.get(&spectator).copied().unwrap_or(0);
+                // Seated ones only: a page refused for want of a seat keeps
+                // its web session open while it waits, but watches nothing.
+                let spectators = context
+                    .rooms
+                    .seated_spectators(&context.room)
+                    .await
+                    .unwrap_or(0);
                 let online = (
                     u32::try_from(people).unwrap_or(u32::MAX),
                     u32::try_from(spectators).unwrap_or(u32::MAX),

@@ -457,8 +457,7 @@ mod secure {
         let io = |e: std::io::Error| format!("{}: {e}", dir.display());
         std::fs::create_dir_all(dir).map_err(io)?;
         let meta = std::fs::symlink_metadata(dir).map_err(io)?;
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
+        let euid = tilo_process::effective_uid();
         if !meta.is_dir() || meta.uid() != euid {
             return Err(format!(
                 "{} is not a directory owned by this helper",
@@ -780,8 +779,7 @@ mod tests {
                 tmp.path().join("op-user.json"),
             )
             .unwrap();
-            // SAFETY: geteuid has no preconditions.
-            if unsafe { libc::geteuid() } == 0 {
+            if tilo_process::effective_uid() == 0 {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
                     .unwrap();

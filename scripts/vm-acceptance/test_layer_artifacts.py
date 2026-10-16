@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ BUILDER = "registry.tilo.so/tilo/tilo-builder@sha256:" + "b" * 64
 
 class HandoffTests(unittest.TestCase):
     def setUp(self):
-        root = HERE.parents[1] / "target/layer-artifact-tests"
+        root = Path(os.environ.get("CARGO_TARGET_DIR") or HERE.parents[1] / "target") / "layer-artifact-tests"
         root.mkdir(parents=True, exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temp.cleanup)
@@ -237,3 +238,43 @@ class HandoffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaseEngineTests(unittest.TestCase):
+    """apps+runtime ships the engines its apps pin; on a CI host they come from the base."""
+
+    def test_pinned_engines_the_base_has_are_copied_and_others_left_to_the_assembly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, base, out = root / "src", root / "base", root / "out"
+            for app, pins in (("browser", '["tilo-runtime/1.0-chromium"]'),
+                              ("mail", '["tilo-runtime/1.0-chromium", "tilo-runtime/2.0-other"]'),
+                              ("notes", None)):
+                (source / "apps" / app).mkdir(parents=True)
+                extra = f"optional-runtimes = {pins}\n" if pins else ""
+                (source / "apps" / app / "tilo-app.toml").write_text(
+                    f'[package]\nid = "so.tilo.{app}"\n{extra}')
+            (base / "1.0-chromium").mkdir(parents=True)
+            (base / "1.0-chromium" / "bundle.toml").write_text("signed = true\n")
+            self.assertEqual(run.engine_pins(source), ["1.0-chromium", "2.0-other"])
+
+            class Vm:
+                binary, vm = "tilo-vm", "acceptance-vm"
+
+                def root_exec(self, script, timeout=120):
+                    version = script.split("/usr/lib/tilo-runtime/")[1].split("/")[0]
+                    return "present\n" if (base / version / "bundle.toml").is_file() else ""
+
+            real_popen = subprocess.Popen
+
+            def popen(argv, **kwargs):
+                if argv[0] != "tilo-vm":
+                    return real_popen(argv, **kwargs)
+                version = argv[-1].rsplit(" ", 1)[1]
+                return real_popen(["tar", "-C", str(base), "-cf", "-", version], **kwargs)
+
+            with patch.object(run.subprocess, "Popen", side_effect=popen):
+                staged = run.stage_base_engines(Vm(), source, out)
+            self.assertEqual(staged, ["1.0-chromium"])
+            self.assertEqual((out / "1.0-chromium" / "bundle.toml").read_text(), "signed = true\n")
+            self.assertFalse((out / "2.0-other").exists())

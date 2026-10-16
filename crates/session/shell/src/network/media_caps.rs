@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use media::realtime::CodecCapabilities;
 
 use crate::network::protocol::{NeighbourMsg, PeerId};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct Registry {
@@ -97,9 +98,7 @@ pub fn record(
 
 /// Record parsed capabilities for `peer`.
 pub fn record_caps(peer: PeerId, caps: CodecCapabilities) {
-    let mut reg = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reg = registry().lock_recover();
     let changed = reg.peers.get(&peer).is_none_or(|old| *old != caps);
     reg.peers.insert(peer, caps);
     if changed {
@@ -110,9 +109,7 @@ pub fn record_caps(peer: PeerId, caps: CodecCapabilities) {
 /// Forget what departed `peer` advertised: a peer that comes back says
 /// again when its link does.
 pub fn forget(peer: PeerId) {
-    let mut reg = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reg = registry().lock_recover();
     if reg.peers.remove(&peer).is_some() {
         reg.generation = reg.generation.wrapping_add(1);
     }
@@ -121,9 +118,7 @@ pub fn forget(peer: PeerId) {
 /// What `peer` can do, or [`CodecCapabilities::legacy_peer`] without an
 /// advert.
 pub fn capabilities(peer: PeerId) -> CodecCapabilities {
-    let reg = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reg = registry().lock_recover();
     reg.peers
         .get(&peer)
         .map_or_else(CodecCapabilities::legacy_peer, Clone::clone)
@@ -131,10 +126,7 @@ pub fn capabilities(peer: PeerId) -> CodecCapabilities {
 
 /// Advances whenever some peer's capabilities changed.
 pub fn generation() -> u64 {
-    registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .generation
+    registry().lock_recover().generation
 }
 
 #[cfg(test)]

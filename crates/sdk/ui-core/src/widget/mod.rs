@@ -1105,12 +1105,6 @@ impl std::ops::Deref for Edits<'_> {
     }
 }
 
-/// Where `doc` stands, to tell whether a settle pass changed it.
-pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
-    use automerge::transaction::Transactable as _;
-    (doc.base_heads(), doc.pending_ops())
-}
-
 thread_local! {
     static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -1127,7 +1121,6 @@ pub fn note_resource_presentation_changed() {
 }
 
 /// How many times [`note_resource_presentation_changed`] ran on this thread.
-#[cfg(feature = "native")]
 pub(crate) fn resource_presentation_epoch() -> u64 {
     RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
@@ -1763,6 +1756,27 @@ pub trait Widget {
         None
     }
 
+    /// [`Self::accessibility`] with its synthetic children shared, for a
+    /// widget that keeps them between frames: each child it did not change
+    /// is handed over as the very `Arc` of the last frame, which the
+    /// semantic tree takes as unchanged without copying or comparing it.
+    ///
+    /// `None` (the default) means "read [`Self::accessibility`]". A widget
+    /// that answers `Some` must answer `accessibility()` with the same node,
+    /// its children owned ([`SharedAccessNode::into_owned`](crate::a11y::SharedAccessNode::into_owned)).
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        None
+    }
+
+    /// Whether [`Self::accessibility`] reports this subtree hidden, for a
+    /// host that asks it of every node to prune focus traversal. Widgets
+    /// whose node is costly to build (text values, per-block children) and is
+    /// never hidden answer without building it; any override must agree with
+    /// `accessibility()`.
+    fn accessibility_hidden(&self) -> bool {
+        self.accessibility().is_some_and(|node| node.state.hidden)
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -2302,6 +2316,13 @@ pub trait Widget {
         false
     }
 
+    /// Why this widget itself asks for animation frames, for diagnostics
+    /// that name a desktop which keeps painting. `None` when it has nothing
+    /// to add to its name and geometry.
+    fn animation_detail(&self) -> Option<String> {
+        None
+    }
+
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
@@ -2459,6 +2480,19 @@ pub trait Widget {
             }
         });
         !has_children || dirty
+    }
+
+    /// Whether this widget composes its children from the size it was last
+    /// allocated (it reads its own rect while building its layout: a compact
+    /// layout under a width, a count of columns, an inset from a drawer).
+    /// A window resize then needs a second composition against the new
+    /// allocation, as well as the re-solve every resize gets. Widgets that
+    /// compose independently of their allocation, or that report
+    /// `take_structure_dirty` themselves when a new allocation changes what
+    /// they show, keep the default: a resize re-solves the retained tree in
+    /// place instead of recomposing all of it.
+    fn composition_follows_allocation(&self) -> bool {
+        false
     }
 
     /// Whether a `layout_dirty` frame needs taffy to **re-solve** sizes
@@ -3036,7 +3070,9 @@ pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
 };
-pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
+pub use window_header::{
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowHeader,
+};
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
@@ -3071,6 +3107,7 @@ pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
+pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
@@ -3095,6 +3132,7 @@ pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
+mod hover_intent;
 pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
@@ -3116,7 +3154,9 @@ pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
-pub use tile_host::{AppKind, TileContent, TileHost};
+pub use tile_host::{
+    AppKind, OpeningCardText, TileContent, TileHost, opening_card_spinner, paint_opening_card,
+};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{

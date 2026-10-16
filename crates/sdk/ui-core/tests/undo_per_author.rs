@@ -147,7 +147,7 @@ fn keyboard_undo_and_redo_drive_button_actions() {
 fn baseline_moves_past_uncommitted_and_empty_changes() {
     // Case `an_empty_commit_moves_the_baseline_past_a_change_nobody_committed_here`.
     // A change can reach a document without a local commit — a peer's ops merged
-    // in, or the shared schema a `qdoc` document adopts rather than mints. The
+    // in, or the shared schema a `tilo-doc` document adopts rather than mints. The
     // baseline the *next* action brackets against has to move past it, or one
     // Ctrl+Z takes the document's own containers out along with the keystroke.
     // Here the move happens on an empty commit (a selection drag, a focus move).

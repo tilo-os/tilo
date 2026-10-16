@@ -8,6 +8,7 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -1122,6 +1123,14 @@ fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
     !event_loop
         .display_handle()
         .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
+}
+
+/// The slow-event reporting threshold in milliseconds, when the developer
+/// overrides it with `TILO_SLOW_EVENT_MS`; see `slow_event`.
+pub(super) fn slow_event_threshold_ms() -> Option<u64> {
+    std::env::var("TILO_SLOW_EVENT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 /// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
@@ -2520,6 +2529,7 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
+        app.mark_semantic_tree_stale();
         app.track_pointer_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);
@@ -2776,6 +2786,7 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
+        let sync_phase = slow_event::phase("sync");
         if app.update_native_model() {
             floating_content_changed = true;
         }
@@ -2800,6 +2811,7 @@ impl AppHandler {
                 window.request_redraw();
             }
         }
+        drop(sync_phase);
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
@@ -2849,6 +2861,7 @@ impl AppHandler {
             && app.close_admission.dialog.is_none())
         .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
+        let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
@@ -2863,6 +2876,7 @@ impl AppHandler {
         ) else {
             return;
         };
+        drop(layout_phase);
         mark_first_frame("first-frame-layout-done");
         // A relayout that moved widgets and rebuilt or resized nothing may be
         // scrolls this window copies; that is decided with the frame's damage.
@@ -2914,7 +2928,9 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
+        let draw_phase = slow_event::phase("draw");
         let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        drop(draw_phase);
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
         // The tooltip's material blurs what is under it, which repaints this
@@ -3098,6 +3114,7 @@ impl AppHandler {
             // `update_if_active` only builds + sends when an AT is
             // attached, so this is free on the common no-reader path.
             if let Some(adapter) = self.a11y_adapter.as_mut() {
+                let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
                 let scale = f64::from(scale_factor);
                 adapter.update_if_active(|| {
@@ -3279,6 +3296,7 @@ impl AppHandler {
     /// Whether something consumed the event.
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) -> bool {
         let synthesized_touch = self.dispatching_touch_pointer;
+        let _dispatch = slow_event::phase("dispatch");
         self.app
             .surface_input(window.as_ref(), other, synthesized_touch)
     }
@@ -3402,6 +3420,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         reason = "winit requires the complete synthetic event dispatch at this callback boundary"
     )]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let _slow = slow_event::Span::begin(
+            "user_event",
+            match &event {
+                UserEvent::AccessKit { .. } => "AccessKit",
+                UserEvent::RenderReady(_) => "RenderReady",
+                _ => "other",
+            },
+        );
         let _entry = self.app.enter_wake_scope();
         let event = match event {
             UserEvent::AccessKit { window_id, event }
@@ -3465,7 +3491,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let window_id = window.id();
-        let mut effect_before = None;
         let event = match event {
             UserEvent::NativeScenarioInput(packet) => {
                 if self.native_input_origin.is_none() {
@@ -3500,20 +3525,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                effect_before = self
-                    .app
-                    .native_input_snapshot()
-                    .map(|value| (packet.id, value));
+                let before = self.app.native_input_snapshot();
                 self.native_input_ids.push(packet.id);
-                match packet.input {
-                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
-                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
-                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
-                    crate::native_scenario::Input::Character { value } => {
-                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
-                    }
-                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                // Pen steps carry their samples ahead of each pointer event,
+                // so a paced stroke reaches widgets as a tablet's would.
+                for event in packet.input.window_events() {
+                    self.injected_window_event(event_loop, window_id, event);
                 }
+                if let Some(before) = before {
+                    crate::native_scenario::log::emit_json(
+                        "tilo-native-effect",
+                        serde_json::json!({
+                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                        }),
+                    );
+                }
+                return;
             }
             other => other,
         };
@@ -3629,14 +3656,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-        }
-        if let Some((id, before)) = effect_before {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-effect",
-                serde_json::json!({
-                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
-                }),
-            );
         }
     }
 
@@ -3811,6 +3830,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
         if let Some(window) = self
             .window
             .clone()
@@ -3875,6 +3895,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let _slow = slow_event::Span::begin("about_to_wait", "");
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             event_loop.exit();
@@ -4785,9 +4806,14 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
+        // Everything from here to the window's creation is marked: Notes spent
+        // 259 ms between `app-construct-end` and `primary-window-created`
+        // with nothing in the startup file to say where.
+        tilo_startup_metrics::mark("run-start");
         self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
             self.input.platform,
         ));
+        tilo_startup_metrics::mark("run-presentation-prepared");
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
@@ -4809,9 +4835,11 @@ impl App {
                     .clone(),
             );
         }
+        tilo_startup_metrics::mark("run-event-loop-build");
         // The launch may have built it already, to make the window early.
         let event_loop =
             take_early_event_loop().unwrap_or_else(|| event_loop_builder.build().unwrap());
+        tilo_startup_metrics::mark("run-event-loop-built");
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -4853,14 +4881,18 @@ impl App {
                 })
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-settings-watched");
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
+            tilo_startup_metrics::mark("run-setup-done");
             self.init_layout();
+            tilo_startup_metrics::mark("run-init-layout-done");
             self.watch_system_settings
                 .then(crate::host_appearance::Source::start)
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-host-appearance-started");
 
         let mut handler = AppHandler {
             app: self,
@@ -4928,8 +4960,9 @@ impl App {
             }
         }
         // The app and its state are dropped (and saved) before the process
-        // reports how its window ended.
+        // reports how its window ended, and so are the settings it changed.
         drop(handler);
+        crate::storage::flush_settings_writes();
         if let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);
         }
@@ -4943,18 +4976,12 @@ static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 /// process then exits non-zero instead of looking like a deliberate quit.
 fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
     tracing::error!(%reason, "{}", super::WINDOW_LOST);
-    ABNORMAL_STOP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_or_insert(reason);
+    ABNORMAL_STOP.lock_recover().get_or_insert(reason);
     event_loop.exit();
 }
 
 fn take_abnormal_stop() -> Option<String> {
-    ABNORMAL_STOP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    ABNORMAL_STOP.lock_recover().take()
 }
 
 #[allow(

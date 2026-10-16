@@ -29,6 +29,7 @@ async fn checkout_channel(
             crate::services::AuthenticatedApplicationLaunch {
                 creation: None,
                 continuation_instance: Some(73),
+                launch_ticket: None,
             },
         )
         .unwrap()

@@ -35,9 +35,6 @@ const LABEL_TOP: f64 = 33.0;
 const NUMBER_SIZE: f32 = 13.0;
 /// Caption glyph size.
 const LABEL_SIZE: f32 = 11.0;
-/// Below this width seven independent captions cannot remain legible. Use a
-/// single current-step label and determinate progress bar instead.
-const COMPACT_WIDTH: f64 = 400.0;
 
 pub struct StepIndicator {
     steps: Vec<String>,
@@ -59,6 +56,18 @@ impl StepIndicator {
         let n = ui::num::f64_of_usize(self.steps.len().max(1));
         let w = self.rect.width();
         self.rect.x0 + (ui::num::f64_of_usize(i) + 0.5) * (w / n)
+    }
+
+    /// Captions must fit their own columns at the renderer's actual text scale.
+    /// Reserve the themed gap for related items between neighbouring captions.
+    fn needs_compact(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> bool {
+        let column_width = self.rect.width() / ui::num::f64_of_usize(self.steps.len().max(1));
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        column_width < 2.0 * (RADIUS + 3.0) + gap
+            || self.steps.iter().any(|label| {
+                let (width, _) = text_renderer.measure(label, LABEL_SIZE, None);
+                f64::from(width) + gap > column_width
+            })
     }
 
     fn draw_compact(
@@ -146,7 +155,7 @@ impl Widget for StepIndicator {
         let accent = theme.tokens.colors.intent.inverted;
         let upcoming_bg = theme.tokens.colors.surfaces.raised;
 
-        if self.rect.width() < COMPACT_WIDTH {
+        if self.needs_compact(text_renderer, theme) {
             self.draw_compact(scene, transform, text_renderer, theme);
             return;
         }
@@ -264,6 +273,87 @@ impl Widget for StepIndicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wizard_indicator(width: f64) -> StepIndicator {
+        let mut indicator = StepIndicator::new(
+            crate::installer_app::STEP_LABELS
+                .iter()
+                .map(|label| (*label).to_owned())
+                .collect(),
+            3,
+        );
+        indicator.rect = Rect::new(0.0, 0.0, width, f64::from(HEIGHT));
+        indicator
+    }
+
+    #[test]
+    fn enlarged_captions_draw_existing_compact_progress_in_every_theme() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            ui::text_render::with_layout_renderer(2.0, |renderer| {
+                let mut indicator = wizard_indicator(480.0);
+                let mut actual = Scene::new();
+                indicator.draw(
+                    &mut actual,
+                    Affine::IDENTITY,
+                    renderer,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let mut compact = Scene::new();
+                indicator.draw_compact(&mut compact, Affine::IDENTITY, renderer, &theme);
+                assert_eq!(actual.encoding().path_data, compact.encoding().path_data);
+                assert_eq!(actual.encoding().draw_data, compact.encoding().draw_data);
+                assert!(actual.encoding().n_paths >= 2, "progress remains painted");
+                assert_eq!(indicator.steps.len(), 8);
+                assert_eq!(indicator.current, 3);
+                let node = indicator.accessibility().expect("progress semantics");
+                assert_eq!(node.name.as_deref(), Some("Installation setup: Account"));
+                assert_eq!(node.value.as_deref(), Some("step 4 of 8"));
+            });
+        }
+    }
+
+    #[test]
+    fn caption_fit_tracks_measured_type_and_available_columns() {
+        let theme = Theme::light();
+        for scale in [1.0, 1.5, 2.0] {
+            ui::text_render::with_layout_renderer(scale, |renderer| {
+                let mut indicator = wizard_indicator(464.0);
+                assert_eq!(
+                    indicator.needs_compact(renderer, &theme),
+                    scale > 1.0,
+                    "normal captions fit; enlarged captions need compact progress"
+                );
+                let widest = indicator
+                    .steps
+                    .iter()
+                    .map(|label| renderer.measure(label, LABEL_SIZE, None).0)
+                    .fold(0.0_f32, f32::max);
+                let gap = f64::from(theme.tokens.spacing.rhythm.related);
+                let column = (f64::from(widest) + gap).max(2.0 * (RADIUS + 3.0) + gap);
+                let required = column * ui::num::f64_of_usize(indicator.steps.len());
+                indicator.rect.x1 = required - 1.0;
+                assert!(indicator.needs_compact(renderer, &theme));
+                indicator.rect.x1 = required + 1.0;
+                assert!(!indicator.needs_compact(renderer, &theme));
+                let mut full = Scene::new();
+                indicator.draw(
+                    &mut full,
+                    Affine::IDENTITY,
+                    renderer,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let mut compact = Scene::new();
+                indicator.draw_compact(&mut compact, Affine::IDENTITY, renderer, &theme);
+                assert!(full.encoding().n_paths > compact.encoding().n_paths);
+
+                // A translated/renamed caption must select compact even at 1×.
+                indicator.steps[0] = "Choose your keyboard layout and language".into();
+                assert!(indicator.needs_compact(renderer, &theme));
+            });
+        }
+    }
 
     #[test]
     fn progress_semantics_name_the_current_step_and_position() {

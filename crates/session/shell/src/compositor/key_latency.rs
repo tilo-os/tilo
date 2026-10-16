@@ -14,6 +14,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// A key no commit answers within this long is reported unanswered and dropped,
 /// so a modifier or a key the app ignores cannot claim a much later repaint.
@@ -146,10 +147,7 @@ impl KeyLatency {
 /// compositor thread; the lock is uncontended.
 pub fn tracker() -> std::sync::MutexGuard<'static, KeyLatency> {
     static TRACKER: OnceLock<Mutex<KeyLatency>> = OnceLock::new();
-    TRACKER
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    TRACKER.get_or_init(Mutex::default).lock_recover()
 }
 
 #[cfg(test)]

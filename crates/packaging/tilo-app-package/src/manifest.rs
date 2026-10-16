@@ -223,6 +223,21 @@ pub struct Package {
     /// in either the desktop's language or English.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub names: std::collections::BTreeMap<String, String>,
+    /// What else people call the app, keyed by BCP 47 tag:
+    ///
+    /// ```toml
+    /// [package.keywords]
+    /// en = ["youtube", "video", "videos"]
+    /// de = ["filme"]
+    /// ```
+    ///
+    /// Aliases, synonyms and the well-known products the app stands in for.
+    /// Search matches every language's words whatever the desktop speaks,
+    /// since a German desktop still gets typed "email". The words are
+    /// authored in `apps/<app>/search/<tag>.ftl` and joined here when the
+    /// app is packed (`tilo-app-package-cli pack`), never by hand.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keywords: std::collections::BTreeMap<String, Vec<String>>,
     /// Freedesktop-style menu category (`Office`, `Development`, ...);
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
@@ -405,10 +420,6 @@ impl IsaLevel {
 
 /// x86-64 microarchitecture feature levels per the `SysV` psABI x86-64
 /// supplement. Each level is a strict superset of the previous.
-#[allow(
-    non_camel_case_types,
-    reason = "x86_64 is the canonical architecture spelling used in signed manifests"
-)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum X86_64Level {

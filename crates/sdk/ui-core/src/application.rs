@@ -721,6 +721,17 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// The per-window records this app's windows kept in this room before it
+    /// [kept one record per room](ApplicationDefinition::keeps_room_record),
+    /// read-only and sorted by id ([`RecordStore::window_records`]). Only a
+    /// context of the room's own record answers: what the app adopts into
+    /// it when it creates it. Any other context has none.
+    pub fn window_records(&self) -> Vec<(RecordId, AutoCommit)> {
+        if !self.record.id.is_package_primary() {
+            return Vec::new();
+        }
+        self.records.window_records(&self.record.kind)
+    }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -922,7 +933,7 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || !self.record.kind.names(&saved.record_kind)
+                    || self.record.kind.as_str() != saved.record_kind
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -1481,6 +1492,26 @@ impl AppComponent {
                     slot,
                 }) as Box<dyn crate::search::SearchProvider>)
             })
+            .collect()
+    }
+    /// [`Self::search_providers`] as the action directory's witness reads
+    /// them: the same names, generations and domains under this component's
+    /// lifetime, without minting a proxy or making the root's providers.
+    pub(crate) fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        let binding = self.callback_binding();
+        let Ok(_entry) = binding.enter() else {
+            return vec![];
+        };
+        let Some(root) = self.root.as_deref() else {
+            return vec![];
+        };
+        crate::search::capability::search_provider_descriptors(root)
+            .into_iter()
+            // As `search_providers`: the host collects nested components itself.
+            .filter(|descriptor| descriptor.owner.is_none())
+            .map(|descriptor| descriptor.owned_by(binding.lifetime_id))
             .collect()
     }
     pub fn record(&self) -> &RecordCheckout {

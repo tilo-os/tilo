@@ -11,12 +11,11 @@ use crate::{
 };
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{collections::BTreeMap, sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
-use tilo_peer_state::{
-    NeighbourMsg, SeedDocument, SeedState, StatePeer, join, owner_commit::OwnerCommitRequest,
-    room::media, seed_room,
-};
+use tilo_owner_commit::OwnerCommitRequest;
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, join, room::media, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 pub mod governor;
@@ -249,7 +248,8 @@ pub fn raw_fixture_at(
     .unwrap();
     peer.select_admission_v5().unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &governor_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &governor_key, now)
             .unwrap()
     );
     let policy = media::RoomMediaV1 {
@@ -264,7 +264,10 @@ pub fn raw_fixture_at(
         calls: BTreeMap::from([(
             [68; 32],
             media::CallV1 {
-                binding: peer.resolve_media_binding(APP, "", "voice").unwrap(),
+                binding: peer
+                    .media()
+                    .resolve_media_binding(APP, "", "voice")
+                    .unwrap(),
                 epoch: 1,
                 phase: media::CallPhaseV1::Active,
                 allowed: media::DirectionsV1 {
@@ -275,7 +278,8 @@ pub fn raw_fixture_at(
             },
         )]),
     };
-    peer.author_media_policy(&policy, &governor_key, now)
+    peer.media_mut()
+        .author_media_policy(&policy, &governor_key, now)
         .unwrap();
     let messages = peer
         .durable_bootstrap_messages(&governor_key, now, 1)

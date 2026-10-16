@@ -27,19 +27,12 @@
 //! that side alone, so an app never compiles the privileged door it talks to
 //! and the shared app runtime does not carry it.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::PathBuf;
 
 pub mod client;
 pub mod install;
+#[cfg(feature = "service")]
+pub mod runtime_request;
 #[cfg(feature = "service")]
 pub mod service;
 #[cfg(all(unix, feature = "test-support"))]
@@ -56,11 +49,8 @@ pub mod transport;
     clippy::restriction,
     unused_imports,
     unused_qualifications,
-    unused_results,
-    non_camel_case_types,
     missing_docs,
     dead_code,
-    unsafe_code,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
 pub mod app_host_capnp {

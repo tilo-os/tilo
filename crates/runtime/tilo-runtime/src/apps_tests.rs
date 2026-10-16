@@ -533,6 +533,41 @@ fn attestation_holds_only_for_the_launched_process_itself() {
     assert!(!launched.attest(pid, VIEWER, ROOM));
 }
 
+/// Each launch's process connects with the ticket of its own launch, so a
+/// workspace `open` learns which instance it started.
+#[test]
+fn a_connecting_process_names_the_launch_that_started_it() {
+    let root = std::env::temp_dir();
+    let apps = Apps::new(None, &root, ROOM, PathBuf::new(), Vec::new());
+    let mut child = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let ours = std::process::id();
+    assert!(apps.launched.record(ours, VIEWER, ROOM, None));
+    assert!(apps.launched.record(child.id(), VIEWER, ROOM, None));
+    let ticket = |pid| {
+        apps.authenticated_launch(pid, VIEWER, ROOM)
+            .unwrap()
+            .and_then(|launch| launch.launch_ticket)
+    };
+    let (first, second) = (ticket(ours), ticket(child.id()));
+    assert!(first.is_some() && second.is_some());
+    assert_ne!(
+        first, second,
+        "two launches of one app hold their own tickets"
+    );
+    assert!(
+        apps.authenticated_launch(ours, "so.tilo.other", ROOM)
+            .unwrap()
+            .is_none(),
+        "a ticket is presented only for the launch's own app"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(ticket(child.id()), None, "a reaped process presents none");
+}
+
 #[test]
 fn a_process_start_time_is_stable_and_absent_for_no_process() {
     let own = std::process::id();

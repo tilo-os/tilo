@@ -292,6 +292,7 @@ impl QuickSettingsBluetoothPane {
                 cursor,
                 72.0,
                 &device.name,
+                None,
             );
             if self.keyboard_focus == Some(Self::DEVICE_FOCUS_START.saturating_add(index)) {
                 Button::paint(

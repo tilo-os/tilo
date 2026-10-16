@@ -67,6 +67,9 @@ impl MediaLane {
         requests.retain(|request| request.retired || self.pending.contains_key(&request.ticket));
         self.catalogues
             .retain(|(binding, _)| !binding.closing.get() && binding.lifetime.is_active());
+        // Whether a component handed over a request: taking it (and the
+        // answers some get at once) changes that component.
+        let mut took = false;
         let mut visit = |binding: &CallbackBinding,
                          widget: &mut dyn crate::widget::AppWidget,
                          _: &tilo_actions::ActionRegistry| {
@@ -75,6 +78,7 @@ impl MediaLane {
             }
             let route = binding.broker_route()?;
             for request in crate::widget::take_collab_requests(widget) {
+                took = true;
                 if let CollabRequest::RealtimeCommand { request_id, .. } = request {
                     crate::widget::handle_collab_event(
                         widget,
@@ -132,6 +136,9 @@ impl MediaLane {
             found: false,
             visit: &mut visit,
         });
+        if took {
+            frame.invalidate_local();
+        }
     }
 
     /// Complete only the exact retained owner that asked. Closed components

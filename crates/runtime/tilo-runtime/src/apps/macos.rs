@@ -233,10 +233,11 @@ pub(super) fn verify_installed(
         &package.package_id_hex,
     )
     .map_err(|error| refuse(error.to_string()))?;
+    use tilo_app_package::TrustFile as _;
     let revoked = match tilo_app_package::default_revoked_keys_path() {
         Some(path) => tilo_app_package::RevocationList::load(&path)
             .map_err(|error| refuse(format!("the revocation list is unreadable ({error})")))?,
-        None => tilo_app_package::RevocationList::empty(),
+        None => tilo_app_package::RevocationList::default(),
     };
     if let Some(entry) = revoked.find(&record.root.publisher_identity) {
         return Err(refuse(format!(

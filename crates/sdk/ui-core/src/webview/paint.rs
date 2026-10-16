@@ -16,7 +16,7 @@
 pub use tilo_paint_stream as stream;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{BlobRef, Color as PaintColor, Frame, Item, LayerId, Patch, Point, ROOT};
@@ -27,6 +27,7 @@ use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 use super::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 /// Never capture more often than this: a capture walks the whole layout.
 const MIN_CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
@@ -359,7 +360,7 @@ static SHARE: Mutex<ShareOutbox> = Mutex::new(ShareOutbox {
 });
 
 fn share() -> std::sync::MutexGuard<'static, ShareOutbox> {
-    SHARE.lock().unwrap_or_else(PoisonError::into_inner)
+    SHARE.lock_recover()
 }
 
 /// Whether the session shares this app's page with someone watching.
@@ -432,17 +433,21 @@ struct PaintState {
     sent_blobs: std::collections::HashSet<[u8; 32]>,
     /// Whether the app wants the page shown at all.
     wanted_visible: bool,
-    /// When a view last drew this engine's page.
-    last_presented: Instant,
+    /// The frame a view last drew (its pixels' address).
+    presented_pixels: usize,
+    /// Since when a newer frame waits for a view to draw it.
+    undrawn_since: Option<Instant>,
     /// What the engine was last told: painting, or hidden.
     painting: bool,
     /// How long an undrawn page keeps painting.
     hide_after: Duration,
 }
 
-/// A page no view has drawn for this long stops painting: the engine is
-/// told it is hidden, which stops its compositing and rendering until a view
-/// draws it again. Agents keep reading and operating a hidden page.
+/// A page whose newest frame no view drew for this long stops painting: the
+/// engine is told it is hidden, which stops its compositing and rendering
+/// until a view draws it again. A window showing a still page draws nothing
+/// and is not "undrawn"; one the shell keeps from drawing (a hidden tab)
+/// holds the frame back. Agents keep reading and operating a hidden page.
 const HIDE_UNPRESENTED: Duration = Duration::from_secs(2);
 
 /// Any engine, drawn as a display list. Commands and events pass through;
@@ -488,7 +493,8 @@ impl PaintEngine {
                 keyframe_needed: true,
                 sent_blobs: std::collections::HashSet::new(),
                 wanted_visible: true,
-                last_presented: crate::time::now(),
+                presented_pixels: 0,
+                undrawn_since: None,
                 painting: true,
                 hide_after: HIDE_UNPRESENTED,
             }),
@@ -497,7 +503,7 @@ impl PaintEngine {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PaintState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The patches since the last call, oldest first, or `Err` with the
@@ -526,8 +532,7 @@ impl PaintEngine {
         let pixels = self
             .inner
             .frames()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .map_or(0, |f| Arc::as_ptr(&f.rgba) as usize);
         if pixels != state.last_pixels {
@@ -539,11 +544,28 @@ impl PaintEngine {
         }
     }
 
-    /// Paint while the app wants the page and someone sees it: a view drew
-    /// it recently, or a session shares it with someone watching.
+    /// The address of the engine's current frame's pixels; 0 for none.
+    fn current_pixels(&self) -> usize {
+        self.inner
+            .frames()
+            .lock_recover()
+            .as_ref()
+            .map_or(0, |frame| Arc::as_ptr(&frame.rgba) as usize)
+    }
+
+    /// Paint while the app wants the page and someone sees it: no frame waits
+    /// undrawn longer than [`HIDE_UNPRESENTED`], or a session shares it with
+    /// someone watching.
     fn update_visibility(&self, state: &mut PaintState) {
-        let seen =
-            crate::time::now().saturating_duration_since(state.last_presented) < state.hide_after;
+        let now = crate::time::now();
+        if self.current_pixels() == state.presented_pixels {
+            state.undrawn_since = None;
+        } else if state.undrawn_since.is_none() {
+            state.undrawn_since = Some(now);
+        }
+        let seen = state
+            .undrawn_since
+            .is_none_or(|since| now.saturating_duration_since(since) < state.hide_after);
         let paint = state.wanted_visible && (seen || share_watched());
         if paint != state.painting {
             state.painting = paint;
@@ -575,8 +597,10 @@ impl WebViewEngine for PaintEngine {
         self.update_visibility(&mut state);
     }
     fn presented(&self) {
+        let pixels = self.current_pixels();
         let mut state = self.lock();
-        state.last_presented = crate::time::now();
+        state.presented_pixels = pixels;
+        state.undrawn_since = None;
         self.update_visibility(&mut state);
     }
     fn set_modifiers(&self, modifiers: KeyModifiers) {
@@ -746,8 +770,12 @@ pub struct PageCanvas<'a> {
 }
 
 impl PageRenderer {
+    /// A renderer for a page about to be shown. Where the image decoder is
+    /// fetched on first use, this starts fetching it, so it is in by the time
+    /// the page's first frame arrives rather than after its first image.
     #[must_use]
     pub fn new() -> Self {
+        let _ = image_decoder::decoder();
         Self::default()
     }
 
@@ -1008,16 +1036,85 @@ impl PageRenderer {
         if let Some(cached) = self.images.get(hash) {
             return cached.clone();
         }
+        // Not cached while the decoder is still to come: the page is drawn
+        // again once it is in.
+        let decode = image_decoder::decoder()?;
         let bytes = blobs.blob(hash)?;
-        let decoded = image::load_from_memory(&bytes).ok().map(|img| {
-            let img = img.to_rgba8();
-            let (width, height) = img.dimensions();
-            crate::raster::rgba8(img.into_raw(), width, height)
-        });
+        let decoded = decode(&bytes);
         self.images.insert(*hash, decoded.clone());
         decoded
     }
 }
+
+/// Decodes a page image's encoded bytes (PNG, JPEG, WebP) to RGBA.
+pub type DecodePageImage = fn(&[u8]) -> Option<ImageData>;
+
+/// Hands over the decoder's [`DecodePageImage`], for
+/// [`install_page_image_decoder`].
+pub type MakePageImageDecoder = fn() -> DecodePageImage;
+
+/// The `image` crate's decoders.
+#[must_use]
+pub fn builtin_page_image_decoder() -> DecodePageImage {
+    fn decode(bytes: &[u8]) -> Option<ImageData> {
+        let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        let (width, height) = img.dimensions();
+        Some(crate::raster::rgba8(img.into_raw(), width, height))
+    }
+    decode
+}
+
+#[cfg(not(feature = "lazy-image-decode"))]
+mod image_decoder {
+    use super::DecodePageImage;
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the lazy-image-decode build has none until it is fetched"
+    )]
+    pub(super) fn decoder() -> Option<DecodePageImage> {
+        Some(super::builtin_page_image_decoder())
+    }
+}
+
+/// The decoder is fetched the first time a page draws an image: the program
+/// hands over a loader ([`defer_page_image_decoder`]) that fetches its code
+/// and passes back [`builtin_page_image_decoder`]
+/// ([`install_page_image_decoder`]). Until then images are left out and the
+/// program draws again once the decoder is in.
+#[cfg(feature = "lazy-image-decode")]
+mod image_decoder {
+    use super::{DecodePageImage, MakePageImageDecoder};
+    use crate::deferred::Deferred;
+
+    static DECODER: Deferred<DecodePageImage> = Deferred::new();
+
+    pub(super) fn decoder() -> Option<DecodePageImage> {
+        DECODER.get()
+    }
+
+    /// How the program fetches the decoder's code: `load` starts the fetch
+    /// and, once the code is in, calls [`install_page_image_decoder`] (or
+    /// [`page_image_decoder_load_failed`]).
+    pub fn defer_page_image_decoder(load: fn()) {
+        DECODER.defer(load);
+    }
+
+    /// The decoder's code is in: pages draw their images from now on.
+    pub fn install_page_image_decoder(make: MakePageImageDecoder) {
+        DECODER.install(make());
+    }
+
+    /// The fetch failed: the next page image fetches again.
+    pub fn page_image_decoder_load_failed() {
+        DECODER.load_failed();
+    }
+}
+
+#[cfg(feature = "lazy-image-decode")]
+pub use image_decoder::{
+    defer_page_image_decoder, install_page_image_decoder, page_image_decoder_load_failed,
+};
 
 fn draw_border(
     scene: &mut Scene,
@@ -1121,6 +1218,36 @@ mod tests {
             frame.blobs().all(|b| matches!(b, BlobRef::Hash(_))),
             "no URL leaves the host"
         );
+    }
+
+    /// A new renderer starts fetching the decoder; before it is in, an image
+    /// is left out and not remembered as undecodable; once it is in, the same
+    /// image decodes.
+    #[cfg(feature = "lazy-image-decode")]
+    #[test]
+    fn images_wait_for_a_deferred_decoder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LOADS: AtomicUsize = AtomicUsize::new(0);
+        fn load() {
+            LOADS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let hash = [7_u8; 32];
+        let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
+        defer_page_image_decoder(load);
+        let mut renderer = PageRenderer::new();
+        assert_eq!(
+            LOADS.load(Ordering::SeqCst),
+            1,
+            "a page about to be shown starts fetching it"
+        );
+        assert!(renderer.image(&blobs, &hash).is_none());
+        assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
+        install_page_image_decoder(builtin_page_image_decoder);
+        let image = renderer
+            .image(&blobs, &hash)
+            .expect("decoded once it is in");
+        assert_eq!((image.width, image.height), (800, 600));
     }
 
     #[test]
@@ -1241,6 +1368,17 @@ mod tests {
             "drawn just now: still painting"
         );
 
+        // A window showing a still page draws nothing, and is still seen.
+        std::thread::sleep(Duration::from_millis(60));
+        drop(engine.drain_events());
+        assert!(
+            test.visibility_changes().is_empty(),
+            "a still page on screen keeps painting"
+        );
+
+        // A new frame no view draws (a hidden tab's) stops it.
+        engine.send(WebViewCommand::Navigate("https://example.test/next".into()));
+        drop(engine.drain_events());
         std::thread::sleep(Duration::from_millis(60));
         drop(engine.drain_events());
         assert_eq!(

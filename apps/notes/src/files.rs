@@ -18,9 +18,5 @@ pub(crate) fn canonical(path: &Path) -> Option<PathBuf> {
 /// The file, or `None` when it is larger than `limit` bytes.
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, FsError> {
     let (dir, name) = at(path)?;
-    if blocking::metadata(&dir, &name)?.len > limit {
-        return Ok(None);
-    }
-    let bytes = blocking::read(&dir, &name)?;
-    Ok((u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= limit).then_some(bytes))
+    blocking::read_bounded(&dir, &name, usize::try_from(limit).unwrap_or(usize::MAX))
 }

@@ -33,6 +33,28 @@ fn build_header<T>(
     Ok(header)
 }
 
+fn check_bootstrap_hash(remote: &Remote, packed: &builderlayer::Packed) -> Result<(), CliError> {
+    if remote.hello.protocol == 5 && packed.layer_hash.is_none() {
+        return Err(CliError::InvalidInput(
+            "legacy daemon bootstrap requires an assembler content hash".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_import_hash(packed: &builderlayer::Packed, imported: &str) -> Result<(), CliError> {
+    if packed
+        .layer_hash
+        .as_deref()
+        .is_some_and(|hash| hash != imported)
+    {
+        return Err(CliError::InvalidInput(
+            "imported layer content differs from the remote assembler".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn start_builder(
     line: &hypervisor::CommandLine,
     root: &std::path::Path,
@@ -206,6 +228,25 @@ impl App {
         self.build_layer_remote_cached(remote, vm, component, builder, inputs, &extra, true)
     }
 
+    /// The same assembly run by this host's own cargo (`--builder host` for
+    /// `apps+runtime` on a machine of the device's architecture): the layer
+    /// still comes out of `layer-pack`, so it is byte-for-byte what a remote
+    /// builder sends, but its provenance says `host`.
+    pub(super) fn build_layer_local_pack(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+    ) -> Result<String, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata()?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        self.build_layer_remote_cached(remote, vm, component, &[], &inputs, &extra, true)
+            .map(|member| member.layer)
+    }
+
     fn build_layer_remote_cached(
         &mut self,
         remote: &mut Remote,
@@ -220,12 +261,15 @@ impl App {
         let mut provenance = inputs.provenance.clone();
         provenance.component.clone_from(&component.name);
         inputs.unchanged(&worktree.root)?;
+        // An empty builder command is this host's own cargo (`--builder host`).
+        let label = if builder.is_empty() { "host" } else { "remote" };
+        provenance.builder = Some(label.to_owned());
         let inventory = inputs
             .file
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let cached = if reuse {
+        let cached = if reuse && remote.hello.protocol != 5 {
             self.receipt
                 .phase("layer_lookup", || verified_layers(remote, &component.name))?
         } else {
@@ -239,8 +283,13 @@ impl App {
         }
         if !self.json {
             eprintln!(
-                "tilo-vm: building {} on the remote builder ({}); the layer streams to {} without touching this disk",
+                "tilo-vm: building {} with {} ({}); the layer streams to {} without touching this disk",
                 component.name,
+                if label == "host" {
+                    "this host's cargo"
+                } else {
+                    "the remote builder"
+                },
                 line.display(),
                 vm.name
             );
@@ -271,8 +320,9 @@ impl App {
             &remote.hello.arch,
             &cached,
         )?;
+        check_bootstrap_hash(remote, &packed)?;
         // The build can outlast an idle connection: a fresh one for delivery.
-        *remote = self.connect(vm)?;
+        *remote = self.connect_component(vm, &component.name, false)?;
         let delivered = self.receipt.phase("transfer", || {
             deliver_layer(remote, &mut stream, &packed, &component.name)
         });
@@ -298,21 +348,13 @@ impl App {
             }
             Delivery::Uploaded(upload) => upload,
         };
-        let expected_hash = packed.layer_hash.clone();
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
                 source: LayerSource::Upload(upload),
                 provenance: Box::new(provenance.clone()),
             })
         })?;
-        if expected_hash
-            .as_deref()
-            .is_some_and(|hash| hash != imported.hash)
-        {
-            return Err(CliError::InvalidInput(
-                "imported layer content differs from the remote assembler".into(),
-            ));
-        }
+        check_import_hash(&packed, &imported.hash)?;
         Ok(userspace_member(
             component,
             imported.hash,

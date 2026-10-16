@@ -532,8 +532,7 @@ fn signing_key_from_file(
             // read-only with the device-identity group. Custom/test stores may
             // be owned by the caller, but a third account may never substitute
             // the signing identity merely by matching its mode.
-            // SAFETY: geteuid takes no arguments and has no failure mode.
-            let reader = unsafe { libc::geteuid() };
+            let reader = rustix::process::geteuid().as_raw();
             if !secret_key_owner_is_accepted(owner_policy, metadata.uid(), reader) {
                 return Err(PersistError::InsecureOwner {
                     path: path.display().to_string(),
@@ -642,7 +641,13 @@ fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
+    let key = signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)?;
+    // Reading the key made this process non-dumpable, so the person's Secret
+    // Service can no longer read its executable to know who is calling. The
+    // process proves it holds the device key instead.
+    #[cfg(target_os = "linux")]
+    tilo_secrets::arm_device_proof(Zeroizing::new(key.to_bytes()).as_ref());
+    Ok(key)
 }
 
 /// Read this device's key from wherever `paths` keeps it.
@@ -1403,8 +1408,7 @@ mod tests {
     fn an_unreachable_device_key_is_an_error_not_a_fresh_machine() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // SAFETY: geteuid takes no arguments and has no failure mode.
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             // Root reaches the key whatever its directory's mode.
             return;
         }

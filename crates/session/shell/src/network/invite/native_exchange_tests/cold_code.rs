@@ -601,7 +601,7 @@ pub(super) async fn restart_after_offline_edits(
     };
     for bytes in publications {
         let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(&message, true).unwrap();
+        let (channel, _) = neighbour_wire::retention(&message, true).unwrap();
         live.publisher.publish_checkpoint(channel, bytes).unwrap();
     }
     let (commands, actor) = Actor::spawn_reporting_addrs(

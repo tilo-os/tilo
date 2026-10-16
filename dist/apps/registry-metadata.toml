@@ -152,6 +152,9 @@ tagline = "A direct line to your system"
 [apps.themes]
 description = "Explore and shape the colors and appearance of your desktop."
 tagline = "Set the tone"
+[apps.thumbnails]
+description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
+tagline = "Thumbnails made where it is fastest"
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
 tagline = "Codes when you need them"

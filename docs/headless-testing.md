@@ -518,8 +518,21 @@ no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
 ## Idle wakeups
 
-An idle desktop should leave the CPU asleep. `idle_wakeups::` in the shell's
-`it` target holds it to a budget: it starts the production binary headless with
+Pull requests count app work through the production `NativeAppTick` scheduling
+seam in `compositor/native_idle_work_tests.rs`. Two adversarial widgets retain
+answered deadlines until draw, while the real `FrameBuilder` runs their pump,
+layout and paint passes. A due poll must update each app once with zero layout
+or draw calls; a future poll must schedule exactly one additional update. A
+later app change must still lay out and draw. Instants are explicit scheduler
+inputs, not elapsed-time gates or synchronization deadlines. This covers the
+app scheduling seam with an available presenter, not every native-loop service.
+
+```bash
+cargo test -p shell --lib idle_work_tests
+```
+
+An idle desktop should leave the CPU asleep. The shell's explicit
+`examples/idle-wakeups.rs` executable holds it to a budget: it starts the production binary headless with
 a signed-in desktop, restores a Notes tab, opens a Terminal through
 `window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
 compositor's process tree from `/proc` for 10 s and fails above
@@ -527,11 +540,14 @@ compositor's process tree from `/proc` for 10 s and fails above
 a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
 compositor painted while nobody touched it. It also holds the in-process apps'
 collaboration shovel and the identity service's client thread to
-`KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
+`KEY_ROUND_BUDGET` per shovel, so a route asking for its channel keys on a 1 s
 timer again fails by name.
 
 ```bash
-cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
+cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+cargo build --locked -p shell --bin shell
+TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+  bash tools/test-env.sh target/debug/examples/idle-wakeups
 ```
 
 It prints a table, busiest first:
@@ -555,9 +571,15 @@ bar's clock repaint when a minute turns in the window. It counts the
 compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
 iteration with what woke it, read inside the window: a 2-second `paint-stats`
 summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks. Pull requests run it whenever
-`shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
-(`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
+the window can carry startup's ticks. This wall-clock measurement is not a
+pull-request test: the example has `test = false` and a non-default
+`scheduled-idle-benchmark` feature. The shared fixture remains in
+`tests/idle_wakeups.rs` for integration tests. The scheduled lane
+(`kpis=wakeups`) runs the executable three times with a 60 s window
+(`TILO_IDLE_WAKEUP_WINDOW_SECS`), preserves every budget assertion and records
+`wakeups.*`. `TILO_IDLE_SHELL_BIN` explicitly selects the built production
+binary because Cargo's integration-test-only `CARGO_BIN_EXE_shell` is not
+available to examples. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
 measurement plus the same margin.
 
@@ -833,6 +855,69 @@ The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
 `control_socket_test` is a module inside the shared `it` test binary, not a
 separate Cargo target. Keep the module filter when opting into ignored tests.
+
+## Desktop smoke gate
+
+`desktop_smoke::` in the shell `it` target (`crates/session/shell/tests/desktop_smoke.rs`)
+is the required end-to-end gate: a real headless compositor restored over a
+session of several windows (in-process Tilo apps and Wayland clients), driven
+through the control socket the way a person drives it: the pointer over every
+window, edge, corner and the top bar and in and out of each client, typing into
+each window, resize, a new window, the palette and a search, workspace
+switches, lock and unlock. A second test runs the same scenario under CPU and
+memory pressure. Both take seconds once the shell tests are built.
+
+```bash
+cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
+```
+
+It is part of the shell test target, so it runs in the required
+`CI / affected packages` check. `tools/ci/affected_packages.py`
+(`DESKTOP_GATE`) also runs it, as just that filter, when a change reaches the
+shell without scheduling the shell's tests.
+
+**Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
+compositor also binds `<control socket>.live`
+(`crates/session/shell/src/compositor/liveness.rs`), answered on its own
+threads, so it still answers when the main loop is deadlocked, which the
+control socket itself cannot:
+
+```bash
+printf '{"op":"heartbeat","budget_ms":500}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+# {"alive":{"ticks":812,"latency_ms":0.2}}  or  {"stalled":{"budget_ms":500,"threads":[...]}}
+printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+```
+
+A heartbeat asks the loop, through a calloop ping source, to acknowledge a
+wake. One it does not acknowledge within the budget is a stall, and the answer
+carries every thread's state and kernel wait channel. When the main thread is
+blocked it also carries the backtraces of the threads blocked in a system
+call; a main thread still working (slow, not stuck) is not interrupted, and
+neither is any thread that is running, faulting in a page or inside the
+allocator's memory calls, because a backtrace is captured by a signal handler
+that allocates, and a thread interrupted inside the allocator never comes back
+out. The harness (`tests/support/desktop.rs`) polls it every 50 ms from a
+monitor thread; a heartbeat overdue past the budget holds whichever call or
+wait the test is in until the report arrives (symbolizing the stacks can take
+many seconds under the pressure variant), then fails it with that report.
+Every control call has a hard deadline of its own, and a call that outlives it
+on a loop that kept acknowledging wakes is reported as slow. The same report
+is written to the compositor's stderr.
+
+Each heartbeat is also a whole main-loop turn, which costs the loop the same
+whether or not anything changed. Twenty a second read 16-31% of a core on CI
+from a desktop that used none, so the scenario's closing idle check holds the
+monitor's pings (`Desktop::without_heartbeats`) while it measures, then asks for
+a heartbeat at once, so a loop that froze meanwhile still fails. Every run
+prints its idle reading by thread, with what woke the loop and what it painted
+(`TILO_PAINT_STATS`) in the window.
+
+Seat state is a second line of defence in a debug build. Smithay holds the
+seat's pointer and keyboard lock while it delivers an event, and calls
+`SeatHandler::focus_changed` and `cursor_image` under it, so a handler that
+asks the seat for the pointer location waits on itself. Handlers open a
+`compositor::seat_lock::Callback` scope, and the seat reads in
+`compositor::seat_lock` panic inside one, naming the read, instead of hanging.
 
 ## Desktop UX journeys
 

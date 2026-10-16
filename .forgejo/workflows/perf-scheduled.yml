@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint (app and OS image sizes), agent, latency, render, wakeups, search, hosting, browser, stream); empty runs all."
         required: false
         default: ""
       accept:
@@ -93,6 +93,8 @@ jobs:
       wakeups: ${{ steps.select.outputs.wakeups }}
       search: ${{ steps.select.outputs.search }}
       hosting: ${{ steps.select.outputs.hosting }}
+      browser: ${{ steps.select.outputs.browser }}
+      stream: ${{ steps.select.outputs.stream }}
     steps:
       - name: Select KPI groups
         id: select
@@ -102,13 +104,13 @@ jobs:
           AB_ROUNDS: ${{ github.event.inputs.ab_rounds }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render wakeups search hosting)
+          known=(fs footprint agent latency render wakeups search hosting browser stream)
           mode=${MODE:-scheduled}
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           if [[ $mode == ab ]]; then
             # tools/perf/ab.py GROUPS: every group that measures a build of
             # the repository (footprint measures published artifacts).
-            ab_known=(fs agent latency render wakeups search hosting)
+            ab_known=(fs agent latency render wakeups search hosting browser)
             [[ -n ${KPIS:-} ]] || { echo "::error::mode ab needs kpis: one or more of ${ab_known[*]}"; exit 1; }
             [[ ${AB_ROUNDS:-} =~ ^[0-9]+$ && $AB_ROUNDS -ge 6 ]] || { echo "::error::ab_rounds must be a number of at least 6"; exit 1; }
             IFS=, read -r -a selected <<< "$KPIS"
@@ -519,6 +521,8 @@ jobs:
             cargo build --locked --release -p shell --example strip_pan_bench
           bash scripts/ci-run.sh "framework-scaling release build" -- \
             cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
+          bash scripts/ci-run.sh "notes-latency release build" -- \
+            cargo build --locked --release -p notes --example notes-latency
 
       - name: Verify, time and record
         run: |
@@ -546,6 +550,12 @@ jobs:
           target/release/examples/framework-scaling 500,1000,2500 focus | tee perf/framework-focus.log
           python3 tools/perf/adapters.py framework-focus --env-json perf/env.json \
             perf/framework-focus.log >> perf/render.jsonl
+          # Notes over a 27-note notebook: typing, Enter, Backspace, the
+          # wheel and opening a note, each input timed to the frame that
+          # shows it and to that frame's raster.
+          target/release/examples/notes-latency | tee perf/notes-latency.log
+          python3 tools/perf/adapters.py notes-latency --env-json perf/env.json \
+            perf/notes-latency.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters
@@ -558,11 +568,9 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Idle wakeups: the shell integration gate
-  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
-  # a 10 s window whenever shell changes, here three times with a 60 s window
-  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
-  # Cargo environment, so the compiler cache its test shards fill serves it.
+  # Idle wakeups: the explicit examples/idle-wakeups.rs benchmark, never a
+  # PR test. Three samples with a 60 s window through adapters.py idle-wakeups.
+  # Build it and the production shell explicitly in the dev profile.
   wakeups:
     needs: [plan, builder]
     if: needs.plan.outputs.wakeups == 'true'
@@ -587,10 +595,12 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Build the shell integration tests
-        run: >-
-          bash scripts/ci-run.sh "idle wakeup gate build" --
-          cargo test --locked -p shell --test it --no-run
+      - name: Build the idle benchmark and shell
+        run: |
+          bash scripts/ci-run.sh "idle wakeup benchmark build" -- \
+            cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+          bash scripts/ci-run.sh "idle wakeup shell build" -- \
+            cargo build --locked -p shell --bin shell
 
       - name: Count an idle desktop's wakeups three times and record them
         run: |
@@ -599,9 +609,9 @@ jobs:
           mkdir -p perf
           status=0
           for run in 1 2 3; do
-            bash tools/test-env.sh cargo test --locked -p shell --test it \
-              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
-              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+              bash tools/test-env.sh target/debug/examples/idle-wakeups \
+              > "perf/idle-$run.log" 2>&1 || status=$?
             grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
           done
           python3 tools/perf/record.py env --profile dev --renderer lavapipe \
@@ -721,6 +731,16 @@ jobs:
           bash scripts/ci-run.sh "relay load bench release build" --
           cargo build --locked --release -p tilo-relay --example relay_load
 
+      # Preserve the original timing-sensitive median-one-write assertion.
+      # This standalone scenario has no pointer or byte-cost tests.
+      - name: Check timed keystroke write cost
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          bash scripts/ci-run.sh "timed keystroke write benchmark" -- \
+            cargo run --locked -p tilo-relay --example keystroke_writes \
+            | tee perf/keystroke-writes.log
+
       - name: Load the relay and record
         run: |
           set -euo pipefail
@@ -737,6 +757,252 @@ jobs:
         if: always()
         with:
           name: perf-hosting
+          path: perf/
+          if-no-files-found: warn
+
+  # A public room host at 100 guests (crates/dev/room-load), three runs:
+  # every guest joins through /join, holds a browser session, moves a cursor
+  # on the live plane and chats. Records the guests' p99 join and chat
+  # delivery and the host's peak memory and CPU (adapters.py room-load):
+  # the largest room docs/benchmarks/room-host-capacity-2026-10.md measured
+  # admitting every guest, and the cap it sizes eu1 to.
+  # Built as the room service image builds its relay (thin LTO, the agents
+  # feature); run on the class the write-up measured, with production's
+  # MALLOC_ARENA_MAX=2.
+  hosting-room:
+    needs: [plan, builder]
+    if: needs.plan.outputs.hosting == 'true'
+    runs-on: runner-large
+    timeout-minutes: 75
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the room load bench
+        run: >-
+          bash scripts/ci-run.sh "room load bench release build" --
+          cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
+
+      - name: Load a room host with 100 guests and record
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner-large > perf/env.json
+          for run in 1 2 3; do
+            target/release/tilo-room-load bench --guests 100 --malloc-arenas 2 --hold 60 \
+              > "perf/room-load-$run.json" 2> "perf/room-load-$run.log"
+          done
+          python3 tools/perf/adapters.py room-load --env-json perf/env.json perf/room-load-*.json \
+            > perf/hosting-room.jsonl
+          cat perf/hosting-room.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-hosting-room
+          path: perf/
+          if-no-files-found: warn
+
+  # The browser runtime: the release desktop bundle (build.sh --bundle
+  # desktop, the bytes web-entry.yml publishes) built once here, then
+  # scripts/perf/browser_qualification.mjs in headless Chrome for Testing:
+  # load, first opens, window activation and an idle desktop. The harness first proves the page ran exactly this
+  # commit's clean bundle and that WebGPU ran on the renderer the records
+  # name. The runner has no GPU, and Chrome gives WebGPU no CPU driver but its
+  # own SwiftShader (lavapipe draws its page, never its WebGPU), which takes
+  # tens of seconds for a panned FHD frame here, and queues its work behind
+  # the page: one round at 960x540 with ten activations, and the demo workload
+  # and its frame-rate goals left to hardware qualification (--demo-seconds 0;
+  # kpi-budgets.toml, "Browser runtime"). A first FHD round took 20 minutes,
+  # and a second one never finished within the job's two hours. Built in the CI builder like
+  # web-entry.yml's bundle, with its compiler cache.
+  browser:
+    needs: [plan, builder]
+    if: needs.plan.outputs.browser == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare verified fonts for the desktop bundle
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Build the release desktop bundle
+        run: |
+          set -euo pipefail
+          # build.sh reads the workspace metadata offline; crates new since
+          # the download cache was saved must be fetched first.
+          cargo fetch --locked
+          # Outside the checkout, which must stay clean: the bundle records
+          # whether it was built from a dirty tree, and the harness refuses one.
+          bundle="$RUNNER_TEMP/browser-bundle"
+          bash scripts/ci-run.sh "release desktop bundle build" -- \
+            crates/browser/tilo-browser-runtime/scripts/build.sh "$bundle" --bundle desktop
+          echo "BROWSER_BUNDLE=$bundle" >> "$GITHUB_ENV"
+
+      - name: Headless Chrome for Testing
+        run: |
+          set -euo pipefail
+          command -v node || dnf install -y nodejs
+          bash tools/ci/ensure-browser-dependencies.sh
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: Qualify the bundle and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer swiftshader \
+            --virtualization kvm --runner runner > perf/env.json
+          node scripts/perf/browser_qualification.mjs "$BROWSER_BUNDLE" --out perf/browser.json \
+            --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --viewport 960x540 \
+            --expect-revision "$(git rev-parse HEAD)" \
+            | tee perf/browser-summary.txt
+          python3 tools/perf/adapters.py browser-qualification --env-json perf/env.json \
+            perf/browser.json > perf/browser.jsonl
+          cat perf/browser.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-browser
+          path: perf/
+          if-no-files-found: warn
+
+  # A native window on the browser desktop: scripts/perf/native_stream_qualification.mjs
+  # streams a session's legacy window through this commit's host
+  # (`tilo-relay dev`, feature web) to the release desktop bundle in headless
+  # Chrome for Testing, and judges each picture the page draws. The session is
+  # tilo-relay's legacy_stream_source example: the shell's share session's
+  # protocol and production encoder over a drawn window, since the runner has
+  # neither a GPU nor a Wayland capture to give it. It encodes in software
+  # (30 fps), Chrome decodes in software and the desktop underneath draws on
+  # SwiftShader at 960x540, as the browser job's does. SwiftShader compiles
+  # the pipelines of the window's tile when the desktop first draws it, which
+  # blocked the page for about 25 s here, so the stream's first 30 s are a
+  # warm-up, judged but not timed (startup still counts it); the hardware numbers
+  # (60 fps encode, hardware decode, a GPU desktop) are a hardware
+  # qualification's (kpi-budgets.toml, "A native window on the browser
+  # desktop"). After the timed run it drives the acceptance cases
+  # (scripts/perf/native_stream_acceptance.mjs: focus, paste, IME, resize, the
+  # HTTPS fallback, a viewer without control, a dropped live plane, no typing
+  # into a stale window) with a second window, device and person. An
+  # incorrect stream or a broken case fails the job and records nothing.
+  stream:
+    needs: [plan, builder]
+    if: needs.plan.outputs.stream == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare verified fonts for the desktop bundle
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Build the release desktop bundle
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          # Outside the checkout, which must stay clean (the browser job's reason).
+          bundle="$RUNNER_TEMP/stream-bundle"
+          bash scripts/ci-run.sh "release desktop bundle build" -- \
+            crates/browser/tilo-browser-runtime/scripts/build.sh "$bundle" --bundle desktop
+          echo "STREAM_BUNDLE=$bundle" >> "$GITHUB_ENV"
+
+      - name: Build the host and the session
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "stream host and session release build" -- \
+            cargo build --locked --release -p tilo-relay --features web,stream-source \
+              --bin tilo-relay --example legacy_stream_source
+          # The session's frame numbers read back as the harness reads them.
+          bash scripts/ci-run.sh "stream session tests" -- \
+            cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
+
+      - name: Headless Chrome for Testing
+        run: |
+          set -euo pipefail
+          command -v node || dnf install -y nodejs
+          bash tools/ci/ensure-browser-dependencies.sh
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: Qualify the stream and record
+        id: h264
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer swiftshader \
+            --virtualization kvm --runner runner > perf/env.json
+          node scripts/perf/native_stream_qualification.mjs "$STREAM_BUNDLE" --out perf/stream.json \
+            --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+            --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+            | tee perf/stream-summary.txt
+          python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
+            perf/stream.json > perf/stream.jsonl
+          cat perf/stream.jsonl
+
+      # A session with no H.264 encoder (a stock device) streams software
+      # VP9 (vp9enc), and every browser decodes it. Same build, same Chrome,
+      # its own series (stream.vp9.*), so neither codec's numbers judge the
+      # other's. It runs even when the H.264 leg failed: the two are separate
+      # verdicts.
+      - name: Qualify the VP9 stream and record
+        if: ${{ !cancelled() && steps.h264.conclusion != 'skipped' }}
+        run: |
+          set -euo pipefail
+          node scripts/perf/native_stream_qualification.mjs "$STREAM_BUNDLE" --out perf/stream-vp9.json \
+            --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+            --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+            --codec vp9 | tee perf/stream-vp9-summary.txt
+          python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
+            perf/stream-vp9.json > perf/stream-vp9.jsonl
+          cat perf/stream-vp9.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-stream
           path: perf/
           if-no-files-found: warn
 
@@ -780,6 +1046,23 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
+      # The browser group builds both sides' desktop bundles and drives them
+      # in Chrome, as the nightly browser job does.
+      - name: Prepare verified fonts for the desktop bundle
+        if: matrix.group == 'browser'
+        uses: ./.forgejo/actions/prepare-font-assets
+
+      - name: Headless Chrome for Testing
+        if: matrix.group == 'browser'
+        run: |
+          set -euo pipefail
+          command -v node || dnf install -y nodejs
+          bash tools/ci/ensure-browser-dependencies.sh
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+          cargo fetch --locked
+
       - name: Build both sides and run them interleaved
         env:
           GROUP: ${{ matrix.group }}
@@ -809,7 +1092,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting, hosting-room, browser, stream]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -843,13 +1126,16 @@ jobs:
           WAKEUPS_RESULT: ${{ needs.wakeups.result }}
           SEARCH_RESULT: ${{ needs.search.result }}
           HOSTING_RESULT: ${{ needs.hosting.result }}
+          HOSTING_ROOM_RESULT: ${{ needs.hosting-room.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          STREAM_RESULT: ${{ needs.stream.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT" "hosting-room:$HOSTING_ROOM_RESULT" "browser:$BROWSER_RESULT" "stream:$STREAM_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

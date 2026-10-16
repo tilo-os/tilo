@@ -72,7 +72,7 @@ impl Fixture {
     }
 
     fn refresh(&self) {
-        person_layout::refresh(&self.network, ContinuityPolicySnapshot::load());
+        person_layout::refresh(&self.network, ContinuityPolicySnapshot::current());
     }
 
     fn actions(&mut self) -> Vec<PersonalFabricAction> {
@@ -141,6 +141,8 @@ fn automatic_display_input_preserves_manual_grants_and_persisted_declines() {
     );
     revoke_input_control(&fixture.network, &fixture.controller).unwrap();
     assert!(fixture.actions().iter().any(|action| matches!(action, PersonalFabricAction::InputLeaseRevoked { nonce } if nonce == &manual.nonce)));
+    // Declines are written on the state writer.
+    crate::shell::durable_writer::global().flush();
     assert_eq!(
         fixture.network.load_display_input_declines().unwrap(),
         BTreeSet::from([fixture.controller.clone()])
@@ -153,6 +155,47 @@ fn automatic_display_input_preserves_manual_grants_and_persisted_declines() {
     );
     let explicit = grant_input_control(&fixture.network, &fixture.controller).unwrap();
     assert_eq!(fixture.grants(), vec![explicit]);
+    crate::shell::durable_writer::global().flush();
+    assert!(
+        fixture
+            .network
+            .load_display_input_declines()
+            .unwrap()
+            .is_empty()
+    );
+    drop(fixture);
+}
+
+/// Granting and revoking input control run on the compositor's loop. The
+/// decline they record is durable, but its write must not wait for the disk
+/// there: under I/O pressure that fsync froze the desktop.
+#[cfg(target_os = "linux")]
+#[test]
+fn recording_a_manual_decline_never_waits_for_the_disk() {
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let manual = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(fixture.grants(), vec![manual]);
+    crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        revoke_input_control(&fixture.network, &fixture.controller)
+    })
+    .expect("revoking and recording the decline need no disk sync");
+    crate::shell::durable_writer::global().flush();
+    assert_eq!(
+        fixture.network.load_display_input_declines().unwrap(),
+        BTreeSet::from([fixture.controller.clone()])
+    );
+    let explicit = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        grant_input_control(&fixture.network, &fixture.controller)
+    })
+    .expect("granting clears the decline without a disk sync");
+    assert!(
+        fixture
+            .grants()
+            .iter()
+            .any(|lease| lease.nonce == explicit.nonce)
+    );
+    crate::shell::durable_writer::global().flush();
     assert!(
         fixture
             .network
@@ -402,7 +445,7 @@ fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
         );
         for item in received {
             assert!(fixture.network.personal_route_is_current(&item.route));
-            assert!(ContinuityPolicySnapshot::load().permits_action(&item.envelope.action));
+            assert!(ContinuityPolicySnapshot::current().permits_action(&item.envelope.action));
             handle_spatial_action(
                 &fixture.network,
                 &item.route,
@@ -428,6 +471,10 @@ fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
     drop(fixture);
 }
 
+// The tests that tear down or deliver into the compositor's own Wayland seat
+// (`compositor::native`, `compositor::state`, `SpatialSeat`) exist only on
+// Linux, like the seat; the transport-only tests run everywhere.
+#[cfg(target_os = "linux")]
 #[test]
 fn spatial_cleanup_native_teardown_survives_full_input_and_transport_queues() {
     use crate::shell::device_fabric::FabricInputEvent;
@@ -529,11 +576,13 @@ fn spatial_cleanup_native_teardown_survives_full_input_and_transport_queues() {
     drop(fixture);
 }
 
+#[cfg(target_os = "linux")]
 struct SpatialSeat {
     _event_loop: smithay::reexports::calloop::EventLoop<'static, crate::compositor::state::State>,
     _display: smithay::reexports::wayland_server::Display<crate::compositor::state::State>,
     state: crate::compositor::state::State,
 }
+#[cfg(target_os = "linux")]
 impl SpatialSeat {
     fn new() -> Self {
         let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
@@ -572,9 +621,11 @@ fn spatial_key(keycode: u32, pressed: bool) -> crate::shell::device_fabric::Fabr
         modifiers: 0,
     }
 }
+#[cfg(target_os = "linux")]
 fn spatial_button(button: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {
     crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed }
 }
+#[cfg(target_os = "linux")]
 fn admit_spatial(
     fixture: &Fixture,
     nonce: [u8; 16],
@@ -606,6 +657,7 @@ fn fill_transport(fixture: &Fixture) {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn spatial_revocation_replacement_preserves_fresh_seat_edges_and_discards_old_nonce() {
     let mut fixture = Fixture::new();
@@ -655,6 +707,7 @@ fn spatial_revocation_replacement_preserves_fresh_seat_edges_and_discards_old_no
     drop(fixture);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn spatial_revocation_failed_notification_still_clears_real_seat_and_refuses_stale_input() {
     let mut fixture = Fixture::new();
@@ -689,6 +742,7 @@ fn spatial_revocation_failed_notification_still_clears_real_seat_and_refuses_sta
     assert_eq!(seat.state.release_all_personal_fabric_input(), 0);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_authority() {
     use crate::compositor::selection::SharedSelection;
@@ -703,7 +757,7 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
     assert_eq!(fixture.grants(), vec![lease.clone()]);
@@ -725,7 +779,7 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     assert!(fixture.actions().is_empty());
     admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
@@ -816,7 +870,7 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     send_spatial_input_bound(
         &fixture.network,
@@ -837,7 +891,7 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     assert!(
         send_spatial_input_bound(
@@ -894,6 +948,7 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
     drop(fixture);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn spatial_controller_withdrawal_clears_target_and_fences_late_edges_and_renewal() {
     use crate::shell::device_fabric_runtime::handle_spatial_action;

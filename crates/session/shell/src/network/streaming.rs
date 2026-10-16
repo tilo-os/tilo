@@ -198,6 +198,16 @@ impl ShareRegistry {
         }
     }
 
+    /// Number of live shares.
+    pub fn len(&self) -> usize {
+        self.shares.len()
+    }
+
+    /// Whether no share is live.
+    pub fn is_empty(&self) -> bool {
+        self.shares.is_empty()
+    }
+
     /// Mark every share read-only — the registry side of the kill switch. Returns how many shares lost write access.
     pub fn revoke_all_input(&mut self) -> usize {
         let mut revoked: usize = 0;
@@ -421,9 +431,9 @@ mod tests {
         // PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
         // `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
         {
-            use crate::network::decoder::VideoDecoder;
             use crate::network::surface_tracker::SurfaceTracker;
             use media::StreamCodec;
+            use tilo_callstream::surface_decoder::VideoDecoder;
 
             const W: u32 = 64;
             const H: u32 = 64;
@@ -485,8 +495,8 @@ mod tests {
             };
             let orig_rgb = strip_alpha(&input);
             let rgba = match &frame.pixels {
-                crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-                other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                tilo_callstream::surface_decoder::DecodedPixels::Rgba8(b) => b,
+                other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                     panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
                 }
             };

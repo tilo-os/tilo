@@ -648,3 +648,82 @@ fn narrowed_scope_metadata_survives_a_refresh_that_omits_scope() {
         Some("read-only")
     );
 }
+
+/// Vertex AI signs in through Google's client with the cloud scope alone and
+/// keeps its grant under its own id: a revoked or forgotten model grant
+/// reads as "sign in again" or missing while Gmail's grant stays usable.
+#[test]
+fn a_model_grant_is_its_own_and_leaves_mail_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tilo");
+    let server = FakeAuthorizationServer::start();
+    let mut table = crate::ClientTable::default();
+    table.google.client_id = "shared.apps.googleusercontent.com".into();
+    table.google.scopes.mail = vec!["mail".into()];
+    table.google.scopes.models = vec!["cloud-platform".into()];
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_OAUTH_GOOGLE_CLIENT_ID")
+        .remove("TILO_OAUTH_GOOGLE_CLIENT_SECRET");
+    let custodian = Custodian::for_root(Some(root))
+        .with_client_table(table)
+        .with_issuer_endpoints(crate::OAuthIssuer::Google, server.provider());
+    let models = crate::OAuthUse::new(crate::OAuthIssuer::Google, crate::Capability::Models);
+
+    let authorization = custodian.begin_sign_in_for(models, None).unwrap();
+    let url = url::Url::parse(authorization.url()).unwrap();
+    let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query["scope"], "cloud-platform");
+    let link = authorization.url().to_string();
+    let browser = std::thread::spawn(move || browse(&link));
+    let tokens = Custodian::finish_sign_in(authorization).unwrap();
+    browser.join().unwrap().unwrap();
+
+    let grant = AccountId::from("agent-model-grant-p");
+    let mail = AccountId::from("person@example.test");
+    assert_eq!(
+        custodian.oauth_grant_state(&grant),
+        Ok(crate::GrantState::Missing)
+    );
+    custodian.seal_oauth(&grant, &tokens).unwrap();
+    custodian.seal_oauth(&mail, &tokens).unwrap();
+    assert_eq!(
+        custodian.oauth_grant_state(&grant),
+        Ok(crate::GrantState::Usable)
+    );
+    let (token, expires) = custodian
+        .oauth_access_token_with_expiry(&grant, models, false)
+        .unwrap();
+    assert_eq!(*token, tokens.access_token);
+    assert!(expires.is_some());
+
+    server.revoke_all_refresh_tokens();
+    assert_eq!(
+        custodian.oauth_access_token(&grant, models, true),
+        Err(CustodyError::NeedsAuthentication)
+    );
+    assert_eq!(
+        custodian.oauth_grant_state(&grant),
+        Ok(crate::GrantState::SignInAgain)
+    );
+    assert_eq!(
+        custodian.oauth_grant_state(&mail),
+        Ok(crate::GrantState::Usable)
+    );
+    custodian.forget_oauth(&grant).unwrap();
+    assert_eq!(
+        custodian.oauth_grant_state(&grant),
+        Ok(crate::GrantState::Missing)
+    );
+    assert_eq!(
+        custodian.oauth_grant_state(&mail),
+        Ok(crate::GrantState::Usable)
+    );
+    // Forgetting is local: Google would revoke every grant of this client
+    // for the person, Gmail's included.
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| !request.target.starts_with("/revoke"))
+    );
+}

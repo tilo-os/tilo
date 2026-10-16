@@ -25,7 +25,7 @@
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{AppModel, Button, ModelPath, Row, Spacer, Widget};
+use ui::widget::{AppModel, Button, ModelPath, Widget};
 use vello::kurbo::Rect;
 
 use crate::host::{Followed, PaneCx};
@@ -33,7 +33,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, rows, value_row};
+use crate::widgets::{Item, SettingsSection, card, note, row, rows, value_row};
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
@@ -417,7 +417,7 @@ impl AppearancePane {
     }
 
     /// The theme, the interface scale and the text size.
-    fn theme_card(&self) -> Box<dyn Widget> {
+    fn theme_card(&self) -> SettingsSection {
         let cx = &self.cx;
         card(
             &t("settings-appearance-theme-card"),
@@ -500,7 +500,7 @@ impl AppearancePane {
 
         let explainer = card(
             &t("settings-appearance-shared-card"),
-            rows(vec![caption(&t("settings-appearance-shared-body"))]),
+            rows(vec![note(&t("settings-appearance-shared-body"))]),
         );
 
         crate::widgets::cards(vec![
@@ -513,10 +513,10 @@ impl AppearancePane {
         ])
     }
 
-    fn wallpaper_card(&self) -> Box<dyn Widget> {
+    fn wallpaper_card(&self) -> SettingsSection {
         let cx = &self.cx;
-        let mut body = vec![
-            caption(&t("settings-appearance-wallpaper-body")),
+        let mut body: Vec<Item> = vec![
+            note(&t("settings-appearance-wallpaper-body")),
             cx.row(t("settings-appearance-use-for"))
                 .id("appearance.wallpaper_scope")
                 .choice(
@@ -543,25 +543,21 @@ impl AppearancePane {
                             .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            Box::new(
-                Row::new()
-                    .push(Box::new(cx.bind_invocation(
-                        Button::new(
-                            "appearance.wallpaper.choose",
-                            &t("settings-appearance-choose-picture"),
-                        ),
-                        AppearanceEffect::ChooseWallpaper,
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ),
+            row(Box::new(cx.bind_invocation(
+                Button::new(
+                    "appearance.wallpaper.choose",
+                    &t("settings-appearance-choose-picture"),
+                ),
+                AppearanceEffect::ChooseWallpaper,
+            ))),
         ];
         if let Some(status) = &self.status_shown {
-            body.push(caption(status));
+            body.push(note(status));
         }
         card(&t("settings-appearance-wallpaper-card"), rows(body))
     }
 
-    fn schedule_card(&self) -> Box<dyn Widget> {
+    fn schedule_card(&self) -> SettingsSection {
         let cx = &self.cx;
         let times = || {
             TIMES
@@ -623,7 +619,7 @@ impl AppearancePane {
             ],
         );
         body.push(value_row(&t("settings-appearance-today"), &today_value));
-        body.push(caption(&t(
+        body.push(note(&t(
             if schedule.config.follow_sun && schedule.location.is_none() {
                 "settings-appearance-schedule-no-location"
             } else {

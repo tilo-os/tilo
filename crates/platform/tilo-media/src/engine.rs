@@ -237,6 +237,16 @@ impl MediaEngine {
         self.refresh_handoff();
     }
 
+    /// Start the decode backend's one-time process set-up in the background,
+    /// so the first engine built later finds it done: an app calls this when
+    /// it learns it will play something soon (a person opened a video whose
+    /// stream is still being resolved), and the set-up overlaps that wait.
+    /// A no-op without the decode backend and after the first call.
+    pub fn prepare_in_background() {
+        #[cfg(gst_decode)]
+        crate::gst_backend::prepare_in_background();
+    }
+
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
     /// this stands up a `GStreamer` pipeline; if `GStreamer` can't initialise

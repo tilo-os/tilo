@@ -4,14 +4,14 @@ use super::desktop_services::WallpaperRequest;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
+use super::reply::{Ended, OrFail, Results, reply};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 #[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::OwnedValue;
@@ -35,20 +35,8 @@ impl WallpaperBackend {
         }
     }
 }
-#[cfg(target_os = "linux")]
-fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
-    options
-        .get(key)
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(false)
-}
 fn set_on(options: &HashMap<String, OwnedValue>) -> Option<String> {
-    let value = options
-        .get("set-on")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| String::try_from(v).ok())
-        .unwrap_or_else(|| "both".into());
+    let value = crate::portal::option::<String>(options, "set-on").unwrap_or_else(|| "both".into());
     matches!(value.as_str(), "background" | "lockscreen" | "both").then_some(value)
 }
 /// xdg-document-portal exports use ordinary `file:` URIs. The service
@@ -73,9 +61,7 @@ impl WallpaperBackend {
         uri: String,
         options: HashMap<String, OwnedValue>,
     ) -> u32 {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window)).await
         else {
             return 2;
         };
@@ -89,7 +75,7 @@ impl WallpaperBackend {
             app_id: auth.caller.app_id.clone(),
             workspace_id: auth.caller.workspace_id.0.to_string(),
             uri,
-            show_preview: bool_opt(&options, "show-preview"),
+            show_preview: crate::portal::option(&options, "show-preview").unwrap_or(false),
             set_on,
         };
         // Import and decode before asking. When `show-preview` is set the
@@ -115,69 +101,48 @@ impl WallpaperBackend {
             app_id: auth.caller.app_id,
             resource: LifecycleResource::Prompt,
         };
-        if !matches!(
-            self.lifecycle
-                .register_request(connection, &path, entry, move |_| {
-                    let _ = dialogs.cancel(&cancel_path);
-                    wallpaper.discard_staged_wallpaper(&cleanup_request, &cleanup_staged);
-                })
-                .await,
-            Ok(true)
-        ) {
-            self.ctx
-                .desktop_services
-                .wallpaper
-                .discard_staged_wallpaper(&request, &staged);
-            return 2;
-        }
-        let preview = crate::shell::i18n::t(if request.show_preview {
-            "portal-wallpaper-preview"
-        } else {
-            "portal-wallpaper-private"
-        });
-        let review = match self.dialogs.enqueue_review(ReviewRequest {
-            handle: path.clone(),
-            app_id: request.app_id.clone(),
-            title: crate::shell::i18n::t("portal-wallpaper-title"),
-            reason: preview,
-            resource: crate::shell::i18n::t_args(
-                "portal-wallpaper-resource",
-                &[("target", request.set_on.as_str().into())],
-            ),
-            confirm_label: crate::shell::i18n::t("portal-wallpaper-confirm"),
-        }) {
-            Ok(review) => review,
-            Err(_) => {
-                self.ctx
-                    .desktop_services
-                    .wallpaper
-                    .discard_staged_wallpaper(&request, &staged);
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return 2;
-            }
+        let cancel = move |_: &LifecycleEntry| {
+            let _ = dialogs.cancel(&cancel_path);
+            wallpaper.discard_staged_wallpaper(&cleanup_request, &cleanup_staged);
         };
-        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
-            self.ctx
-                .desktop_services
-                .wallpaper
-                .discard_staged_wallpaper(&request, &staged);
-            self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            return 1;
-        }
-        let response = self
-            .ctx
-            .desktop_services
-            .wallpaper
-            .apply_staged_wallpaper(&request, &staged)
-            .response_code();
-        self.lifecycle
-            .complete_request_object(connection, &path)
+        let reviewed = self
+            .lifecycle
+            .with_request(connection, &path, entry, cancel, async {
+                let preview = crate::shell::i18n::t(if request.show_preview {
+                    "portal-wallpaper-preview"
+                } else {
+                    "portal-wallpaper-private"
+                });
+                let review = self
+                    .dialogs
+                    .enqueue_review(ReviewRequest {
+                        handle: path.clone(),
+                        app_id: request.app_id.clone(),
+                        title: crate::shell::i18n::t("portal-wallpaper-title"),
+                        reason: preview,
+                        resource: crate::shell::i18n::t_args(
+                            "portal-wallpaper-resource",
+                            &[("target", request.set_on.as_str().into())],
+                        ),
+                        confirm_label: crate::shell::i18n::t("portal-wallpaper-confirm"),
+                    })
+                    .or_fail()?;
+                match review.await {
+                    Ok(ReviewDecision::Confirmed) => Ok(Results::new()),
+                    _ => Err(Ended::Cancelled),
+                }
+            })
             .await;
-        response
+        let wallpaper = &self.ctx.desktop_services.wallpaper;
+        match reviewed {
+            Ok(_) => wallpaper
+                .apply_staged_wallpaper(&request, &staged)
+                .response_code(),
+            Err(ended) => {
+                wallpaper.discard_staged_wallpaper(&request, &staged);
+                reply(Err(ended)).0
+            }
+        }
     }
 }
 #[cfg(test)]

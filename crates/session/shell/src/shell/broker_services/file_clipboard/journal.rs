@@ -253,8 +253,7 @@ impl Journal {
             .open(directory.anchored_root().join(name))
             .map_err(|error| error.to_string())?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        // SAFETY: geteuid reads the process identity without pointers.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         if !metadata.is_file()
             || metadata.len() > MAX_RECEIPT_BYTES
             || metadata.uid() != owner
@@ -1273,11 +1272,9 @@ fn update_pending(
     if active {
         if let Some(entry) = optional_entry(&pending, leaf)? {
             let metadata = entry.metadata().map_err(|error| error.to_string())?;
-            // SAFETY: geteuid only reads this process's effective identity.
             if !metadata.is_file()
                 || metadata.len() != 0
-                || metadata.mode() & 0o077 != 0
-                || metadata.uid() != unsafe { libc::geteuid() }
+                || !tilo_files::native::private::private_to_me(&metadata)
             {
                 return Err("invalid clipboard pending marker".into());
             }

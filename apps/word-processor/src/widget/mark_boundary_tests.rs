@@ -1,8 +1,10 @@
 use super::text_runs::{BlockRuns, char_baseline, char_color, char_has, mark_style_segments};
 use tilo_doc::document::MarkSpan;
 // Independent retained per-character reference for the mark-boundary optimization.
+use super::text_runs::{block_runs, char_font_family, char_font_size, char_highlight};
 use super::*;
 use tilo_doc::document::MarkValue;
+use ui::richtext::RichSpan;
 
 fn reference_block_runs(block: &BlockView) -> BlockRuns {
     let chars: Vec<char> = block.text.chars().collect();

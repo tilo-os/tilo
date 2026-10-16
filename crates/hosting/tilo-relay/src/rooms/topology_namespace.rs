@@ -1,10 +1,11 @@
-//! Namespace registration through the existing authenticated room authority.
+//! Namespace registration, a member's own business in the room.
 use super::{CollaborationError, GovernanceCompletion, Rooms, system_time};
 use tilo_user_identity::DeviceCert;
 
 impl Rooms {
     /// Durably register an already admitted writer's own topology namespace.
-    /// Endpoint-bound caller evidence comes from `RoomAdminProtocol`; membership
+    /// The caller is the device the room certified, as the relay session it
+    /// asks on (`actions::member`) authenticated it; membership
     /// and current workspace Write are checked again under the room lock.
     ///
     /// # Errors
@@ -25,7 +26,7 @@ impl Rooms {
         let state = self.room(room).await?;
         let mut room = state.lock().await;
         let mut candidate = room.peer().clone();
-        let changed = candidate.claim_topology_namespace(
+        let changed = candidate.governance_mut().claim_topology_namespace(
             caller,
             salt,
             &self.inner.host.key,

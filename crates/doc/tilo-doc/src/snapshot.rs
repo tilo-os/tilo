@@ -297,7 +297,7 @@ pub fn at(doc: &mut automerge::AutoCommit, version: usize) -> Result<DocSnapshot
     Ok(crate::model::materialize(&rebuilt, &c))
 }
 
-/// The snapshot of `doc`, when it carries the qdoc schema.
+/// The snapshot of `doc`, when it carries the tilo-doc schema.
 pub fn of(doc: &automerge::AutoCommit) -> Option<DocSnapshot> {
     let c = crate::model::open(doc, &automerge::ROOT).ok()?;
     Some(crate::model::materialize(doc, &c))

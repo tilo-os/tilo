@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -20,7 +20,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,18 +351,14 @@ impl InteractiveChart for FunnelChart {
         self.activated = Some(stage.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self.valid();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(bounds) = self
-            .geometry()
+    fn keyboard_items(&self) -> Vec<usize> {
+        self.valid()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        self.geometry()
             .into_iter()
-            .find(|stage| Some(stage.index) == self.inspection.hovered)
-            .map(|stage| stage.bounds)
-        {
-            self.inspection.pointer = bounds.center();
-        }
-        self.inspection.hovered.is_some()
+            .find(|stage| stage.index == index)
+            .map(|stage| stage.bounds.center())
     }
 }
 
@@ -377,25 +373,8 @@ impl Widget for FunnelChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.inspection.keyboard
-            && let Some(bounds) = self
-                .geometry()
-                .into_iter()
-                .find(|stage| Some(stage.index) == self.inspection.hovered)
-                .map(|stage| stage.bounds)
-        {
-            self.inspection.pointer = bounds.center();
-        }
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for geometry in self.geometry() {
             let Some(stage) = self.stages.get(geometry.index) else {
                 continue;
@@ -484,15 +463,12 @@ impl Widget for FunnelChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             key_path,
             self.stages.iter().map(|stage| &stage.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "FunnelChart"

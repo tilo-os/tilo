@@ -1,0 +1,70 @@
+# Thumbnails — Tilo application manifest.
+#
+# A compute package, not a window: `thumbnail-batch` thumbnails a staged
+# batch of images for a compute job another of the person's devices placed
+# here (an offloaded Make thumbnails in Photos). `kind = "service"` keeps it
+# out of the command palette and the `cli` entrypoint gets no surface. The
+# compute worker runs only a command the signed manifest lists under
+# `[cli]`. The action a person, a script or an agent invokes is Photos'
+# own; this package is only where it may run.
+#
+
+
+[package]
+id       = "so.tilo.thumbnails"
+name     = "Thumbnails"
+category = "Utility"
+version  = "0.1.0"
+kind     = "service"
+runtime  = "tilo-runtime/2026.07"
+platforms = ["linux"]
+platform-reason = "Runs only as a compute job, which a Linux device's package launcher sandboxes."
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["threads"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent: a batch reads only the inputs the worker staged
+# in its app directory and writes only its outputs there.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+# None: the worker launches compute jobs with no services.
+[sandbox.services]
+
+[entrypoint]
+bin  = "bin/thumbnail-batch"
+type = "cli"
+
+[cli]
+commands = ["thumbnail-batch"]
+
+[providers]
+mime = []
+ext  = []

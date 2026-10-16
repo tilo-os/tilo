@@ -52,7 +52,7 @@ pub mod io;
 pub mod panic_boundary;
 mod pool;
 mod timer;
-pub mod wake;
+pub use tilo_wake as wake;
 
 use std::cell::Cell;
 use std::future::Future;

@@ -75,8 +75,7 @@ pub(super) fn private_directory(
         Err(error) => {
             let entry = parent.entry(name).map_err(|_| error)?;
             let metadata = entry.metadata().map_err(|error| error.to_string())?;
-            // SAFETY: geteuid reads the current process's effective uid.
-            let owner = unsafe { libc::geteuid() };
+            let owner = rustix::process::geteuid().as_raw();
             if !metadata.is_dir()
                 || metadata.uid() != owner
                 || metadata.permissions().mode() & 0o077 != 0

@@ -42,6 +42,11 @@ enum Profile {
     Temporary(Rc<tempfile::TempDir>, String, String),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
+    /// Another window a launcher opens on a temporary profile, in a room on
+    /// a device:
+    /// an instance of its own, whose fallback record is that window's own
+    /// unless the app keeps one per room, as the native host decides.
+    Window(Rc<tempfile::TempDir>, String, String, u64),
 }
 
 /// A component prepared on a private or explicit profile at `root` keeps
@@ -87,7 +92,9 @@ impl Profile {
     /// The directory the profile keeps everything in.
     fn root(&self) -> PathBuf {
         match self {
-            Self::Temporary(directory, ..) => directory.path().to_path_buf(),
+            Self::Temporary(directory, ..) | Self::Window(directory, ..) => {
+                directory.path().to_path_buf()
+            }
             Self::DataDir(directory) => data_dir_root(directory),
         }
     }
@@ -96,7 +103,9 @@ impl Profile {
     /// other bytes its record names in, instead of the person's.
     fn content(&self) -> tilo_content::ContentStore {
         match self {
-            Self::Temporary(directory, ..) => super::app::profile_content(directory.path()),
+            Self::Temporary(directory, ..) | Self::Window(directory, ..) => {
+                super::app::profile_content(directory.path())
+            }
             Self::DataDir(directory) => data_dir_content(directory),
         }
     }
@@ -360,6 +369,40 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// A new window of the app on a fresh profile that already holds
+    /// `documents`, each a record a window of the app kept in the test room
+    /// ([`window_record`]): how an app that now keeps one record per room
+    /// first opens where it used to keep one per window.
+    ///
+    /// # Errors
+    /// Returns invalid record scope, storage or launch failures.
+    pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        {
+            let native =
+                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+            for document in documents {
+                ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
+                    .map_err(operation)?;
+            }
+        }
+        Self::open(
+            Profile::Window(
+                profile,
+                TEST_ROOM.to_owned(),
+                TEST_DEVICE.to_owned(),
+                INSTANCE + 1,
+            ),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
     ///
@@ -527,6 +570,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
             Profile::Temporary(directory, room, device) => {
                 Profile::Temporary(Rc::clone(directory), room.clone(), device.clone())
             }
+            Profile::Window(directory, room, device, window) => {
+                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), *window)
+            }
             Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
         };
         let role = self.role;
@@ -535,6 +581,39 @@ impl<A: ResourceApp> HeadlessApp<A> {
         drop(self);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(profile, role, &author, &arguments, None, None, None, |_| {})
+    }
+
+    /// Close the app and open a new window of it on the same profile and in
+    /// the same room, as the launcher opens one: an instance it never had,
+    /// whose fallback record is a fresh record of that window's own unless
+    /// the app [keeps one per room](ResourceApp::ROOM_RECORD).
+    ///
+    /// # Errors
+    /// Returns the flush or launch failure, and refuses a `--data-dir`
+    /// profile, which has one window.
+    pub fn another_window(mut self) -> Result<Self, LaunchError> {
+        self.close()?;
+        let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
+        let profile = match &self.profile {
+            Profile::Temporary(directory, room, device)
+            | Profile::Window(directory, room, device, _) => {
+                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), window)
+            }
+            Profile::DataDir(_) => {
+                return Err(operation("a --data-dir profile has one window"));
+            }
+        };
+        let role = self.role;
+        let author = std::mem::take(&mut self.author);
+        drop(self);
+        Self::open(profile, role, &author, &[], None, None, None, |_| {})
+    }
+
+    /// The room's default records of the app's windows kept on this
+    /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
+    /// reads them.
+    pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
+        self.records.window_records(&definition::<A>().record_kind)
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the
@@ -1471,6 +1550,35 @@ pub fn drive_live_window<A: ResourceApp, T>(
     Ok(seen)
 }
 
+/// The record window `instance` of `A` kept in the test room while `A` kept
+/// one per window: stamped with that window's default identity, initialized
+/// as `A` creates a record, then edited with `actions`. Open the app over
+/// such records with [`HeadlessApp::with_window_records`].
+///
+/// # Errors
+/// Returns the resource's initialization or an action's refusal.
+pub fn window_record<A: ResourceApp>(
+    instance: u64,
+    actions: &[<A::Resource as Resource>::Action],
+) -> Result<tilo_resource::Doc, LaunchError> {
+    let mut doc = tilo_resource::Doc::new();
+    let kind = definition::<A>().record_kind.clone();
+    if !ui_core::record::init_scoped(
+        &mut doc,
+        &RecordId::window_default(instance),
+        &kind,
+        TEST_ROOM,
+        Some(TEST_ROOM),
+    ) {
+        return Err(operation("the window record could not be stamped"));
+    }
+    <A::Resource as Resource>::initialize(&mut doc).map_err(operation)?;
+    for action in actions {
+        tilo_actions::Action::apply(action, &mut doc).map_err(operation)?;
+    }
+    Ok(doc)
+}
+
 /// [`drive_live_window`] with the window shown in a region of a host's
 /// scene, as the shell shows an in-process app: the real app in a
 /// [`ui_core::app::EmbeddedApp`], which the drive lays out, draws into its
@@ -1662,7 +1770,8 @@ fn open_app(
     let author = UserId(person.clone());
     let permissions = role_permissions(&person, launch.role);
     let (mut host, instance) = match &profile {
-        Profile::Temporary(directory, room, device) => (
+        Profile::Temporary(directory, room, device)
+        | Profile::Window(directory, room, device, _) => (
             ApplicationHost::new_with_profile_lifetime(
                 directory.path().join("state"),
                 device.clone(),
@@ -1672,7 +1781,10 @@ fn open_app(
                 tilo_actions::ActionContext::default(),
                 directory.clone(),
             )?,
-            INSTANCE,
+            match &profile {
+                Profile::Window(_, _, _, window) => *window,
+                _ => INSTANCE,
+            },
         ),
         Profile::DataDir(directory) => (
             data_dir_host(directory, &author, Rc::clone(&permissions))?,
@@ -1682,13 +1794,20 @@ fn open_app(
     let definition = opening.definition;
     let records = host.records_for(definition)?;
     let named = (opening.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
-    let mut prepared = prepare_on(
-        &mut host,
-        definition,
-        instance,
-        named,
-        ComponentRunnerInputs::from_native_process(),
-    )?;
+    let inputs = ComponentRunnerInputs::from_native_process();
+    let mut prepared = match (&profile, named) {
+        (Profile::Window(..), None) => host.prepare_default(
+            definition,
+            instance,
+            RecordCheckout::new(
+                RecordId::window_default(instance),
+                definition.record_kind.clone(),
+            ),
+            None,
+            inputs,
+        )?,
+        (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
+    };
     let checkout = prepared.context.record().clone();
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
@@ -1758,7 +1877,7 @@ fn private_launch(
         .collect();
     let profile = if private {
         let device = match &profile {
-            Profile::Temporary(_, _, device) => device.clone(),
+            Profile::Temporary(_, _, device) | Profile::Window(_, _, device, _) => device.clone(),
             Profile::DataDir(_) => TEST_DEVICE.to_owned(),
         };
         Profile::Temporary(

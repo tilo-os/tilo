@@ -42,6 +42,26 @@ impl NotificationHost for Fixture {
     }
 }
 
+/// A background failure with a full explanation: the reader is
+/// where a notification too long for its row is read.
+const REPORT: &str = concat!(
+    "Last night's backup to “Backup Disk” stopped at 02:14, 62 % of the way through, ",
+    "when the disk disconnected.\n\n",
+    "Error: the disk went away while it was being written to (input/output error on ",
+    "Backup Disk, sdb1).\n\n",
+    "Nothing on this computer changed, and the earlier backups on the disk are intact. ",
+    "Saved: Documents, Pictures and Notes up to 02:14. Not yet saved: Music, Videos and ",
+    "anything changed since.\n\n",
+    "What to do\n",
+    "• Reconnect the disk. The next backup starts on its own and picks up where this one ",
+    "stopped, so nothing is copied twice.\n",
+    "• If it disconnects again, try another cable or port: a disk that loses power during ",
+    "a backup can take a minute to come back.\n",
+    "• Backups checks every file it copies, so an interrupted backup never leaves a ",
+    "damaged copy behind.\n\n",
+    "Last complete backup: yesterday at 02:00."
+);
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     let out = std::env::args().nth(1).map_or_else(
@@ -64,32 +84,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for (name, theme, width, height) in variants {
         let host = Fixture::default();
-        let body = concat!(
-            "The app stopped before opening. Try again. Your document is safe.\n\n",
-            "If it stops again, reopen the app from Search. Changes already synchronized remain available on this device. ",
-            "You can return to your workspace and continue with another app while this one recovers.\n\n",
-            "Recovery step 1: close the failed launch and open Search. Enter the application name and select its result. ",
-            "If the app is still downloading, let that download finish before trying again.\n\n",
-            "Recovery step 2: check whether the document is available in Files. Keep the original document while recovery completes. ",
-            "An interrupted launch does not require deleting the document or clearing notification history.\n\n",
-            "Recovery step 3: if the issue continues, keep this complete message for troubleshooting. ",
-            "This reading page can be scrolled using the pointer, Page Down, End or accessible scrolling.\n\n",
-            "Recovery complete: your document is safe."
-        );
         host.0.borrow_mut().retain(
-            Notification::new("Couldn't open Notes — complete recovery instructions", body)
-                .with_app_name("Applications")
+            Notification::new("Backup couldn't finish", REPORT)
+                .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Error),
         );
         let mut center = NotificationCenter::new();
         let mut text = TextRenderer::new();
         let renderer = &mut OffscreenRenderer::new(width, height);
         for state in [
-            "read-focused",
+            "row-focused",
             "reading-start",
             "reading-end",
             "back-focused",
             "resized",
+            "pointer-opened",
         ] {
             let inset = 16.0;
             let panel_width = if state == "resized" {
@@ -100,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let panel = Rect::new(inset, inset, inset + panel_width, f64::from(height) - inset);
             let layout = CenterLayout::new(panel, CenterLayout::metrics(&theme, &mut text));
             match state {
-                "read-focused" => {
-                    center.focus_accessibility_path(&host, &[0, 0, 1]);
+                "row-focused" => {
+                    center.focus_accessibility_path(&host, &layout, &[0, 0]);
                 }
                 "reading-start" => {
                     center.key(&host, &layout, &Key::Named(NamedKey::Enter));
@@ -110,7 +119,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     center.key(&host, &layout, &Key::Named(NamedKey::End));
                 }
                 "back-focused" => {
-                    center.focus_accessibility_path(&host, &[0]);
+                    center.focus_accessibility_path(&host, &layout, &[0]);
+                }
+                "pointer-opened" => {
+                    // Opened by the pointer: no focus ring until the
+                    // keyboard moves focus.
+                    center = NotificationCenter::new();
+                    center.click(&host, &layout, layout.row(0).center());
                 }
                 _ => {}
             }

@@ -502,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = commands.add_parser("run", help="run the named suites")
     run_parser.add_argument("suites", nargs="*")
     run_parser.add_argument("--all", action="store_true", help="run every declared suite")
+    run_parser.add_argument("--group", action="append", default=[], metavar="NAME",
+                            help="run every suite of this group (repeatable)")
     run_parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     commands.add_parser("list", help="print every declared suite")
     commands.add_parser("check", help="verify every test-shaped file is accounted for")
@@ -519,11 +521,20 @@ def main(argv: list[str] | None = None) -> int:
                   f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired; "
                   f"{len(manifest.cargo)} Cargo packages with cross-package inputs")
         return 1 if problems else 0
-    if args.all and args.suites:
-        parser.error("run takes either suite paths or --all")
-    # An empty selection is an error, never "everything": the workflow passes
-    # the selector's list, and an empty list there means selection broke.
-    return run(ROOT, load(ROOT).suites() if args.all else args.suites, args.jobs)
+    if sum(map(bool, (args.all, args.suites, args.group))) > 1:
+        parser.error("run takes either suite paths, --group or --all")
+    manifest = load(ROOT)
+    if args.group:
+        groups = {group.name: group for group in manifest.groups}
+        unknown = [name for name in args.group if name not in groups]
+        if unknown:
+            parser.error(f"no such group in {MANIFEST}: {', '.join(unknown)}")
+        selected = [suite for name in args.group for suite in groups[name].suites]
+    else:
+        # An empty selection is an error, never "everything": the workflow passes
+        # the selector's list, and an empty list there means selection broke.
+        selected = manifest.suites() if args.all else args.suites
+    return run(ROOT, selected, args.jobs)
 
 
 if __name__ == "__main__":

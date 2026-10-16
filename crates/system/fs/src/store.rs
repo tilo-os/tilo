@@ -21,7 +21,7 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
     Arc, RwLock,
@@ -47,11 +47,12 @@ use moka::sync::Cache;
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
 #[cfg(feature = "filesystem")]
 use crate::eviction::{
-    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionPlan,
-    EvictionQueue, EvictionRequestId, ObservedBlobState, VersionPayload,
+    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionQueue,
+    EvictionRequestId, ObservedBlobState, VersionPayload,
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 pub mod area;
 #[cfg(test)]
@@ -128,10 +129,6 @@ pub enum BlobRecordLookupError {
 #[derive(Debug, thiserror::Error)]
 #[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
-    #[error(
-        "a dry-run plan cannot delete blobs; enqueue it and use the freshly authorized GC bridge"
-    )]
-    ExplicitDeletionUnsupported,
     #[error(transparent)]
     Authorization(#[from] BackendGcAuthorizationError),
     #[error("reading owned blob tag {tag} failed: {message}")]
@@ -174,6 +171,8 @@ pub struct ContentStore {
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
+    /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
+    write_syncs: std::sync::atomic::AtomicU64,
     /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
     /// The directory of an ephemeral store's area, removed with it.
@@ -265,6 +264,12 @@ fn remove_import_spills(dir: &Path) {
     }
 }
 
+/// Where a persistent store at `cache_dir` keeps its file-backed content,
+/// unless opened with [`ContentStore::open_with_files`].
+fn files_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("files")
+}
+
 /// Budget for cached file-backed content when the caller sets none: a
 /// quarter of the filesystem that holds it.
 fn default_budget(dir: &Path) -> u64 {
@@ -330,7 +335,29 @@ impl ContentStore {
         gc_interval: Duration,
     ) -> Result<Self> {
         let dir = cache_dir.as_ref();
-        Self::open_inner(dir, gc_interval, &dir.join("files")).await
+        Self::open_inner(dir, gc_interval, &files_dir(dir)).await
+    }
+
+    /// The whole of file version `content` (its manifest hash) from the
+    /// persistent store at `cache_dir` ([`Self::open`]), read without
+    /// opening the store: for another process beside the one that has it
+    /// open, which must not take its database locks. Only file-backed
+    /// versions ([`crate::content::FILE_BACKED_MIN`]) live where such a
+    /// reader can find them; any other is `Ok(None)`, as is one longer than
+    /// `max_bytes`.
+    ///
+    /// Nothing is verified and the version may be only partly resident: the
+    /// caller checks the bytes against a hash it trusts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the version's file exists but cannot be read.
+    pub fn read_file_version_unlocked(
+        cache_dir: &Path,
+        content: [u8; 32],
+        max_bytes: u64,
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        area::read_entry_unlocked(&files_dir(cache_dir), &content, max_bytes)
     }
 
     async fn open_inner(dir: &Path, gc_interval: Duration, files_dir: &Path) -> Result<Self> {
@@ -367,6 +394,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
             runtime: Some(runtime),
@@ -404,6 +432,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
             runtime: None,
@@ -446,6 +475,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: Some(scratch),
             runtime: None,
@@ -476,11 +506,16 @@ impl ContentStore {
     /// costs one sync instead of one per file. Callers end the group before
     /// anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
-        let mut deferred = self
-            .deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut deferred = self.deferred.lock_recover();
         deferred.0 = deferred.0.saturating_add(1);
+    }
+
+    /// How many database syncs the writes to this store have made so far: one
+    /// per write outside a deferred-durability group, one per group that
+    /// wrote. Each is an fsync, so a caller writing many blobs can check that
+    /// it pays for one rather than one per blob.
+    pub fn write_syncs(&self) -> u64 {
+        self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
@@ -492,10 +527,7 @@ impl ContentStore {
     /// pending for the next sync.
     pub async fn end_deferred_sync(&self) -> Result<()> {
         let sync = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
@@ -503,11 +535,12 @@ impl ContentStore {
             }
             sync
         };
+        if sync {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if sync && let Err(error) = self.store().sync_db().await {
-            self.deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .1 = true;
+            self.deferred.lock_recover().1 = true;
             return Err(error.into());
         }
         Ok(())
@@ -825,16 +858,15 @@ impl ContentStore {
     /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
     async fn sync_unless_deferred(&self) -> Result<()> {
         let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             if deferred.0 > 0 {
                 deferred.1 = true;
             }
             deferred.0 > 0
         };
         if !deferred {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.store().sync_db().await?;
         }
         Ok(())
@@ -1100,24 +1132,6 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Refuse to execute a bare, potentially stale dry-run plan.
-    ///
-    /// Use [`EvictionQueue::enqueue`] followed by
-    /// [`Self::release_eviction_to_backend_gc`]. Keeping this API fail-closed
-    /// prevents an enqueue-time or ad-hoc plan from becoming stale deletion
-    /// authority.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`StoreEvictionError::ExplicitDeletionUnsupported`].
-    #[cfg(feature = "filesystem")]
-    pub fn execute_eviction(
-        &self,
-        _plan: &EvictionPlan,
-    ) -> std::result::Result<(), StoreEvictionError> {
-        Err(StoreEvictionError::ExplicitDeletionUnsupported)
-    }
-
     /// Freshly authorize a queued request and make exactly its approved blobs
     /// collectible by releasing Tilo-owned named tags.
     ///
@@ -1294,26 +1308,17 @@ struct GcGate {
 impl GcGate {
     /// Let the next sweeps collect everything outside `live`.
     fn authorize(&self, live: HashSet<Hash>) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        *self.live.write_recover() = Some(live);
         self.wake.notify_one();
     }
 
     /// Park the GC again once the sweep this live set was installed for is over.
     fn revoke(&self) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.write_recover() = None;
     }
 
     fn snapshot(&self) -> Option<HashSet<Hash>> {
-        self.live
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.live.read_recover().clone()
     }
 
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when
@@ -1561,38 +1566,6 @@ mod tests {
                 metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
-        }
-        // Phase `unsupported_execution_never_claims_to_delete`.
-        {
-            use crate::eviction::{EvictionMode, EvictionPlan};
-
-            let store = ContentStore::memory();
-            let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
-            let plan = EvictionPlan {
-                record_id: fs_protocol::FileRecordId::new(),
-                version_id: fs_protocol::FileVersionId::new(),
-                mode: EvictionMode::DestructiveOverride,
-                reclaimable: vec![BlobExtent {
-                    hash,
-                    locally_present: true,
-                    resident_bytes: Some(7),
-                }],
-                shared_and_protected: Vec::new(),
-                already_absent: Vec::new(),
-                reclaimable_bytes: 7,
-                unaccounted_reclaimable_blobs: 0,
-                protected_shared_bytes: 0,
-                unaccounted_protected_shared_blobs: 0,
-            };
-
-            assert!(matches!(
-                store.execute_eviction(&plan),
-                Err(StoreEvictionError::ExplicitDeletionUnsupported)
-            ));
-            assert!(
-                store.has(hash).await,
-                "an unsupported action must not mutate storage"
-            );
         }
         // Phase `eviction_observation_completes_only_for_backend_absence`.
         {
@@ -2163,5 +2136,47 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn another_process_reads_file_backed_versions_while_the_store_is_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ContentStore::open(directory.path()).await.unwrap();
+        let large: Vec<u8> = (0..3 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let manifest = *store
+            .write_content(&large)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let small = *store
+            .write_content(b"a small file kept as loose blobs")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+
+        // The store stays open, holding its databases, while it is read.
+        let read = |content, max_bytes| {
+            ContentStore::read_file_version_unlocked(directory.path(), content, max_bytes).unwrap()
+        };
+        let len = u64::try_from(large.len()).unwrap();
+        assert_eq!(read(manifest, u64::MAX), Some(large.clone()));
+        assert_eq!(read(manifest, len), Some(large.clone()));
+        assert_eq!(read(manifest, len - 1), None, "over the bound");
+        assert_eq!(read(small, u64::MAX), None, "not file-backed");
+        assert_eq!(read([7; 32], u64::MAX), None, "unknown");
+
+        // A link where an entry's file belongs is not followed.
+        let elsewhere = directory.path().join("elsewhere");
+        std::fs::write(&elsewhere, &large).unwrap();
+        let linked = files_dir(directory.path())
+            .join("data")
+            .join(hex::encode([8; 32]));
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        assert_eq!(read([8; 32], u64::MAX), None);
+        drop(store);
     }
 }

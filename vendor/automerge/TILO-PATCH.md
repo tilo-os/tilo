@@ -225,3 +225,66 @@ where upstream panics or leaves a document that does not). `map_apply.rs`
 and `sequence_apply.rs` hold their forged cross-key and cross-element
 changes apart from the histories they compare and check the same of them.
 Upstream `main` applies the same way; the patch is upstreamable.
+
+# Tilo patch: find an op by its id without searching the document
+
+`OpSet::get_op_id_pos` (`src/op_set2/op_set.rs`) finds an op by searching
+the `id_ctr` column for its counter. The column's B-tree skips slabs whose
+counters cannot hold it, which works while counters rise along the
+document. A text that collaborators typed into at scattered places holds
+old and new counters side by side in every slab, so the search decoded
+nearly every slab: about 0.25 ms per lookup at 80,000 ops. Taking in one
+remote keystroke looks up the element it goes after twice (the peer-change
+check and the sequence walk's seek, both patches above), so it cost 39 µs
+at 1,000 changes of such history, 128 µs at 5,000 and 504 µs at 20,000,
+on the worker and again in the caller; cursors and patch paths pay the
+same per lookup.
+
+`OpIdIndex` (`src/op_set2/op_set/op_id_index.rs`) holds where every op was
+when it was built, per actor sorted by counter (8 bytes per op), and
+follows the document from there: `OpSet::splice` records where each splice
+went, ops spliced in since sit in the gaps between the built ops, and a
+Fenwick tree over blocks of gaps counts them, so a lookup and a splice are
+O(log n). It is built only for a document whose searches have been slow:
+each search counts the slabs it may decode, and once those would have
+paid for building the index (a slab costs about as much as 16 ops of the
+build), the next apply builds it (2.5 ms at 80,000 ops) if the `id_ctr`
+column spans at least 64 slabs and at least half as many counters are
+lower than the one before them. A text typed in order has next to none
+and packs thousands of ops into a slab, and an import or a load searches
+little, so they hold nothing more (`patch_log_memory.rs` and
+`tilo-doc-codecs`' `import_memory.rs` pin that). A replica taking remote keystrokes
+into a scattered text builds it on the third: the 80,000-op document
+above holds 4.4 MB, and the index adds 0.65 MB. A document found not
+worth it is looked at again once it has grown by an eighth. The index is
+dropped, to be rebuilt by the next apply, when ops leave the document (a
+rolled back transaction), actors are renumbered, a gap grows past 4,096
+ops, or more ops have been spliced in than a quarter of those built.
+
+A position the index gives is used only once the id read there is the one
+asked for; otherwise, or with no index, the column is searched as before,
+so the index decides how fast an op is found, never which. A one-letter
+remote change now costs 11–15 µs at 1,000, 5,000 or 20,000 changes alike
+(release, p50 of 500).
+
+The marked spots are `TILO(op-id-index)` in `op_set.rs`, `op_id_index.rs`
+(with unit tests checking it against a model under random splices) and
+`batch.rs`. With `slow_path_assertions` (or in the crate's own tests)
+every lookup is also checked against the search. Pinned by
+`crates/doc/tilo-automerge/tests/scattered_apply.rs`, which compares
+documents, heads and patches with crates.io `automerge` 0.12.0 over
+three-actor histories typed at scattered places and checks that what a
+remote letter costs does not grow with such a history. Upstream `main`
+looks ops up the same way; the patch is upstreamable.
+
+# Tilo change: the fork's own tests run in CI
+
+The workspace builds this crate as a path dependency and never runs its
+tests, so `tools/ci/test-vendored-crates.sh` runs them: check.yml's
+`vendored` job whenever this directory or `vendor/automerge-test` changes,
+and the nightly. The manifest therefore declares its own `[workspace]` (so
+its tests run from this directory however the checkout is nested) and
+restores upstream's `automerge-test` dev-dependency, which crates.io
+publication drops and `tests/test.rs` needs, from `vendor/automerge-test`
+(see its `PROVENANCE.md`). The test run starts from a copy of the workspace
+lock, so the fork is tested at the dependency versions Tilo ships.

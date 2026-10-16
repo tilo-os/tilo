@@ -68,11 +68,23 @@ impl NativeProcessHost {
         if let Some(person) = resolved.person_dir {
             host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
         }
+        // One record per window or one per room: this is where a window
+        // that names no record gets its fallback, and the fallback is only
+        // half the answer. An app whose definition keeps a room record
+        // (`ApplicationDefinition::room_record`, a framework app's
+        // `ResourceApp::ROOM_RECORD`) never uses it: `prepare_default` opens
+        // the room's package primary for every one of its windows, so they
+        // all show one notebook or conversation, and the first creates it
+        // (adopting what the per-window records held, see
+        // `HostContext::window_records`). Every other app gets a record per
+        // launcher-issued window, so two windows of an editor are two
+        // documents; reopening the closed tab (same instance) brings its own
+        // record back through its saved view.
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
             default_record: if launcher_instance {
-                RecordId::derived("default", &RecordId::for_tab(resolved.instance_id))
+                RecordId::window_default(resolved.instance_id)
             } else {
                 RecordId::room_default()
             },
@@ -545,12 +557,6 @@ pub struct ApplicationHost {
     /// Where the person's own records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
     person: RecordOwners,
-    lent_services: Vec<RegisteredLoan>,
-}
-
-struct RegisteredLoan {
-    package_id: String,
-    provide: Box<dyn Fn(&mut HostContext)>,
 }
 
 impl ApplicationHost {
@@ -634,29 +640,7 @@ impl ApplicationHost {
             permissions,
             author,
             action_context,
-            lent_services: Vec::new(),
         })
-    }
-
-    /// Register a host-owned service for one package and the host's exact person.
-    /// Every prepared launch receives a fresh loan; other packages receive none.
-    /// This binds an already authorized service and creates no credential grant.
-    /// # Errors
-    /// Refuses a different principal or empty package.
-    pub fn register_service<T: Clone + 'static>(
-        &mut self,
-        package_id: &str,
-        principal: &str,
-        service: T,
-    ) -> Result<(), LaunchError> {
-        if principal != self.author.0 || package_id.trim().is_empty() {
-            return Err(LaunchError::BindingMismatch);
-        }
-        self.lent_services.push(RegisteredLoan {
-            package_id: package_id.into(),
-            provide: Box::new(move |context| context.lend(service.clone())),
-        });
-        Ok(())
     }
 
     /// Keep the person's own records ([`crate::record::person`]) in `store`
@@ -680,13 +664,6 @@ impl ApplicationHost {
         ) {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
-        }
-        for loan in self
-            .lent_services
-            .iter()
-            .filter(|loan| loan.package_id == package_id)
-        {
-            (loan.provide)(&mut context);
         }
         context
     }
@@ -733,7 +710,7 @@ impl ApplicationHost {
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
                     || saved.record_id != checkout.id.as_str()
-                    || !checkout.kind.names(&saved.record_kind)
+                    || checkout.kind.as_str() != saved.record_kind
             })
         {
             return Err(LaunchError::BindingMismatch);
@@ -757,7 +734,7 @@ impl ApplicationHost {
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if saved.app_id != package_id
-            || !definition.record_kind.names(&saved.record_kind)
+            || definition.record_kind.as_str() != saved.record_kind
             || id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
@@ -803,9 +780,29 @@ impl ApplicationHost {
                 },
                 &target,
             )?;
-            let restore = initial_view.map_or(RestoreInput::None, |application| {
-                RestoreInput::Local(context.envelope(View::default(), Some(application)))
-            });
+            // Every window shares the room's record, but each keeps its own
+            // presentation: this instance reopens where it was left (the
+            // note it showed), when what it saved is of the room's record.
+            // A view of a record it kept per window before is not restored.
+            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+            let saved = if matches!(target, LaunchTarget::Record { .. }) {
+                self.views
+                    .load(instance_id)
+                    .map_err(LaunchError::Restore)?
+                    .filter(|saved| {
+                        saved.app_id == package_id
+                            && saved.record_id == context.record().id.as_str()
+                            && definition.record_kind.names(&saved.record_kind)
+                    })
+            } else {
+                None
+            };
+            let restore = saved
+                .or_else(|| {
+                    initial_view
+                        .map(|application| context.envelope(View::default(), Some(application)))
+                })
+                .map_or(RestoreInput::None, RestoreInput::Local);
             return Ok(PreparedComponentInputs {
                 context: self.with_person_records(definition, context),
                 target,
@@ -859,7 +856,8 @@ impl ApplicationHost {
             .load(instance_id)
             .map_err(LaunchError::Restore)?
             .filter(|saved| {
-                saved.record_id == checkout.id.as_str() && checkout.kind.names(&saved.record_kind)
+                saved.record_id == checkout.id.as_str()
+                    && checkout.kind.as_str() == saved.record_kind
             });
         let (context, target, restore) =
             self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
@@ -1112,6 +1110,107 @@ mod native_process_tests {
     }
 
     #[test]
+    fn room_record_windows_share_one_record_and_see_the_per_window_ones() {
+        use crate::application_test_support as probe;
+        use automerge::{ReadDoc, transaction::Transactable};
+        let temp = tempfile::tempdir().unwrap();
+        let per_window = definition(probe::APP);
+        let mut per_room = definition(probe::APP);
+        per_room.room_record = true;
+        let room = "3f2b1c00-0000-4000-8000-00000000000c";
+        let launch = |definition: &ApplicationDefinition, instance: u64| {
+            NativeProcessHost::open_with(
+                definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let note = |doc: &automerge::AutoCommit| -> Option<String> {
+            match doc.get(automerge::ROOT, "note").unwrap() {
+                Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+                    automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        // Two windows from before: each kept its own record.
+        for (instance, text) in [(42, "second"), (41, "first")] {
+            let mut window = launch(&per_window, instance);
+            let mut prepared = window
+                .prepare_launch(&per_window, None, probe::runner_inputs())
+                .unwrap();
+            assert_eq!(
+                prepared.context.record().id,
+                RecordId::window_default(instance)
+            );
+            prepared
+                .context
+                .initialize_new_record(|doc| {
+                    doc.put(automerge::ROOT, "note", text)
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap();
+        }
+        // The first window of the room record creates it, and sees what the
+        // per-window ones hold, in id order, without taking them over.
+        let mut first = launch(&per_room, 43);
+        let mut created = first
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        assert!(created.context.record().id.is_package_primary());
+        assert!(matches!(created.target, LaunchTarget::PrimaryNew));
+        let windows = created.context.window_records();
+        assert_eq!(
+            windows
+                .iter()
+                .map(|(id, doc)| (id.clone(), note(doc)))
+                .collect::<Vec<_>>(),
+            [
+                (RecordId::window_default(41), Some("first".into())),
+                (RecordId::window_default(42), Some("second".into())),
+            ]
+        );
+        created
+            .context
+            .initialize_new_record(|doc| {
+                doc.put(automerge::ROOT, "note", "shared")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        drop(created);
+        drop(first);
+        // A later, different window opens that same record.
+        let mut second = launch(&per_room, 44);
+        let reopened = second
+            .prepare_launch(&per_room, None, probe::runner_inputs())
+            .unwrap();
+        assert!(reopened.context.record().id.is_package_primary());
+        assert!(matches!(reopened.target, LaunchTarget::Record { .. }));
+        assert_eq!(
+            reopened.context.read_record(note).unwrap(),
+            Some("shared".into())
+        );
+        // The per-window records are still there, unchanged.
+        assert_eq!(reopened.context.window_records().len(), 2);
+        drop(reopened);
+        drop(second);
+        let mut old = launch(&per_window, 41);
+        let old = old
+            .prepare_launch(&per_window, None, probe::runner_inputs())
+            .unwrap();
+        assert!(matches!(old.target, LaunchTarget::Record { .. }));
+        assert_eq!(old.context.read_record(note).unwrap(), Some("first".into()));
+        assert!(old.context.window_records().is_empty());
+    }
+
+    #[test]
     fn a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data() {
         use crate::application_test_support as probe;
         use automerge::{ReadDoc, transaction::Transactable};
@@ -1190,6 +1289,32 @@ mod native_process_tests {
                 .unwrap(),
             "retained original"
         );
+    }
+
+    #[test]
+    fn window_default_storage_keys_name_exactly_their_record() {
+        for instance in [0, 0x42, 0xf276_0000_0000_0044, u64::MAX] {
+            let id = RecordId::window_default(instance);
+            assert_eq!(
+                RecordId::window_default_of_storage_key(&id.storage_key()),
+                Some(id)
+            );
+        }
+        assert_eq!(RecordId::window_default(0), RecordId::room_default());
+        for other in [
+            RecordId::package_primary(),
+            RecordId::for_tab(0x42),
+            RecordId::derived("notes", &RecordId::for_tab(0x42)),
+        ] {
+            assert_eq!(
+                RecordId::window_default_of_storage_key(&other.storage_key()),
+                None
+            );
+        }
+        let real = RecordId::window_default(0x42).storage_key();
+        let last = if real.ends_with('0') { '1' } else { '0' };
+        let forged = format!("{}{last}", real.get(..real.len() - 1).unwrap());
+        assert_eq!(RecordId::window_default_of_storage_key(&forged), None);
     }
 
     #[test]
@@ -1491,79 +1616,5 @@ mod native_process_tests {
             foreign_package.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
-    }
-}
-
-#[cfg(test)]
-mod service_loan_tests {
-    use super::*;
-    use crate::record::RecordKind;
-    use crate::widget::IconDescriptor;
-
-    fn definition(app_id: &'static str) -> ApplicationDefinition {
-        ApplicationDefinition {
-            app_id,
-            title: "Service probe",
-            icon: IconDescriptor::Glyph("P"),
-            record_kind: RecordKind::new("service-probe"),
-            required: Vec::new(),
-            optional: Vec::new(),
-            opens: &[],
-            room_record: false,
-            create: |_, _, _| Err(LaunchError::BindingMismatch),
-        }
-    }
-
-    fn launch_context(host: &mut ApplicationHost, app: &ApplicationDefinition) -> HostContext {
-        let records = host.records_for(app).expect("checked app namespace");
-        let context = HostContext::prepare(
-            app,
-            HostContextInputs {
-                records,
-                views: host.views.clone(),
-                device_id: host.device_id.clone(),
-                instance_id: 1,
-                permissions: host.permissions.clone(),
-                author: host.author.clone(),
-                action_context: host.action_context.clone(),
-            },
-            &LaunchTarget::New,
-        )
-        .expect("checked launch");
-        host.with_person_records(app, context)
-    }
-
-    #[test]
-    fn registered_services_require_exact_person_and_only_reach_the_named_package() {
-        let mut host = ApplicationHost::with_store(
-            Rc::new(durable_store::MemoryStore::default()),
-            "device-a".into(),
-            "room-a",
-            UserId("person-a".into()),
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            tilo_actions::ActionContext::default(),
-        )
-        .expect("host");
-        assert!(
-            host.register_service("so.tilo.messages", "person-b", 7u64)
-                .is_err()
-        );
-        assert!(host.register_service("", "person-a", 7u64).is_err());
-        host.register_service("so.tilo.messages", "person-a", 7u64)
-            .expect("explicit owned service");
-        let mut other = launch_context(&mut host, &definition("so.tilo.other"));
-        assert!(other.take_lent().is_empty());
-        drop(other);
-        let mut messages = launch_context(&mut host, &definition("so.tilo.messages"));
-        let loans = messages.take_lent();
-        assert_eq!(loans.len(), 1);
-        assert_eq!(
-            loans.first().and_then(|loan| loan.downcast_ref::<u64>()),
-            Some(&7)
-        );
-        assert!(
-            messages.take_lent().is_empty(),
-            "a launch loan is taken only once"
-        );
     }
 }

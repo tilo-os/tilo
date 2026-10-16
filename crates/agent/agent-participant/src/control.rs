@@ -25,6 +25,7 @@ use tilo_actions::{
     ActionContract, ActionOutput, Collects, ExecutionLocus, InvocationId, InvocationUpdate,
     OperationKind,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::agents::{
     AGENT_KIND, AgentGrant, AgentInfo, AgentMessage, AgentStatus, AgentStep, AgentTask,
     AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState, MESSAGE_ACTION, MessageRole,
@@ -131,9 +132,7 @@ pub(crate) struct SnapshotChanges {
 
 impl SnapshotChanges {
     fn generation_guard(&self) -> MutexGuard<'_, u64> {
-        self.generation
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.generation.lock_recover()
     }
 
     /// Something the snapshot holds changed, or the host is stopping.
@@ -293,7 +292,7 @@ impl AgentControl {
     }
 
     fn state(&self) -> MutexGuard<'_, ControlState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Tell `changes` whenever what this agent persists changes.
@@ -312,11 +311,7 @@ impl AgentControl {
     /// Wake the agent's loop: its steering, its session or its host
     /// changed.
     pub(crate) fn wake(&self) {
-        *self
-            .changed
-            .raised
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = true;
+        *self.changed.raised.lock_recover() = true;
         self.changed.condvar.notify_all();
     }
 
@@ -324,11 +319,7 @@ impl AgentControl {
     /// lower the signal. A wake that came before the call returns at once,
     /// so none is lost between a pump and this wait.
     pub(crate) fn wait_for_change(&self, timeout: Option<Duration>) {
-        let raised = self
-            .changed
-            .raised
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let raised = self.changed.raised.lock_recover();
         let mut raised = match timeout {
             Some(timeout) => {
                 self.changed
@@ -349,14 +340,11 @@ impl AgentControl {
     /// The person's host that confirms what the agent's grants leave to
     /// them. Without one, such an action is refused.
     pub fn set_witness(&self, witness: Option<Witness>) {
-        *self.witness.lock().unwrap_or_else(PoisonError::into_inner) = witness;
+        *self.witness.lock_recover() = witness;
     }
 
     pub(crate) fn witness(&self) -> Option<Witness> {
-        self.witness
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.witness.lock_recover().clone()
     }
 
     /// The agent's delegation.
@@ -864,7 +852,7 @@ impl AgentSupervisor {
     }
 
     fn state(&self) -> MutexGuard<'_, SupervisorState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The signal raised whenever [`Self::snapshot`] would return something
@@ -884,14 +872,11 @@ impl AgentSupervisor {
     }
 
     fn ledger(&self) -> MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.ledger.lock().unwrap_or_else(PoisonError::into_inner)
+        self.ledger.lock_recover()
     }
 
     fn link(&self) -> Option<Arc<dyn AgentHostLink>> {
-        self.link
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.link.lock_recover().clone()
     }
 
     /// Connect the host: grants can then be requested, and approved ones
@@ -901,7 +886,7 @@ impl AgentSupervisor {
         for control in self.state().agents.values() {
             control.set_witness(link.witness(control.delegation()));
         }
-        *self.link.lock().unwrap_or_else(PoisonError::into_inner) = Some(link);
+        *self.link.lock_recover() = Some(link);
     }
 
     /// Offer an approved agent identity for spawning. The host has already

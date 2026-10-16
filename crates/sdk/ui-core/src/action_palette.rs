@@ -24,7 +24,7 @@
 //! back to the app to navigate.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
-//! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
+//! [`take_operation`](ActionPalette::take_operation) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
@@ -49,9 +49,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
-    ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
-    EncodedAction, OperationKind, Resource, flatten,
+    ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, Resource, flatten,
 };
+#[cfg(test)]
+use tilo_actions::{ActionRegistry, ActionTransport, Dispatched};
 
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";
@@ -331,6 +332,10 @@ pub struct ActionPalette {
     /// The exported actions' titles and descriptions, indexed while they
     /// stay the same.
     action_index: ListIndex,
+    /// [`crate::search::engine_generation`] the rows were ranked with:
+    /// where the index's code loads on first use, an open palette ranks
+    /// again once it is in.
+    engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
@@ -338,7 +343,7 @@ pub struct ActionPalette {
     /// `Some` while collecting the explicit confirmation required by the
     /// selected action contract.
     confirm: Option<ConfirmState>,
-    /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
+    /// A ready-to-dispatch action, set on activation, drained by `take_operation`.
     pending_dispatch: Option<PendingOperation>,
     history_suspended: bool,
     history_review_required: bool,
@@ -458,6 +463,7 @@ impl ActionPalette {
             missing_selection: None,
             search_generation: 0,
             action_index: ListIndex::default(),
+            engine_generation: crate::search::engine_generation(),
             search_announcement: None,
             open: false,
             arg: None,
@@ -484,12 +490,6 @@ impl ActionPalette {
     /// action becomes an **Actions** row; rebuilds the result set + index.
     pub fn load_open_resources(&mut self, resources: &[Resource]) {
         self.resources = resources.to_vec();
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -568,12 +568,6 @@ impl ActionPalette {
             });
         self.picked_filters
             .retain(|filter| self.facets.iter().any(|facet| facet.key == filter.key));
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -1085,6 +1079,14 @@ impl ActionPalette {
                 ..SearchAdvance::default()
             };
         }
+        let engine_generation = crate::search::engine_generation();
+        if self.engine_generation != engine_generation {
+            self.engine_generation = engine_generation;
+            if self.open {
+                let typed = self.field.value().to_owned();
+                self.rebuild(&typed);
+            }
+        }
         if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
             for (key, validation) in &mut self.provider_validation {
                 validation.permissions = None;
@@ -1535,7 +1537,7 @@ impl ActionPalette {
         let Ok(encoded) = flattened.action.build_json(arguments) else {
             return false;
         };
-        let mut context = ActionContext::for_resource(
+        let mut context = flattened.action.history_context(
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1568,7 +1570,9 @@ impl ActionPalette {
     /// Drain a completed action activation and dispatch it against `doc` +
     /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
     /// same path a remote peer uses to replay. `None` when no action is
-    /// pending (e.g. the last activation was a navigation).
+    /// pending (e.g. the last activation was a navigation). Tests use this to
+    /// replay an activation without the application host's executor.
+    #[cfg(test)]
     pub fn take_dispatch(
         &mut self,
         doc: &mut crate::widget::Edits<'_>,
@@ -1731,6 +1735,7 @@ impl ActionPalette {
             .collect()
     }
 
+    #[cfg(test)]
     fn dispatch_encoded(
         doc: &mut crate::widget::Edits<'_>,
         encoded: &EncodedAction,
@@ -1860,7 +1865,7 @@ impl ActionPalette {
         if !fa.action.contract.availability.is_available() {
             return None;
         }
-        let mut context = ActionContext::for_resource(
+        let mut context = fa.action.history_context(
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
@@ -2057,7 +2062,12 @@ impl ActionPalette {
         self.results.set_loading(false);
         self.next_provider = 0;
         self.refresh_progressive_results();
-        if self.providers.is_empty() {
+        if !query.trim().is_empty() && !crate::search::engine_ready() {
+            // The rows are ranked by the index, whose code is still loading.
+            self.search_announcement = Some(String::from("Searching"));
+            self.results.set_empty_text("Searching…");
+            let _ = self.advance_search_page();
+        } else if self.providers.is_empty() {
             self.results.set_empty_text("No matches");
             self.search_announcement = Some(format!("{} results", self.results.len()));
         } else {
@@ -2088,13 +2098,6 @@ impl ActionPalette {
 
     /// Position the palette at `origin` with `width`. Called each frame
     /// before `draw`.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "width and the field height are UI layout dimensions in logical \
-                  pixels, always tiny compared to f32's range; narrowing \
-                  for taffy's f32-based layout loses no visually \
-                  meaningful precision"
-    )]
     #[allow(
         clippy::expect_used,
         reason = "private palette ownership mismatch is an invariant violation"
@@ -3108,10 +3111,14 @@ mod tests {
                 )
                 .unwrap(),
             )
-            .with_action(ActionSpec::prompted(
+            .with_action(ActionSpec::prompted_param(
                 "rename",
                 "Rename",
-                "New name",
+                tilo_actions::ActionParam::required(
+                    "value",
+                    tilo_actions::ParamType::Text,
+                    "New name",
+                ),
                 "e.g. Widget",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {

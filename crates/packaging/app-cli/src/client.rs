@@ -32,8 +32,11 @@ use thiserror::Error;
 
 use crate::config::{RegistryConfig, config_dir, placeholder_owner_pubkey};
 
-/// Reasonable default request timeout — a fresh registry contacted
-/// over WAN should still fit. Overridable via `TILO_STORE_HTTP_TIMEOUT`.
+/// How long one step of a request may wait: connecting and receiving the
+/// response head, then each read of the body. The blocking client applies it
+/// per operation, not to the whole transfer, so a large catalogue on a slow
+/// but progressing link is not cut off. Overridable via
+/// `TILO_STORE_HTTP_TIMEOUT`.
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 const MAX_INDEX_RESPONSE_BYTES: u64 = registry_types::MAX_SNAPSHOT_ENCODED_BYTES as u64;
 
@@ -61,6 +64,8 @@ pub enum RegistryError {
     Rollback,
     #[error("registry snapshot checkpoint could not be persisted: {0}")]
     Checkpoint(String),
+    #[error("this device holds no verified catalogue from the registry")]
+    NotStored,
     #[error("registry handshake owner does not match the pinned key")]
     OwnerMismatch,
     #[error("registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
@@ -115,13 +120,24 @@ struct SnapshotCheckpoint {
     snapshot_hash_hex: String,
 }
 
-fn client() -> Result<reqwest::blocking::Client, RegistryError> {
-    tilo_net::http::blocking_client()
-        .user_agent("app/0.1")
-        .timeout(http_timeout())
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| RegistryError::Http(e.to_string()))
+/// The process's one registry client, so the requests of a run share its
+/// connection pool instead of each paying a new TCP and TLS handshake. Its
+/// timeout ([`http_timeout`]) bounds each step of a request, not the whole
+/// transfer.
+fn client() -> Result<&'static reqwest::blocking::Client, RegistryError> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::http::blocking_client()
+                .user_agent("app/0.1")
+                .timeout(http_timeout())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| RegistryError::Http(e.clone()))
 }
 
 /// Fetch and parse informational registry metadata, rejecting an owner identity
@@ -184,8 +200,51 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
         CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
     let now = tilo_clock::unix_now();
     let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
-    persist_checkpoint(reg, &snapshot)?;
+    persist_checkpoint(reg, &snapshot, &bytes)?;
     Ok(snapshot)
+}
+
+/// The catalogue this device last accepted from `reg`, read from disk without
+/// touching the network, so a registry that is slow or unreachable still
+/// describes what it listed.
+///
+/// The stored bytes are not trusted: they must be exactly the snapshot the
+/// durable anti-rollback checkpoint names, and they are verified again against
+/// the pinned owner key and the current time, so an expired catalogue is
+/// refused here just as a freshly fetched one would be.
+///
+/// # Errors
+///
+/// [`RegistryError::NotStored`] when no catalogue was accepted yet, and the
+/// proof, freshness or checkpoint error that makes a stored one unusable.
+pub fn last_verified_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    let path = checkpoint_path(reg).ok_or(RegistryError::NotStored)?;
+    last_verified_at(&path, &reg.owner_pubkey_hex, tilo_clock::unix_now())
+}
+
+fn last_verified_at(
+    path: &std::path::Path,
+    owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    #[cfg(unix)]
+    let _lock = checkpoint_lock(path)?;
+    let read = |path: &std::path::Path| match std::fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(RegistryError::NotStored),
+        Err(error) => Err(RegistryError::Checkpoint(error.to_string())),
+    };
+    let checkpoint: SnapshotCheckpoint = serde_json::from_slice(&read(path)?)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    let snapshot = CatalogueSnapshot::from_json(&read(&snapshot_path(path))?)
+        .map_err(|error| RegistryError::Decode(error.to_string()))?;
+    // Anything but the checkpointed snapshot is an older (or foreign) one.
+    if snapshot.sequence() != checkpoint.sequence
+        || snapshot.checkpoint_hash()? != checkpoint.snapshot_hash_hex
+    {
+        return Err(RegistryError::Rollback);
+    }
+    classify_snapshot(&snapshot, owner_pubkey_hex, now_unix)
 }
 
 /// Every retained version of `package_id`: from a freshly verified snapshot,
@@ -201,6 +260,22 @@ pub fn fetch_all_versions(
     package_id: &str,
 ) -> Result<VerifiedEntry, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
+    all_versions_in(reg, &snapshot, package_id)
+}
+
+/// [`fetch_all_versions`] from a snapshot the caller already fetched and
+/// verified, so asking about several packages downloads, verifies and
+/// checkpoints the snapshot once instead of once per package.
+///
+/// # Errors
+///
+/// Returns an error when the package is not listed in `snapshot`, or when the
+/// version index cannot be fetched or is not the one the snapshot signs.
+pub fn all_versions_in(
+    reg: &RegistryConfig,
+    snapshot: &CatalogueSnapshot,
+    package_id: &str,
+) -> Result<VerifiedEntry, RegistryError> {
     let listed = snapshot
         .entries()
         .into_iter()
@@ -315,34 +390,60 @@ fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
     )
 }
 
+/// The accepted snapshot's bytes, beside the checkpoint that names them.
+fn snapshot_path(checkpoint: &std::path::Path) -> std::path::PathBuf {
+    checkpoint.with_extension("snapshot.json")
+}
+
+/// Advance the checkpoint to `snapshot` and keep its verified `bytes` for
+/// [`last_verified_entries`]. Both are written under one lock; a crash between
+/// the two writes leaves bytes the checkpoint does not name, which the reader
+/// refuses.
 fn persist_checkpoint(
     reg: &RegistryConfig,
     snapshot: &CatalogueSnapshot,
+    bytes: &[u8],
 ) -> Result<(), RegistryError> {
-    let Some(path) = checkpoint_path(reg) else {
-        return Ok(());
-    };
+    match checkpoint_path(reg) {
+        Some(path) => persist_checkpoint_at(&path, snapshot, bytes),
+        None => Ok(()),
+    }
+}
+
+fn persist_checkpoint_at(
+    path: &std::path::Path,
+    snapshot: &CatalogueSnapshot,
+    bytes: &[u8],
+) -> Result<(), RegistryError> {
     // Both forms of one snapshot share this identity, so switching form is
     // neither a rollback nor a fork.
     let hash = snapshot.checkpoint_hash()?;
     #[cfg(unix)]
-    let _lock = checkpoint_lock(&path)?;
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let old: SnapshotCheckpoint = serde_json::from_slice(&bytes)
+    let _lock = checkpoint_lock(path)?;
+    let stored = snapshot_path(path);
+    let unchanged = match std::fs::read(path) {
+        Ok(old) => {
+            let old: SnapshotCheckpoint = serde_json::from_slice(&old)
                 .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
             validate_checkpoint(&old, snapshot.sequence(), &hash)?;
+            // The same sequence passed validation, so it is this snapshot.
+            old.sequence == snapshot.sequence() && stored.is_file()
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(RegistryError::Checkpoint(error.to_string())),
+    };
+    if unchanged {
+        return Ok(());
     }
+    tilo_files::native::atomic::write_creating_parent(&stored, bytes)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
     let checkpoint = SnapshotCheckpoint {
         sequence: snapshot.sequence(),
         snapshot_hash_hex: hash,
     };
-    let bytes = serde_json::to_vec(&checkpoint)
+    let encoded = serde_json::to_vec(&checkpoint)
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
-    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(path, &encoded)
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))
 }
 
@@ -420,13 +521,24 @@ mod tests {
     }
 
     fn snapshot(owner: &SigningKey) -> CatalogueSnapshot {
+        CatalogueSnapshot::Full(signed_snapshot(owner, 1))
+    }
+
+    fn signed_snapshot(
+        owner: &SigningKey,
+        sequence: u64,
+    ) -> registry_types::SignedRegistrySnapshot {
         let entry = signed_entry();
         let mut snapshot = registry_types::SignedRegistrySnapshot {
             protocol: registry_types::SNAPSHOT_PROTOCOL,
-            sequence: 1,
+            sequence,
             issued_at_unix: 100,
             expires_at_unix: 200,
-            previous_snapshot_hash_hex: String::new(),
+            previous_snapshot_hash_hex: if sequence == 1 {
+                String::new()
+            } else {
+                "aa".repeat(32)
+            },
             moderation_head_hex: String::new(),
             publishers: vec![registry_types::PublisherAuthorization {
                 pubkey_hex: entry.publisher_pubkey_hex.clone(),
@@ -438,7 +550,60 @@ mod tests {
             bots_signature_hex: String::new(),
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
-        CatalogueSnapshot::Full(snapshot)
+        snapshot
+    }
+
+    #[test]
+    fn the_last_accepted_catalogue_is_read_back_only_while_it_still_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint = dir.path().join("registry-checkpoints/owner.json");
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        assert!(matches!(
+            last_verified_at(&checkpoint, &owner_hex, 150),
+            Err(RegistryError::NotStored)
+        ));
+
+        // An accepted snapshot is described offline, as fetched.
+        let first = signed_snapshot(&owner, 1);
+        let first_bytes = serde_json::to_vec(&first).unwrap();
+        persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(first), &first_bytes).unwrap();
+        let entries = last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
+        assert_eq!(entries[0].entry.name.resolve("en"), Some("Editor"));
+        assert_eq!(entries[0].trust, TrustLevel::PublisherSigned);
+
+        // Expired metadata is refused, exactly as a fresh fetch of it would be.
+        assert!(matches!(
+            last_verified_at(&checkpoint, &owner_hex, 250),
+            Err(RegistryError::Proof(
+                registry_types::SnapshotError::Freshness
+            ))
+        ));
+        // The pinned owner key, not the stored bytes, decides.
+        let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+        assert!(last_verified_at(&checkpoint, &stranger, 150).is_err());
+
+        // Once a newer snapshot is accepted, the older bytes are a rollback.
+        let second = signed_snapshot(&owner, 2);
+        let second_bytes = serde_json::to_vec(&second).unwrap();
+        persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(second), &second_bytes)
+            .unwrap();
+        last_verified_at(&checkpoint, &owner_hex, 150).unwrap();
+        std::fs::write(snapshot_path(&checkpoint), &first_bytes).unwrap();
+        assert!(matches!(
+            last_verified_at(&checkpoint, &owner_hex, 150),
+            Err(RegistryError::Rollback)
+        ));
+
+        // Bytes edited on disk fail their signatures.
+        let mut tampered = signed_snapshot(&owner, 2);
+        tampered.entries[0].name = "hijacked".into();
+        std::fs::write(
+            snapshot_path(&checkpoint),
+            serde_json::to_vec(&tampered).unwrap(),
+        )
+        .unwrap();
+        assert!(last_verified_at(&checkpoint, &owner_hex, 150).is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -465,7 +630,7 @@ mod tests {
                 std::fs::read_dir("/").unwrap_err().kind(),
                 std::io::ErrorKind::PermissionDenied
             );
-            let error = persist_checkpoint(&registry, &snapshot).unwrap_err();
+            let error = persist_checkpoint(&registry, &snapshot, b"{}").unwrap_err();
             assert!(
                 matches!(error, RegistryError::Checkpoint(ref text) if text.contains("Permission denied")),
                 "{error}"

@@ -516,7 +516,7 @@ pub enum FileMutationParticipantRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ConflictMergeCodecV1 {
-    QdocAutomergeV1,
+    TiloDocAutomergeV1,
     PlainUtf8ThreeWayV1,
 }
 
@@ -1757,17 +1757,17 @@ mod tests {
             let valid = merge_manifest();
             valid.validate().unwrap();
 
-            let mut qdoc = valid.clone();
+            let mut tilo_doc = valid.clone();
             if let FileMutationOperation::MergeContentConflict {
                 base_version,
                 codec,
                 ..
-            } = &mut qdoc.operation
+            } = &mut tilo_doc.operation
             {
                 *base_version = None;
-                *codec = ConflictMergeCodecV1::QdocAutomergeV1;
+                *codec = ConflictMergeCodecV1::TiloDocAutomergeV1;
             }
-            qdoc.validate().unwrap();
+            tilo_doc.validate().unwrap();
 
             let mut stale_current = valid.clone();
             if let FileMutationOperation::MergeContentConflict {

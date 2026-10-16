@@ -31,6 +31,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera"]
 
+[resources]
+kinds = ["camera"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

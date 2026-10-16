@@ -91,6 +91,26 @@ pub fn anchor_for_tab(tree: &WorkspaceTree, tab: TabId) -> Option<TabAnchor> {
         .map(|(anchor, _)| anchor)
 }
 
+/// Where the active tab of `group` sits.
+pub fn anchor_in_group(
+    tree: &WorkspaceTree,
+    group: crate::shell::state::GroupId,
+) -> Option<TabAnchor> {
+    tabs(tree)
+        .map(|(anchor, _)| anchor)
+        .filter(|anchor| anchor.group == group)
+        .find(|anchor| {
+            tree.desktop.workspaces.iter().any(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|g| g.id == group && g.active_tab == anchor.tab)
+                })
+            })
+        })
+}
+
 /// The focused tab of the active workspace.
 fn focused_tab(tree: &WorkspaceTree) -> Option<TabId> {
     let workspace = tree.desktop.active_workspace()?;
@@ -318,6 +338,7 @@ mod tests {
             active_tab: other,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         let strip_id = strip.id;
         tree.desktop.set_active_group(strip_id, group);

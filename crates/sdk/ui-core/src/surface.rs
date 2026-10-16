@@ -20,6 +20,7 @@ use vello::peniko::{Color, Fill, ImageBrush, ImageData as Image};
 use crate::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::{Colors, Shadow};
+use tilo_lock::MutexRecover as _;
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
 /// one or two logical pixels along each edge: enough to feel soft and held,
@@ -229,9 +230,7 @@ fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     // A panic elsewhere while the lock was held can't corrupt this map (a
     // plain sprite cache, not an invariant-bearing structure), so recover
     // the data instead of taking the whole render path down with it.
-    let mut map = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut map = cache.lock_recover();
     cached_sprites(&mut map, (r, g, b))
 }
 

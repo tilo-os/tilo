@@ -28,9 +28,9 @@ const PHASE_MS: f64 = 4000.0;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct JoinedRoom {
+pub struct JoinedRoom {
     room: String,
-    workspace_id: u64,
+    pub workspace_id: u64,
     invitation: String,
     admission_token: String,
 }
@@ -46,8 +46,53 @@ pub struct Shared {
     pub service: Plain,
     pub host_cert: DeviceCert,
     pub stats: Arc<Stats>,
+    /// What the spectators measured, apart from the guests.
+    pub spectator_stats: Arc<Stats>,
     pub started: Instant,
     pub stop: tokio::sync::watch::Receiver<bool>,
+}
+
+/// The chat record every guest writes, in the last room it joined.
+pub const CHAT_RECORD: &str = "general";
+/// The field of the chat record a guest's message sets.
+const MESSAGE: &str = "message";
+
+/// One chat message as a guest's page writes it: an Automerge change of the
+/// chat record setting [`MESSAGE`] to the time it was sent (milliseconds
+/// since the run started, big-endian) and `padding` bytes, by an actor of
+/// its own, so it applies to the record whatever else the record holds.
+fn chat_message(sent_ms: u64, padding: usize) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    use collab_types::CommitNamed as _;
+    let mut message = sent_ms.to_be_bytes().to_vec();
+    message.extend((0..padding).map(|_| rand::random::<u8>()));
+    let mut change = automerge::AutoCommit::new();
+    if change
+        .put(
+            automerge::ROOT,
+            MESSAGE,
+            automerge::ScalarValue::Bytes(message),
+        )
+        .is_err()
+    {
+        return Vec::new();
+    }
+    change.commit_edit("chat", MESSAGE);
+    change.save_incremental()
+}
+
+/// When the chat message `change` was sent, as [`chat_message`] wrote it.
+fn chat_sent_ms(change: &[u8]) -> Option<u64> {
+    use automerge::ReadDoc as _;
+    let mut document = automerge::AutoCommit::new();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut document, change).ok()?;
+    let (automerge::Value::Scalar(value), _) = document.get(automerge::ROOT, MESSAGE).ok()?? else {
+        return None;
+    };
+    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+        return None;
+    };
+    Some(u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?))
 }
 
 fn exponential(mean_ms: f64) -> Duration {
@@ -56,35 +101,58 @@ fn exponential(mean_ms: f64) -> Duration {
 }
 
 /// What the room service tells a visitor past its cap.
-const FULL: &str = "the room is full";
+pub const FULL: &str = "the room is full";
+/// What it tells a spectator past the spectator cap.
+pub const WATCHING_FULL: &str = "too many people are watching";
 
-fn now_ms(started: Instant) -> u64 {
+/// Guests' measurements for `/join`, spectators' for `/spectate`.
+fn stats_for<'a>(shared: &'a Shared, path: &str) -> &'a Stats {
+    if path == "/spectate" {
+        &shared.spectator_stats
+    } else {
+        &shared.stats
+    }
+}
+
+pub fn now_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-async fn admit(
+/// Ask the service at `path` for pre-admissions, then redeem each with a new
+/// person's one-time token, as a guest's page does. Past a cap, the error is
+/// the service's own message ([`FULL`] or [`WATCHING_FULL`]).
+pub async fn admit(
     shared: &Shared,
+    path: &str,
+    request: serde_json::Value,
     name: &str,
 ) -> Result<(SigningKey, DeviceCert, Vec<JoinedRoom>), String> {
+    let asked = Instant::now();
     let (status, body) = shared
         .service
         .post_with(
-            "/join",
+            path,
             &[("content-type", "application/json")],
-            serde_json::json!({ "userPublicKey": "", "displayName": name })
-                .to_string()
-                .into_bytes(),
+            request.to_string().into_bytes(),
         )
         .await?;
     if status == 503
-        && serde_json::from_slice::<serde_json::Value>(&body)
-            .is_ok_and(|reply| reply.get("error").and_then(|e| e.as_str()) == Some(FULL))
+        && let Some(full) = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|reply| {
+                reply
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .filter(|error| error == FULL || error == WATCHING_FULL)
     {
-        return Err(FULL.into());
+        return Err(full);
     }
     if status != 200 {
-        return Err(format!("/join: status {status}"));
+        return Err(format!("{path}: status {status}"));
     }
+    stats_for(shared, path).service(asked.elapsed().as_secs_f64() * 1000.0);
     let joined: Joined = serde_json::from_slice(&body).map_err(|error| error.to_string())?;
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -127,7 +195,8 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     let stats = shared.stats.clone();
     let begun = Instant::now();
     let name = format!("Guest {index}");
-    let (key, cert, rooms) = match admit(&shared, &name).await {
+    let request = serde_json::json!({ "userPublicKey": "", "displayName": name });
+    let (key, cert, rooms) = match admit(&shared, "/join", request, &name).await {
         Ok(admitted) => admitted,
         Err(error) if error == FULL => {
             stats.full(begun.elapsed().as_secs_f64() * 1000.0);
@@ -145,6 +214,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
             cert,
             host_cert: shared.host_cert.clone(),
             revocations: RevocationList::new(),
+            watching: false,
         },
         Arc::new(key),
         Arc::new(MemoryPeerStore::default()),
@@ -178,7 +248,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     let chat = rooms.last().map(|room| DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
-        record: "general".into(),
+        record: CHAT_RECORD.into(),
     });
 
     // The cursor: a fallback live session on the desktop room.
@@ -186,26 +256,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     if shared.args.cursor_hz > 0.0
         && let Some(desktop) = desktop
     {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let asked = peer.live_grant_then(
-            desktop,
-            Box::new(move |grant| {
-                let _ = sender.send(grant);
-            }),
-        );
-        match (asked, receiver.await) {
-            (Ok(()), Ok(Ok(grant))) => {
-                match Live::open(shared.relay.clone(), &grant.token, stats.clone()).await {
-                    Ok(opened) => {
-                        stats.live_open.fetch_add(1, Ordering::Relaxed);
-                        live = Some(opened);
-                    }
-                    Err(error) => stats.fail(error),
-                }
-            }
-            (Err(error), _) | (_, Ok(Err(error))) => stats.fail(format!("live grant: {error}")),
-            (_, Err(_)) => stats.fail("live grant: dropped"),
-        }
+        live = open_live(&peer, desktop, &shared.relay, &stats).await;
     }
 
     let tick = if shared.args.cursor_hz > 0.0 {
@@ -254,8 +305,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
         if let (Some(at), Some(route)) = (next_chat, chat.as_ref())
             && now >= at
         {
-            let mut message = now_ms(shared.started).to_be_bytes().to_vec();
-            message.extend((0..shared.args.chat_bytes).map(|_| rand::random::<u8>()));
+            let message = chat_message(now_ms(shared.started), shared.args.chat_bytes);
             if peer
                 .publish(route.clone(), &DocumentMutation::Incremental(message))
                 .is_ok()
@@ -264,45 +314,100 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
             }
             next_chat = Some(now + exponential(shared.args.chat_every * 1000.0));
         }
-        for event in peer.drain() {
-            match event {
-                PeerEvent::Document(document) => match document.mutation() {
-                    Some(DocumentMutation::Incremental(bytes)) if bytes.len() >= 8 => {
-                        let mut at = [0u8; 8];
-                        at.copy_from_slice(bytes.get(..8).unwrap_or(&[0; 8]));
-                        let sent = u64::from_be_bytes(at);
-                        if sent < joined_at {
-                            stats.chat_history();
-                        } else {
-                            let latency = now_ms(shared.started).saturating_sub(sent);
-                            stats.chat(sent, latency as f64);
-                        }
-                    }
-                    other => stats.fail(format!(
-                        "document without a readable change (sealed: {}, mutation: {})",
-                        document.decrypted_payload.is_some(),
-                        other.is_some()
-                    )),
-                },
-                PeerEvent::DocumentRejected(reason) => {
-                    stats.fail(format!("document rejected: {reason}"));
-                }
-                PeerEvent::Committed { .. } => {
-                    stats.committed.fetch_add(1, Ordering::Relaxed);
-                }
-                _ => {}
-            }
-        }
-        let failures = peer.status().failures.len();
-        if failures > seen_failures {
-            stats
-                .session_failures
-                .fetch_add((failures - seen_failures) as u64, Ordering::Relaxed);
-            for failure in peer.status().failures.iter().skip(seen_failures) {
-                stats.fail(format!("session: {} {}", failure.code, failure.message));
-            }
-        }
-        seen_failures = failures;
+        seen_failures = take_events(&peer, &stats, shared.started, joined_at, seen_failures);
     }
     peer.close();
+}
+
+/// Open the live plane of `workspace` with the session's live grant, counting
+/// what its stream delivers into `stats`.
+pub async fn open_live(
+    peer: &PeerHandle,
+    workspace: u64,
+    relay: &Arc<Plain>,
+    stats: &Arc<Stats>,
+) -> Option<Live> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let asked = peer.live_grant_then(
+        workspace,
+        Box::new(move |grant| {
+            let _ = sender.send(grant);
+        }),
+    );
+    match (asked, receiver.await) {
+        (Ok(()), Ok(Ok(grant))) => {
+            match Live::open(relay.clone(), &grant.token, stats.clone()).await {
+                Ok(opened) => {
+                    stats.live_open.fetch_add(1, Ordering::Relaxed);
+                    Some(opened)
+                }
+                Err(error) => {
+                    stats.fail(error);
+                    None
+                }
+            }
+        }
+        (Err(error), _) | (_, Ok(Err(error))) => {
+            stats.fail(format!("live grant: {error}"));
+            None
+        }
+        (_, Err(_)) => {
+            stats.fail("live grant: dropped");
+            None
+        }
+    }
+}
+
+/// Count what the session delivered since the last call: chat changes with
+/// their delivery time (or as history, when sent before `joined_at`),
+/// commits, rejections, and session failures beyond the `seen` first ones.
+/// Returns the failures seen so far.
+pub fn take_events(
+    peer: &PeerHandle,
+    stats: &Stats,
+    started: Instant,
+    joined_at: u64,
+    seen: usize,
+) -> usize {
+    for event in peer.drain() {
+        match event {
+            PeerEvent::Document(document) => match document.mutation() {
+                Some(DocumentMutation::Incremental(bytes)) if chat_sent_ms(&bytes).is_some() => {
+                    let sent = chat_sent_ms(&bytes).unwrap_or_default();
+                    if sent < joined_at {
+                        stats.chat_history();
+                    } else {
+                        let latency = now_ms(started).saturating_sub(sent);
+                        stats.chat(sent, latency as f64);
+                    }
+                }
+                // The governor's compaction of the chat's history: messages
+                // the page already holds, as one snapshot.
+                Some(DocumentMutation::Snapshot(_)) => stats.chat_history(),
+                other => stats.fail(format!(
+                    "document without a readable change (sealed: {}, mutation: {})",
+                    document.decrypted_payload.is_some(),
+                    other.is_some()
+                )),
+            },
+            PeerEvent::DocumentRejected(reason) => {
+                stats.fail(format!("document rejected: {reason}"));
+            }
+            PeerEvent::Committed { .. } => {
+                stats.committed.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+    let session = peer.status();
+    let failures = session.failures.len();
+    if failures > seen {
+        stats
+            .session_failures
+            .fetch_add((failures - seen) as u64, Ordering::Relaxed);
+        for failure in session.failures.iter().skip(seen) {
+            stats.fail(format!("session: {} {}", failure.code, failure.message));
+        }
+    }
+    failures
 }

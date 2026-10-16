@@ -181,16 +181,12 @@ mod unix {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     }
 
-    /// The desktop name a Tilo login announces before its compositor starts;
-    /// the compositor's own test for a real Tilo session reads the same value.
-    const TILO_DESKTOP: &str = "tilo";
-
-    /// Host executables to attach to, in preference order. Inside the Tilo
-    /// desktop only the session's own host serves, so an app never attaches
+    /// Host executables to attach to, in preference order. Inside a Tilo
+    /// login only the session's own host serves, so an app never attaches
     /// to a second authority beside it; elsewhere the standalone host comes
     /// first.
     fn host_names() -> &'static [&'static str] {
-        if env::var_os("XDG_CURRENT_DESKTOP").as_deref() == Some(OsStr::new(TILO_DESKTOP)) {
+        if tilo_paths::login::is_tilo_login() {
             &["tilo-runtime-mcp"]
         } else {
             &["tilo-runtime", "tilo-runtime-mcp"]

@@ -31,7 +31,7 @@ pub fn request(
     })
 }
 
-fn private_action_input(
+pub(crate) fn private_action_input(
     reader: impl std::io::Read,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
     use std::io::Read as _;

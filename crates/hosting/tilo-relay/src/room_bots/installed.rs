@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::AutoCommit;
@@ -40,6 +40,7 @@ use crate::rooms::{MemberMark, Rooms};
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
 use tilo_automation::grant::OUTBOX_FIELD;
+use tilo_lock::MutexRecover as _;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
 /// The input a program declares to be told the room's members and roles.
@@ -312,7 +313,10 @@ impl BotRunner {
                 .queue
                 .wake_at_ms()
                 .map_or(IDLE, |at| {
-                    Duration::from_millis(u64::try_from(at.saturating_sub(now_ms())).unwrap_or(0))
+                    Duration::from_millis(
+                        u64::try_from(at.saturating_sub(tilo_clock::unix_now_ms_i64()))
+                            .unwrap_or(0),
+                    )
                 })
                 .min(IDLE);
             tokio::select! {
@@ -341,7 +345,7 @@ impl BotRunner {
     /// # Errors
     /// A record could not be read or the state file written.
     pub async fn step(&mut self) -> Result<Vec<tilo_automation::RunReport>, String> {
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms_i64();
         for firing in self.take_in().await? {
             if let Some(dead) = self.progress.queue.push(firing, now) {
                 self.progress.bury(&self.bot.installation, dead);
@@ -349,7 +353,7 @@ impl BotRunner {
         }
         self.keep()?;
         let mut reports = Vec::new();
-        while let Some(queued) = self.progress.queue.next_due(now_ms()) {
+        while let Some(queued) = self.progress.queue.next_due(tilo_clock::unix_now_ms_i64()) {
             let firing = queued.firing.clone();
             let finished = match self.fire(&firing).await {
                 Ok(Fired::Refused(reason)) => {
@@ -357,20 +361,25 @@ impl BotRunner {
                     // the same refusal.
                     self.progress
                         .queue
-                        .dead_letter_head(&reason, now_ms())
+                        .dead_letter_head(&reason, tilo_clock::unix_now_ms_i64())
                         .map_or(Finished::Done, |dead| {
                             Finished::DeadLettered(Box::new(dead))
                         })
                 }
                 Ok(Fired::Ran(report)) => {
-                    let finished = self.progress.queue.finished(&report, now_ms());
+                    let finished = self
+                        .progress
+                        .queue
+                        .finished(&report, tilo_clock::unix_now_ms_i64());
                     tracing::info!(installation = %self.bot.installation, run = %firing.run.0, outcome = ?report.outcome, ?finished, "bot run finished");
                     reports.push(*report);
                     finished
                 }
                 Err(error) => {
                     tracing::warn!(installation = %self.bot.installation, run = %firing.run.0, %error, "bot run could not be run");
-                    self.progress.queue.not_run(&error, now_ms())
+                    self.progress
+                        .queue
+                        .not_run(&error, tilo_clock::unix_now_ms_i64())
                 }
             };
             if let Finished::DeadLettered(dead) = finished {
@@ -482,13 +491,9 @@ impl BotRunner {
                     record,
                 };
                 let held = Arc::clone(&self.held);
-                tokio::task::spawn_blocking(move || {
-                    held.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .hold(&route, saved)
-                })
-                .await
-                .map_err(|error| error.to_string())??;
+                tokio::task::spawn_blocking(move || held.lock_recover().hold(&route, saved))
+                    .await
+                    .map_err(|error| error.to_string())??;
             }
         }
         let mut inputs = self.bot.inputs.clone();
@@ -533,11 +538,7 @@ impl BotRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
-        let changes = self
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take_changes();
+        let changes = self.held.lock_recover().take_changes();
         let mut changes = changes.into_iter();
         while let Some((route, mutation)) = changes.next() {
             if let Err(refusal) = self.publish(&route, mutation).await {
@@ -548,7 +549,7 @@ impl BotRunner {
                 let touched: BTreeSet<DocumentRoute> = std::iter::once(route)
                     .chain(changes.map(|(route, _)| route))
                     .collect();
-                let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut held = self.held.lock_recover();
                 for route in &touched {
                     held.forget(route);
                 }
@@ -796,10 +797,6 @@ pub fn governance_events(
 /// The app id the room's governance verbs are named under.
 const ROOM_APP: &str = "so.tilo.desktop";
 
-fn now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX)
-}
-
 /// The bot `entry` installed in the room with `inputs`: the installation
 /// kept under `dir` when the room installed it before, else a new one.
 /// `entry` is a program file on this host, or a directory entry fetched
@@ -861,7 +858,7 @@ pub async fn install(
         name,
         program,
         inputs,
-        installed_at_ms: now_ms(),
+        installed_at_ms: tilo_clock::unix_now_ms_i64(),
     };
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let bytes = serde_json::to_vec_pretty(&bot).map_err(|error| error.to_string())?;

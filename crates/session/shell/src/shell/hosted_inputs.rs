@@ -24,12 +24,14 @@ pub struct NativeAppRegistration {
     pub opens_mime_types: &'static [&'static str],
 }
 
-/// Device-local launch data for one open hosted document.
+/// Device-local launch data for one open hosted document: which app opens
+/// which file. The app reads the file itself, so the shell never does: on
+/// the workspace mount the first read hydrates it from a peer, which the
+/// compositor loop must not wait for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedDocument {
     pub provider_id: &'static str,
     pub path: PathBuf,
-    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +201,7 @@ impl HostedTileInputs {
             picker_scope: Some(crate::portal::PickerScope {
                 initial_dir: directory.clone(),
                 roots: vec![directory.clone()],
+                home: Some(directory.clone()),
             }),
             files: Some(file_explorer::StartupInputs {
                 initial_dir: directory,
@@ -254,6 +257,36 @@ impl HostedTileInputs {
 
     pub(crate) fn is_fixture(&self) -> bool {
         self.fixture.is_some()
+    }
+
+    /// An owned fixture whose apps reach the session's broker at
+    /// `collab`, as a session's do: a capture of a room whose session
+    /// service is gone points it at a socket nobody serves.
+    /// # Errors
+    /// Returns an error if these inputs belong to a live host.
+    pub fn with_session_broker_at(
+        self,
+        collab: std::path::PathBuf,
+        identity: std::path::PathBuf,
+    ) -> std::io::Result<Self> {
+        if !self.is_fixture() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "A fixture broker requires owned fixture inputs",
+            ));
+        }
+        if let Some(apps) = &self.in_process {
+            apps.borrow_mut()
+                .reach_broker(std::rc::Rc::new(move |app, room| {
+                    super::in_process::session_connector(
+                        collab.clone(),
+                        identity.clone(),
+                        app,
+                        room,
+                    )
+                }));
+        }
+        Ok(self)
     }
 
     /// Give an owned fixture a stable clock, without changing the live source.
@@ -365,15 +398,16 @@ impl HostedTileInputs {
             else {
                 continue;
             };
+            // Restored at startup, before any frame: whether the file is
+            // still readable text decides between the editor and a notice.
             let restored = reference
                 .path
                 .canonicalize()
-                .and_then(|path| std::fs::read_to_string(&path).map(|text| (path, text)));
+                .and_then(|path| std::fs::read_to_string(&path).map(|_| path));
             let state = match restored {
-                Ok((path, text)) => HostedDocumentState::Ready(HostedDocument {
+                Ok(path) => HostedDocumentState::Ready(HostedDocument {
                     provider_id: app.package_id,
                     path,
-                    text,
                 }),
                 Err(error) => HostedDocumentState::Unavailable {
                     provider_id: app.package_id,
@@ -609,7 +643,6 @@ mod document_lifecycle_tests {
                     HostedDocument {
                         provider_id: "org.nirios.Editor",
                         path: reference.path.clone(),
-                        text: "live document\n".into(),
                     },
                 );
                 tabs.push(tab);
@@ -665,7 +698,7 @@ mod document_lifecycle_tests {
             "stale references must be filtered before restoration"
         );
         assert!(
-            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.text == "live document\n")
+            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.path == path.canonicalize().unwrap())
         );
         let mut driver =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(reopened.host), (1280, 800));

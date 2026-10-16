@@ -70,6 +70,19 @@ impl From<OAuthError> for CustodyError {
     }
 }
 
+/// What custody holds for one `OAuth` grant, without releasing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantState {
+    /// Nothing is sealed under this id on this device: never signed in
+    /// here (a setting that roamed from another device), or forgotten.
+    Missing,
+    /// A grant custody can refresh.
+    Usable,
+    /// The provider revoked the grant, or it was sealed without offline
+    /// access: the person must sign in again.
+    SignInAgain,
+}
+
 /// The long-lived grant sealed in the vault's `token` field. Never handed
 /// out of this crate except to be sealed.
 #[derive(Serialize, Deserialize)]
@@ -145,6 +158,7 @@ pub struct Custodian {
     overrides: BTreeMap<OAuthUse, (Provider, Registration)>,
     endpoints: BTreeMap<OAuthIssuer, Provider>,
     storage: BTreeMap<&'static str, serde_json::Value>,
+    gmail_profile_endpoint: String,
 }
 
 impl Custodian {
@@ -162,6 +176,7 @@ impl Custodian {
             overrides: BTreeMap::new(),
             endpoints: BTreeMap::new(),
             storage: BTreeMap::new(),
+            gmail_profile_endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/profile".into(),
         }
     }
 
@@ -222,6 +237,20 @@ impl Custodian {
         cloud: OAuthCloud,
         tokens: &TokenSet,
     ) -> Result<serde_json::Value, CustodyError> {
+        if cloud == OAuthCloud::GoogleDrive
+            && let Some(granted) = &tokens.scope
+        {
+            let (provider, _) = self.oauth_config(cloud)?;
+            if provider
+                .scopes
+                .iter()
+                .any(|required| !granted.split_whitespace().any(|scope| scope == required))
+            {
+                return Err(CustodyError::SignIn(
+                    "Google Drive permission was not granted".into(),
+                ));
+            }
+        }
         crate::storage::resolve(
             cloud,
             self.storage.get(cloud.type_id()),
@@ -358,6 +387,74 @@ impl Custodian {
         Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
     }
 
+    /// Start Google's files sign-in, optionally with explicitly requested Gmail
+    /// access. Both capabilities must be configured; never silently drop mail.
+    ///
+    /// # Errors
+    /// Unconfigured capability or a loopback failure.
+    pub fn begin_google_sign_in(&self, mail: bool) -> Result<Authorization, CustodyError> {
+        let (mut provider, registration) = self.oauth_config(OAuthCloud::GoogleDrive)?;
+        if mail {
+            let (gmail, _) = self.use_config(OAuthUse::mail(OAuthIssuer::Google))?;
+            for scope in gmail.scopes {
+                if !provider.scopes.contains(&scope) {
+                    provider.scopes.push(scope);
+                }
+            }
+        }
+        Authorization::begin(&provider, &registration, None).map_err(CustodyError::from)
+    }
+
+    /// Replace the Gmail profile API origin for a local provider fixture.
+    #[must_use]
+    pub fn with_gmail_profile_endpoint(mut self, endpoint: String) -> Self {
+        self.gmail_profile_endpoint = endpoint;
+        self
+    }
+
+    /// Validate Gmail access and obtain the provider-confirmed mailbox identity.
+    /// A Drive grant alone must never create a working Mail account.
+    ///
+    /// # Errors
+    /// Missing mail permission, unavailable Gmail, or an invalid provider response.
+    pub fn gmail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
+        if tokens.scope.as_deref().is_some_and(|scopes| {
+            !scopes
+                .split_whitespace()
+                .any(|scope| scope == "https://mail.google.com/")
+        }) {
+            return Err(CustodyError::SignIn(
+                "Gmail permission was not granted".into(),
+            ));
+        }
+        let http = tilo_net::http::blocking_client()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| CustodyError::Offline)?;
+        let response = http
+            .get(&self.gmail_profile_endpoint)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .map_err(|_| CustodyError::Offline)?;
+        if !response.status().is_success() {
+            return Err(CustodyError::SignIn(format!(
+                "Gmail could not be opened (HTTP {}). Check Gmail availability and mail permission.",
+                response.status().as_u16()
+            )));
+        }
+        let profile: serde_json::Value = response
+            .json()
+            .map_err(|_| CustodyError::SignIn("Gmail returned an invalid profile".into()))?;
+        let email = profile
+            .get("emailAddress")
+            .and_then(serde_json::Value::as_str)
+            .filter(|email| email.contains('@') && !email.contains(char::is_whitespace))
+            .ok_or_else(|| CustodyError::SignIn("Gmail returned no mailbox address".into()))?;
+        Ok(email.to_string())
+    }
+
     /// Begin sign-in with a non-empty subset of this use's configured scopes.
     /// Client registration, endpoints and PKCE validation remain unchanged.
     ///
@@ -398,6 +495,30 @@ impl Custodian {
             return Err(CustodyError::NeedsAuthentication);
         };
         Ok(tokens.scope)
+    }
+
+    /// Whether `id`'s `OAuth` grant is there and still refreshable, for a
+    /// "Sign in again" status. A grant the provider revoked is kept as an
+    /// empty one when a refresh learns of it (see
+    /// [`Self::oauth_access_token`]), which reads here as
+    /// [`GrantState::SignInAgain`].
+    ///
+    /// # Errors
+    /// An unreadable vault.
+    pub fn oauth_grant_state(&self, id: &AccountId) -> Result<GrantState, CustodyError> {
+        let vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        let Some(secret) = vault.get(id) else {
+            return Ok(GrantState::Missing);
+        };
+        Ok(match decode_grant(&secret) {
+            Some((Grant::Oauth2 { tokens }, _)) if !tokens.refresh_token.is_empty() => {
+                GrantState::Usable
+            }
+            _ => GrantState::SignInAgain,
+        })
     }
 
     /// Seal a sign-in result as `id`'s grant, replacing any earlier one.

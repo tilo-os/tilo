@@ -11,7 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
     Action, AppInstallResult, ApplyResult, AwakeLease, BaseInfo, BootConfirmResult, ComponentInfo,
-    DEVICE_SLOT, GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer,
+    DEVICE_SLOT, GcResult, HelloResult, ImageChange, InputAction, InputResult, Issue, KeptLayer,
     LayerImportResult, LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease,
     LogsResult, Manifest, OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope,
     SeatResult, ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult,
@@ -21,6 +21,7 @@ use tilo_vm_protocol::{
 use crate::apply::{self, Apply, GREETER_UNIT, Restarts, Session, SessionChange};
 use crate::awake;
 use crate::error::DaemonError;
+use crate::image;
 use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
 use crate::slots::{self, Generation, SlotRecord, SlotStore};
@@ -378,6 +379,20 @@ pub(crate) fn abi_check_verified(
     Ok(warnings)
 }
 
+/// The component that carries the native toolkit and the thin apps built on it.
+const COHORT_COMPONENT: &str = "apps+runtime";
+
+/// The `<version>` of a `tilo-runtime/<version>` runtime, the directory
+/// it occupies under `/usr/lib/tilo-runtime`; `None` for any other runtime.
+fn native_toolkit(runtime: &str) -> Option<&str> {
+    let version = runtime.strip_prefix("tilo-runtime/")?;
+    let mut parts = Path::new(version).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) if !version.contains('/') => Some(version),
+        _ => None,
+    }
+}
+
 /// The first 12 hex digits, enough to tell two hashes apart in a message.
 fn short(hash: &str) -> &str {
     hash.get(..12).unwrap_or(hash)
@@ -537,9 +552,51 @@ impl Daemon {
         self.slots.load_with(name, device)
     }
 
+    /// Put the slots back on `booted` when their generations were made on
+    /// another image; see [`crate::image`]. `merge` says whether
+    /// `systemd-sysext` has merged the layers yet.
+    ///
+    /// # Errors
+    /// A held VM lock, and I/O failures.
+    pub fn reconcile_image(
+        &mut self,
+        booted: &str,
+        merge: image::Merge,
+    ) -> Result<Option<ImageChange>, DaemonError> {
+        image::ensure_root(&self.root)?;
+        let _vm = self.locks.vm_exclusive()?;
+        image::reconcile(&self.root, &self.slots, self.apply.as_mut(), booted, merge)
+    }
+
     /// Bring every slot back after the VM boots; see [`restore_slots`].
-    pub fn restore(&mut self) -> Vec<Issue> {
-        let issues = restore_slots(&self.slots, &self.layers, &self.locks, self.apply.as_mut());
+    /// First, slots made on another image than `booted` go back to it (when
+    /// the early-boot reconcile has not done so already) and the layers an
+    /// image change left behind are deleted.
+    pub fn restore(&mut self, booted: Option<&str>) -> Vec<Issue> {
+        let mut issues = Vec::new();
+        if let Some(booted) = booted {
+            let reconciled = self
+                .reconcile_image(booted, image::Merge::Done)
+                .and_then(|_| {
+                    let _vm = self.locks.vm_exclusive()?;
+                    image::collect_dropped_layers(&self.root, &self.slots, &self.layers, GC_MIN_AGE)
+                });
+            if let Err(error) = reconciled {
+                issues.push(Issue {
+                    slot: VM_SLOT.into(),
+                    problem: format!(
+                        "the slots could not be put back on the booted image {booted}: {error}"
+                    ),
+                    hint: "tilo-vm doctor; the next boot tries again".into(),
+                });
+            }
+        }
+        issues.extend(restore_slots(
+            &self.slots,
+            &self.layers,
+            &self.locks,
+            self.apply.as_mut(),
+        ));
         self.seat_issues = Some(issues.clone());
         issues
     }
@@ -669,7 +726,18 @@ impl Daemon {
             }
             Request::Control(p) => {
                 let (_, session) = self.user_slot(&p.slot)?;
-                to_value(&self.apply.control(&session, &p.args)?)
+                if let Some(input) = &p.private_args {
+                    if !matches!(p.args.as_slice(), [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
+                        || input.line.len() > 65536
+                    {
+                        return Err(DaemonError::InvalidParams(
+                            "invalid private control request".into(),
+                        ));
+                    }
+                    to_value(&self.apply.private_control(&session, &p.args, &input.line)?)
+                } else {
+                    to_value(&self.apply.control(&session, &p.args)?)
+                }
             }
             Request::Gc(p) => {
                 let _vm = self.locks.vm_exclusive()?;
@@ -873,6 +941,8 @@ impl Daemon {
             seat0,
             storage: self.storage(),
             issues: self.issues()?,
+            image_change: image::last_change(&self.root),
+            slots_image: image::slots_image(&self.root),
         })
     }
 
@@ -1379,7 +1449,7 @@ impl Daemon {
             .layers
             .provenance(layer)
             .unwrap_or_else(|| Provenance::local(component));
-        let cohort = if component == "apps+runtime"
+        let cohort = if component == COHORT_COMPONENT
             && self
                 .manifest
                 .as_ref()
@@ -1411,11 +1481,30 @@ impl Daemon {
         let info = self.component_info(&record, component, info);
         apply::check_scope(&record, component, &info)?;
         let mut result = match self.slots.prepare_swap(&record, component, layer, info)? {
-            Some((from, to)) => self.transition(&mut record, &from, &to)?,
+            Some((from, to)) => {
+                // The cohort reselects its own applications for the new toolkit.
+                let reselected = cohort
+                    .as_ref()
+                    .map(|cohort| cohort.ids().collect())
+                    .unwrap_or_default();
+                self.check_cohort_users(&record, &from, &to, &reselected)?;
+                self.transition(&mut record, &from, &to)?
+            }
             None => unchanged(record),
         };
+        if !result.changed {
+            self.layers.verify(layer)?;
+        }
         if let Some(cohort) = &cohort {
-            let (_, session) = self.user_slot(name)?;
+            let (record, session) = self.user_slot(name)?;
+            if !result.changed {
+                let current = self.slots.generation(name, record.current)?;
+                let layers = self.system_layers(&record, self.layer_paths(&current)?)?;
+                if self.cohort_is_active(&session, &layers, cohort)? {
+                    result.warnings.splice(0..0, warnings);
+                    return Ok(result);
+                }
+            }
             result.cohort_selection.extend(crate::cohort::select(
                 self.apply.as_mut(),
                 &session,
@@ -1439,15 +1528,76 @@ impl Daemon {
         if from.number == to.number {
             return Ok(unchanged(record));
         }
-        if let Some(current) = from.components.get("apps+runtime")
-            && to.components.get("apps+runtime").map(|entry| &entry.layer) != Some(&current.layer)
-        {
-            return Err(DaemonError::InvalidParams(
-                "cannot roll back the selected apps+runtime cohort: user packages may require its SDK; \
-                 select a complete verified cohort instead (unrelated component rollbacks remain available)".into(),
-            ));
-        }
+        self.check_cohort_users(&record, &from, &to, &BTreeSet::new())?;
         self.transition(&mut record, &from, &to)
+    }
+
+    /// Refuse a transition that takes away a native toolkit the slot user's
+    /// own packages run on: one the apps+runtime layer of `from` ships
+    /// (`/usr/lib/tilo-runtime/<version>`) and neither the layers `to`
+    /// merges nor the image itself ship. Packages in `reselected` are
+    /// installed again for the new toolkit. A package that names no
+    /// runtime never blocks; runtime-kind packages are among them, since
+    /// a runtime may not declare one.
+    fn check_cohort_users(
+        &mut self,
+        record: &SlotRecord,
+        from: &Generation,
+        to: &Generation,
+        reselected: &BTreeSet<&str>,
+    ) -> Result<(), DaemonError> {
+        let Some(current) = from.components.get(COHORT_COMPONENT) else {
+            return Ok(());
+        };
+        if to
+            .components
+            .get(COHORT_COMPONENT)
+            .map(|entry| &entry.layer)
+            == Some(&current.layer)
+        {
+            return Ok(());
+        }
+        let Some(session) = record.session() else {
+            return Ok(());
+        };
+        let packages = self.apply.user_packages(&session)?;
+        let cohort = self.layers.require(&current.layer)?;
+        let target = self.system_layers(record, self.layer_paths(to)?)?;
+        let mut stranded = Vec::new();
+        for package in packages
+            .iter()
+            .filter(|package| !reselected.contains(package.id.as_str()))
+        {
+            let Some(version) = native_toolkit(&package.runtime) else {
+                continue;
+            };
+            let relative = Path::new("usr/lib/tilo-runtime").join(version);
+            if cohort.join(&relative).is_dir()
+                && !target.iter().any(|layer| layer.join(&relative).is_dir())
+                && !self.apply.image_has_runtime(version)
+            {
+                stranded.push(package);
+            }
+        }
+        if stranded.is_empty() {
+            return Ok(());
+        }
+        let needs = stranded
+            .iter()
+            .map(|package| format!("{} needs {}", package.id, package.runtime))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remove = stranded
+            .iter()
+            .map(|package| format!("`tilo app remove {}`", package.id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(DaemonError::InvalidParams(format!(
+            "generation {} drops the native toolkit the {COHORT_COMPONENT} layer of generation {} \
+             ships, and {}'s own packages run on it: {needs}; neither generation {} nor the image \
+             provides it. Remove them ({remove}) or roll to a generation that provides it",
+            to.number, from.number, session.user, to.number
+        )))
     }
 
     fn transition(
@@ -2005,12 +2155,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cohort_rollback_refuses_before_changing_layers_but_keeps_unrelated_rollback() {
+    const TOOLKIT: &str = "2026.07+native.0123456789abcdef0123456789abcdef";
+
+    fn user_package(id: &str, runtime: &str) -> package_store::registry::InstalledPackage {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "payload_root": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}"),
+            "manifest_path": format!("/home/quickuser/.local/share/tilo-apps/pkgs/{id}.pkg/manifest.toml"),
+            "runtime": runtime,
+        }))
+        .unwrap()
+    }
+
+    /// Roll the owner's laptop back to the bare image after it took an
+    /// apps+runtime cohort shipping `TOOLKIT` and then a shell. Returns the
+    /// rollback's outcome, the calls the refusal check left behind, and
+    /// the generation current afterwards.
+    fn roll_cohort_back_to_image(
+        packages: Vec<package_store::registry::InstalledPackage>,
+        image_runtimes: &[&str],
+    ) -> (Result<ApplyResult, DaemonError>, usize, usize, u64) {
         let root = tempfile::tempdir().unwrap();
         let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut apply = RecordingApply::with_login("quickuser");
         apply.mirror = Some(mirror.clone());
+        apply.user_packages = packages;
+        apply.image_runtimes = image_runtimes.iter().map(|v| (*v).to_owned()).collect();
         let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
         daemon
             .handle(Request::Hello(tilo_vm_protocol::Hello {
@@ -2020,45 +2190,107 @@ mod tests {
             .unwrap();
         let first = "01".repeat(32);
         let next = "02".repeat(32);
-        for hash in [&first, &next] {
-            fs::create_dir_all(root.path().join("layers").join(hash).join("usr/bin")).unwrap();
-        }
+        let layers = root.path().join("layers");
+        fs::create_dir_all(
+            layers
+                .join(&first)
+                .join("usr/lib/tilo-runtime")
+                .join(TOOLKIT),
+        )
+        .unwrap();
+        fs::create_dir_all(layers.join(&next).join("usr/bin")).unwrap();
+        let session = Some(ComponentInfo::new(Scope::Session, Vec::new()));
         let cohort = daemon
-            .swap(
-                DEVICE_SLOT,
-                "apps+runtime",
-                &first,
-                Some(ComponentInfo::new(Scope::Session, Vec::new())),
-            )
+            .swap(DEVICE_SLOT, COHORT_COMPONENT, &first, session.clone())
             .unwrap();
-        daemon
-            .swap(
-                DEVICE_SLOT,
-                "shell",
-                &next,
-                Some(ComponentInfo::new(Scope::Session, Vec::new())),
-            )
-            .unwrap();
+        daemon.swap(DEVICE_SLOT, "shell", &next, session).unwrap();
+        // Rolling back a component the cohort does not carry is never checked.
         daemon
             .rollback(DEVICE_SLOT, Some(cohort.generation))
             .unwrap();
-        let record = daemon.load_slot(DEVICE_SLOT).unwrap();
-        let calls = mirror.lock().unwrap().len();
-        let error = daemon.rollback(DEVICE_SLOT, Some(0)).unwrap_err();
+        let before = mirror.lock().unwrap().len();
+        let result = daemon.rollback(DEVICE_SLOT, Some(0));
+        let after = mirror.lock().unwrap().len();
+        let current = daemon.load_slot(DEVICE_SLOT).unwrap().current;
+        (result, before, after, current)
+    }
+
+    #[test]
+    fn cohort_rollback_without_user_packages_is_allowed() {
+        let (result, _, _, current) = roll_cohort_back_to_image(Vec::new(), &[]);
+        assert_eq!(result.unwrap().generation, 0);
+        assert_eq!(current, 0);
+    }
+
+    #[test]
+    fn cohort_rollback_ignores_packages_that_need_no_app_toolkit() {
+        // A runtime package (it may not declare a runtime) and an app that
+        // names none, as `tilo-install` records them.
+        let (result, _, _, current) = roll_cohort_back_to_image(
+            vec![
+                user_package("so.tilo.runtime.chromium", ""),
+                user_package("org.example.static", ""),
+            ],
+            &[],
+        );
+        assert_eq!(result.unwrap().generation, 0);
+        assert_eq!(current, 0);
+    }
+
+    #[test]
+    fn cohort_rollback_refuses_to_strand_a_package_on_the_removed_toolkit() {
+        let runtime = format!("tilo-runtime/{TOOLKIT}");
+        let (result, before, after, current) = roll_cohort_back_to_image(
+            vec![
+                user_package("so.tilo.runtime.chromium", ""),
+                user_package("org.example.thin", &runtime),
+                user_package("org.example.elsewhere", "tilo-runtime/2025.01+native.ffff"),
+            ],
+            &[],
+        );
+        let error = result.unwrap_err().to_string();
         assert!(
-            error
-                .to_string()
-                .contains("user packages may require its SDK")
+            error.contains(&format!("org.example.thin needs {runtime}")),
+            "{error}"
         );
+        assert!(
+            error.contains("tilo app remove org.example.thin"),
+            "{error}"
+        );
+        assert!(!error.contains("chromium"), "{error}");
+        assert!(!error.contains("org.example.elsewhere"), "{error}");
+        assert_eq!(after, before, "refusal must precede any layer side effect");
+        assert_ne!(current, 0);
+    }
+
+    #[test]
+    fn cohort_rollback_allows_a_package_whose_toolkit_the_image_ships() {
+        let (result, _, _, current) = roll_cohort_back_to_image(
+            vec![user_package(
+                "org.example.thin",
+                &format!("tilo-runtime/{TOOLKIT}"),
+            )],
+            &[TOOLKIT],
+        );
+        assert_eq!(result.unwrap().generation, 0);
+        assert_eq!(current, 0);
+    }
+
+    #[test]
+    fn only_a_single_tilo_runtime_directory_names_a_native_toolkit() {
         assert_eq!(
-            mirror.lock().unwrap().len(),
-            calls,
-            "refusal must precede any layer side effect"
+            native_toolkit(&format!("tilo-runtime/{TOOLKIT}")),
+            Some(TOOLKIT)
         );
-        assert_eq!(
-            daemon.load_slot(DEVICE_SLOT).unwrap().current,
-            record.current
-        );
+        for runtime in [
+            "",
+            "tilo-runtime/",
+            "tilo-runtime/..",
+            "tilo-runtime/a/b",
+            "other/1.0",
+        ] {
+            assert_eq!(native_toolkit(runtime), None, "{runtime}");
+        }
     }
 
     /// Every connection's hello takes the keep-awake lease; `awake` holds it

@@ -5,20 +5,21 @@
 //! `artifacts/<blake3>.tapp` sits `artifacts/<blake3>.tapp.zst`: the same
 //! bytes compressed once, when the object is stored, so clients download a
 //! third of them (`tilo_app_package::compressed`). A twin is written only
-//! from bytes already checked against their name, and re-checked the same
-//! way before it is served: it must decompress, within the length of the
-//! object it stands for, to bytes that hash to that name.
+//! from bytes already checked against their name, and checked again the
+//! first time each stored twin file is served (see `checked`): it must
+//! decompress, within the length of the object it stands for, to bytes that
+//! hash to that name.
 //!
 //! A twin is an optimisation, never the only copy. A missing one is served as
 //! 404 and the client takes the raw object; `compress-payloads` writes the
 //! twins of objects stored before twins existed.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use tilo_app_package::BlobHash;
 use tilo_app_package::compressed::{self, SUFFIX};
 
+use super::checked::CheckedFiles;
 use super::{Storage, StorageError, atomic_write, is_hex_digest, list_digests};
 
 /// What [`Storage::compress_stored_objects`] did.
@@ -88,6 +89,7 @@ impl Storage {
             return Ok(None);
         };
         load_twin(
+            &self.checked,
             &self.payload_twin_path(&hash),
             &self.payload_dir().join(hash.to_hex()),
             &hash,
@@ -121,7 +123,7 @@ impl Storage {
         ) else {
             return Ok(None);
         };
-        load_twin(&twin, &raw, &hash)
+        load_twin(&self.checked, &twin, &raw, &hash)
     }
 
     /// Write the missing twin of every stored payload object and imported
@@ -188,35 +190,35 @@ pub(super) fn write_twin(path: &Path, bytes: &[u8]) -> Result<Option<u64>, Stora
     Ok(Some(twin.len() as u64))
 }
 
-/// Read the twin at `twin` and check that it decompresses, within the
-/// length of the object at `raw`, to bytes hashing to `hash`.
-fn load_twin(twin: &Path, raw: &Path, hash: &BlobHash) -> Result<Option<Vec<u8>>, StorageError> {
+/// Read the twin at `twin` and check, the first time this file is served,
+/// that it decompresses within the length of the object at `raw` to bytes
+/// hashing to `hash`.
+fn load_twin(
+    checked: &CheckedFiles,
+    twin: &Path,
+    raw: &Path,
+    hash: &BlobHash,
+) -> Result<Option<Vec<u8>>, StorageError> {
     let Ok(raw_len) = std::fs::metadata(raw).map(|metadata| metadata.len()) else {
         // A twin is served only beside the object it stands for.
         return Ok(None);
     };
-    let file = match std::fs::File::open(twin) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(StorageError::Io(format!("open twin: {error}"))),
-    };
-    let bound = compressed::compressed_bound(raw_len);
-    let mut bytes = Vec::new();
-    file.take(bound.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| StorageError::Io(format!("read twin: {error}")))?;
-    if bytes.len() as u64 > bound {
-        return Err(StorageError::Parse(
-            "twin exceeds its object's bound".into(),
-        ));
-    }
-    let mut hasher = blake3::Hasher::new();
-    let len = compressed::decompress_bounded(bytes.as_slice(), raw_len, &mut hasher)
-        .map_err(|error| StorageError::Parse(format!("twin does not decompress: {error}")))?;
-    if len != raw_len || hasher.finalize().as_bytes() != hash.as_bytes() {
-        return Err(StorageError::Parse(
-            "twin does not decompress to its object".into(),
-        ));
-    }
-    Ok(Some(bytes))
+    checked.read(
+        twin,
+        "twin",
+        |_| Ok(compressed::compressed_bound(raw_len)),
+        |bytes| {
+            let mut hasher = blake3::Hasher::new();
+            let len =
+                compressed::decompress_bounded(bytes, raw_len, &mut hasher).map_err(|error| {
+                    StorageError::Parse(format!("twin does not decompress: {error}"))
+                })?;
+            if len != raw_len || hasher.finalize().as_bytes() != hash.as_bytes() {
+                return Err(StorageError::Parse(
+                    "twin does not decompress to its object".into(),
+                ));
+            }
+            Ok(())
+        },
+    )
 }

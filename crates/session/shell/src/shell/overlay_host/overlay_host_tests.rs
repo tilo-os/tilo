@@ -462,6 +462,20 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         };
 
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
+        // The open is queued off the compositor thread: its refusal arrives
+        // as a launch event that the host settles on its next drain.
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while chrome.borrow().notifications().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the queued refusal never reached the host"
+            );
+            if !host.drain_launch_events() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
 
         assert!(
             crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
@@ -1698,8 +1712,9 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforex"),
-            "the Save name field owns text input before capture opens"
+            Some("x"),
+            "the Save name field owns text input before capture opens (typing replaces \
+             the preset name, which opens selected)"
         );
 
         assert!(pump(
@@ -1728,7 +1743,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforexy"),
+            Some("xy"),
             "after capture closes, the exact prior Save field must regain keyboard input"
         );
     }
@@ -1929,6 +1944,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         scope: Some(crate::portal::PickerScope {
             initial_dir: folder.path().to_path_buf(),
             roots: vec![folder.path().to_path_buf()],
+            home: None,
         }),
         reply,
     });
@@ -2862,11 +2878,11 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     {
         let chrome = h.chrome.borrow_mut();
@@ -2896,7 +2912,7 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2923,7 +2939,7 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2949,7 +2965,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[5])
+            .accessibility_rect_for_path(&[3])
             .is_none()
     );
 
@@ -2960,11 +2976,11 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2993,7 +3009,7 @@ fn people_completed_click_defers_follow_until_release() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -3014,7 +3030,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
         let target = h
             .host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[5])
+            .accessibility_rect_for_path(&[3])
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -3053,7 +3069,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -3135,7 +3151,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3158,7 +3174,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3195,7 +3211,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3204,7 +3220,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let moved = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
@@ -3433,27 +3449,6 @@ fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
 }
 
 #[test]
-fn people_viewport_probe_keyboard_paging_keeps_a_usable_pager_focus() {
-    let mut h = people_viewport_probe_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
-    assert_eq!(
-        h.host
-            .collaborators_overlay
-            .key(&Key::Named(NamedKey::Enter), false),
-        Some(CollaboratorsHit::NextPeople),
-        "the fixture selects Next People"
-    );
-    let mods = Modifiers::default();
-    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
-    paint(&mut h);
-    let tree = h.host.collaborators_overlay.accessibility_snapshot();
-    assert!(
-        tree.children.iter().any(|node| node.state.focused),
-        "paging drops all keyboard focus, making the next page require restarting navigation"
-    );
-}
-
-#[test]
 fn people_status_pointer_reentry_preserves_the_draft() {
     let mut h = people_status_fixture();
     let mods = Modifiers::default();
@@ -3487,44 +3482,48 @@ fn people_status_pointer_reentry_preserves_the_draft() {
 }
 
 #[test]
-fn people_viewport_keyboard_visits_every_page_and_returns_to_status() {
+fn people_viewport_keyboard_reaches_everyone_and_returns_to_status() {
     let mut h = people_viewport_probe_fixture();
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
     paint(&mut h);
     let mods = Modifiers::default();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
-    for page in 1..=4 {
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
-        let mut release = key_press(Key::Named(NamedKey::Enter));
-        if let WindowEvent::KeyboardInput { event, .. } = &mut release {
-            event.state = ElementState::Released;
-        }
-        assert!(pump(&mut h, &release, mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    let mut reached = std::collections::BTreeSet::new();
+    for _ in 0..60 {
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::ArrowRight)),
+            mods
+        ));
         paint(&mut h);
         let tree = h.host.collaborators_overlay.accessibility_snapshot();
         let focused = tree
             .children
             .iter()
             .position(|node| node.state.focused)
-            .expect("pager focus survives");
+            .expect("keyboard focus survives scrolling");
         let rect = h
             .host
             .collaborators_overlay
             .accessibility_rect_for_path(&[focused])
             .expect("focused target");
-        assert!(h.host.rect.contains(rect.center()));
-        let expected = if page == 4 {
-            CollaboratorsHit::PreviousPeople
-        } else {
-            CollaboratorsHit::NextPeople
-        };
-        assert_eq!(
-            h.host
-                .collaborators_overlay
-                .key(&Key::Named(NamedKey::Enter), false),
-            Some(expected)
+        assert!(
+            h.host.rect.contains(rect.center()),
+            "the list scrolls the focused control into view"
         );
+        if let Some(CollaboratorsHit::ToggleFollow(index)) = h
+            .host
+            .collaborators_overlay
+            .key(&Key::Named(NamedKey::Enter), false)
+        {
+            reached.insert(index);
+        }
     }
+    assert_eq!(
+        reached.len(),
+        13,
+        "every person is reachable without pages: {reached:?}"
+    );
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
     let rect = h
         .host
@@ -3792,6 +3791,27 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
             .1
             .is_none()
     );
+}
+
+#[test]
+fn a_slow_host_update_names_the_step_that_took_the_time() {
+    let mut steps = UpdateSteps::start();
+    steps.mark("peer-sync");
+    steps.steps[0].1 = Duration::from_millis(3);
+    steps.mark("search-index");
+    steps.steps[1].1 = Duration::from_millis(900);
+    assert!(
+        steps
+            .report(SLOW_HOST_UPDATE.saturating_sub(Duration::from_millis(1)))
+            .is_none(),
+        "an update inside the budget is not reported"
+    );
+    let line = steps
+        .report(Duration::from_millis(903))
+        .expect("an update past the budget is reported");
+    assert!(line.starts_with("SLOW-HOST-UPDATE total=903ms ("), "{line}");
+    assert!(line.contains("search-index=900ms"), "{line}");
+    assert!(line.contains("peer-sync=3ms"), "{line}");
 }
 
 /// Exercise the real catalogue callback and widget action-host/reducer, never

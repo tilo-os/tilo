@@ -2196,10 +2196,6 @@ mod scheduling_tests {
 /// the wire for pointer presence, and when.
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the assertions add fixed durations to a paused clock"
-)]
 mod pointer_pacing_writer_tests {
     use super::*;
     use crate::coedit::POINTER_GAP;
@@ -2216,7 +2212,10 @@ mod pointer_pacing_writer_tests {
 
     /// Every `write_all` the writer makes, as one chunk.
     #[derive(Clone, Default)]
-    struct Wire(Arc<Mutex<Vec<Chunk>>>);
+    struct Wire {
+        chunks: Arc<Mutex<Vec<Chunk>>>,
+        written: Arc<tokio::sync::Notify>,
+    }
 
     impl tokio::io::AsyncWrite for Wire {
         fn poll_write(
@@ -2224,10 +2223,11 @@ mod pointer_pacing_writer_tests {
             _: &mut Context<'_>,
             bytes: &[u8],
         ) -> Poll<std::io::Result<usize>> {
-            self.0
+            self.chunks
                 .lock()
                 .unwrap()
                 .push((Instant::now(), bytes.to_vec()));
+            self.written.notify_one();
             Poll::Ready(Ok(bytes.len()))
         }
 
@@ -2243,7 +2243,7 @@ mod pointer_pacing_writer_tests {
     impl Wire {
         /// Each write, as the state envelopes a relay decodes from it.
         async fn writes(&self) -> Vec<(Instant, Vec<Envelope>)> {
-            let chunks = self.0.lock().unwrap().clone();
+            let chunks = self.chunks.lock().unwrap().clone();
             let mut writes = Vec::new();
             for (at, bytes) in chunks {
                 let mut reader = SessionReader::framed(std::io::Cursor::new(bytes), FRAMING);
@@ -2325,6 +2325,56 @@ mod pointer_pacing_writer_tests {
         // Ten moves over 297 ms: the first at once, then one per gap.
         assert_eq!(writes.len(), 7);
 
+        drop(pump.states);
+        assert!(pump.task.await.unwrap());
+    }
+
+    /// Count actual production writer calls under a controlled sample clock.
+    /// Network packet counters include path probes, ACKs and retransmissions,
+    /// which cannot say how much presence work the session writer performed.
+    #[tokio::test(start_paused = true)]
+    async fn sixty_100_hz_moves_cost_thirteen_writes_and_deliver_the_resting_position() {
+        let pump = writer();
+        let t0 = Instant::now();
+        for step in 0..60_u32 {
+            tokio::time::sleep_until(t0 + ms(10) * step).await;
+            pump.states
+                .send(pointer("tile", f64::from(step)))
+                .await
+                .unwrap();
+        }
+        let last = pointer("tile", 59.0);
+        let writes = tokio::time::timeout(POINTER_GAP * 2, async {
+            loop {
+                let writes = pump.wire.writes().await;
+                if writes
+                    .last()
+                    .is_some_and(|(_, frames)| frames.last() == Some(&last))
+                {
+                    break writes;
+                }
+                // notify_one retains a permit if a write races this check.
+                pump.wire.written.notified().await;
+            }
+        })
+        .await
+        .expect("the resting pointer is written without another input");
+        println!(
+            "POINTER_PACING_WORK moves=60 writes={} frames={}",
+            writes.len(),
+            writes.iter().map(|(_, frames)| frames.len()).sum::<usize>()
+        );
+        assert_eq!(
+            writes.len(),
+            13,
+            "one leading write, then one per logical 50 ms gap"
+        );
+        assert_eq!(writes.first(), Some(&(t0, vec![pointer("tile", 0.0)])));
+        assert_eq!(writes.last(), Some(&(t0 + ms(600), vec![last])));
+        assert!(writes.iter().all(|(_, frames)| frames.len() == 1));
+        for pair in writes.windows(2) {
+            assert!(pair[1].0 - pair[0].0 >= POINTER_GAP);
+        }
         drop(pump.states);
         assert!(pump.task.await.unwrap());
     }

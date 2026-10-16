@@ -25,9 +25,16 @@ pub struct AppNoticeCard {
 impl AppNoticeCard {
     /// The card for `tab`, whose window is called `title` and whose app the
     /// catalogue offers as `display_name`.
-    pub fn install(tab: TabId, title: &str, display_name: &str) -> Self {
+    /// `detail` replaces the plain "not installed" when there is more to
+    /// say: why the last install failed.
+    pub fn install(tab: TabId, title: &str, display_name: &str, detail: &str) -> Self {
+        let message = if detail.is_empty() {
+            crate::shell::i18n::t("peer-window-not-installed")
+        } else {
+            detail.to_owned()
+        };
         let card = EmptyState::new(title)
-            .with_message(crate::shell::i18n::t("peer-window-not-installed"))
+            .with_message(message)
             .with_action(crate::shell::i18n::t_args(
                 "peer-window-install",
                 &[("app", display_name.to_owned().into())],

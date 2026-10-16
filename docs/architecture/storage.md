@@ -1403,8 +1403,11 @@ mmap-written). [R9]
 
 **Implemented:** the content store's file area is the one bounded cache.
 Its entries carry a retention class: fetched content is *cached* and is
-evicted least recently used first once cached resident bytes exceed the
-budget (a quarter of the area's filesystem by default); content this device
+evicted once cached resident bytes exceed the budget (a quarter of the
+area's filesystem by default): first what a host acknowledged holding with
+a replica receipt for the current version, outside the eight most recently
+used entries (the file being read and those predicted next), then the
+rest, least recently used first within each; content this device
 may be the only holder of (what it authored) is *local-only*, and "Keep
 offline" hydration makes an entry *pinned*; neither is ever evicted by the
 budget. Explicit eviction through the queue above removes area entries by
@@ -1420,6 +1423,26 @@ partially cold files are not implemented; eviction is per entry.
 - `local` never means synced. "Synced" and "safe to free" come only from
   receipts (`docs/collaborative-files-product.md:300-302`).
 
+**Implemented:** the storage socket (`runtime_fs::storage`) answers a
+workspace's *residency*: its bytes on this device split into what losing
+the device would cost. *Only here* is content no other device is known to
+hold: no receipt names its current version and its bytes did not come
+from a peer, or it has unsaved changes. Pinned or not, that is what a
+wiped device loses. The rest is *pinned* ("Keep offline", on itself or a
+folder above), *cache* (the file area's cached entries, which free-cache
+drops and the budget drops anyway) or *replicated* (kept, and
+acknowledged elsewhere). The summary carries counts per workspace and
+never a path, because it is what the device answers the person's other
+devices. Settings' storage area is its client: the `storage-summary`,
+`free-cache` and `keep-here` effects, and one card per device. The other
+devices' cards are their own answers: Settings lists the person's devices
+through the host, and asks each one that is neither this device nor
+revoked for its `storage-summary` through the host's own-device route
+(`tilo.own-device`, see `docs/device-mesh.md`), which only reaches an
+app's own actions on an enrolled, authenticated device of the same
+person. A device that is offline shows no card; an answer is taken only
+for a device the latest list names.
+
 ### 12.4 Read-ahead and prediction
 
 - **In-file:** sequential reads of a partial file trigger read-ahead. The
@@ -1430,10 +1453,22 @@ partially cold files are not implemented; eviction is per entry.
   between the same person's devices**, never with collaborators. They are what
   makes "continue on the desktop what you did on the laptop" instant. The
   "recently used on another device" hint is the `ReplicationIntent` seam
-  (`docs/device-mesh.md`).
-- **Directory locality:** opening a file hydrates the directory's small
-  siblings. This is today's rule with the limits raised (`smart.rs:19-23` caps
-  it at 32 MiB files, 2 concurrent, 128 MiB queued).
+  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount
+  and bounded: two files opened within two minutes of each other on two
+  separate occasions predict each other, and a partner is fetched only if the
+  mount's identity may read it at prediction time. The pairs survive restarts
+  in one owner-only file per workspace, `<cache dir>/prefetch-history/<workspace>`
+  (`smart/kept_history.rs`): record ids only, at most 2048 pairs, none older
+  than 30 days, checksummed and replaced atomically (a damaged file is deleted,
+  never partly trusted), written by a keeper 20 s after the last change and
+  never on the request path. Turning prefetching off deletes it and stops
+  learning; a mount deletes the files of workspaces its cache directory no
+  longer serves. Sharing between devices is still to come.
+- **Directory locality:** opening a file hydrates the directory's next
+  siblings of the same type in natural order (`page-9` before `page-10`): two
+  ahead, or four once three files were opened in order, forwards or
+  backwards; a cold open of the last files looks back. The limits are
+  `smart.rs`'s: 32 MiB files, 2 concurrent, 128 MiB queued.
 - **Gates:** predictive and backfill work respects the existing network,
   battery and disk gates (`smart_monitor.rs`). Foreground and pinned work does
   not.

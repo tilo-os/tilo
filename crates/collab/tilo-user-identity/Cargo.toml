@@ -99,8 +99,10 @@ data-encoding.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 data-encoding-macro.workspace = true
 
-# The login Keychain keeps a Tilo runtime's device key on macOS.
-[target.'cfg(target_os = "macos")'.dependencies]
+# The login Keychain keeps a Tilo runtime's device key on macOS. On Linux a
+# process that read the device key proves it to the Secret Service, which
+# cannot read a non-dumpable process's executable.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -118,3 +120,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

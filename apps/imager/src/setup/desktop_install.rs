@@ -283,7 +283,7 @@ mod transaction_core {
             .symlink_metadata()
             .map_err(|_| "Cannot inspect private staging.")?;
         // Production calls this only after asserting effective uid zero.
-        if metadata.uid() != unsafe { libc::geteuid() }
+        if metadata.uid() != tilo_process::effective_uid()
             || metadata.permissions().mode() & 0o077 != 0
         {
             return Err("Package staging ownership or permissions are unsafe.".into());
@@ -867,8 +867,7 @@ mod native {
 #[cfg(target_os = "linux")]
 pub(super) fn run_native_helper(bytes: &[u8], digest: &str) -> i32 {
     use std::io::Write;
-    // SAFETY: geteuid has no preconditions and does not mutate process state.
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return 1;
     }
     // A stopped/lost UI must not block the privileged transaction on progress.
@@ -1456,7 +1455,7 @@ mod tests {
     #[test]
     #[ignore = "requires disposable Linux guest, root and explicit local artifact metadata"]
     fn native_desktop_install_local_artifact() {
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(tilo_process::effective_uid(), 0);
         let path = std::path::PathBuf::from(
             std::env::var_os("TILO_DESKTOP_TEST_ARTIFACT").expect("explicit local artifact"),
         );

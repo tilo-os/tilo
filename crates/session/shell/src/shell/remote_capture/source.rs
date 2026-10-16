@@ -430,8 +430,7 @@ fn physical_camera() -> Option<std::path::PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn unnamed_spool() -> std::io::Result<File> {
-    // SAFETY: `geteuid` has no pointer arguments or preconditions.
-    let runtime = format!("/run/user/{}\0", unsafe { libc::geteuid() });
+    let runtime = format!("/run/user/{}\0", rustix::process::geteuid().as_raw());
     let runtime = std::ffi::CStr::from_bytes_with_nul(runtime.as_bytes()).ok();
     for directory in runtime.into_iter().chain([c"/var/tmp"]) {
         // SAFETY: both directory paths are NUL terminated. O_TMPFILE returns

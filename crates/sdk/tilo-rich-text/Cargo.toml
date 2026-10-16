@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The SDK rich-text editor: the toolkit's block editor bound to qdoc's rich-text resource through the app framework"
+description = "The SDK rich-text editor: the toolkit's block editor bound to tilo-doc's rich-text resource through the app framework"
 
 [dependencies]
 # The framework the editor takes part in (surfaces, dispatcher, live state)

@@ -22,9 +22,10 @@
 //! here is pure and tested the same way.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use crate::sync_playout::{ChannelRole, ClockMapping, SyncPlayout};
+use tilo_lock::MutexRecover as _;
 
 /// Nanoseconds per second.
 const NS_PER_SECOND: i64 = 1_000_000_000;
@@ -205,7 +206,7 @@ impl<C> SyncPlaybackSource<C> {
 
 impl<C: ClockMapping + Send + 'static> PlaybackSource for SyncPlaybackSource<C> {
     fn render(&mut self, presentation_ns: i64, out: &mut [f32]) {
-        let mut state = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.shared.lock_recover();
         let SyncPlayoutState { playout, clock } = &mut *state;
         playout.render(clock, presentation_ns, out);
         drop(state);
@@ -222,19 +223,16 @@ pub struct StreamStatus {
 
 impl StreamStatus {
     pub fn timing(&self) -> Option<DeviceTiming> {
-        *self.timing.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.timing.lock_recover()
     }
 
     pub fn failure(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.failure.lock_recover().clone()
     }
 
     /// Records the first failure; later ones are consequences of it.
     pub fn fail(&self, reason: impl Into<String>) {
-        let mut failure = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut failure = self.failure.lock_recover();
         if failure.is_none() {
             *failure = Some(reason.into());
         }
@@ -249,7 +247,7 @@ impl StreamStatus {
     }
 
     fn record_timing(&self, timing: DeviceTiming) {
-        *self.timing.lock().unwrap_or_else(PoisonError::into_inner) = Some(timing);
+        *self.timing.lock_recover() = Some(timing);
     }
 }
 
@@ -609,10 +607,7 @@ pub struct ScheduleProgress {
 
 impl ScheduleProgress {
     pub fn late_by_ns(&self) -> Option<i64> {
-        *self
-            .late_by_ns
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        *self.late_by_ns.lock_recover()
     }
 
     pub fn finished(&self) -> bool {
@@ -657,11 +652,7 @@ impl PlaybackSource for ScheduledBuffer {
             i64::try_from(out.len().checked_div(self.channels).unwrap_or(0)).unwrap_or(i64::MAX);
         let end = first.saturating_add(count);
         {
-            let mut late = self
-                .progress
-                .late_by_ns
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut late = self.progress.late_by_ns.lock_recover();
             if late.is_none() && end > 0 {
                 *late = Some(frames_to_ns(first.max(0), self.rate));
             }
@@ -1665,7 +1656,6 @@ mod native {
 
 #[cfg(test)]
 #[allow(
-    clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
     reason = "fixture arithmetic on literal times, frame counts and ramps"
 )]

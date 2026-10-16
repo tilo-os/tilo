@@ -16,7 +16,7 @@ use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -2130,11 +2130,6 @@ impl MapsApp {
         result.handled()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per Hit variant; the length is the number of click \
-                  targets the map surface exposes, not accidental complexity in any one arm"
-    )]
     fn dispatch(&mut self, hit: &Hit) {
         match hit {
             Hit::Consume => {}
@@ -2903,11 +2898,6 @@ impl MapsApp {
     /// visible map area (clear of the docked panel and the control column):
     /// its name, what it is, the facts OpenStreetMap has for it, and
     /// Directions.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a single linear draw pass over this card's fixed regions; splitting it would only \
-              relocate the line count, not the amount a reader must hold in mind"
-    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "the shared drawing names (t: transform, x/y: the pen, s1–s4: spacing steps) \
@@ -4656,14 +4646,7 @@ impl Widget for MapsApp {
         self.nav_card_size = navigation_card_size(theme);
         self.navigation_placement
             .set_preferred_size(self.nav_card_size);
-        let node = taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         self.node = Some(node);
         node
     }

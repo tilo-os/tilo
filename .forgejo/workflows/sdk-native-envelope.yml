@@ -119,10 +119,15 @@ jobs:
           cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
       - name: Calculator for Linux
         run: bash tools/ci/measure.sh "Calculator for Linux" -- target/debug/tilo-app build --target linux apps/calculator
-      # The generated app compiles its whole graph into a temporary target
-      # directory that the test removes. Run before the .tapp step, the two
-      # builds never occupy the runner's disk at the same time.
-      - name: A generated app builds outside the repository (native and wasm32)
+      # The external developer's journey: a generated app outside the
+      # repository passes `tilo-app check`, its audit fails on a control bound
+      # to nothing, it builds natively and for wasm32, packages as a signed
+      # Tilo OS .tapp, and `apply`/`publish` take it into a loopback
+      # registry's review queue without making it public. The app compiles
+      # its whole graph into a temporary target directory that the test
+      # removes. Run before the .tapp step, the two builds never occupy the
+      # runner's disk at the same time.
+      - name: A generated app goes from new to a release awaiting review
         run: |
           rustup target add wasm32-unknown-unknown
           bash tools/ci/measure.sh "generated app outside the repository" -- \

@@ -1,25 +1,45 @@
 #!/usr/bin/env bash
-# Publish the tapps and app collections a Release / apps run built.
+# Publish the tapps and app collections a Release / apps build signed.
 #
-# release-apps.yml's publish job runs this from the repository root after
-# downloading the build artifacts into release/<arch>/. It needs the job's
-# OIDC request variables (enable-openid-connect) and the environment the job
-# sets: MAIN_AUDIENCE, VERSION, COLLECTION, COMPLETE, BUILDER_IMAGE, the
-# PRIOR_* collection inputs, TILO_PACKAGE_PUBLIC_BASE_URL, TILO_REGISTRY_URL,
-# TAPP_PUBLISHER_IDENTITY and, with VERIFY_FINAL_RECEIPT=true, the
-# FINAL_RECEIPT_POLICY inputs. It uploads immutable packages, assembles each
-# collection and, for main's default collection, advances the
-# TILO_APP_COLLECTION_* repository variables, then submits each tapp to the
-# signed registry. Last, it offers the runtime build the apps link as the
-# registry package so.tilo.runtime, so a device without that build fetches it
-# with the apps.
+# tools/apps/t-release.sh runs this from the repository root with the signed
+# packages in release/<arch>/, in two stages that hold different credentials
+# (TILO_APP_PUBLISH_STAGE):
+#
+#   upload  with TILO_PACKAGE_TOKEN, a token that may write generic packages:
+#           uploads each tapp, assembles and uploads each collection, writes
+#           the collection channel (TILO_APP_CHANNEL_OUT, the pointer an OS
+#           build takes its apps from), and uploads the registry's media and
+#           the runtime package's objects.
+#   submit  with TAPP_PUBLISHER_IDENTITY and no package token: signs each
+#           tapp's registry entry and submits it to the registry, then offers
+#           the runtime build the apps link as so.tilo.runtime, so a device
+#           without that build fetches it with the apps.
+#
+# Both take VERSION, COLLECTION, COMPLETE, BUILDER_IMAGE, the PRIOR_*
+# collection inputs, TILO_PACKAGE_PUBLIC_BASE_URL, TILO_REGISTRY_URL,
+# TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
+# GITHUB_REF, GITHUB_SHA and RUNNER_TEMP, and with VERIFY_FINAL_RECEIPT=true
+# the FINAL_RECEIPT_POLICY inputs.
+#
+# Unset, the stage is `all`: release-apps.yml's publish job does both with one
+# job's OIDC token (enable-openid-connect, audience MAIN_AUDIENCE) and
+# TAPP_PUBLISHER_IDENTITY, and for main's default collection advances the
+# TILO_APP_COLLECTION_* repository variables instead of writing a channel file.
 set -euo pipefail
-audience=$MAIN_AUDIENCE
-[[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
-jwt=$(curl --fail --silent --show-error \
-  --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-  "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
-echo "::add-mask::$jwt"
+stage=${TILO_APP_PUBLISH_STAGE:-all}
+case $stage in
+  upload) jwt=${TILO_PACKAGE_TOKEN:?the upload stage needs TILO_PACKAGE_TOKEN} ;;
+  submit) jwt= ;;
+  all)
+    audience=$MAIN_AUDIENCE
+    [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
+    jwt=$(curl --fail --silent --show-error \
+      --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
+    echo "::add-mask::$jwt"
+    ;;
+  *) printf 'TILO_APP_PUBLISH_STAGE must be upload or submit, not %s\n' "$stage" >&2; exit 2 ;;
+esac
 if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
   policy_file="$RUNNER_TEMP/final-receipt-policy.json"
   printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy_file"
@@ -76,8 +96,10 @@ for index in release/*/index.json; do
       "$package_api/tilo-app-$name/$VERSION/$file.zst" >> "$upload_manifest"
   done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
 done
+if [[ $stage != submit ]]; then
 TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
   tools/upload_immutable_packages.sh "$upload_manifest"
+fi
 
 # Assemble each collection from this run's tapps and the prior collection's
 # unchanged members, upload it, and, for main's default collection, advance
@@ -187,7 +209,7 @@ publish_collections() {
   # Keep the OS input channel current after a successful default/main
   # collection publish. The package URL remains immutable; only these
   # two repository variables move.
-  if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
+  if [[ $stage == all && $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
     [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
     variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
     update_variable() {
@@ -218,8 +240,24 @@ publish_collections() {
     fi
     echo '::notice::advanced the default OS app-collection channel'
   fi
+  # The channel an OS build takes its apps from: this run's immutable
+  # collections, the builder their runtime came from (a later run may reuse
+  # the collection only with the same builder) and, when this selection
+  # covered every change, the source the next run selects its tapps against.
+  if [[ $COLLECTION == default && -n ${TILO_APP_CHANNEL_OUT:-} ]]; then
+    [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
+    jq -n --arg url_x86_64 "$channel_url" --arg sha256_x86_64 "$channel_sha" \
+      --arg url_aarch64 "${arm64_channel_url:-}" --arg sha256_aarch64 "${arm64_channel_sha:-}" \
+      --arg builder "$BUILDER_IMAGE" --arg source "$([[ $COMPLETE == true ]] && echo "$GITHUB_SHA")" \
+      '{schema: 1, collection: "default",
+        x86_64: {url: $url_x86_64, sha256: $sha256_x86_64},
+        aarch64: (if $url_aarch64 == "" then null else {url: $url_aarch64, sha256: $sha256_aarch64} end),
+        builder: $builder, source: (if $source == "" then null else $source end)}' \
+      > "$TILO_APP_CHANNEL_OUT"
+    printf 'app collection channel: %s\n' "$(jq -c . "$TILO_APP_CHANNEL_OUT")"
+  fi
 }
-if [[ -n ${COLLECTION:-} ]]; then
+if [[ $stage != submit && -n ${COLLECTION:-} ]]; then
   publish_collections
 fi
 
@@ -250,8 +288,26 @@ while IFS= read -r media; do
   printf '%s\t%s\n' "$media" \
     "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"
 done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
-TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
-  tools/upload_immutable_packages.sh "$registry_media_uploads"
+if [[ $stage != submit ]]; then
+  TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
+    tools/upload_immutable_packages.sh "$registry_media_uploads"
+fi
+
+# The runtime package's objects go up with the rest; its entry is signed below.
+upload_runtimes() {
+  local index
+  for index in release/*/index.json; do
+    RUNTIME_PACKAGE_STAGE=upload VERSION=$VERSION TILO_PACKAGE_TOKEN=$jwt PACKAGE_API=$package_api \
+      REGISTRY_URL=$registry_url OWNER=$owner REGISTRY_CLI=$registry_cli \
+      tools/apps/publish-runtime-package.sh "${index%/index.json}/runtime-package" \
+      "$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")" \
+      so.tilo.runtime tilo-app-runtime
+  done
+}
+if [[ $stage == upload ]]; then
+  upload_runtimes
+  exit 0
+fi
 
 # Archived screenshots are served directly through the existing public proxy.
 # Include them in the same availability/type gate before signing any entry.
@@ -292,7 +348,14 @@ check_media() {
   version=${version##*/}
   if [[ $version =~ ^[0-9a-f]{64}$ ]]; then
     archived_file=$(mktemp "$RUNNER_TEMP/tilo-registry-archive.XXXXXX")
+    # The proxy fetches an archived screenshot from its origin on first
+    # read and can answer that read with a gateway timeout (HTTP 524) while
+    # the same URL serves on the next request. That single answer used to
+    # fail publication after the media uploads had already landed. Retry
+    # transient answers (timeouts, 5xx such as 502-504 and 524), as the HEAD
+    # check above does. A wrong digest or a persistent error still fails.
     if ! curl --fail --silent --show-error --max-filesize 33554432 \
+      --connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 \
       "$media_url" --output "$archived_file"; then
       rm -f -- "$archived_file"
       return 1
@@ -444,7 +507,8 @@ publish_runtimes() {
           supported_languages: ["en"],
           source_url: "https://code.tilo.so/tilo/tilo"}' > "$metadata"
   for index in release/*/index.json; do
-    VERSION=$VERSION TILO_PACKAGE_TOKEN=$jwt PACKAGE_API=$package_api \
+    RUNTIME_PACKAGE_STAGE=$([[ $stage == all ]] && echo all || echo submit) \
+      VERSION=$VERSION TILO_PACKAGE_TOKEN=$jwt PACKAGE_API=$package_api \
       REGISTRY_URL=$registry_url OWNER=$owner REGISTRY_CLI=$registry_cli \
       REGISTRY_IDENTITY=$registry_identity \
       tools/apps/publish-runtime-package.sh "${index%/index.json}/runtime-package" \

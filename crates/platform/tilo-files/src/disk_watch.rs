@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher as _};
 
 use crate::watch::{Change, ChangeKind, Inbox, Watch};
@@ -103,49 +102,40 @@ fn error(error: notify::Error) -> FsError {
     }
 }
 
-/// The paths an event names and what happened to each. A write's hidden
+/// The paths an event names and what each is now. A write's hidden
 /// temporary sibling is left out; the rename that publishes it reports the
 /// real name.
+///
+/// Every kind is read from the filesystem when the event is delivered, not
+/// from the event itself. Events arrive after the fact, and under load long
+/// after: by the time a write's rename is delivered the file may already be
+/// removed again. Mixing the two views reorders history: a rename looked up
+/// late says `Removed`, and the next event of the same burst, taken at its
+/// word, says `Changed` after it, for a file that is gone. Read at delivery,
+/// each change is the path's state at a later moment than the one before
+/// it, and any change after the last look raises another event, so the last
+/// change a watch reports for a path is what the path is. `FSEvents`, which
+/// coalesces and whose flags cannot be taken at their word either, needs
+/// the same.
 fn changes(event: &Event) -> Vec<(PathBuf, ChangeKind)> {
-    let settled = |path: &PathBuf| {
-        if path.exists() {
-            ChangeKind::Changed
-        } else {
-            ChangeKind::Removed
-        }
-    };
-    let named: Vec<(PathBuf, ChangeKind)> = match event.kind {
-        EventKind::Access(_) => Vec::new(),
-        EventKind::Remove(_) => event
-            .paths
-            .iter()
-            .map(|path| (path.clone(), ChangeKind::Removed))
-            .collect(),
-        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
-            let mut paths = event.paths.iter();
-            paths
-                .next()
-                .map(|from| (from.clone(), ChangeKind::Removed))
-                .into_iter()
-                .chain(paths.map(|to| (to.clone(), ChangeKind::Changed)))
-                .collect()
-        }
-        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => event
-            .paths
-            .iter()
-            .map(|path| (path.clone(), ChangeKind::Removed))
-            .collect(),
-        // FSEvents coalesces; whether a name exists now is the truth.
-        _ => event
-            .paths
-            .iter()
-            .map(|path| (path.clone(), settled(path)))
-            .collect(),
-    };
-    named
-        .into_iter()
-        .filter(|(path, _)| !is_temporary(path))
+    if matches!(event.kind, EventKind::Access(_)) {
+        return Vec::new();
+    }
+    event
+        .paths
+        .iter()
+        .filter(|path| !is_temporary(path))
+        .map(|path| (path.clone(), state_now(path)))
         .collect()
+}
+
+/// Whether `path` names an entry now. A dangling symlink is still an entry,
+/// and a name that cannot be looked up for any other reason may have changed.
+fn state_now(path: &Path) -> ChangeKind {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ChangeKind::Removed,
+        _ => ChangeKind::Changed,
+    }
 }
 
 /// `native::atomic`'s temporary names: `.<name>.<pid>.<sequence>.tmp`.
@@ -198,6 +188,99 @@ mod tests {
             })
         );
         assert_eq!(watch.try_next(), None);
+    }
+
+    fn drain(inbox: Arc<Inbox>) -> Vec<Change> {
+        let watch = Watch::new(inbox, Box::new(()));
+        std::iter::from_fn(|| watch.try_next()).collect()
+    }
+
+    fn event(kind: EventKind, paths: &[&Path]) -> Event {
+        paths.iter().fold(Event::new(kind), |event, path| {
+            event.add_path(path.to_path_buf())
+        })
+    }
+
+    /// Two atomic writes and a removal, all done before the watch thread got
+    /// to the first event, as happens under load. The rename that published
+    /// each write is delivered after the file is gone; it must not say the
+    /// file changed after an earlier event already said it was removed.
+    #[test]
+    fn a_file_removed_before_its_writes_are_delivered_is_never_reported_changed() {
+        use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let file = root.join("a.md");
+        let inbox = Arc::new(Inbox::default());
+        let watched = VPath::root();
+        for seq in 0..2 {
+            let temporary = root.join(format!(".a.md.42.{seq}.tmp"));
+            let burst = [
+                event(EventKind::Create(CreateKind::File), &[&temporary]),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                    &[&temporary],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                    &[&file],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                    &[&temporary, &file],
+                ),
+            ];
+            for native in burst {
+                deliver(&inbox, root, &watched, Ok(native));
+            }
+        }
+        deliver(
+            &inbox,
+            root,
+            &watched,
+            Ok(event(EventKind::Remove(RemoveKind::File), &[&file])),
+        );
+        assert_eq!(
+            drain(inbox),
+            vec![Change {
+                path: VPath::new("a.md").unwrap(),
+                kind: ChangeKind::Removed
+            }]
+        );
+    }
+
+    /// The other way round: a removal delivered after the name was created
+    /// again reports the file that is there, so the last change is the truth.
+    #[test]
+    fn a_removal_delivered_after_the_name_returned_reports_the_file() {
+        use notify::event::RemoveKind;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, b"back").unwrap();
+        let inbox = Arc::new(Inbox::default());
+        deliver(
+            &inbox,
+            dir.path(),
+            &VPath::root(),
+            Ok(event(EventKind::Remove(RemoveKind::File), &[&file])),
+        );
+        assert_eq!(
+            drain(inbox),
+            vec![Change {
+                path: VPath::new("a.md").unwrap(),
+                kind: ChangeKind::Changed
+            }]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+        assert_eq!(state_now(&link), ChangeKind::Changed);
+        assert_eq!(state_now(&dir.path().join("missing")), ChangeKind::Removed);
     }
 
     #[cfg(target_os = "linux")]

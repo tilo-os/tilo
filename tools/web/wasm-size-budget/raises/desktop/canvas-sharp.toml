@@ -1,4 +1,0 @@
-bytes = 917504
-run = 63538
-measured = 83451268
-reason = "feature growth: canvas paints close views and large exports of painted layers finer, in tiles (#2339)"

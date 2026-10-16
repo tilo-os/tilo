@@ -163,6 +163,17 @@ pub enum KnownProvider {
 }
 
 impl KnownProvider {
+    /// The provider's own name.
+    pub fn name(self) -> &'static str {
+        match self {
+            KnownProvider::Google => "Google",
+            KnownProvider::Microsoft => "Microsoft",
+            KnownProvider::Yahoo => "Yahoo",
+            KnownProvider::Fastmail => "Fastmail",
+            KnownProvider::ICloud => "iCloud",
+        }
+    }
+
     /// The connection settings for this provider. OAuth is required for Google
     /// and Microsoft; the others accept an app-password.
     pub fn autoconfig(self) -> Autoconfig {
@@ -346,6 +357,73 @@ pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
         .collect()
 }
 
+/// One DNS `SRV` answer (RFC 2782).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Srv {
+    pub priority: u16,
+    pub weight: u16,
+    pub port: u16,
+    pub host: String,
+}
+
+/// Parse a DNS-over-HTTPS JSON answer into its `SRV` records. A target of `.`
+/// means the service is explicitly unavailable (RFC 2782) and is dropped.
+pub fn parse_doh_srv(json: &str) -> Vec<Srv> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(answers) = v.get("Answer").and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    answers
+        .iter()
+        // SRV record type is 33.
+        .filter(|a| a.get("type").and_then(serde_json::Value::as_u64) == Some(33))
+        .filter_map(|a| {
+            let mut fields = a.get("data")?.as_str()?.split_whitespace();
+            let priority = fields.next()?.parse().ok()?;
+            let weight = fields.next()?.parse().ok()?;
+            let port = fields.next()?.parse().ok()?;
+            let host = fields.next()?.trim_end_matches('.').to_string();
+            (!host.is_empty()).then_some(Srv {
+                priority,
+                weight,
+                port,
+                host,
+            })
+        })
+        .collect()
+}
+
+/// The server to use among `records`: the lowest priority, then the heaviest.
+fn best_srv(records: &[Srv]) -> Option<&Srv> {
+    records
+        .iter()
+        .min_by_key(|r| (r.priority, std::cmp::Reverse(r.weight)))
+}
+
+/// A configuration from RFC 6186 service records: `_imaps` for incoming and
+/// `_submissions` (implicit TLS) or else `_submission` for outgoing. Both
+/// servers must be published.
+pub fn autoconfig_from_srv(
+    imaps: &[Srv],
+    submissions: &[Srv],
+    submission: &[Srv],
+) -> Option<Autoconfig> {
+    let imap = best_srv(imaps)?;
+    let smtp = best_srv(submissions).or_else(|| best_srv(submission))?;
+    Some(Autoconfig {
+        display_name: None,
+        imap_host: imap.host.clone(),
+        imap_port: imap.port,
+        imap_tls: true,
+        smtp_host: smtp.host.clone(),
+        smtp_port: smtp.port,
+        smtp_tls: true,
+        oauth: false,
+    })
+}
+
 /// The autoconfig URLs to try, in priority order, for a domain + email.
 /// Public so the (network) `discover_cancellable` and its test can share the list.
 pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
@@ -371,7 +449,40 @@ pub fn discover_cancellable(
     cancellation: &std::sync::atomic::AtomicBool,
 ) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
-    discover_with_urls(email, cancellation, discovery_urls(domain, email))
+    discover_with_urls(
+        email,
+        cancellation,
+        discovery_urls(domain, email),
+        Some(&Resolvers::public()),
+    )
+}
+
+/// Where the DNS and directory lookups of discovery go: DNS-over-HTTPS
+/// resolvers, the Thunderbird ISPDB, and the autoconfig locations a mail
+/// provider serves for its own domain. Templates: `%NAME%` and `%TYPE%` in a
+/// resolver, `%DOMAIN%` in the others.
+#[cfg(feature = "live")]
+struct Resolvers {
+    doh: Vec<String>,
+    ispdb: String,
+    provider: Vec<String>,
+}
+
+#[cfg(feature = "live")]
+impl Resolvers {
+    fn public() -> Self {
+        Self {
+            doh: vec![
+                "https://dns.google/resolve?name=%NAME%&type=%TYPE%".into(),
+                "https://cloudflare-dns.com/dns-query?name=%NAME%&type=%TYPE%".into(),
+            ],
+            ispdb: "https://autoconfig.thunderbird.net/v1.1/%DOMAIN%".into(),
+            provider: vec![
+                "https://autoconfig.%DOMAIN%/mail/config-v1.1.xml".into(),
+                "https://%DOMAIN%/.well-known/autoconfig/mail/config-v1.1.xml".into(),
+            ],
+        }
+    }
 }
 
 #[cfg(feature = "live")]
@@ -379,6 +490,7 @@ fn discover_with_urls(
     email: &str,
     cancellation: &std::sync::atomic::AtomicBool,
     urls: Vec<String>,
+    dns: Option<&Resolvers>,
 ) -> Option<Autoconfig> {
     let discovered = ui::rt::app().block_on(async {
         tokio::select! {
@@ -389,7 +501,7 @@ fn discover_with_urls(
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             } => None,
-            result = tokio::time::timeout(std::time::Duration::from_secs(30), discover_candidates(email, urls)) => result.ok().flatten(),
+            result = tokio::time::timeout(DISCOVERY_TIMEOUT, discover_candidates(email, urls, dns)) => result.ok().flatten(),
         }
     });
     discovered
@@ -398,58 +510,148 @@ fn discover_with_urls(
         .flatten()
 }
 
+/// How long one lookup may take, and the whole discovery. Lookups run side by
+/// side, so the slowest hit decides the wait, not their sum.
 #[cfg(feature = "live")]
-async fn discover_candidates(email: &str, urls: Vec<String>) -> Option<Autoconfig> {
+const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(feature = "live")]
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Where a candidate configuration comes from, in priority order.
+#[cfg(feature = "live")]
+enum Source {
+    /// A provider's autoconfig XML or the Thunderbird ISPDB.
+    Url(String),
+    /// RFC 6186 `_imaps` / `_submission(s)` SRV records.
+    Srv,
+    /// The mail exchanger: a known provider, or the configuration the
+    /// ISPDB or the exchanger's own domain publishes for that domain.
+    Mx,
+}
+
+#[cfg(feature = "live")]
+async fn discover_candidates(
+    email: &str,
+    urls: Vec<String>,
+    dns: Option<&Resolvers>,
+) -> Option<Autoconfig> {
+    use futures_util::StreamExt as _;
+
     let (_, domain) = email.split_once('@')?;
-    let client = tilo_net::http::client()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent("Tilo Mail")
-        .build()
-        .ok()?;
-
-    // 1. Thunderbird ISPDB + provider `.well-known` autoconfig XML.
-    for url in urls {
-        let Ok(resp) = client.get(&url).send().await else {
-            continue;
-        };
-        if !resp.status().is_success() {
-            continue;
-        }
-        let Ok(body) = resp.text().await else {
-            continue;
-        };
-        if let Some(cfg) = parse_autoconfig(&body) {
-            return Some(cfg);
-        }
-    }
-
-    // 2. Curated consumer-domain table (covers Microsoft/Google/etc. across
-    //    every TLD, so @outlook.de resolves even when the ISPDB misses it, plus
-    //    the large free webmail hosts — GMX, web.de, Zoho, …).
+    // The curated table answers without a socket.
     if let Some(cfg) = builtin_autoconfig(domain) {
         return Some(cfg);
     }
-
-    // 3. MX-based provider guess for hosted domains (a company on Google
-    //    Workspace / Microsoft 365 keeps its own domain but points MX at the
-    //    provider). Resolved via DNS-over-HTTPS so no resolver dependency is
-    //    pulled in.
-    if let Some(p) = discover_via_mx(&client, domain).await {
-        return Some(p.autoconfig());
+    let client = tilo_net::http::client()
+        .timeout(LOOKUP_TIMEOUT)
+        .user_agent("Tilo Mail")
+        .build()
+        .ok()?;
+    // Every lookup starts at once and the answers are taken in priority
+    // order. A configuration found further down the list waits for the
+    // lookups ranked above it, but only as long again as it took itself (at
+    // least PREFERENCE_GRACE): a domain whose autoconfig host or web server
+    // silently drops connections otherwise held setup for the whole lookup
+    // timeout after the Thunderbird database had answered.
+    // Dropping the lookups (cancellation, a win) closes their requests.
+    let sources = urls
+        .into_iter()
+        .map(Source::Url)
+        .chain(dns.map(|_| [Source::Srv, Source::Mx]).into_iter().flatten());
+    let started = tokio::time::Instant::now();
+    let mut lookups: futures_util::stream::FuturesUnordered<_> = sources
+        .enumerate()
+        .map(|(rank, source)| {
+            let client = &client;
+            async move { (rank, resolve(client, dns, domain, source).await) }
+        })
+        .collect();
+    let mut answers: Vec<Option<Option<Autoconfig>>> = (0..lookups.len()).map(|_| None).collect();
+    let mut deadline = None;
+    loop {
+        let waiting = answers.iter().position(Option::is_none);
+        let best = answers
+            .iter()
+            .position(|answer| matches!(answer, Some(Some(_))));
+        match (best, waiting) {
+            (Some(best), waiting) if waiting.is_none_or(|waiting| waiting > best) => {
+                return answers.get_mut(best)?.take().flatten();
+            }
+            (None, None) => return None,
+            _ => {}
+        }
+        if best.is_some() && deadline.is_none() {
+            let now = tokio::time::Instant::now();
+            deadline = now.checked_add(now.duration_since(started).max(PREFERENCE_GRACE));
+        }
+        let until = deadline
+            .or_else(|| started.checked_add(DISCOVERY_TIMEOUT))
+            .unwrap_or(started);
+        tokio::select! {
+            answered = lookups.next() => {
+                let (rank, found) = answered?;
+                if let Some(answer) = answers.get_mut(rank) {
+                    *answer = Some(found);
+                }
+            }
+            () = tokio::time::sleep_until(until) => {
+                // The lookups ranked higher had their chance: take the best.
+                return best.and_then(|best| answers.get_mut(best)?.take().flatten());
+            }
+        }
     }
-
-    None
 }
 
-/// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
-/// provider. Tries Google and Cloudflare `DoH` endpoints. Network — `live` only.
+/// The least a found configuration waits for better-ranked lookups still
+/// running: the stagger RFC 8305 gives a connection attempt.
 #[cfg(feature = "live")]
-async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<KnownProvider> {
-    let endpoints = [
-        format!("https://dns.google/resolve?name={domain}&type=MX"),
-        format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX"),
-    ];
-    for url in endpoints {
+const PREFERENCE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+#[cfg(feature = "live")]
+async fn resolve(
+    client: &reqwest::Client,
+    dns: Option<&Resolvers>,
+    domain: &str,
+    source: Source,
+) -> Option<Autoconfig> {
+    match source {
+        Source::Url(url) => fetch_autoconfig(client, &url).await,
+        Source::Srv => {
+            let dns = dns?;
+            let (imaps, submissions, submission) = tokio::join!(
+                srv_records(client, dns, "_imaps", domain),
+                srv_records(client, dns, "_submissions", domain),
+                srv_records(client, dns, "_submission", domain),
+            );
+            autoconfig_from_srv(&imaps, &submissions, &submission)
+        }
+        Source::Mx => discover_via_mx(client, dns?, domain).await,
+    }
+}
+
+/// The autoconfig document at `url`, when it serves one.
+#[cfg(feature = "live")]
+async fn fetch_autoconfig(client: &reqwest::Client, url: &str) -> Option<Autoconfig> {
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    parse_autoconfig(&resp.text().await.ok()?)
+}
+
+/// Ask each DNS-over-HTTPS resolver in turn for `name`'s records of
+/// `record_type`; the first usable answer body.
+#[cfg(feature = "live")]
+async fn doh_query(
+    client: &reqwest::Client,
+    dns: &Resolvers,
+    name: &str,
+    record_type: &str,
+) -> Option<String> {
+    for template in &dns.doh {
+        let url = template
+            .replace("%NAME%", name)
+            .replace("%TYPE%", record_type);
         let Ok(resp) = client
             .get(&url)
             .header("accept", "application/dns-json")
@@ -461,15 +663,72 @@ async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<Known
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(body) = resp.text().await else {
-            continue;
-        };
-        let records = parse_doh_mx(&body);
-        if let Some(p) = provider_from_mx_records(records) {
-            return Some(p);
+        if let Ok(body) = resp.text().await {
+            return Some(body);
         }
     }
     None
+}
+
+#[cfg(feature = "live")]
+async fn srv_records(
+    client: &reqwest::Client,
+    dns: &Resolvers,
+    service: &str,
+    domain: &str,
+) -> Vec<Srv> {
+    match doh_query(client, dns, &format!("{service}._tcp.{domain}"), "SRV").await {
+        Some(body) => parse_doh_srv(&body),
+        None => Vec::new(),
+    }
+}
+
+/// The domains a mail exchanger `host` belongs to, most specific first,
+/// that are worth asking for a configuration: its parent domains down to two
+/// labels, without the address's own `domain` (already asked). A domain
+/// whose mail a provider hosts publishes nothing itself; the provider is
+/// known by its exchanger (`mx01.provider.example` → `provider.example`),
+/// which is how Thunderbird finds it in the ISPDB.
+pub fn mx_lookup_domains(host: &str, domain: &str) -> Vec<String> {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
+    (1..labels.len().saturating_sub(1))
+        .filter_map(|skip| labels.get(skip..).map(|rest| rest.join(".")))
+        .filter(|candidate| *candidate != domain)
+        .collect()
+}
+
+/// Resolve `domain`'s MX records and find the configuration of the provider
+/// they point at: the curated table, else what the ISPDB or the exchanger's
+/// own domain publishes for the exchanger's domains. All of those lookups
+/// run at once and are read most specific domain first.
+#[cfg(feature = "live")]
+async fn discover_via_mx(
+    client: &reqwest::Client,
+    dns: &Resolvers,
+    domain: &str,
+) -> Option<Autoconfig> {
+    let body = doh_query(client, dns, domain, "MX").await?;
+    let mut records = parse_doh_mx(&body);
+    records.sort_by_key(|(preference, _)| *preference);
+    if let Some(provider) = provider_from_mx_records(records.clone()) {
+        return Some(provider.autoconfig());
+    }
+    let (_, exchanger) = records.first()?;
+    let urls: Vec<String> = mx_lookup_domains(exchanger, domain)
+        .iter()
+        .flat_map(|candidate| {
+            std::iter::once(&dns.ispdb)
+                .chain(&dns.provider)
+                .map(move |template| template.replace("%DOMAIN%", candidate))
+        })
+        .collect();
+    futures_util::future::join_all(urls.iter().map(|url| fetch_autoconfig(client, url)))
+        .await
+        .into_iter()
+        .flatten()
+        .next()
 }
 
 #[cfg(test)]
@@ -564,6 +823,7 @@ mod tests {
                         "fixture@custom.invalid",
                         &worker_cancellation,
                         vec![url],
+                        None,
                     ))
                     .unwrap();
             });
@@ -597,6 +857,192 @@ mod tests {
                 .expect("cancellation closes the request socket");
             worker.join().unwrap();
         }
+    }
+
+    /// The domain's own autoconfig host takes connections and never answers;
+    /// the Thunderbird database answers at once. Setup takes the database's
+    /// answer after a short wait for the better-ranked one, not the whole
+    /// lookup timeout. A better-ranked answer that is merely slower still
+    /// wins.
+    #[cfg(feature = "live")]
+    #[test]
+    fn a_silent_autoconfig_host_does_not_hold_up_discovery() {
+        use std::io::{Read as _, Write as _};
+
+        fn serve(xml: Option<&'static str>, delay: std::time::Duration) -> String {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { return };
+                    std::thread::spawn(move || {
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request);
+                        let Some(xml) = xml else {
+                            // Silent: hold the connection open, answer nothing.
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            return;
+                        };
+                        std::thread::sleep(delay);
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",
+                            xml.len()
+                        );
+                    });
+                }
+            });
+            url
+        }
+        let other = SAMPLE.replace("imap.example.com", "imap.other.example");
+        let other: &'static str = Box::leak(other.into_boxed_str());
+        let never = std::sync::atomic::AtomicBool::new(false);
+
+        let started = std::time::Instant::now();
+        let found = discover_with_urls(
+            "me@custom.invalid",
+            &never,
+            vec![
+                serve(None, std::time::Duration::ZERO),
+                serve(Some(other), std::time::Duration::ZERO),
+            ],
+            None,
+        )
+        .expect("the database's answer");
+        let waited = started.elapsed();
+        assert_eq!(found.imap_host, "imap.other.example");
+        assert!(
+            waited < LOOKUP_TIMEOUT / 2,
+            "a silent autoconfig host held discovery for {waited:?}"
+        );
+
+        let found = discover_with_urls(
+            "me@custom.invalid",
+            &never,
+            vec![
+                serve(Some(SAMPLE), std::time::Duration::from_millis(100)),
+                serve(Some(other), std::time::Duration::ZERO),
+            ],
+            None,
+        )
+        .expect("the provider's answer");
+        assert_eq!(found.imap_host, "imap.example.com");
+    }
+
+    #[test]
+    fn an_exchanger_is_looked_up_by_its_parent_domains() {
+        assert_eq!(
+            mx_lookup_domains("mx00.mailhost.example.", "custom.example"),
+            ["mailhost.example"]
+        );
+        assert_eq!(
+            mx_lookup_domains("in1.mx.provider.co.example", "custom.example"),
+            [
+                "mx.provider.co.example",
+                "provider.co.example",
+                "co.example"
+            ]
+        );
+        // The address's own domain was asked already.
+        assert_eq!(
+            mx_lookup_domains("mail.custom.example", "custom.example"),
+            Vec::<String>::new()
+        );
+        assert!(mx_lookup_domains("localhost", "custom.example").is_empty());
+    }
+
+    /// A domain that publishes nothing for mail, whose exchanger belongs to a
+    /// provider the ISPDB knows: discovery finds the provider by the MX
+    /// record, through a fake resolver and a fake ISPDB on loopback.
+    #[cfg(feature = "live")]
+    #[test]
+    fn a_domain_hosted_by_an_ispdb_provider_is_found_by_its_exchanger() {
+        use std::io::{Read as _, Write as _};
+
+        let provider = SAMPLE.replace("imap.example.com", "imap.mailhost.example");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let provider = provider.clone();
+                std::thread::spawn(move || {
+                    let mut request = [0; 4096];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let body = if path == "/dns?name=custom.invalid&type=MX" {
+                        Some(
+                            r#"{"Status":0,"Answer":[{"type":15,"data":"20 mx01.mailhost.example."},{"type":15,"data":"10 mx00.mailhost.example."}]}"#
+                                .to_string(),
+                        )
+                    } else if path.starts_with("/dns?") {
+                        Some(r#"{"Status":3}"#.to_string())
+                    } else if path == "/ispdb/mailhost.example" {
+                        Some(provider)
+                    } else {
+                        None
+                    };
+                    let reply = match body {
+                        Some(body) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        ),
+                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    };
+                    let _ = stream.write_all(reply.as_bytes());
+                });
+            }
+        });
+        let resolvers = Resolvers {
+            doh: vec![format!("{base}/dns?name=%NAME%&type=%TYPE%")],
+            ispdb: format!("{base}/ispdb/%DOMAIN%"),
+            provider: vec![format!("{base}/provider/%DOMAIN%")],
+        };
+        let found = discover_with_urls(
+            "me@custom.invalid",
+            &std::sync::atomic::AtomicBool::new(false),
+            vec![
+                format!("{base}/own/custom.invalid"),
+                format!("{base}/ispdb/custom.invalid"),
+            ],
+            Some(&resolvers),
+        )
+        .expect("the exchanger's provider");
+        assert_eq!(found.imap_host, "imap.mailhost.example");
+    }
+
+    #[test]
+    fn srv_records_make_an_account_when_both_servers_are_published() {
+        let json = r#"{"Answer":[
+            {"type":33,"data":"20 5 993 backup.example.com."},
+            {"type":33,"data":"10 1 993 imap.example.com."},
+            {"type":5,"data":"alias.example.com."}]}"#;
+        let imaps = parse_doh_srv(json);
+        assert_eq!(imaps.len(), 2, "only SRV (type 33) records are kept");
+        let submission =
+            parse_doh_srv(r#"{"Answer":[{"type":33,"data":"0 1 587 smtp.example.com."}]}"#);
+        let cfg = autoconfig_from_srv(&imaps, &[], &submission).expect("both published");
+        assert_eq!(
+            (
+                cfg.imap_host.as_str(),
+                cfg.imap_port,
+                cfg.smtp_host.as_str(),
+                cfg.smtp_port
+            ),
+            ("imap.example.com", 993, "smtp.example.com", 587),
+            "the lowest priority wins and the trailing dot is dropped"
+        );
+        assert!(
+            autoconfig_from_srv(&imaps, &[], &[]).is_none(),
+            "no outgoing server"
+        );
+        let off = parse_doh_srv(r#"{"Answer":[{"type":33,"data":"0 0 0 ."}]}"#);
+        assert!(
+            off.is_empty(),
+            "a `.` target means the service is unavailable"
+        );
+        assert!(parse_doh_srv("not json").is_empty());
     }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

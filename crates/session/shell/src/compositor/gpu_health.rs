@@ -16,7 +16,8 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
 /// Name of the record under `$XDG_RUNTIME_DIR/tilo/`.
 pub const FILE_NAME: &str = "gpu-health.json";
@@ -46,7 +47,7 @@ pub struct GpuHealth {
 static RECORD: Mutex<Option<GpuHealth>> = Mutex::new(None);
 
 fn update(change: impl FnOnce(&mut GpuHealth)) {
-    let mut guard = RECORD.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = RECORD.lock_recover();
     let record = guard.get_or_insert_with(GpuHealth::default);
     let before = record.clone();
     change(record);
@@ -73,14 +74,7 @@ fn write(record: &GpuHealth) {
     let Ok(bytes) = serde_json::to_vec_pretty(record) else {
         return;
     };
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            let staging = path.with_extension("json.tmp");
-            std::fs::write(&staging, &bytes)?;
-            std::fs::rename(&staging, &path)
-        });
+    let result = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
     if let Err(error) = result {
         tracing::warn!(
             target: "shell::compositor::gpu",
@@ -172,11 +166,7 @@ mod tests {
             std::path::PathBuf::from("/dev/dri/renderD128"),
             "virtio GPU without 3D acceleration".to_string(),
         )]);
-        let record = RECORD
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .unwrap_or_default();
+        let record = RECORD.lock_recover().clone().unwrap_or_default();
         assert_eq!(
             record.nodes_without_gpu["/dev/dri/renderD128"],
             "virtio GPU without 3D acceleration"
@@ -203,11 +193,7 @@ mod tests {
                 ui::gpu::SOFTWARE_FALLBACK_MESSAGE
             ),
         );
-        let record = RECORD
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .unwrap_or_default();
+        let record = RECORD.lock_recover().clone().unwrap_or_default();
         assert!(!record.app_adapters.contains_key("so.tilo.notes"));
         assert!(
             record.app_adapters["so.tilo.file-explorer"].contains("type=Cpu"),

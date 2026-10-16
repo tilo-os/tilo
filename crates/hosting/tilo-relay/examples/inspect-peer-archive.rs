@@ -8,13 +8,14 @@
 use anyhow::{Result, bail, ensure};
 use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use collab_types::DocumentMutation;
+use neighbour_wire::NeighbourMsg;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use tilo_peer_state::{NeighbourMsg, coverage, room};
+use tilo_peer_state::{coverage, room};
 use tilo_relay::{
     coedit::CoeditPayload,
     transport::{self, Envelope},
@@ -94,7 +95,7 @@ struct Decoded {
     source: String,
     author: [u8; 32],
     at: u64,
-    kind: tilo_peer_state::transport::Retention,
+    kind: neighbour_wire::Retention,
     message: NeighbourMsg,
 }
 fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
@@ -112,34 +113,30 @@ fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
     let (channel, body, kind) = match CoeditPayload::decode(&delta)
         .ok_or_else(|| anyhow::anyhow!("invalid coedit payload"))?
     {
-        CoeditPayload::Checkpoint { channel, body } => (
-            channel,
-            body,
-            tilo_peer_state::transport::Retention::Checkpoint,
-        ),
+        CoeditPayload::Checkpoint { channel, body } => {
+            (channel, body, neighbour_wire::Retention::Checkpoint)
+        }
         CoeditPayload::RetainedDelta { channel, body } => {
-            (channel, body, tilo_peer_state::transport::Retention::Delta)
+            (channel, body, neighbour_wire::Retention::Delta)
         }
     };
     let message: NeighbourMsg = postcard::from_bytes(&body)?;
     ensure!(
-        tilo_peer_state::transport::retention(
-            &message,
-            kind == tilo_peer_state::transport::Retention::Checkpoint
-        ) == Some((channel, kind)),
+        neighbour_wire::retention(&message, kind == neighbour_wire::Retention::Checkpoint)
+            == Some((channel, kind)),
         "retained channel or kind mismatch"
     );
     // Filesystem labels are evidence too. Tests use fixture-N names; real input
     // labels are relative to retained/, and must agree with the actual codec.
     if source.name.starts_with("checkpoints/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Checkpoint
+            kind == neighbour_wire::Retention::Checkpoint
                 && source.name == format!("checkpoints/{}", hex::encode(channel)),
             "checkpoint filename/channel mismatch"
         );
     } else if source.name.starts_with("tails/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Delta
+            kind == neighbour_wire::Retention::Delta
                 && source.name.split('/').nth(1) == Some(hex::encode(channel).as_str()),
             "tail filename/channel mismatch"
         );
@@ -224,7 +221,7 @@ fn canonical(room_id: &str, app: &str, record: &str, doc: &AutoCommit) -> Result
 }
 fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
     use collab_types::{Ed25519PublicKey, caps::Principal};
-    use tilo_peer_state::transport::Retention;
+    use neighbour_wire::Retention;
     let b = &auth.bootstrap;
     let room_id = uuid::Uuid::parse_str(&b.room)?;
     ensure!(

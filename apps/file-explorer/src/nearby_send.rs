@@ -5,6 +5,12 @@
 //! projects the shell's certified-device/status reply into app-local picker,
 //! consent and progress state. The shell remains responsible for validating
 //! paths, consent and the existing resumable transfer.
+//!
+//! It never asks on a timer. The shell announces each change
+//! ([`CollabEvent::NearbyTransferChanged`], which names nothing) and Files
+//! then asks for one snapshot; the first announcement arrives when the route
+//! joins. An idle desktop with Files open therefore makes no Nearby request
+//! and no wakeup at all.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -17,7 +23,11 @@ use ui::collaboration::{
 };
 
 const APP_ID: &str = "so.tilo.file-explorer";
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// How long a background snapshot may go unanswered before the next
+/// announced change asks again regardless: a request sent while the route
+/// was going down is never answered, and waiting on it would stop every
+/// later refresh.
+const UNANSWERED_AFTER: Duration = Duration::from_secs(5);
 const MAX_VISIBLE_HISTORY: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,12 +58,15 @@ pub struct NearbySendState {
     pending: BTreeMap<u64, Pending>,
     requests: VecDeque<CollabRequest>,
     snapshot: NearbyTransferSnapshot,
-    next_poll: Instant,
+    /// When the background snapshot now awaiting its reply was asked for.
+    refresh_sent: Option<Instant>,
+    /// The shell announced another change while that snapshot was out: ask
+    /// once more when it is answered, so the last change is never missed.
+    refresh_again: bool,
     shown_offer: Option<NearbyTransferHandle>,
     observed_phases: BTreeMap<NearbyTransferHandle, NearbyTransferPhase>,
     history: VecDeque<NearbyTransferStatus>,
     airdrop_available: bool,
-    queried_airdrop: bool,
 }
 
 impl Default for NearbySendState {
@@ -63,12 +76,12 @@ impl Default for NearbySendState {
             pending: BTreeMap::new(),
             requests: VecDeque::new(),
             snapshot: NearbyTransferSnapshot::default(),
-            next_poll: ui::time::now(),
+            refresh_sent: None,
+            refresh_again: false,
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),
             airdrop_available: false,
-            queried_airdrop: false,
         }
     }
 }
@@ -174,31 +187,51 @@ impl NearbySendState {
         self.queue(NearbyTransferCommand::Retry { handle }, Pending::Retry);
     }
 
-    pub fn poll_if_due(&mut self, now: Instant) {
-        if now < self.next_poll
-            || self
-                .pending
-                .values()
-                .any(|pending| matches!(pending, Pending::Snapshot { open_picker: false }))
+    /// The shell announced that the view may have changed: ask for one
+    /// snapshot, and whether `AirDrop` is on offer. While an earlier ask is
+    /// still out, remember to ask again once it is answered instead; bursts
+    /// of changes (a transfer's progress) cost one snapshot at a time.
+    fn refresh(&mut self, now: Instant) {
+        if self
+            .refresh_sent
+            .is_some_and(|sent| now.saturating_duration_since(sent) < UNANSWERED_AFTER)
         {
+            self.refresh_again = true;
             return;
         }
-        self.next_poll = now + POLL_INTERVAL;
+        // Nothing is out, or what is out will never be answered.
+        self.pending.retain(|_, pending| {
+            !matches!(
+                pending,
+                Pending::Snapshot { open_picker: false } | Pending::AirDropAvailability
+            )
+        });
+        self.refresh_sent = Some(now);
+        self.refresh_again = false;
         self.queue(
             NearbyTransferCommand::Snapshot,
             Pending::Snapshot { open_picker: false },
         );
-        if !self.queried_airdrop {
-            self.queried_airdrop = true;
-            self.queue(
-                NearbyTransferCommand::AirDropAvailability,
-                Pending::AirDropAvailability,
-            );
+        self.queue(
+            NearbyTransferCommand::AirDropAvailability,
+            Pending::AirDropAvailability,
+        );
+    }
+
+    /// The background snapshot was answered, either way.
+    fn refreshed(&mut self, now: Instant) {
+        self.refresh_sent = None;
+        if std::mem::take(&mut self.refresh_again) {
+            self.refresh(now);
         }
     }
 
-    pub fn next_poll(&self) -> Instant {
-        self.next_poll
+    /// Requests are queued and the app must be pumped to send them. They are
+    /// queued while handling an event, after this turn's requests were taken,
+    /// so the host wakes for them at once; with none queued this is no
+    /// deadline at all.
+    pub fn has_requests(&self) -> bool {
+        !self.requests.is_empty()
     }
 
     pub fn targets(&self) -> &[NearbyTransferTarget] {
@@ -221,12 +254,19 @@ impl NearbySendState {
     }
 
     pub fn handle_event(&mut self, event: &CollabEvent) -> Vec<NearbyUiEffect> {
+        if matches!(event, CollabEvent::NearbyTransferChanged) {
+            self.refresh(ui::time::now());
+            return Vec::new();
+        }
         let CollabEvent::NearbyTransferCommandResult { request_id, result } = event else {
             return Vec::new();
         };
         let Some(pending) = self.pending.remove(request_id) else {
             return Vec::new();
         };
+        if pending == (Pending::Snapshot { open_picker: false }) {
+            self.refreshed(ui::time::now());
+        }
         let reply = match result {
             Ok(reply) => reply,
             Err(error) => {
@@ -273,7 +313,6 @@ impl NearbySendState {
                 Pending::AirDropAvailability,
                 NearbyTransferReply::AirDropAvailability { available },
             ) => {
-                self.queried_airdrop = false;
                 if self.airdrop_available == *available {
                     return Vec::new();
                 }
@@ -318,7 +357,8 @@ impl NearbySendState {
         snapshot: NearbyTransferSnapshot,
         open_picker: bool,
     ) -> Vec<NearbyUiEffect> {
-        // Background Snapshot polls keep the 2s wake. An identical roster
+        // A change the shell announced may leave the view as it was (a
+        // handle renewed, progress inside one percent). An identical roster
         // must not look like a frame: the runner used to commit every reply.
         if !open_picker && snapshot == self.snapshot {
             return Vec::new();
@@ -420,6 +460,259 @@ mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
 
+    /// The shell announces a change; Files asks for one snapshot and for
+    /// `AirDrop`'s availability, and nothing else. Returns the snapshot's id.
+    fn announce(state: &mut NearbySendState) -> u64 {
+        assert!(
+            state
+                .handle_event(&CollabEvent::NearbyTransferChanged)
+                .is_empty(),
+            "an announcement names nothing and shows nothing by itself"
+        );
+        assert!(state.has_requests(), "the host wakes to send the ask");
+        let requests = state.take_requests();
+        assert_eq!(requests.len(), 2, "one snapshot and one availability ask");
+        requests
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::Snapshot,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .expect("an announcement asks for a snapshot")
+    }
+
+    fn answer(
+        state: &mut NearbySendState,
+        request_id: u64,
+        snapshot: NearbyTransferSnapshot,
+    ) -> Vec<NearbyUiEffect> {
+        state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+            request_id,
+            result: Ok(NearbyTransferReply::Snapshot { snapshot }),
+        })
+    }
+
+    fn sending(phase: NearbyTransferPhase, transferred_bytes: u64) -> NearbyTransferSnapshot {
+        NearbyTransferSnapshot {
+            transfers: vec![NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([31; 16]),
+                name: "report.pdf".into(),
+                device_label: "Desk".into(),
+                direction: NearbyTransferDirection::Sending,
+                phase,
+                transferred_bytes,
+                total_bytes: 200,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_idle_files_window_asks_nothing_and_needs_no_wakeup() {
+        let mut state = NearbySendState::default();
+        assert!(
+            !state.has_requests(),
+            "nothing is asked before the shell says so"
+        );
+        assert!(state.take_requests().is_empty());
+        let request_id = announce(&mut state);
+        assert!(answer(&mut state, request_id, NearbyTransferSnapshot::default()).is_empty());
+        assert!(
+            !state.has_requests() && state.take_requests().is_empty(),
+            "an answered view waits for the next announcement, not a timer"
+        );
+    }
+
+    #[test]
+    fn an_offer_announced_by_the_shell_surfaces_without_a_timer() {
+        let mut state = NearbySendState::default();
+        let request_id = announce(&mut state);
+        assert!(answer(&mut state, request_id, NearbyTransferSnapshot::default()).is_empty());
+
+        // A device offers a file: the shell announces it, nothing else runs.
+        let offer = NearbyTransferStatus {
+            handle: NearbyTransferHandle::from_issued_bytes([12; 16]),
+            name: "Photos".into(),
+            device_label: "Travel laptop".into(),
+            direction: NearbyTransferDirection::Receiving,
+            phase: NearbyTransferPhase::AwaitingConsent,
+            transferred_bytes: 0,
+            total_bytes: 42,
+        };
+        let destination = NearbyTransferDestination {
+            handle: NearbyDestinationHandle::from_issued_bytes([13; 16]),
+            label: "Workspace files".into(),
+            remembered_for_session: false,
+        };
+        let request_id = announce(&mut state);
+        let effects = answer(
+            &mut state,
+            request_id,
+            NearbyTransferSnapshot {
+                destinations: vec![destination.clone()],
+                transfers: vec![offer.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![NearbyUiEffect::Offer {
+                transfer: offer.clone(),
+                destinations: vec![destination],
+            }]
+        );
+        assert_eq!(
+            state.transfers(),
+            &[offer],
+            "the action surface lists the offer for a person, script or agent to answer"
+        );
+    }
+
+    #[test]
+    fn a_transfer_start_progress_and_end_reach_files_through_announcements() {
+        let mut state = NearbySendState::default();
+
+        let request_id = announce(&mut state);
+        assert_eq!(
+            answer(
+                &mut state,
+                request_id,
+                sending(NearbyTransferPhase::Queued, 0)
+            ),
+            vec![NearbyUiEffect::Status("Queued report.pdf for Desk".into())],
+            "a transfer that starts is shown"
+        );
+
+        let request_id = announce(&mut state);
+        assert_eq!(
+            answer(
+                &mut state,
+                request_id,
+                sending(NearbyTransferPhase::Transferring, 100)
+            ),
+            vec![NearbyUiEffect::Status("Sending report.pdf (50%)".into())]
+        );
+        let request_id = announce(&mut state);
+        assert!(
+            answer(
+                &mut state,
+                request_id,
+                sending(NearbyTransferPhase::Transferring, 150)
+            )
+            .is_empty(),
+            "progress inside a phase is no new status line"
+        );
+        assert_eq!(
+            state.transfers()[0].transferred_bytes,
+            150,
+            "but the transfer Files publishes moves on"
+        );
+
+        let request_id = announce(&mut state);
+        assert_eq!(
+            answer(
+                &mut state,
+                request_id,
+                sending(NearbyTransferPhase::Completed, 200)
+            ),
+            vec![NearbyUiEffect::Status(
+                "Nearby Send completed: report.pdf".into()
+            )],
+            "a transfer that ends is shown"
+        );
+        assert_eq!(
+            state.history.front().map(|entry| entry.phase),
+            Some(NearbyTransferPhase::Completed)
+        );
+
+        let mut failing = NearbySendState::default();
+        let request_id = announce(&mut failing);
+        let effects = answer(
+            &mut failing,
+            request_id,
+            sending(NearbyTransferPhase::Failed, 40),
+        );
+        assert!(
+            matches!(
+                effects.first(),
+                Some(NearbyUiEffect::Failed(transfer)) if transfer.name == "report.pdf"
+            ),
+            "a failed transfer offers its retry: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn announcements_during_an_unanswered_snapshot_become_one_more_ask() {
+        let mut state = NearbySendState::default();
+        let first = announce(&mut state);
+        for _ in 0..3 {
+            assert!(
+                state
+                    .handle_event(&CollabEvent::NearbyTransferChanged)
+                    .is_empty()
+            );
+            assert!(
+                state.take_requests().is_empty(),
+                "one snapshot is out at a time"
+            );
+        }
+        assert!(answer(&mut state, first, NearbyTransferSnapshot::default()).is_empty());
+        let requests = state.take_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [
+                    CollabRequest::NearbyTransferCommand {
+                        command: NearbyTransferCommand::Snapshot,
+                        ..
+                    },
+                    CollabRequest::NearbyTransferCommand {
+                        command: NearbyTransferCommand::AirDropAvailability,
+                        ..
+                    }
+                ]
+            ),
+            "the changes announced meanwhile are asked about once: {requests:?}"
+        );
+    }
+
+    #[test]
+    fn an_ask_lost_with_its_route_does_not_block_later_announcements() {
+        let mut state = NearbySendState::default();
+        let lost = announce(&mut state);
+        let sent = state.refresh_sent.expect("the ask is out");
+        // The reply never comes; the route went down with it. A change
+        // announced after the rejoin asks again rather than waiting forever.
+        state.refresh(sent + UNANSWERED_AFTER);
+        let requests = state.take_requests();
+        let Some(CollabRequest::NearbyTransferCommand {
+            request_id,
+            command: NearbyTransferCommand::Snapshot,
+            ..
+        }) = requests.first()
+        else {
+            panic!("a fresh snapshot: {requests:?}");
+        };
+        let request_id = *request_id;
+        assert_ne!(request_id, lost);
+        assert!(
+            answer(&mut state, lost, sending(NearbyTransferPhase::Queued, 0)).is_empty(),
+            "a late answer to the forgotten ask is ignored"
+        );
+        assert_eq!(
+            answer(
+                &mut state,
+                request_id,
+                sending(NearbyTransferPhase::Queued, 0)
+            ),
+            vec![NearbyUiEffect::Status("Queued report.pdf for Desk".into())]
+        );
+    }
+
     #[test]
     fn airdrop_availability_is_typed_and_failure_withdraws_the_action() {
         let mut state = NearbySendState::default();
@@ -429,7 +722,7 @@ mod tests {
                 .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
                 .is_err()
         );
-        state.poll_if_due(ui::time::now());
+        state.handle_event(&CollabEvent::NearbyTransferChanged);
         let requests = state.take_requests();
         let request_id = requests
             .iter()
@@ -485,7 +778,7 @@ mod tests {
                     online: true,
                 });
             }
-            state.poll_if_due(ui::time::now());
+            state.handle_event(&CollabEvent::NearbyTransferChanged);
             let request_id = state
                 .take_requests()
                 .into_iter()
@@ -657,52 +950,17 @@ mod tests {
     #[test]
     fn identical_background_snapshot_is_not_a_ui_effect() {
         let mut state = NearbySendState::default();
-        state.poll_if_due(ui::time::now());
-        let request = state
-            .take_requests()
-            .into_iter()
-            .next()
-            .expect("snapshot request");
-        let CollabRequest::NearbyTransferCommand {
-            request_id,
-            command: NearbyTransferCommand::Snapshot,
-            ..
-        } = request
-        else {
-            panic!("background snapshot must remain the first request");
-        };
+        let request_id = announce(&mut state);
         let idle = NearbyTransferSnapshot::default();
-        let first = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
-            request_id,
-            result: Ok(NearbyTransferReply::Snapshot {
-                snapshot: idle.clone(),
-            }),
-        });
         assert!(
-            first.is_empty(),
+            answer(&mut state, request_id, idle.clone()).is_empty(),
             "an empty idle roster must not open chrome"
         );
-        state.poll_if_due(ui::time::now() + super::POLL_INTERVAL);
-        let request = state
-            .take_requests()
-            .into_iter()
-            .next()
-            .expect("second snapshot");
-        let CollabRequest::NearbyTransferCommand {
-            request_id,
-            command: NearbyTransferCommand::Snapshot,
-            ..
-        } = request
-        else {
-            panic!("background snapshot must remain the first request");
-        };
-        let second = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
-            request_id,
-            result: Ok(NearbyTransferReply::Snapshot { snapshot: idle }),
-        });
+        // A renewed handle or progress inside one percent is announced too.
+        let request_id = announce(&mut state);
         assert!(
-            second.is_empty(),
-            "an unchanged Nearby poll must not keep requesting frames"
+            answer(&mut state, request_id, idle).is_empty(),
+            "an unchanged Nearby view must not keep requesting frames"
         );
     }
 

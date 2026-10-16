@@ -266,6 +266,7 @@ impl RustcCommand {
     }
 
     /// The `-L dependency=` directories Cargo put its builds in.
+    #[cfg(target_os = "linux")]
     fn dependency_dirs(&self) -> Vec<PathBuf> {
         self.args
             .windows(2)

@@ -38,8 +38,9 @@ impl NotificationSeverity {
     }
 }
 
-/// Icon-kind hint for a notification. There is no icon font on the banner
-/// path yet, so every kind renders the same severity-tinted dot.
+/// What a notification is about, when the desktop itself knows: plain
+/// information leads with its glyph. `Generic` has none, so a card leads
+/// with its sender instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
@@ -47,6 +48,18 @@ pub enum NotificationIconKind {
     Workspace,
     Network,
     Permission,
+}
+
+impl NotificationIconKind {
+    /// The glyph this kind leads a card with.
+    pub fn icon(self) -> Option<ui::icons::Icon> {
+        match self {
+            Self::Generic => None,
+            Self::Workspace => Some(ui::icons::Icon::LayoutGrid),
+            Self::Network => Some(ui::icons::Icon::Wifi),
+            Self::Permission => Some(ui::icons::Icon::Fingerprint),
+        }
+    }
 }
 
 /// Restart-scoped identity of a notification mirrored from another
@@ -107,6 +120,10 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// `Option<Duration>` keeps the expiry arithmetic a single code path.
 pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 
+/// Action key of an ask's "Not now": the banner leaves, the ask stays in
+/// the notification centre where the person can answer it later.
+pub const NOT_NOW_ACTION: &str = "not-now";
+
 /// Max notifications in the active stack; older entries retire to history
 /// from the front (same FIFO as `ui::widget::toast::ToastStack`).
 pub const MAX_NOTIFICATIONS: usize = 6;
@@ -120,6 +137,15 @@ fn next_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A person a notification is from: the name their initials come from and
+/// the stable identity (a peer id, a contact handle) that picks their
+/// presence colour, the same one they wear everywhere else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationPerson {
+    pub name: String,
+    pub identity: String,
 }
 
 /// A single notification. `id` is a process-unique token for the desktop's
@@ -144,6 +170,10 @@ pub struct Notification {
     /// Only the host's durable scheduler can attach this route.
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub scheduled_target: Option<ScheduledNotificationTarget>,
+    /// The person this notification is from, when it is from one (a
+    /// message, a mention): the banner leads with their avatar and keeps
+    /// the app as its source line.
+    pub from: Option<NotificationPerson>,
     /// Sending application's display name; rendered as a caption above the
     /// title when present.
     pub app_name: Option<String>,
@@ -183,6 +213,7 @@ impl Notification {
             remote_route: None,
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             scheduled_target: None,
+            from: None,
             app_name: None,
             app_id: None,
             source_workspace: None,
@@ -200,6 +231,16 @@ impl Notification {
             return Some(k.clone());
         }
         self.actions.first().map(|(k, _)| k.clone())
+    }
+
+    /// From `name`, whose stable `identity` picks their presence colour.
+    #[must_use]
+    pub fn with_from(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.from = Some(NotificationPerson {
+            name: name.into(),
+            identity: identity.into(),
+        });
+        self
     }
 
     #[must_use]

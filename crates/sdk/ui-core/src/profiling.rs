@@ -77,6 +77,82 @@ pub enum Pass {
     PresenceOverlay,
 }
 
+/// Where one input event's `handle_event` time went, in the live app.
+///
+/// The phases are disjoint spans inside one event's dispatch, so their sum
+/// never exceeds that event's total; the remainder is routing glue (focus,
+/// shortcuts, palette and navigation fallbacks) that no phase claims.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputPhases {
+    /// The widget tree's own `handle_event`, including the hit tests widgets
+    /// do while routing the event to the control under the pointer.
+    pub dispatch: Duration,
+    /// The host's pointer hit tests after dispatch: cursor shape and tooltip
+    /// target under the pointer.
+    pub hit_test: Duration,
+    /// Resource discovery before dispatch and resource invalidation after it.
+    pub resources: Duration,
+    /// Presence, action-surface and metadata publication, plus screen-reader
+    /// announcements.
+    pub publication: Duration,
+    /// Document commits and undo boundaries the event closes.
+    pub commit: Duration,
+}
+
+/// Measures [`InputPhases`] for one event. Inert unless profiling is on:
+/// [`start`](Self::start) then returns `None` and reads no clock.
+#[derive(Debug, Default)]
+pub struct InputPhaseClock {
+    enabled: bool,
+    phases: InputPhases,
+}
+
+/// The phase an [`InputPhaseClock`] span is attributed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPhase {
+    Dispatch,
+    HitTest,
+    Resources,
+    Publication,
+    Commit,
+}
+
+impl InputPhaseClock {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            phases: InputPhases::default(),
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> Option<Instant> {
+        self.enabled.then(crate::time::now)
+    }
+
+    /// Attributes the time since `start` to `phase`. Does nothing for a
+    /// `None` start.
+    #[inline]
+    pub fn finish(&mut self, phase: InputPhase, start: Option<Instant>) {
+        let Some(start) = start else {
+            return;
+        };
+        let elapsed = start.elapsed();
+        let slot = match phase {
+            InputPhase::Dispatch => &mut self.phases.dispatch,
+            InputPhase::HitTest => &mut self.phases.hit_test,
+            InputPhase::Resources => &mut self.phases.resources,
+            InputPhase::Publication => &mut self.phases.publication,
+            InputPhase::Commit => &mut self.phases.commit,
+        };
+        *slot = slot.saturating_add(elapsed);
+    }
+
+    pub fn phases(&self) -> InputPhases {
+        self.phases
+    }
+}
+
 /// This is the atom every surface shares: the HUD graphs it, the dump
 /// serialises it, and [`PerfReport`] aggregates it.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -92,6 +168,26 @@ pub struct FrameTiming {
     pub resource_availability_us: u64,
     pub scene_pool_wait_us: u64,
     pub presence_overlay_us: u64,
+    /// Input events whose `handle_event` time is folded into this frame.
+    /// Several events share a frame, so `handle_event_us` is their sum, not
+    /// any one event's cost.
+    pub input_events: u64,
+    /// The costliest single event among `input_events`.
+    pub input_event_max_us: u64,
+    /// [`InputPhases::dispatch`], summed over `input_events`.
+    pub input_dispatch_us: u64,
+    /// [`InputPhases::hit_test`], summed over `input_events`.
+    pub input_hit_test_us: u64,
+    /// [`InputPhases::resources`], summed over `input_events`.
+    pub input_resources_us: u64,
+    /// [`InputPhases::publication`], summed over `input_events`.
+    pub input_publication_us: u64,
+    /// [`InputPhases::commit`], summed over `input_events`.
+    pub input_commit_us: u64,
+    /// From the start of the oldest of `input_events` to this frame's
+    /// commit: how long the first input waited for a CPU frame showing it.
+    /// Ends before the render worker, so it is not input-to-photon latency.
+    pub input_to_commit_us: u64,
     /// For the live app this is the measured wall time of the whole frame
     /// build (so it includes work *between* passes); for the headless
     /// harness, where passes run contiguously, it is their sum.
@@ -166,13 +262,13 @@ impl DumpWriter {
                 if !self.header_written {
                     let _ = writeln!(
                         self.file,
-                        "frame,t_us,sync_us,build_layout_us,apply_layout_us,draw_us,handle_event_us,total_us,resource_availability_us,scene_pool_wait_us,presence_overlay_us"
+                        "frame,t_us,sync_us,build_layout_us,apply_layout_us,draw_us,handle_event_us,total_us,resource_availability_us,scene_pool_wait_us,presence_overlay_us,input_events,input_event_max_us,input_dispatch_us,input_hit_test_us,input_resources_us,input_publication_us,input_commit_us,input_to_commit_us"
                     );
                     self.header_written = true;
                 }
                 writeln!(
                     self.file,
-                    "{},{},{},{},{},{},{},{},{},{},{}",
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     t.frame,
                     t.t_us,
                     t.sync_us,
@@ -183,7 +279,15 @@ impl DumpWriter {
                     t.total_us,
                     t.resource_availability_us,
                     t.scene_pool_wait_us,
-                    t.presence_overlay_us
+                    t.presence_overlay_us,
+                    t.input_events,
+                    t.input_event_max_us,
+                    t.input_dispatch_us,
+                    t.input_hit_test_us,
+                    t.input_resources_us,
+                    t.input_publication_us,
+                    t.input_commit_us,
+                    t.input_to_commit_us
                 )
             }
         };
@@ -205,12 +309,28 @@ pub struct FrameProfiler {
     /// In the live app several input events land between two redraws;
     /// their cost is summed here and attributed to the next frame.
     pending_handle_event_us: u64,
+    /// The per-event breakdown of `pending_handle_event_us`, banked the same
+    /// way; only the live app's [`record_input`](Self::record_input) fills it.
+    pending_input: PendingInput,
     history: VecDeque<FrameTiming>,
     hud: bool,
     dump: Option<DumpWriter>,
     /// When `Some`, every committed frame is also appended here — the
     /// headless harness reads this back as its [`PerfReport`] sample set.
     capture: Option<Vec<FrameTiming>>,
+}
+
+/// Input banked between two frames, folded into the next one.
+#[derive(Debug, Default)]
+struct PendingInput {
+    events: u64,
+    max_us: u64,
+    dispatch_us: u64,
+    hit_test_us: u64,
+    resources_us: u64,
+    publication_us: u64,
+    commit_us: u64,
+    oldest: Option<Instant>,
 }
 
 /// `Duration::as_micros` returns `u128`; frame passes and elapsed profiler
@@ -239,6 +359,7 @@ impl FrameProfiler {
             frame_index: 0,
             cur: FrameTiming::default(),
             pending_handle_event_us: 0,
+            pending_input: PendingInput::default(),
             history: VecDeque::with_capacity(HISTORY_CAP),
             hud,
             dump,
@@ -318,9 +439,42 @@ impl FrameProfiler {
         }
     }
 
+    /// Banks one live input event that began at `started` and took `total`,
+    /// with `phases` saying where that time went. Counts toward
+    /// `handle_event_us` exactly as [`Pass::HandleEvent`] does, and also
+    /// keeps the event count, the costliest event and the per-phase sums, so
+    /// a frame's banked input is not mistaken for one event's duration.
+    pub fn record_input(&mut self, started: Instant, total: Duration, phases: InputPhases) {
+        let us = saturating_u64(total.as_micros());
+        self.pending_handle_event_us = self.pending_handle_event_us.saturating_add(us);
+        let pending = &mut self.pending_input;
+        pending.events = pending.events.saturating_add(1);
+        pending.max_us = pending.max_us.max(us);
+        let add = |sum: &mut u64, phase: Duration| {
+            *sum = sum.saturating_add(saturating_u64(phase.as_micros()));
+        };
+        add(&mut pending.dispatch_us, phases.dispatch);
+        add(&mut pending.hit_test_us, phases.hit_test);
+        add(&mut pending.resources_us, phases.resources);
+        add(&mut pending.publication_us, phases.publication);
+        add(&mut pending.commit_us, phases.commit);
+        pending.oldest.get_or_insert(started);
+    }
+
     /// `total_us` is the live app's measured wall time.
     pub fn commit_frame(&mut self, total_us: u64) {
         self.cur.handle_event_us = std::mem::take(&mut self.pending_handle_event_us);
+        let input = std::mem::take(&mut self.pending_input);
+        self.cur.input_events = input.events;
+        self.cur.input_event_max_us = input.max_us;
+        self.cur.input_dispatch_us = input.dispatch_us;
+        self.cur.input_hit_test_us = input.hit_test_us;
+        self.cur.input_resources_us = input.resources_us;
+        self.cur.input_publication_us = input.publication_us;
+        self.cur.input_commit_us = input.commit_us;
+        self.cur.input_to_commit_us = input
+            .oldest
+            .map_or(0, |oldest| saturating_u64(oldest.elapsed().as_micros()));
         self.cur.frame = self.frame_index;
         self.cur.t_us = saturating_u64(self.origin.elapsed().as_micros());
         self.cur.total_us = total_us;
@@ -349,6 +503,14 @@ impl FrameProfiler {
             resource_availability_us = sample.resource_availability_us,
             scene_pool_wait_us = sample.scene_pool_wait_us,
             presence_overlay_us = sample.presence_overlay_us,
+            input_events = sample.input_events,
+            input_event_max_us = sample.input_event_max_us,
+            input_dispatch_us = sample.input_dispatch_us,
+            input_hit_test_us = sample.input_hit_test_us,
+            input_resources_us = sample.input_resources_us,
+            input_publication_us = sample.input_publication_us,
+            input_commit_us = sample.input_commit_us,
+            input_to_commit_us = sample.input_to_commit_us,
             total_us = sample.total_us,
             "frame"
         );
@@ -550,7 +712,14 @@ impl FrameProfiler {
         draw_line(
             scene,
             text,
-            &format!("event {:.2}ms  budget 16.6ms", ms(last.handle_event_us)),
+            // A frame banks every event since the last one: show how many,
+            // and the costliest, so the sum is not read as one event.
+            &format!(
+                "event {:.2}ms x{}  max {:.2}",
+                ms(last.handle_event_us),
+                last.input_events,
+                ms(last.input_event_max_us)
+            ),
             theme.text_dim,
             &mut ty,
         );
@@ -996,6 +1165,71 @@ mod tests {
                 );
             }
             assert_eq!(lines.count(), 1, "one header, two frames");
+        }
+
+        // Case `live_input_banks_event_count_maximum_and_phases_per_frame`.
+        {
+            let mut profiler = FrameProfiler::for_capture();
+            let started = crate::time::now();
+            let phases = |dispatch, commit| InputPhases {
+                dispatch: Duration::from_micros(dispatch),
+                hit_test: Duration::from_micros(3),
+                resources: Duration::from_micros(2),
+                publication: Duration::from_micros(1),
+                commit: Duration::from_micros(commit),
+            };
+            profiler.record_input(started, Duration::from_micros(120), phases(100, 4));
+            profiler.record_input(crate::time::now(), Duration::from_micros(40), phases(20, 9));
+            std::thread::sleep(Duration::from_millis(1));
+            profiler.commit_frame(1_000);
+            profiler.record(Pass::HandleEvent, Duration::from_micros(7));
+            profiler.commit_frame(1_000);
+            let samples = profiler.take_capture();
+            let banked = samples[0];
+            assert_eq!(banked.handle_event_us, 160);
+            assert_eq!(banked.input_events, 2);
+            assert_eq!(banked.input_event_max_us, 120);
+            assert_eq!(banked.input_dispatch_us, 120);
+            assert_eq!(banked.input_hit_test_us, 6);
+            assert_eq!(banked.input_resources_us, 4);
+            assert_eq!(banked.input_publication_us, 2);
+            assert_eq!(banked.input_commit_us, 13);
+            assert!(
+                banked.input_to_commit_us >= 1_000,
+                "measured from the oldest event: {banked:?}"
+            );
+            // A frame with no live input keeps none of the last frame's,
+            // while the headless pass still counts toward the sum.
+            let next = samples[1];
+            assert_eq!(next.handle_event_us, 7);
+            assert_eq!(
+                (
+                    next.input_events,
+                    next.input_event_max_us,
+                    next.input_to_commit_us
+                ),
+                (0, 0, 0)
+            );
+
+            let mut clock = InputPhaseClock::new(false);
+            assert!(
+                clock.start().is_none(),
+                "no clock read while profiling is off"
+            );
+            clock.finish(InputPhase::Dispatch, None);
+            assert_eq!(clock.phases(), InputPhases::default());
+            let mut clock = InputPhaseClock::new(true);
+            let start = clock.start();
+            assert!(start.is_some());
+            std::thread::sleep(Duration::from_millis(1));
+            clock.finish(InputPhase::HitTest, start);
+            clock.finish(InputPhase::HitTest, start);
+            assert!(
+                clock.phases().hit_test >= Duration::from_millis(2),
+                "spans of one phase accumulate: {:?}",
+                clock.phases()
+            );
+            assert_eq!(clock.phases().dispatch, Duration::ZERO);
         }
 
         // Case `over_budget_frames_are_counted_in_the_report`.

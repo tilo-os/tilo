@@ -147,6 +147,49 @@ fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
         .is_err(),
         "another metadata path must be rejected before exec"
     );
+    // A publisher revoked after install stops launching: the signed record's
+    // own publisher key is what the revocation list is matched against.
+    let record = package_store::integrity::read_record(
+        &package_store::integrity::record_dir(installed),
+        &installed.id,
+        original,
+    )
+    .unwrap();
+    let revoked = tilo_app_package::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: hex::encode(record.root.publisher_identity),
+            reason: "publisher key compromised".into(),
+        }],
+    };
+    let refused = crate::run::verified_launch_installation_against(
+        installed,
+        &installed.manifest_path,
+        &installed.payload_root,
+        original,
+        &revoked,
+    )
+    .expect_err("a revoked publisher's package must not launch");
+    assert!(
+        refused.to_string().contains("revoked"),
+        "the refusal names the revocation: {refused}"
+    );
+    let unrelated = tilo_app_package::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: "ab".repeat(32),
+            reason: "someone else".into(),
+        }],
+    };
+    assert!(
+        crate::run::verified_launch_installation_against(
+            installed,
+            &installed.manifest_path,
+            &installed.payload_root,
+            original,
+            &unrelated,
+        )
+        .is_ok(),
+        "another publisher's revocation does not refuse this package"
+    );
     let mut renamed = installed.clone();
     renamed.id = "so.tilo.chat".into();
     assert!(

@@ -125,16 +125,30 @@ pub trait RuntimeRegistry: Send + Sync {
     fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError>;
 }
 
+/// Paths the Windows compatibility system extension (tilo-windows-compat, see
+/// os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json) overlays
+/// on `/usr`. The base image carries none of them, so a plan that binds one of
+/// them on a device that has not installed Windows support must say so instead
+/// of failing inside bubblewrap on a missing source.
+const PAYLOAD_PATHS: [&str; 3] = [
+    "/usr/lib/tilo/windows-runners",
+    "/usr/bin/FEX",
+    "/usr/share/fex-emu",
+];
+
 #[derive(Clone, Copy, Debug)]
 pub struct SystemRuntimeRegistry {
     /// Where translated (ARM) runtimes learn whether the image includes them.
     provider_manifest: Option<&'static str>,
+    /// Whether to require the on-demand Windows payload to be merged.
+    require_payload: bool,
 }
 
 impl SystemRuntimeRegistry {
     pub const fn new() -> Self {
         Self {
             provider_manifest: Some(PROVIDER_MANIFEST),
+            require_payload: true,
         }
     }
 
@@ -143,6 +157,7 @@ impl SystemRuntimeRegistry {
     pub(crate) const fn assuming_provider() -> Self {
         Self {
             provider_manifest: None,
+            require_payload: false,
         }
     }
 }
@@ -159,7 +174,23 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
         if let (true, Some(manifest)) = (image.translated, self.provider_manifest) {
             require_translated_provider(std::fs::read_to_string(manifest).ok().as_deref())?;
         }
+        if self.require_payload {
+            require_payload(&image, std::path::Path::exists)?;
+        }
         Ok(image)
+    }
+}
+
+/// The runtime binds the payload only when it is merged. Absent, the person is
+/// told what to install; the launch never starts.
+fn require_payload(image: &RuntimeImage, exists: impl Fn(&Path) -> bool) -> Result<(), PlanError> {
+    let missing = image
+        .host_paths()
+        .any(|path| PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) && !exists(path));
+    if missing {
+        Err(PlanError::WindowsSupportNotInstalled)
+    } else {
+        Ok(())
     }
 }
 
@@ -715,6 +746,9 @@ fn map_granted_files(
     landlock_read: &mut Vec<PathBuf>,
     landlock_write: &mut Vec<PathBuf>,
 ) {
+    // (host path, mount point, writable) of every file grant, for the
+    // private-store masks below.
+    let mut mounted: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
     for (index, source) in capabilities.ro_paths.iter().enumerate() {
         if is_host_microphone_endpoint(capabilities, source) {
             continue;
@@ -726,6 +760,7 @@ fn map_granted_files(
         }
         let destination = PathBuf::from(format!("{FILES_MOUNT}/read/{index:03}"));
         bind(argv, "--ro-bind-try", source, &destination);
+        mounted.push((source.clone(), destination.clone(), false));
         landlock_read.push(destination);
     }
     for (index, source) in capabilities.rw_paths.iter().enumerate() {
@@ -743,7 +778,65 @@ fn map_granted_files(
         }
         let destination = PathBuf::from(format!("{FILES_MOUNT}/write/{index:03}"));
         bind(argv, "--bind-try", source, &destination);
+        mounted.push((source.clone(), destination.clone(), true));
         landlock_write.push(destination);
+    }
+    push_private_store_masks(argv, capabilities, &mounted);
+}
+
+/// Hide the Tilo private stores a file grant contains
+/// ([`CapabilityPlan::masked_dirs`]) at the grant's mount point here, as the
+/// native launcher does at the grant's own path. Every grant is its own
+/// mount in a capsule, so inside a writable one each directory on the way to
+/// a store is pinned (bound onto itself, which makes it a mount point the app
+/// cannot rename) — all pins first, so none re-exposes a store already
+/// masked — then each store gets an empty read-only tmpfs.
+fn push_private_store_masks(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+    mounted: &[(PathBuf, PathBuf, bool)],
+) {
+    let mut pins: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut masks: Vec<PathBuf> = Vec::new();
+    for store in &capabilities.masked_dirs {
+        for (source, destination, writable) in mounted {
+            let Ok(rel) = store.strip_prefix(source) else {
+                continue;
+            };
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            if *writable {
+                let (mut host, mut inside) = (source.clone(), destination.clone());
+                let mut parts = rel.components().peekable();
+                while let Some(part) = parts.next() {
+                    if parts.peek().is_none() {
+                        break;
+                    }
+                    host.push(part);
+                    inside.push(part);
+                    if !pins.iter().any(|(_, at)| at == &inside) {
+                        pins.push((host.clone(), inside.clone()));
+                    }
+                }
+            }
+            let at = destination.join(rel);
+            if !masks.contains(&at) {
+                masks.push(at);
+            }
+        }
+    }
+    pins.sort_by_key(|(_, at)| at.components().count());
+    for (host, at) in &pins {
+        bind(argv, "--bind", host, at);
+    }
+    for at in &masks {
+        argv.extend([
+            "--tmpfs".to_string(),
+            at.display().to_string(),
+            "--remount-ro".to_string(),
+            at.display().to_string(),
+        ]);
     }
 }
 
@@ -915,6 +1008,13 @@ pub enum PlanError {
          Windows provider for ARM. The Windows VM remains available where installed."
     )]
     WindowsProviderNotIncluded,
+    #[error(
+        "Windows support is not installed on this device. It is a separate download of about \
+         3 GB that is only fetched when you ask for it. Install it with \
+         `systemctl start tilo-extension@install:windows-compat.service` (as an administrator), \
+         then launch again. Nothing was started."
+    )]
+    WindowsSupportNotInstalled,
     #[error(transparent)]
     Capsule(#[from] CapsuleError),
     #[error("VM route was sent to the capsule planner")]
@@ -1442,8 +1542,7 @@ mod tests {
         command.runtime_lock_required = true;
         // This fixture runs as the invoking user, independently of the fixed
         // session UID used by planner-only unit tests.
-        // SAFETY: geteuid only reads the current process credentials.
-        command.identity_uid = unsafe { libc::geteuid() };
+        command.identity_uid = rustix::process::geteuid().as_raw();
         command.bwrap_argv.splice(
             0..0,
             [
@@ -1584,8 +1683,7 @@ mod tests {
         let executable = prefix.join(&program.prefix_relative_executable);
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         copy_arm_console_fixture(&executable, architecture);
-        // SAFETY: geteuid has no preconditions and does not mutate process state.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let runtime = PathBuf::from(format!("/run/user/{uid}"));
         std::fs::create_dir_all(&runtime).unwrap();
         let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
@@ -1845,6 +1943,51 @@ mod tests {
                     .any(|arg| arg == "/run/user/1000/pipewire-0")
             );
         }
+        // Phase `private_stores_inside_a_file_grant_are_masked_at_its_mount`.
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let capabilities = CapabilityPlan {
+                rw_paths: vec![PathBuf::from("/home/alice")],
+                masked_dirs: vec![PathBuf::from("/home/alice/.config/tilo")],
+                pinned_dirs: vec![PathBuf::from("/home/alice/.config")],
+                ..CapabilityPlan::empty()
+            };
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &capabilities,
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            let argv = &command.bwrap_argv;
+            let position = |pattern: &[&str]| {
+                argv.windows(pattern.len())
+                    .position(|w| w.iter().zip(pattern).all(|(a, b)| a == b))
+            };
+            let grant = position(&["--bind-try", "/home/alice", "/run/tilo/files/write/000"]);
+            let pin = position(&[
+                "--bind",
+                "/home/alice/.config",
+                "/run/tilo/files/write/000/.config",
+            ]);
+            let mask = position(&[
+                "--tmpfs",
+                "/run/tilo/files/write/000/.config/tilo",
+                "--remount-ro",
+                "/run/tilo/files/write/000/.config/tilo",
+            ]);
+            assert!(
+                matches!((grant, pin, mask), (Some(g), Some(p), Some(m)) if g < p && p < m),
+                "the store must be pinned and masked after the grant's mount: {argv:?}"
+            );
+        }
         // Phase `planner_rejects_a_symlinked_capsule_data_component`.
         {
             use std::os::unix::fs::symlink;
@@ -1918,6 +2061,86 @@ mod tests {
                     .bwrap_argv
                     .windows(3)
                     .any(|args| { args == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn proton(host: &str) -> RuntimeImage {
+        SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            host,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind() {
+        for host in ["x86_64", "aarch64"] {
+            let error = require_payload(&proton(host), |_| false).unwrap_err();
+            assert!(
+                matches!(error, PlanError::WindowsSupportNotInstalled),
+                "{host}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("not installed"), "{message}");
+            assert!(
+                message.contains("tilo-extension@install:windows-compat.service"),
+                "the message names the action: {message}"
+            );
+            assert!(message.contains("Nothing was started"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_merged_payload_plans_normally() {
+        assert!(require_payload(&proton("x86_64"), |_| true).is_ok());
+        assert!(require_payload(&proton("aarch64"), |_| true).is_ok());
+    }
+
+    #[test]
+    fn only_payload_paths_are_probed_not_the_base_the_image_always_has() {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let _ = require_payload(&proton("aarch64"), |path| {
+            probed.borrow_mut().push(path.to_path_buf());
+            true
+        });
+        let probed = probed.into_inner();
+        assert!(!probed.is_empty());
+        assert!(
+            probed
+                .iter()
+                .all(|path| { PAYLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) })
+        );
+        assert!(probed.contains(&PathBuf::from(PROTON_HOST)));
+        assert!(!probed.contains(&PathBuf::from("/usr/bin/bwrap")));
+    }
+
+    #[test]
+    fn production_registry_requires_the_payload_and_test_registry_does_not() {
+        assert!(SystemRuntimeRegistry::new().require_payload);
+        assert!(!SystemRuntimeRegistry::assuming_provider().require_payload);
+    }
+
+    #[test]
+    fn the_payload_paths_are_exactly_what_the_sysext_stage_packs() {
+        let containerfile = include_str!("../../../../os/Containerfile");
+        for packed in [
+            "/tree/usr/lib/tilo/windows-runners/proton/",
+            "/tree/usr/lib/tilo/windows-runners/steam-runtime/",
+            "/payload/usr/lib/tilo/windows-runners",
+        ] {
+            assert!(containerfile.contains(packed), "{packed}");
+        }
+        for host in [PROTON_HOST, STEAM_RUNTIME_HOST, X86_ROOTFS_HOST] {
+            assert!(
+                PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
+                "{host}"
             );
         }
     }

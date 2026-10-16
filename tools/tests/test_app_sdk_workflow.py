@@ -29,6 +29,22 @@ def job(name: str) -> str:
 
 
 class AppSdkWorkflow(unittest.TestCase):
+    def test_web_builds_pinned_moq_once_and_keeps_both_bundle_licenses(self) -> None:
+        web = job("web")
+        prepare = 'python3 tools/ci/prepare_sdk_moq.py prepare'
+        self.assertEqual(web.count(prepare), 1)
+        self.assertLess(web.index(prepare), web.index('name: Desktop bundle (dev profile)'))
+        for app in ('calculator', 'chat'):
+            self.assertIn('python3 tools/ci/prepare_sdk_moq.py license '
+                          f'target/tilo-app/web/{app}/bundle', web)
+        self.assertIn('target/debug/tilo-app build --target web --bundle desktop apps/calculator', web)
+        self.assertIn('target/debug/tilo-app build apps/chat --platform web', web)
+        self.assertIn('Compiled Chat browser disconnect and retry', web)
+        self.assertIn('Compiled Chat browser call consent and lifecycle', web)
+        self.assertIn('Mount every registered app', web)
+        self.assertIn('Desktop navigation by wheel, top bar and shortcuts', web)
+        self.assertNotIn(prepare, job('web-size'))  # One release bundle already needs only one setup.
+
     def test_linux_selection_does_not_change_browser_or_manual_gates(self) -> None:
         self.assertIn("needs.builder.outputs.linux_affected == 'true'", job('linux'))
         for name in ('web', 'web-size'):
@@ -69,7 +85,7 @@ class AppSdkWorkflow(unittest.TestCase):
 
     def test_macos_lane_lives_on_the_development_mac(self) -> None:
         self.assertNotIn("macos", JOBS)
-        self.assertIn("dev-apps-macos.yml", SOURCE)
+        self.assertIn("sdk-macos", SOURCE)
 
     def test_linux_uses_portable_native_prs_and_keeps_main_x86_qualification(self) -> None:
         body = job("linux")

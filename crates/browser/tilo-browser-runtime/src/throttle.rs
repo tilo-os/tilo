@@ -37,6 +37,18 @@ impl PublicationSchedule {
         PublicationDecision::Now
     }
 
+    /// Hold a change that was not even looked at: inside the window it
+    /// waits for the window's end, as [`Self::decide`] would defer it, and
+    /// the instant is returned; outside it `None`, and the caller must look.
+    pub(crate) fn defer(&mut self, now: Instant) -> Option<Instant> {
+        let due = self.last?.checked_add(self.window)?;
+        if now >= due {
+            return None;
+        }
+        self.due = Some(due);
+        Some(due)
+    }
+
     /// A delivery ran now: scheduled, at its deadline, or forced.
     pub(crate) fn mark_published(&mut self, now: Instant) {
         self.last = Some(now);
@@ -50,5 +62,18 @@ impl PublicationSchedule {
 
     pub(crate) fn due(&self) -> Option<Instant> {
         self.due
+    }
+
+    /// Hold a change until `at`, as if [`Self::defer`] had.
+    pub(crate) fn hold(&mut self, at: Instant) {
+        self.due = Some(at);
+    }
+
+    /// Whether [`Self::defer`] would hold a change at `now`, without
+    /// scheduling anything.
+    pub(crate) fn would_defer(&self, now: Instant) -> bool {
+        self.last
+            .and_then(|last| last.checked_add(self.window))
+            .is_some_and(|due| now < due)
     }
 }

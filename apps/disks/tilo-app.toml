@@ -31,6 +31,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["files.paths", "threads"]
 
+[resources]
+kinds = ["disks.system"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

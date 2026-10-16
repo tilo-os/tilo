@@ -1,6 +1,6 @@
 //! End-to-end: author a rich document (heading, bold run, bullet list, and a
 //! 2x2 table) in the word processor, save it as `.docx`, reopen, and verify the
-//! structure (block kinds, text, inline marks) round-tripped through the `qdoc`
+//! structure (block kinds, text, inline marks) round-tripped through the `tilo-doc`
 //! `DocxCodec` + the editor's file I/O — exactly as the integrated app does.
 //! Mirrors `e2e_odt.rs` for the Microsoft Word format.
 

@@ -4,7 +4,7 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,6 +19,7 @@ use crate::model::{Doc, ModelError};
 use crate::path::Edit;
 use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
+use tilo_lock::MutexRecover as _;
 
 /// A resource type. Implement it by hand for a type with its own storage
 /// layout and merge semantics (a timeline, a rich-text document, a photo edit
@@ -1705,7 +1706,7 @@ thread_local! {
 pub fn origin_now_ms() -> i64 {
     ORIGIN_CLOCK
         .with(std::cell::Cell::get)
-        .unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+        .unwrap_or_else(tilo_clock::unix_now_ms_i64)
 }
 
 /// Run `f` with the origin clock reading `now_ms`: every action built
@@ -1977,7 +1978,7 @@ static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
 #[doc(hidden)]
 pub fn reset_type_schemas() {
     if let Some(cache) = SCHEMAS.get() {
-        let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut store = cache.lock_recover();
         store.epoch = store.epoch.wrapping_add(1);
         store.entries.clear();
     }
@@ -1986,9 +1987,7 @@ pub fn reset_type_schemas() {
 /// Which generation of app code built what is cached from the resource
 /// types: it changes when [`reset_type_schemas`] forgets them.
 pub(crate) fn type_epoch() -> u64 {
-    SCHEMAS.get().map_or(0, |cache| {
-        cache.lock().unwrap_or_else(PoisonError::into_inner).epoch
-    })
+    SCHEMAS.get().map_or(0, |cache| cache.lock_recover().epoch)
 }
 
 /// `build`'s schema for the resource `vocabulary`, retained for this
@@ -2022,7 +2021,7 @@ fn cached_schema(
     build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let epoch = {
-        let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let store = cache.lock_recover();
         if let Some(found) = store.entries.get(&key) {
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
@@ -2031,7 +2030,7 @@ fn cached_schema(
     };
     // Build outside the lock: a schema may publish another resource's.
     let value = build().map(Arc::new);
-    let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = cache.lock_recover();
     // A build started before a code reload cannot repopulate the new cache.
     if store.epoch == epoch {
         store.entries.insert(key, value.clone());
@@ -2054,14 +2053,23 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
     {
         return Err(format!("{id}: {error}"));
     }
+    // Group members refer to this schema instead of copying it into the
+    // group's parameter. Validate here as well as at the direct apply door,
+    // including constraints stricter than the action's serde representation.
+    if let Some(schema) = apply_param(vocabulary).schema {
+        tilo_actions::validate_json_schema(&value, &schema)?;
+    }
     (vocabulary.read)(value)
 }
 
 /// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's
 /// declared actions and of [`APPLY`]. A declared member's arguments are
 /// checked against its own action's schema when the group is built, so this
-/// names those actions rather than repeating their schemas; an `apply`
-/// member carries `apply`'s schema, without its descriptions.
+/// names those actions rather than repeating their schemas. An `apply`
+/// member is read exactly as [`APPLY`] reads its value when the group is
+/// built, so it refers to `apply`'s schema rather than copying it: a
+/// resource with a large action vocabulary (rich text's) published that
+/// schema twice in every surface.
 pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
     let schema = per_type(vocabulary, TypeSchema::Group, &|| {
         let declarations = vocabulary.declarations();
@@ -2069,8 +2077,7 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
         for decl in declarations.iter() {
             ids.push(decl.id);
         }
-        let apply = apply_param(vocabulary).schema;
-        Some(group_schema(&ids, apply.as_deref(), vocabulary.edits))
+        Some(group_schema(&ids, vocabulary.edits))
     })
     .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
@@ -2084,10 +2091,14 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
     .with_shared_schema(schema)
 }
 
-/// The schema of a group of the actions `ids`, `apply` with the action
-/// schema `apply`, and field edits when `edits`: one function for every
-/// resource.
-fn group_schema(ids: &[&str], apply: Option<&serde_json::Value>, edits: bool) -> serde_json::Value {
+/// What the value of an `apply` member of a group is: the schema it is
+/// checked against is published once, on `apply` itself.
+pub const APPLY_MEMBER: &str =
+    "One action value, as the `apply` action's `apply` parameter describes it";
+
+/// The schema of a group of the actions `ids`, `apply`, and field edits when
+/// `edits`: one function for every resource.
+fn group_schema(ids: &[&str], edits: bool) -> serde_json::Value {
     use crate::schema::{
         array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
@@ -2105,7 +2116,7 @@ fn group_schema(ids: &[&str], apply: Option<&serde_json::Value>, edits: bool) ->
             "A named action, args as it takes them",
         ));
     }
-    let action = apply.map_or_else(|| serde_json::json!({"type": "object"}), undescribed);
+    let action = describe(serde_json::json!({"type": "object"}), APPLY_MEMBER);
     if edits {
         members.push(describe(
             object(vec![
@@ -2242,7 +2253,7 @@ pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionN
 
 /// The encoded group of the built `members`, of the resource `vocabulary`:
 /// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
-fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
     let mut payload = Vec::with_capacity(128);
     payload.push(b'[');
     for (index, member) in members.iter().enumerate() {

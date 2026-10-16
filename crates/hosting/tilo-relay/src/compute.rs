@@ -32,8 +32,9 @@ use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::ServerAdvertisement;
 use crate::mesh::DeviceKey;
-use crate::{ComputeAccelerator, ServerAdvertisement};
+use crate::placement::ComputeRequirements;
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -138,20 +139,24 @@ pub fn admit_compute_job(
     now_ms: u64,
 ) -> Result<(), ComputeError> {
     spec.validate_for(worker.device, now_ms)?;
-    if !worker.online
-        || !worker.role.can_serve()
-        || !worker.services.compute
-        || !worker.workspaces.contains(&spec.workspace_id)
-        || !worker.apps.contains(&spec.app_id)
-        || (spec.limits.gpu && !worker.accelerators.contains(&ComputeAccelerator::Gpu))
-        || worker.assignment_capacity == 0
-        || worker.active_assignments >= worker.assignment_capacity
-        || worker.energy_saver
-        || worker.power.is_critically_constrained()
-    {
+    if worker.compute_ineligibility(&spec.requirements()).is_some() {
         return Err(ComputeError::WorkerUnavailable);
     }
     Ok(())
+}
+
+impl ComputeJobSpec {
+    /// What this job needs from its worker: the terms both placement and
+    /// admission decide eligibility by.
+    #[must_use]
+    pub fn requirements(&self) -> ComputeRequirements<'_> {
+        ComputeRequirements {
+            requester: self.requester,
+            workspace_id: self.workspace_id,
+            app_id: &self.app_id,
+            gpu: self.limits.gpu,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,9 +205,13 @@ impl ComputeJobLifecycle {
         }
         let allowed = matches!(
             (&self.phase, &next),
+            // A job can fail before it starts: its worker is lost or
+            // revoked before it reports running.
             (
                 ComputeJobPhase::Pending,
-                ComputeJobPhase::Running | ComputeJobPhase::Cancelled
+                ComputeJobPhase::Running
+                    | ComputeJobPhase::Failed { .. }
+                    | ComputeJobPhase::Cancelled
             ) | (
                 ComputeJobPhase::Running,
                 ComputeJobPhase::Completed { .. }
@@ -299,6 +308,66 @@ pub trait ComputeContentStore: Send + Sync {
     ///
     /// Returns an error when the local content store cannot persist the bytes.
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String>;
+    /// Where this store keeps the bytes of `digest`, as a 32-byte locator
+    /// another device's [`HeldContent`] may understand (workspace content
+    /// names the file version's manifest hash), or `None`. A hint offered
+    /// with a possession proof, never authority.
+    fn locator(&self, _digest: [u8; 32]) -> Option<[u8; 32]> {
+        None
+    }
+}
+
+/// Content a worker device already holds, which a job may run on in place
+/// of an input fetched from its requester — but only once the requester
+/// proved it holds the same bytes
+/// ([`prove_job_input`](crate::compute_content::prove_job_input)). Holding
+/// bytes is never authority to bind them to a job; the proof is.
+pub trait HeldContent: Send + Sync {
+    /// The bytes this device holds as `digest`, looked up by the digest or,
+    /// when given, by the requester's `locator`
+    /// ([`ComputeContentStore::locator`]); `Ok(None)` when it holds none or
+    /// they would exceed `max_bytes`. Called off the async runtime. The
+    /// caller checks the bytes against `digest` and the proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when local content cannot be read.
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String>;
+
+    /// Whether [`Self::held`] can find content by a locator it would not
+    /// find by digest alone. When `false`, a worker asks for a proof only
+    /// for digests it already found, so a miss costs nothing.
+    fn locates(&self) -> bool {
+        false
+    }
+}
+
+/// The outputs a worker retains for the requesters of the jobs it ran.
+///
+/// A completed job's outputs stay retrievable by digest, but only by that
+/// job's requester and only the digests that job reported: knowing a digest
+/// is never authority to read it.
+pub trait ComputeOutputSource: Send + Sync {
+    /// The bytes of output `digest` of job `job_id` in `workspace_id`, when
+    /// `asker` submitted that job and it reported the digest; `Ok(None)`
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained output cannot be read or no
+    /// longer matches its digest.
+    fn retained_output(
+        &self,
+        asker: DeviceKey,
+        workspace_id: u64,
+        job_id: [u8; 16],
+        digest: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// Information passed only to the trusted, local sandbox adapter.
@@ -448,6 +517,27 @@ pub enum ComputeExecutionError {
     OutputStore(String),
 }
 
+impl ComputeExecutionError {
+    /// The stable failure code a requester sees for this error.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::RouteMismatch | Self::Admission(_) => "admission",
+            Self::PackageUnavailable | Self::PackageDigestMismatch => "package",
+            Self::EntrypointUnavailable => "entrypoint",
+            Self::GpuUnavailable => "gpu_unavailable",
+            Self::Replay => "replay",
+            Self::MissingInput => "input_unavailable",
+            Self::InputDigestMismatch => "input_integrity",
+            Self::InputsTooLarge => "input_too_large",
+            Self::Staging(_) => "staging",
+            Self::Launch(_) => "launch",
+            Self::InvalidOutput => "output",
+            Self::OutputStore(_) => "output_store",
+        }
+    }
+}
+
 /// A local executor bound to one certified worker advertisement. Jobs are
 /// synchronously supervised, while cancellation is safe to signal from any
 /// thread through [`CaptureCancellation`].
@@ -497,10 +587,6 @@ where
     ///
     /// Returns an error for an invalid or ineligible request, package or
     /// content-integrity failure, replay, sandbox failure, or invalid output.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeps the security-critical execution sequence auditable"
-    )]
     pub fn execute(
         &self,
         authenticated_requester: DeviceKey,
@@ -509,6 +595,39 @@ where
         now_ms: u64,
         cancellation: CaptureCancellation,
     ) -> Result<ComputeJobResult, ComputeExecutionError> {
+        self.execute_with_inputs(
+            &self.content,
+            (authenticated_requester, authenticated_workspace),
+            spec,
+            now_ms,
+            cancellation,
+        )
+    }
+
+    /// [`Self::execute`], staging the job's inputs from `inputs` (the bytes
+    /// hydrated for this one job) rather than from the worker's own store.
+    /// Outputs are still persisted to the worker's store, from which
+    /// [`ComputeOutputSource`] serves them to the job's requester.
+    ///
+    /// `route` is the authenticated `(requester, workspace)` of the
+    /// transport route, as for [`Self::execute`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the security-critical execution sequence auditable"
+    )]
+    pub fn execute_with_inputs(
+        &self,
+        inputs: &dyn ComputeContentStore,
+        route: (DeviceKey, u64),
+        spec: &ComputeJobSpec,
+        now_ms: u64,
+        cancellation: CaptureCancellation,
+    ) -> Result<ComputeJobResult, ComputeExecutionError> {
+        let (authenticated_requester, authenticated_workspace) = route;
         if authenticated_requester != spec.requester || authenticated_workspace != spec.workspace_id
         {
             return Err(ComputeExecutionError::RouteMismatch);
@@ -591,7 +710,7 @@ where
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
         let output_dir_handle = File::open(&output_dir)
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
-        self.stage_inputs(spec, &input_dir)
+        Self::stage_inputs(inputs, spec, &input_dir)
             .map_err(|error| self.fail_existing(spec.job_id, "input", error))?;
         write_request(spec, &io_root)
             .map_err(|error| self.fail(spec.job_id, "staging", error.to_string()))?;
@@ -661,9 +780,7 @@ where
         }
         prepare_private_dir(&self.state_root)
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
-        let claim_path = self
-            .state_root
-            .join(format!("{}.claim", hex::encode(spec.job_id)));
+        let claim_path = self.claim_path(spec.job_id);
         let mut claim = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -709,14 +826,18 @@ where
     }
 
     fn stage_inputs(
-        &self,
+        inputs: &dyn ComputeContentStore,
         spec: &ComputeJobSpec,
         input_dir: &Path,
     ) -> Result<(), ComputeExecutionError> {
         let mut total = 0_u64;
+        let mut staged = std::collections::BTreeSet::new();
         for digest in &spec.inputs {
-            let bytes = self
-                .content
+            // A digest named twice is one input file.
+            if !staged.insert(*digest) {
+                continue;
+            }
+            let bytes = inputs
                 .get(*digest)
                 .map_err(ComputeExecutionError::Staging)?
                 .ok_or(ComputeExecutionError::MissingInput)?;
@@ -779,6 +900,12 @@ where
                         return Err(self.fail_existing(spec.job_id, "output", error));
                     }
                 };
+                // Record which digests this job's requester may retrieve
+                // before reporting any of them: a digest the requester
+                // cannot fetch is never reported.
+                if let Err(error) = self.retain_outputs(spec.job_id, &outputs) {
+                    return Err(self.fail_existing(spec.job_id, "output_store", error));
+                }
                 ComputeJobPhase::Completed { outputs }
             }
         };
@@ -847,6 +974,30 @@ where
         Ok(outputs)
     }
 
+    fn claim_path(&self, job_id: [u8; 16]) -> PathBuf {
+        self.state_root
+            .join(format!("{}.claim", hex::encode(job_id)))
+    }
+
+    fn outputs_path(&self, job_id: [u8; 16]) -> PathBuf {
+        self.state_root
+            .join(format!("{}{OUTPUT_INDEX_SUFFIX}", hex::encode(job_id)))
+    }
+
+    fn retain_outputs(
+        &self,
+        job_id: [u8; 16],
+        outputs: &[[u8; 32]],
+    ) -> Result<(), ComputeExecutionError> {
+        let mut index = String::with_capacity(outputs.len().saturating_mul(65));
+        for digest in outputs {
+            index.push_str(&hex::encode(digest));
+            index.push('\n');
+        }
+        tilo_files::native::atomic::write(&self.outputs_path(job_id), index.as_bytes())
+            .map_err(|error| ComputeExecutionError::OutputStore(error.to_string()))
+    }
+
     fn fail(&self, job_id: [u8; 16], code: &str, detail: String) -> ComputeExecutionError {
         let _ = self.advance(
             job_id,
@@ -873,6 +1024,71 @@ where
         );
         error
     }
+}
+
+impl<C, P, S> ComputeOutputSource for ComputeWorker<C, P, S>
+where
+    C: ComputeContentStore,
+    P: ComputePackageCatalogue,
+    S: ComputeSandbox,
+{
+    fn retained_output(
+        &self,
+        asker: DeviceKey,
+        workspace_id: u64,
+        job_id: [u8; 16],
+        digest: [u8; 32],
+    ) -> Result<Option<Vec<u8>>, String> {
+        // The claim names the job's authenticated requester and workspace;
+        // the index names exactly the outputs that job reported.
+        let Some(claim) = read_small(&self.claim_path(job_id))? else {
+            return Ok(None);
+        };
+        let mut fields = claim.trim_end().split(':');
+        let requester = fields.next().unwrap_or_default();
+        let _worker = fields.next();
+        let workspace = fields.next().unwrap_or_default();
+        if requester != hex::encode(asker) || workspace != workspace_id.to_string() {
+            return Ok(None);
+        }
+        let Some(index) = read_small(&self.outputs_path(job_id))? else {
+            return Ok(None);
+        };
+        let wanted = hex::encode(digest);
+        if !index.lines().any(|line| line == wanted) {
+            return Ok(None);
+        }
+        let Some(bytes) = self.content.get(digest)? else {
+            return Ok(None);
+        };
+        if blake3::hash(&bytes).as_bytes() != &digest {
+            return Err("retained output does not match its digest".into());
+        }
+        Ok(Some(bytes))
+    }
+}
+
+/// Suffix of the file beside a job's claim that lists the outputs it
+/// reported, which its requester may retrieve.
+pub const OUTPUT_INDEX_SUFFIX: &str = ".outputs";
+
+/// A small private metadata file, or `None` when it does not exist.
+fn read_small(path: &Path) -> Result<Option<String>, String> {
+    const MAX_INDEX_BYTES: u64 = 64 * 1024;
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut text = String::new();
+    file.take(MAX_INDEX_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(text))
 }
 
 fn verify_registry_binding(
@@ -1104,7 +1320,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{DeviceRole, PowerAvailability, ServiceCapabilities};
+    use crate::{ComputeAccelerator, DeviceRole, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;

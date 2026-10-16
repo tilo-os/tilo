@@ -20,6 +20,8 @@ pub(crate) struct ResourceOptions {
     seed: Option<syn::Path>,
     available: Option<syn::Path>,
     read_content: Option<syn::Path>,
+    /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
+    read_content_in_doc: Option<syn::Path>,
     views: Option<syn::Path>,
     version: Option<syn::LitInt>,
     migrate: Option<syn::Path>,
@@ -36,7 +38,7 @@ pub(crate) struct ResourceOptions {
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read_content = path`, `read_content_in_doc = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
@@ -53,6 +55,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         seed: None,
         available: None,
         read_content: None,
+        read_content_in_doc: None,
         views: None,
         version: None,
         migrate: None,
@@ -100,6 +103,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
             ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
+            ("read_content_in_doc", Expr::Path(path)) => {
+                options.read_content_in_doc = Some(path.path.clone());
+            }
             ("views", Expr::Path(path)) => options.views = Some(path.path.clone()),
             (
                 "version",
@@ -1285,15 +1291,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         || quote!(::std::vec::Vec::new()),
         |path| quote!(#path(state)),
     );
+    // The record's own fields that hold resources (`#[model(resource)]`),
+    // then its derived places.
     let derived = options.children.as_ref().map_or_else(
-        || quote!(::std::vec::Vec::new()),
+        || quote!(#krate::child::record_nested_children::<Self>()),
         |path| {
-            quote! {
-                #path(state)
-                    .iter()
-                    .map(#krate::Derived::<Self>::publish)
-                    .collect::<::std::vec::Vec<_>>()
-            }
+            quote! {{
+                let mut children = #krate::child::record_nested_children::<Self>();
+                children.extend(#path(state).iter().map(#krate::Derived::<Self>::publish));
+                children
+            }}
         },
     );
     let derived_child = options.children.as_ref().map_or_else(
@@ -1308,6 +1315,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let derived_child = quote! {
+        if let ::core::option::Option::Some(found) =
+            #krate::child::record_nested_children::<Self>()
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+        {
+            return ::core::option::Option::Some(found);
+        }
+        #derived_child
+    };
     // Items are published when an item verb or effect is offered on them
     // or they carry a label; addressed one by one beyond the page.
     let item_child = quote! {
@@ -1512,6 +1529,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let read_content = options.read_content_in_doc.as_ref().map_or(read_content, |path| {
+        quote! {
+            const READABLE: bool = true;
+            fn read_content(
+                state: &Self,
+                doc: &#krate::Doc,
+                item: ::core::option::Option<&str>,
+            ) -> ::core::result::Result<#krate::__private::serde_json::Value, ::std::string::String> {
+                let item = item.map(#krate::Id::from_raw);
+                #path(state, doc, item.as_ref())
+            }
+        }
+    });
     let views = options.views.as_ref().map_or_else(
         || quote!(),
         |path| {

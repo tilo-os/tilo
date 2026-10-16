@@ -26,7 +26,7 @@ mod platform {
 #[cfg(unix)]
 mod platform {
     use super::{File, OpenOptions, Path, io};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
     pub fn directory(path: &Path) -> io::Result<()> {
         std::fs::DirBuilder::new()
@@ -34,7 +34,7 @@ mod platform {
             .mode(0o700)
             .create(path)?;
         let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        if !metadata.is_dir() || !super::owned_by_me(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity directory is not user-owned",
@@ -53,10 +53,7 @@ mod platform {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
+        if !metadata.is_file() || !super::private_to_me(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity file is not private and user-owned",
@@ -121,6 +118,31 @@ pub fn is_owner_only(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
+/// Whether this process's effective user owns what `metadata` describes.
+/// Always `true` on platforms without Unix ownership.
+#[inline]
+#[must_use]
+pub fn owned_by_me(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.uid() == rustix::process::geteuid().as_raw()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        true
+    }
+}
+
+/// Whether what `metadata` describes is [owned by this user](owned_by_me) and
+/// [closed to everyone else](is_owner_only).
+#[inline]
+#[must_use]
+pub fn private_to_me(metadata: &std::fs::Metadata) -> bool {
+    owned_by_me(metadata) && is_owner_only(metadata)
+}
+
 /// Open an existing regular file the current user owns, for reading at most
 /// `max_len` bytes, and return it with its length.
 ///
@@ -136,14 +158,11 @@ pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)>
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-        // SAFETY: `geteuid` has no preconditions and only reads the calling
-        // process's credential.
-        let uid = || unsafe { libc::geteuid() };
         let metadata = std::fs::symlink_metadata(path)?;
         if !metadata.file_type().is_file() {
             return Err(io::Error::other("target is not a regular file"));
         }
-        if metadata.uid() != uid() {
+        if !owned_by_me(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "file is not owned by the current user",
@@ -159,7 +178,7 @@ pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)>
         let opened = file.metadata()?;
         if !opened.file_type().is_file()
             || opened.len() > max_len
-            || opened.uid() != uid()
+            || !owned_by_me(&opened)
             || opened.dev() != metadata.dev()
             || opened.ino() != metadata.ino()
         {

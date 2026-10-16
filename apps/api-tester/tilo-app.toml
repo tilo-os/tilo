@@ -24,6 +24,9 @@ aarch64 = "aarch64"
 required = ["network.http"]
 optional = ["network.fetch-proxy", "secrets"]
 
+[resources]
+kinds = ["api-tester.workspace"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

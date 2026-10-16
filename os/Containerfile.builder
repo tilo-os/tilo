@@ -114,6 +114,70 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk \
     CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
     AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
 
+# Windows, cross-compiled from Linux (docs/publishing-on-t.md, Windows): Rust's MSVC
+# targets and cargo-xwin, which drives clang-cl and lld-link (already here
+# from Fedora's clang and lld). The MSVC CRT and Windows SDK that cargo-xwin
+# downloads are deliberately not in the image: Microsoft's license does not
+# allow redistributing them, and this image is pullable by anyone. The
+# windows-sdk-<arch> checks download them into t's private store instead.
+ARG CARGO_XWIN_VERSION=0.23.1
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    rustup target add --toolchain "${RUST_CHANNEL}" x86_64-pc-windows-msvc aarch64-pc-windows-msvc \
+    && archive="cargo-xwin-v${CARGO_XWIN_VERSION}.$(uname -m)-unknown-linux-musl.tar.gz" \
+    && sha=$(awk -F '\t' -v name="$archive" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-assets.tsv) \
+    && test -n "$sha" \
+    && echo "${sha}  /tilo-assets/${archive}" | sha256sum --check --strict \
+    && tar -xzf "/tilo-assets/${archive}" -C /usr/local/bin cargo-xwin \
+    && chmod 0755 /usr/local/bin/cargo-xwin \
+    && cargo-xwin --version && clang-cl --version && lld-link --version
+# x86_64 only, because Fedora builds Wine for x86 only: Wine runs Inno Setup's
+# compiler (the imager's Windows installer, apps/imager/packaging/
+# package-windows.sh) and the x86_64 Windows test executables. Inno Setup is
+# installed into a throwaway Wine prefix and only its program directory kept,
+# at /opt/inno-setup. jsign signs Authenticode with a key that stays in AWS
+# KMS (no OpenSSL here: os/tests/no_openssl_runtime.sh keeps it out of every
+# image; the JDK checks the signing certificate). PyYAML and
+# jsonschema check the WinGet manifests against WinGet's published schemas.
+# wine-core alone loops forever creating a prefix: wine.inf copies files that
+# wine-common (winmd metadata) and wine-cms (the sRGB profile) ship.
+ARG INNO_SETUP_VERSION=6.7.3
+ARG JSIGN_VERSION=7.6
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    --mount=type=bind,source=tools/ci/windows/wine-prefix.sh,target=/tmp/wine-prefix.sh,ro \
+    if [ "$(uname -m)" = x86_64 ]; then \
+      dnf install -y --setopt=install_weak_deps=False \
+        wine-core wine-common wine-cms java-25-openjdk-headless \
+        python3-pyyaml python3-jsonschema \
+      && dnf clean all && rm -rf /var/cache/dnf \
+      && for archive in "innosetup-${INNO_SETUP_VERSION}.exe" "jsign-${JSIGN_VERSION}.jar"; do \
+           sha=$(awk -F '\t' -v name="$archive" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-assets.tsv) \
+           && test -n "$sha" \
+           && echo "${sha}  /tilo-assets/${archive}" | sha256sum --check --strict || exit 1; \
+         done \
+      && export WINEPREFIX=/tmp/inno-prefix \
+      && bash /tmp/wine-prefix.sh \
+      && wine "/tilo-assets/innosetup-${INNO_SETUP_VERSION}.exe" /VERYSILENT /SUPPRESSMSGBOXES \
+           /NORESTART /CURRENTUSER /PORTABLE=1 '/DIR=C:\inno-setup' \
+      && wineserver -w \
+      && cp -r /tmp/inno-prefix/drive_c/inno-setup /opt/inno-setup \
+      && rm -rf /tmp/inno-prefix /tmp/.wine-* \
+      && test -f /opt/inno-setup/ISCC.exe \
+      && install -D -m 0644 "/tilo-assets/jsign-${JSIGN_VERSION}.jar" /usr/local/share/jsign/jsign.jar \
+      && printf '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n' > /usr/local/bin/jsign \
+      && chmod 0755 /usr/local/bin/jsign \
+      && jsign --help >/dev/null; \
+    fi
+
+# Native browser tests use Fedora's signed Chromium RPM, not a per-job download.
+# Bypass its desktop launcher: tests supply their own flags and fresh profiles.
+# Keep this late so browser updates do not rebuild the cross toolchains.
+ENV CHROME=/usr/lib64/chromium-browser/chromium-browser
+RUN dnf install -y --setopt=install_weak_deps=False chromium \
+    && dnf clean all && rm -rf /var/cache/dnf \
+    && test -x "$CHROME" && "$CHROME" --version
+
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env

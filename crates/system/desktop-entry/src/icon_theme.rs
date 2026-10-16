@@ -25,7 +25,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
+use tilo_lock::MutexRecover as _;
 
 /// The theme every inheritance chain ends in.
 pub const FALLBACK_THEME: &str = "hicolor";
@@ -389,16 +390,11 @@ impl IconLookup {
         }
         let name = clean_name(name)?;
         let key = (name.to_string(), size, scale);
-        if let Some(hit) = self
-            .memo
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-        {
+        if let Some(hit) = self.memo.lock_recover().get(&key) {
             return hit.clone();
         }
         let found = self.find_uncached(name, size, scale);
-        let mut memo = self.memo.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut memo = self.memo.lock_recover();
         if memo.len() >= MEMO_LIMIT {
             memo.clear();
         }
@@ -493,18 +489,12 @@ impl IconLookup {
     }
 
     fn theme(&self, name: &str) -> Option<Arc<Theme>> {
-        if let Some(known) = self
-            .themes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(name)
-        {
+        if let Some(known) = self.themes.lock_recover().get(name) {
             return known.clone();
         }
         let loaded = self.load_theme(name).map(Arc::new);
         self.themes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(name.to_string(), loaded.clone());
         loaded
     }
@@ -544,7 +534,7 @@ fn shared() -> &'static Mutex<Option<Shared>> {
 /// installed or removed, since that is when new icons appear.
 pub fn system_lookup() -> Arc<IconLookup> {
     let generation = crate::cache::cached_scan_generation();
-    let mut guard = shared().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut guard = shared().lock_recover();
     if let Some(current) = guard.as_ref()
         && current.generation == generation
     {

@@ -100,7 +100,7 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
-STAGING_HANDOFF="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
+STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff
 # The room store volume the storage daemon's native data plane serves from.
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
@@ -1122,7 +1122,7 @@ use_encrypted_copy_scratch() {
 copy_booted_image() {
   if [ "$OFFLINE_TARGET" -ne 0 ]; then
     step "Importing the selected offline Tilo target"
-    LOCAL_IMG="$(python3 /usr/libexec/tilo-installer-offline-target.py import)" \
+    LOCAL_IMG="$(/usr/libexec/tilo-installer-offline-target import)" \
       || die "offline target import or embedded update origin failed"
     [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
       || die "offline target did not resolve to an immutable image ID"
@@ -1130,17 +1130,11 @@ copy_booted_image() {
     return
   fi
   step "Copying the running Tilo image into local container storage"
-  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
-  # VM development can bind-mount the backend and helper from its writable
-  # overlay. The sealed /usr tree cannot gain a helper without an image rebuild.
-  if [ ! -f "$VM_COPY_CACHE" ] \
-      && [ -f /var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py ]; then
-    VM_COPY_CACHE=/var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py
-  fi
+  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache
   VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
   VM_CACHED_COPY=0
   if [ -e "$VM_COPY_CACHE_MARKER" ] \
-      && python3 "$VM_COPY_CACHE" check; then
+      && "$VM_COPY_CACHE" check; then
     log "  -> reusing the exact booted image from VM-local container storage"
     VM_CACHED_COPY=1
   else
@@ -1154,7 +1148,7 @@ copy_booted_image() {
   if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
     # Receipt creation only accelerates later VM retries; a failed write must
     # never change the completed export or the physical install path.
-    python3 "$VM_COPY_CACHE" record \
+    "$VM_COPY_CACHE" record \
       || log "  -> VM copy cache receipt unavailable; next run will copy again"
   fi
 
@@ -1168,7 +1162,7 @@ copy_booted_image() {
 OFFLINE_TARGET=0
 if [ -e /var/lib/tilo-installer/target-oci ] \
     || [ -L /var/lib/tilo-installer/target-oci ]; then
-  python3 /usr/libexec/tilo-installer-offline-target.py verify >/dev/null \
+  /usr/libexec/tilo-installer-offline-target verify >/dev/null \
     || die "preloaded signed target failed verification"
   offline_origin="$(python3 -c 'import json; print(json.load(open("/run/tilo-installer/offline-target.json"))["update_origin"])')"
   # The live medium may be generic so it can boot QEMU virt, while the signed
@@ -1506,13 +1500,15 @@ stage_installed_firstboot_runtime() {
     && [ ! -L "$source_root/usr/share/tilo/greetd-config.toml" ] \
     || die "installer is missing its first-boot greeter baseline"
   install -d -m 0755 "$target_etc/tilo" "$target_etc/systemd/system/multi-user.target.wants"
-  helper_files="$source_root/usr/libexec/tilo-firstboot-files.py"
+  # The file helper is compiled, so firstboot-user runs this copy itself
+  # rather than through an interpreter.
+  helper_files="$source_root/usr/libexec/tilo-firstboot-files"
   [ -f "$helper_files" ] && [ ! -L "$helper_files" ] \
     || die "installer is missing its first-boot file runtime"
   tmp="$(mktemp "$target_etc/tilo/.firstboot-files.XXXXXX")"
-  install -m 0644 "$helper_files" "$tmp"
-  label_installed_tilo_path "$tmp" /etc/tilo/tilo-firstboot-files.py
-  mv -f -- "$tmp" "$target_etc/tilo/tilo-firstboot-files.py"
+  install -m 0755 "$helper_files" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/tilo-firstboot-files
+  mv -f -- "$tmp" "$target_etc/tilo/tilo-firstboot-files"
   tmp="$(mktemp "$target_etc/tilo/.firstboot-user.XXXXXX")"
   install -m 0644 "$helper" "$tmp"
   label_installed_tilo_path "$tmp" /etc/tilo/firstboot-user
@@ -1798,7 +1794,7 @@ if [ "$ALONGSIDE" -eq 1 ] && [ "$ENCRYPT" -eq 1 ] \
   [ -c "$VM_INSTALL_PROOF_PORT" ] && systemd-detect-virt --vm --quiet \
     || die "VM install proof requires a named virtio character device inside a VM"
   VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json
-  python3 /usr/libexec/tilo-vm-install-proof.py \
+  /usr/libexec/tilo-vm-install-proof \
     --target-root "$MNT" --deploy-etc "$DEPLOY_ETC" \
     --efi-root "$BOOT_ESP_ROOT" \
     --target-uki "$BOOT_ESP_ROOT/EFI/Linux/bootc/bootc_composefs-${TARGET_COMPOSEFS_DIGEST}.efi" \
@@ -1835,10 +1831,10 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
     die "setup handoff contains the human root secret"
   fi
   if [ -d "$HANDOFF_SRC/etc" ]; then
-    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
+    /usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
   fi
   if [ -d "$HANDOFF_SRC/var" ]; then
-    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/var" "$HANDOFF_VAR"
+    /usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/var" "$HANDOFF_VAR"
   fi
   key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
   if [ -f "$key" ]; then
@@ -1878,7 +1874,7 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
       && [ -x /usr/sbin/sshd ] \
       && [ -f /usr/lib/systemd/system/sshd.service ] \
       || die "bring-up SSH requires a verified development target with OpenSSH"
-    python3 /usr/libexec/tilo-install-dev-ssh.py --etc "$DEPLOY_ETC" \
+    /usr/libexec/tilo-install-dev-ssh --etc "$DEPLOY_ETC" \
       --username "$USERNAME" --key "$SSH_REQUEST" \
       || die "could not configure owner-key bring-up SSH"
     rm -f "$DEPLOY_ETC/tilo/bringup-ssh.pub"

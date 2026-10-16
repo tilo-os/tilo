@@ -5,7 +5,7 @@
 
 use crate::config::{Config, PersistentConfig};
 use crate::guests::GuestLedger;
-use crate::limits::{IpHasher, JoinLimits, Seats};
+use crate::limits::{IpHasher, JoinLimits, JoinRates, Seats};
 use crate::room::read_started;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::public_avatars::is_avatar_name;
 use tilo_relay_protocol::room_operator::{LineError, OperatorCommand, RoomEvent, hex32};
 use tilo_relay_protocol::rooms::RoomRole;
@@ -56,8 +57,11 @@ pub struct SpectateRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpectateAnswer {
-    /// The device certificate in the form the browser runtime takes.
-    pub certificate: serde_json::Value,
+    /// The device certificate in the form the browser runtime takes, as JSON
+    /// text the page passes on unparsed: its nanosecond timestamps are
+    /// larger than a JavaScript number holds exactly, and the signature
+    /// covers them, so a parsed and re-serialized copy no longer verifies.
+    pub certificate: String,
     pub origin: String,
     pub room: String,
 }
@@ -74,7 +78,7 @@ pub enum JoinRefusal {
 /// What the child answered one waiting request.
 enum Answer {
     Invitation(String),
-    Certificate(serde_json::Value),
+    Certificate(String),
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -116,7 +120,13 @@ impl Shared {
             .persistent
             .as_ref()
             .context("not a persistent room")?;
-        Self::with_key(dir, key, config.max_guests, persistent.max_spectators)
+        Self::with_key(
+            dir,
+            key,
+            config.max_guests,
+            persistent.max_spectators,
+            (persistent.guest_joins, persistent.spectator_joins),
+        )
     }
 
     fn with_key(
@@ -124,15 +134,20 @@ impl Shared {
         key: [u8; 32],
         max_guests: usize,
         max_spectators: usize,
+        (guest_joins, spectator_joins): (JoinRates, JoinRates),
     ) -> Result<Self> {
         std::fs::create_dir_all(dir.join("avatars"))
             .with_context(|| format!("create {}", dir.display()))?;
         let guests = GuestLedger::open(dir.join("guests.json"))?;
+        // The guest windows as they stood before a restart: the ledger keeps
+        // each join's address hash and time on the persistent volume.
+        let since = tilo_clock::unix_now_ms().saturating_sub(crate::limits::DAY_MS);
+        let joins = JoinLimits::restored(guest_joins, guests.joins_since(since));
         Ok(Self {
             dir,
             hasher: IpHasher::new(key),
-            joins: std::sync::Mutex::new(JoinLimits::guests()),
-            spectates: std::sync::Mutex::new(JoinLimits::spectators()),
+            joins: std::sync::Mutex::new(joins),
+            spectates: std::sync::Mutex::new(JoinLimits::new(spectator_joins)),
             guests: std::sync::Mutex::new(guests),
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
@@ -142,8 +157,14 @@ impl Shared {
     #[cfg(test)]
     pub(crate) fn for_test(dir: &Path, max_guests: usize, max_spectators: usize) -> Arc<Self> {
         Arc::new(
-            Self::with_key(dir.to_path_buf(), [7; 32], max_guests, max_spectators)
-                .unwrap_or_else(|error| panic!("{error:#}")),
+            Self::with_key(
+                dir.to_path_buf(),
+                [7; 32],
+                max_guests,
+                max_spectators,
+                (JoinRates::GUESTS, JoinRates::SPECTATORS),
+            )
+            .unwrap_or_else(|error| panic!("{error:#}")),
         )
     }
 
@@ -152,15 +173,18 @@ impl Shared {
     }
 }
 
+/// What [`Persistent::admit_address`] took for a visitor: a seat, and a
+/// join at `at_ms` in the window of `ip_hash`.
+struct Admitted {
+    ip_hash: String,
+    at_ms: u64,
+}
+
 pub struct Persistent {
     shared: Arc<Shared>,
     /// The current child; `None` while it restarts.
     child: Mutex<Option<Child>>,
     waiters: std::sync::Mutex<Waiters>,
-}
-
-fn now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
 }
 
 fn token_digest(token: &str) -> String {
@@ -268,6 +292,10 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .arg("--room-id-file")
         .arg(dir.join("room-id"))
         .arg("--member-limits")
+        // The relay sees every watching page's subscription and holds the
+        // spectator cap; this service's count only paces new certificates.
+        .arg("--max-spectators")
+        .arg(persistent.max_spectators.to_string())
         .arg("--public-avatars")
         .arg(dir.join("avatars"))
         .arg("--public-avatars-url")
@@ -277,6 +305,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     }
     for channel in &persistent.chat_channels {
         command.arg("--chat-channel").arg(channel);
+    }
+    for strip in &persistent.strips {
+        command.arg("--strip").arg(strip);
     }
     for owner in &persistent.owners {
         command.arg("--owner").arg(owner);
@@ -289,7 +320,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     }
     command
         .arg("--reset-every")
-        .arg(persistent.reset_secs.to_string());
+        .arg(persistent.reset_secs.to_string())
+        .arg("--prune-after-mins")
+        .arg(persistent.prune_after_mins.to_string());
     size_sessions(&mut command, config, persistent);
     if !persistent.bots.is_empty() {
         for bot in &persistent.bots {
@@ -466,7 +499,7 @@ impl Persistent {
                     certificate,
                 }) => self.settle(
                     &format!("spectate:{device_public_key}"),
-                    serde_json::to_value(&certificate)
+                    serde_json::to_string(&certificate)
                         .map(Answer::Certificate)
                         .map_err(|error| error.to_string()),
                 ),
@@ -482,10 +515,7 @@ impl Persistent {
                         (&self.shared.seats, people),
                         (&self.shared.watching, spectators),
                     ] {
-                        seats
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .counted(online);
+                        seats.lock_recover().counted(online);
                     }
                     if let Some(ops) = crate::ops::get() {
                         ops.set_online(u64::from(people), u64::from(spectators));
@@ -500,7 +530,7 @@ impl Persistent {
                         .guests
                         .lock()
                         .map_err(|_| anyhow::anyhow!("guest ledger poisoned"))?
-                        .removed(&user_public_key, now_ms())?;
+                        .removed(&user_public_key, tilo_clock::unix_now_ms())?;
                     eprintln!(
                         "tilo-room-service: a guest was {}; their address {}",
                         if banned { "banned" } else { "removed" },
@@ -594,19 +624,27 @@ impl Persistent {
     }
 
     fn counted(seats: &std::sync::Mutex<Seats>) -> u32 {
-        seats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .online()
+        seats.lock_recover().online()
     }
 
     /// Gives back a seat taken by [`Self::admit_address`] for a visitor who
     /// got no answer.
     fn release(seats: &std::sync::Mutex<Seats>) {
-        seats
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .release();
+        seats.lock_recover().release();
+    }
+
+    /// Gives back what [`Self::admit_address`] took for a visitor the room
+    /// never answered: their seat, and the join in their address's window,
+    /// so retrying while the relay restarts does not use the window up.
+    fn unadmit(
+        admitted: &Admitted,
+        limits: &std::sync::Mutex<JoinLimits>,
+        seats: &std::sync::Mutex<Seats>,
+    ) {
+        Self::release(seats);
+        limits
+            .lock_recover()
+            .forget(&admitted.ip_hash, admitted.at_ms);
     }
 
     pub fn avatar_path(&self, name: &str) -> Option<PathBuf> {
@@ -618,9 +656,9 @@ impl Persistent {
         ip: IpAddr,
         limits: &std::sync::Mutex<JoinLimits>,
         seats: &std::sync::Mutex<Seats>,
-    ) -> std::result::Result<String, JoinRefusal> {
+    ) -> std::result::Result<Admitted, JoinRefusal> {
         let ip_hash = self.shared.hasher.hash(ip);
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         if self
             .shared
             .guests
@@ -651,7 +689,10 @@ impl Persistent {
             Self::release(seats);
             return Err(refusal);
         }
-        Ok(ip_hash)
+        Ok(Admitted {
+            ip_hash,
+            at_ms: now,
+        })
     }
 
     /// `POST /join`: pre-admit the visitor's own guest person.
@@ -666,7 +707,8 @@ impl Persistent {
             ));
         }
         let name = printable_name(&request.display_name).map_err(JoinRefusal::Invalid)?;
-        let ip_hash = self.admit_address(ip, &self.shared.joins, &self.shared.seats)?;
+        let admitted = self.admit_address(ip, &self.shared.joins, &self.shared.seats)?;
+        let unadmit = || Self::unadmit(&admitted, &self.shared.joins, &self.shared.seats);
         let token = hex::encode(rand::random::<[u8; 32]>());
         let token_sha256 = token_digest(&token);
         let (answer, origin, _) = self
@@ -684,13 +726,16 @@ impl Persistent {
                 },
             )
             .await
-            .inspect_err(|_| Self::release(&self.shared.seats))?;
+            .inspect_err(|_| unadmit())?;
         let Answer::Invitation(invitation) = answer else {
-            Self::release(&self.shared.seats);
+            unadmit();
             return Err(JoinRefusal::Unavailable);
         };
+        // At the time the window recorded, so the windows restored from the
+        // ledger after a restart are the ones this service held.
         if let Ok(mut guests) = self.shared.guests.lock()
-            && let Err(error) = guests.record_join(&request.user_public_key, &ip_hash, now_ms())
+            && let Err(error) =
+                guests.record_join(&request.user_public_key, &admitted.ip_hash, admitted.at_ms)
         {
             eprintln!("tilo-room-service: could not record a join: {error:#}");
         }
@@ -713,7 +758,8 @@ impl Persistent {
                 "devicePublicKey must be 64 lowercase hex characters",
             ));
         }
-        self.admit_address(ip, &self.shared.spectates, &self.shared.watching)?;
+        let admitted = self.admit_address(ip, &self.shared.spectates, &self.shared.watching)?;
+        let unadmit = || Self::unadmit(&admitted, &self.shared.spectates, &self.shared.watching);
         let (answer, origin, room) = self
             .ask(
                 format!("spectate:{}", request.device_public_key),
@@ -722,9 +768,9 @@ impl Persistent {
                 },
             )
             .await
-            .inspect_err(|_| Self::release(&self.shared.watching))?;
+            .inspect_err(|_| unadmit())?;
         let Answer::Certificate(certificate) = answer else {
-            Self::release(&self.shared.watching);
+            unadmit();
             return Err(JoinRefusal::Unavailable);
         };
         Ok(SpectateAnswer {
@@ -1001,6 +1047,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_restart_does_not_give_an_address_its_join_window_back() {
+        let (persistent, mut relay, dir) = persistent(200, 1000).await;
+        for key in 0..5u8 {
+            join_once(&persistent, &mut relay, "203.0.113.1", key).await;
+        }
+        drop((persistent, relay));
+        // The service starts again on the same volume, with no relay yet.
+        let restarted = Persistent::new(Shared::for_test(dir.path(), 200, 1000));
+        assert!(matches!(
+            restarted.join(ip("203.0.113.1"), request(9)).await,
+            Err(JoinRefusal::TooMany { retry_after_secs }) if (1..=600).contains(&retry_after_secs)
+        ));
+        // Another address passes the window and reaches the (absent) relay.
+        assert!(matches!(
+            restarted.join(ip("203.0.113.2"), request(10)).await,
+            Err(JoinRefusal::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_join_the_room_never_answered_does_not_use_the_window_up() {
+        let dir = tempfile::tempdir().unwrap();
+        // No relay attached, as while it restarts.
+        let restarting = Persistent::new(Shared::for_test(dir.path(), 200, 1000));
+        // Past both windows (5 guest joins, 30 spectates): none of these
+        // counted, so each still reaches the room and finds it away.
+        for key in 0..40u8 {
+            assert!(matches!(
+                restarting.join(ip("203.0.113.1"), request(key)).await,
+                Err(JoinRefusal::Unavailable)
+            ));
+            assert!(matches!(
+                restarting
+                    .spectate(
+                        ip("203.0.113.1"),
+                        SpectateRequest {
+                            device_public_key: hex::encode([key; 32]),
+                        },
+                    )
+                    .await,
+                Err(JoinRefusal::Unavailable)
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn a_pending_join_ends_when_the_relay_goes_away() {
         let (persistent, mut relay, _dir) = persistent(200, 1000).await;
         let joining = tokio::spawn({
@@ -1111,10 +1203,13 @@ mod tests {
         let answer = watching.await.unwrap().unwrap();
         assert_eq!(answer.room, "room-uuid");
         assert_eq!(answer.origin, "https://rooms.example");
+        // The certificate stays JSON text, so its timestamps reach the page
+        // exactly and the signature still verifies there.
         assert_eq!(
-            answer.certificate,
-            serde_json::to_value(&certificate).unwrap()
+            serde_json::from_str::<tilo_user_identity::DeviceCert>(&answer.certificate).unwrap(),
+            certificate
         );
+        assert!(answer.certificate.contains("1791962530023125779"));
     }
 
     #[tokio::test]
@@ -1146,8 +1241,10 @@ mod tests {
             device_public_key: [4; 32],
             device_label: "Watching visitor".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(2),
+            // A real clock reading: beyond 2^53, so a JavaScript number
+            // would round it.
+            issued_at_ns: 1_791_962_530_023_125_779,
+            expires_at_ns: Some(1_791_966_130_023_125_779),
             signature: [3; 64],
         }
     }
@@ -1250,37 +1347,84 @@ mod tests {
     }
 
     #[test]
+    fn the_relay_holds_the_spectator_cap() {
+        let vars = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+            ("TILO_ROOMS_MAX_SPECTATORS", "40"),
+        ];
+        let config = Config::from_lookup(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|arg| arg == "--max-spectators");
+        assert_eq!(at.map(|at| args[at + 1].as_str()), Some("40"));
+    }
+
+    #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
-        let channel_args = |vars: &[(&str, &str)]| {
-            let config = Config::from_lookup(|name| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-            .unwrap();
-            let command = child_command(&config, Path::new("/state")).unwrap();
-            let args: Vec<String> = command
-                .as_std()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            args.windows(2)
-                .filter(|pair| pair[0] == "--chat-channel")
-                .map(|pair| pair[1].clone())
-                .collect::<Vec<_>>()
-        };
+        assert!(relay_args("--chat-channel", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--chat-channel",
+                &[("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell")]
+            ),
+            ["general", "show-and-tell"]
+        );
+    }
+
+    #[test]
+    fn the_relay_prunes_guests_after_the_horizon_the_operator_names() {
+        assert_eq!(relay_args("--prune-after-mins", &[]), ["60"]);
+        assert_eq!(
+            relay_args(
+                "--prune-after-mins",
+                &[("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]
+            ),
+            ["1"]
+        );
+    }
+
+    #[test]
+    fn the_relay_gives_the_desktop_the_strips_the_operator_names() {
+        assert!(relay_args("--strip", &[]).is_empty());
+        assert_eq!(
+            relay_args("--strip", &[("TILO_ROOMS_STRIPS", "Main,Games night")]),
+            ["Main", "Games night"]
+        );
+    }
+
+    /// The values the relay is started with for `flag`, under the
+    /// persistent room's base configuration and `vars`.
+    fn relay_args(flag: &str, vars: &[(&str, &str)]) -> Vec<String> {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
         ];
-        assert!(channel_args(&base).is_empty());
-        assert_eq!(
-            channel_args(&[
-                base[0],
-                base[1],
-                ("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell"),
-            ]),
-            ["general", "show-and-tell"]
-        );
+        let config = Config::from_lookup(|name| {
+            base.iter()
+                .chain(vars)
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+            .collect()
     }
 }

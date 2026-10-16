@@ -83,6 +83,7 @@ fn open_tab(tree: &mut WorkspaceTree, room: RoomId, salt: u16, title: &str) -> u
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     workspace.strips.push(strip);
     tree.sync_room_doc(room);
@@ -481,8 +482,17 @@ fn the_agreed_list_survives_a_restart() {
         )
     };
     let mut list = open();
+    // Reconciled from the compositor's loop, so it must not wait for the
+    // disk: the write goes to the state writer.
+    #[cfg(target_os = "linux")]
+    assert!(crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(
+        || list.publish_local(&laptop, PERSON)
+    ));
+    #[cfg(not(target_os = "linux"))]
     assert!(list.publish_local(&laptop, PERSON));
     drop(list);
+    crate::shell::durable_writer::global().flush();
+    assert!(store.exists(), "the list is written");
     let mut reopened = open();
     assert!(
         !reopened.publish_local(&laptop, PERSON),

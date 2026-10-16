@@ -381,6 +381,9 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Historical refs predate this gate; every side that has it must pass it.
+    if "keystroke_writes" in ctx.bins:
+        call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
     # Both sides need a bench that knows --relay-cpus; an older one refuses it.
     cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
@@ -416,19 +419,31 @@ def run_render(ctx: RunContext) -> list[record.Record]:
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
-    return record.read(records) + adapters.framework_open(
+    measured = record.read(records) + adapters.framework_open(
         [opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
-
-
-IDLE_WAKEUPS_TEST = "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget"
+    if "notes-latency" in ctx.bins:
+        notes = ctx.dir / "notes-latency.log"
+        call([ctx.bins["notes-latency"]], notes, ctx.repo)
+        measured += adapters.notes_latency([notes.read_text(encoding="utf-8", errors="replace")], ctx.env)
+    return measured
 
 
 def run_wakeups(ctx: RunContext) -> list[record.Record]:
     log = ctx.dir / "idle.log"
-    # A run over the wakeup budget fails the test but still measured: the
-    # adapter fails only when the run printed no measurement.
-    call(["bash", ctx.repo / "tools/test-env.sh", ctx.bins["it"], IDLE_WAKEUPS_TEST, "--exact", "--nocapture"],
-         log, ctx.cwd["it"], {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window)}, check=False)
+    # A run over budget still produces evidence for A/B comparison, just as
+    # in the other groups. The scheduled lane also enforces the executable's exit.
+    if "idle-wakeups" in ctx.bins:
+        command = [ctx.bins["idle-wakeups"]]
+        cwd = ctx.repo
+    else:
+        # Historical refs kept the same measurement in the integration suite.
+        command = [ctx.bins["it"],
+                   "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget",
+                   "--exact", "--nocapture"]
+        cwd = ctx.cwd["it"]
+    call(["bash", ctx.repo / "tools/test-env.sh", *command],
+         log, cwd, {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window),
+                    "TILO_IDLE_SHELL_BIN": str(ctx.bins["shell"])}, check=False)
     return adapters.idle_wakeups([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
@@ -456,12 +471,40 @@ def run_search(ctx: RunContext) -> list[record.Record]:
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 
+
+def run_browser(ctx: RunContext) -> list[record.Record]:
+    report = ctx.dir / "browser.json"
+    call(["node", "scripts/perf/browser_qualification.mjs", ctx.bins["browser-bundle"], "--out", report,
+          "--renderer", ctx.env["renderer"], "--expect-revision", ctx.env["commit"],
+          # As the nightly job on SwiftShader (perf-scheduled.yml).
+          "--demo-seconds", "0", "--rounds", "1", "--activations", "10", "--viewport", "960x540"],
+         ctx.dir / "bench.log", ctx.repo)
+    return adapters.browser_qualification(json.loads(report.read_text(encoding="utf-8")), ctx.env,
+                                          require_clean=False)
+
+
+# The release desktop bundle as web-entry.yml builds it: the shipped profile,
+# not the A/B job's thin-LTO release environment, which the wasm profiles
+# would inherit. build.sh records the tree dirty when `git status` lists
+# anything; ab.py refuses tracked changes, and the untracked A/B output in
+# the checkout is not the source, so status leaves untracked files out.
+BROWSER_BUNDLE = "target/perf-browser-bundle"
+BROWSER_BUILD = ("bash", "-c",
+                 f'rm -rf "$PWD/{BROWSER_BUNDLE}" && env -u CARGO_PROFILE_RELEASE_LTO '
+                 "-u CARGO_PROFILE_RELEASE_CODEGEN_UNITS GIT_CONFIG_COUNT=1 "
+                 "GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no "
+                 f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle desktop')
+
 # The groups of perf-scheduled.yml that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
           (("cargo", "build", "--locked", "--release", "-p", "tilo-relay", "--example", "relay_load"),),
-          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting),
+          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
+          {"keystroke_writes": ("crates/hosting/tilo-relay/examples/keystroke_writes.rs",
+                                ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
+                                 "keystroke_writes"),
+                                "target/debug/examples/keystroke_writes")}),
     Group("latency", "dev", "lavapipe",
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),
@@ -478,11 +521,17 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"strip_pan_bench": ("crates/session/shell/examples/strip_pan_bench.rs",
                                ("cargo", "build", "--locked", "--release", "-p", "shell", "--example",
                                 "strip_pan_bench"),
-                               "target/release/examples/strip_pan_bench")}),
-    Group("wakeups", "dev", "lavapipe", (),
-          {"shell": "target/debug/shell"},
-          {"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")},
-          {"shell": "target/debug/shell"}, run_wakeups),
+                               "target/release/examples/strip_pan_bench"),
+           "notes-latency": ("apps/notes/examples/notes-latency.rs",
+                             ("cargo", "build", "--locked", "--release", "-p", "notes", "--example",
+                              "notes-latency"),
+                             "target/release/examples/notes-latency")}),
+    Group("wakeups", "dev", "lavapipe",
+          (("cargo", "build", "--locked", "-p", "shell", "--example", "idle-wakeups",
+            "--features", "scheduled-idle-benchmark"),
+           ("cargo", "build", "--locked", "-p", "shell", "--bin", "shell")),
+          {"shell": "target/debug/shell", "idle-wakeups": "target/debug/examples/idle-wakeups"},
+          {}, {"shell": "target/debug/shell"}, run_wakeups),
     Group("fs", "dev", "none", (),
           {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
                                      "--no-run"), "performance_gate")},
@@ -490,6 +539,8 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("search", "dev", "none", (),
           {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
           {}, run_search),
+    Group("browser", "release", "swiftshader", (BROWSER_BUILD,),
+          {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
 )}
 
 
@@ -522,11 +573,22 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
     return found[0]
 
 
+def side_group(group: Group, repo: Path) -> Group:
+    """Keep A/B comparisons with refs before the idle executable migration usable."""
+    if group.name != "wakeups" or (repo / "crates/session/shell/examples/idle-wakeups.rs").is_file():
+        return group
+    return dataclasses.replace(
+        group, builds=(("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
+        binaries={"shell": "target/debug/shell"},
+        tests={"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")})
+
+
 def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Path) -> dict[str, Any]:
     """Check out `commit`, build every group and keep its artifacts."""
     git(repo, "checkout", "--quiet", "--detach", commit)
     manifest: dict[str, Any] = {}
-    for group in groups:
+    for selected in groups:
+        group = side_group(selected, repo)
         directory = out / "bin" / side / group.name
         directory.mkdir(parents=True, exist_ok=True)
         log = out / "logs" / f"build-{side}-{group.name}.log"
@@ -539,7 +601,11 @@ def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Pat
             shutil.copy2(executable, directory / name)
             cwd[name] = str(package)
         for name, path in group.binaries.items():
-            shutil.copy2(repo / path, directory / name)
+            # A directory artifact (the browser bundle) is kept whole.
+            if (repo / path).is_dir():
+                shutil.copytree(repo / path, directory / name)
+            else:
+                shutil.copy2(repo / path, directory / name)
         for name, (source, command, path) in group.optional.items():
             if not (repo / source).is_file():
                 print(f"== {side} {commit[:10]} has no {source}; {name} is not built", flush=True)

@@ -4,9 +4,10 @@
 //! To see it, drive a running compositor rather than eyeballing a checklist:
 //! `cargo run --bin shell -- --backend headless` plus `tilo-control`
 //! (`scripts/headless-examples/`, `docs/headless-testing.md`), or render stills
-//! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
-//! in a window inside an existing X11/Wayland session.
+//! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
+//! runs the compositor in a window inside an existing X11/Wayland session.
 
+pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
@@ -47,9 +48,13 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
 pub mod device_wake;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(crate) mod disk_sync_guard;
 pub mod display_bars;
 pub mod display_confirm;
 pub(crate) mod display_control;
@@ -78,6 +83,7 @@ pub mod host_apps;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
+pub(crate) mod identity_admin;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
@@ -104,6 +110,7 @@ pub mod network;
 pub mod notification;
 pub mod notification_history;
 pub mod now_playing;
+pub mod opening_card;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
@@ -146,6 +153,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub mod settings_failures;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod spatial_calibration;
@@ -156,6 +164,7 @@ pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
 pub mod status;
+pub mod storage_notice;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
@@ -479,12 +488,14 @@ fn try_to_ui_tile_for_tab(
         // own instance of yet; becomes a `Foreign` above once it arrives.
         ShellTile::PeerWindow {
             label,
+            note,
             missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
             ..
         } if tab.is_some() => UiTile::App(Box::new(app_notice_card::AppNoticeCard::install(
             tab.unwrap_or_default(),
             label,
             display_name,
+            note,
         ))),
         ShellTile::PeerWindow {
             label,
@@ -497,10 +508,22 @@ fn try_to_ui_tile_for_tab(
                 &[("app", label.clone().into())],
             ),
         },
-        ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
-            title: label.clone(),
-            detail: note.clone(),
-        },
+        // Its instance here is starting, or being installed first: the
+        // place it will open in, moving until it does.
+        ShellTile::PeerWindow {
+            label,
+            note,
+            missing: None,
+            ..
+        } if note == peer_windows::OPENING
+            || tab.is_some_and(crate::shell::peer_windows::installing) =>
+        {
+            let wait = match tab.and_then(crate::shell::peer_windows::installing_package) {
+                Some((package_id, app)) => opening_card::Wait::Installing { package_id, app },
+                None => opening_card::Wait::Opening,
+            };
+            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
+        }
         // A legacy window runs only on its host; until a stream of it is
         // attached here, the tab says where it is.
         ShellTile::HostedWindow {
@@ -535,14 +558,24 @@ fn try_to_ui_tile_for_tab(
                 note,
             )))
         }
-        ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
-            title: label.clone(),
-            detail: if note.is_empty() {
-                crate::shell::i18n::t("shell-window-restoring")
+        // Asked for (a launch, a restore) and not yet arrived: the place
+        // it will open in, moving until it does.
+        ShellTile::LocalApp { label, note, .. }
+            if note.is_empty() || note == peer_windows::OPENING =>
+        {
+            let wait = if note.is_empty() {
+                opening_card::Wait::Restoring
             } else {
-                note.clone()
-            },
-        },
+                opening_card::Wait::Opening
+            };
+            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
+        }
+        ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
+            UiTile::Notice {
+                title: label.clone(),
+                detail: note.clone(),
+            }
+        }
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // These are their apps' own components, mounted in this process
             // by `mount_in_process`; reaching here, the host mounts none.
@@ -700,15 +733,8 @@ fn open_legacy_document_from_files(
                 ],
             )
         })?;
-        let text = std::fs::read_to_string(&path).map_err(|error| {
-            crate::shell::i18n::t_args(
-                "shell-path-read-failed",
-                &[
-                    ("path", path.display().to_string().into()),
-                    ("error", error.to_string().into()),
-                ],
-            )
-        })?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let title = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
@@ -735,7 +761,6 @@ fn open_legacy_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },
@@ -759,8 +784,8 @@ pub(crate) fn open_document_from_files(
         let path = path
             .canonicalize()
             .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let checkout = ui::record::RecordCheckout::new(
             ui::record::RecordId::for_file(&path),
             ui::record::RecordKind::new("text-document"),
@@ -815,7 +840,6 @@ pub(crate) fn open_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },
@@ -1069,6 +1093,18 @@ pub fn mount_in_process(
     })
 }
 
+/// Spacing of the strip column under the top bar. Nothing between the bar
+/// and the first strip: the tab row above every window already carries
+/// `TAB_PILL_INSET_Y` of air over its pills, and the bar keeps `s1` under
+/// its controls, so a margin on top of both was an empty band (24 physical
+/// px at scale 2) between the bar and the windows' tab row. The windows
+/// keep a margin over the bottom edge, which nothing else provides.
+pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
+    tilo_desktop::composition::WorkArea::Flush {
+        top: 0.0,
+        bottom: 12.0,
+    };
+
 /// The native chrome the shared desktop surface is built with: the session's
 /// top bar and wallpaper, the collaboration launchpad for an empty
 /// workspace, and a leading inset for the sidebar wheel.
@@ -1102,7 +1138,7 @@ pub(crate) fn workspace_surface_chrome(
         navigation: tilo_desktop::composition::NavigationChrome::InSurface,
         // Window surfaces meet the strip boundary: moving apps inward to keep
         // a clipped shadow would leave a visible shell-owned gutter.
-        work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+        work_area: WORK_AREA,
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(
@@ -1115,8 +1151,29 @@ pub(crate) fn workspace_surface_chrome(
         // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
         // lives in the overlay layer, so wheel and strip pan together.
         leading_inset: f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
-        notify: None,
+        // An application mounted in this process does its asynchronous work
+        // (an action directory question, an invocation, a collaborator's
+        // edit) on the compositor's own thread, which parks while nothing
+        // stirs: without this, what such an app is asked from outside waits
+        // for some unrelated frame, and on an idle desktop never gets an
+        // answer.
+        notify: Some(std::sync::Arc::new(|| {
+            if let Some(wake) = COMPONENT_WAKE.get() {
+                wake();
+            }
+        })),
     }
+}
+
+/// What wakes the compositor loop when an application it hosts wants a frame
+/// ([`install_component_wake`]).
+static COMPONENT_WAKE: std::sync::OnceLock<crate::session_runtime::Wake> =
+    std::sync::OnceLock::new();
+
+/// Let the applications this session hosts wake its loop. Set once, by the
+/// compositor, before any such application is asked anything.
+pub(crate) fn install_component_wake(wake: crate::session_runtime::Wake) {
+    let _ = COMPONENT_WAKE.set(wake);
 }
 
 /// The shared desktop surface for the tree's active workspace, plus the
@@ -1187,16 +1244,6 @@ pub(crate) fn surface_row_ptrs(
 ///
 /// # Panics
 /// In unit tests, panics if the isolated Files fixture cannot be created.
-// `tree_handle` is only ever read here (`.clone()`/`.read()`), never
-// moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
-// its callers outside this module (`compositor::frame`,
-// `compositor::hosted`) already hold their own owned handle at the call
-// site, so narrowing here is not this pass's call to make.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
-              call sites in shell::compositor, outside this pass's scope"
-)]
 pub fn build_tilo_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
@@ -1245,6 +1292,7 @@ pub fn build_tilo_overlay_host_with_inputs(
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
     launcher::action_authority::Export::of(&tree).publish();
+    launcher::action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

@@ -651,6 +651,9 @@ pub struct Queue {
     family_index: u32,
     relay_semaphores: Mutex<RelaySemaphores>,
     signal_semaphores: Mutex<SemaphoreList>,
+    /// Semaphores the next submission waits for (Tilo patch,
+    /// [`Queue::add_wait_semaphore`]).
+    wait_semaphores: Mutex<SemaphoreList>,
 }
 
 impl Queue {
@@ -752,6 +755,11 @@ pub enum TextureMemory {
 
     // memory not owned by wgpu
     External,
+
+    // memory not owned by wgpu, holding an image a foreign (non-Vulkan)
+    // producer wrote: its first use acquires it from
+    // `VK_QUEUE_FAMILY_FOREIGN_EXT` when the device enabled that extension.
+    ForeignExternal,
 }
 
 #[derive(Debug)]
@@ -1321,6 +1329,13 @@ impl crate::Queue for Queue {
         if !guard.is_empty() {
             signal_semaphores.append(&mut guard);
         }
+        drop(guard);
+
+        let mut waits = self.wait_semaphores.lock();
+        if !waits.is_empty() {
+            wait_semaphores.append(&mut waits);
+        }
+        drop(waits);
 
         // In order for submissions to be strictly ordered, we encode a dependency between each submission
         // using a pair of semaphores. This adds a wait if it is needed, and signals the next semaphore.
@@ -1401,6 +1416,18 @@ impl crate::Queue for Queue {
 impl Queue {
     pub fn raw_device(&self) -> &ash::Device {
         &self.device.raw
+    }
+
+    /// Make the next submission on this queue wait for the binary `semaphore`
+    /// before its `stage` (Tilo patch). Submissions on a queue are ordered
+    /// (each waits for the one before it), so every later one waits too: a
+    /// client buffer's write fence, imported as a semaphore, orders every
+    /// read of the buffer after the client's writes without blocking a thread.
+    /// The caller keeps `semaphore` alive until that submission completed.
+    pub fn add_wait_semaphore(&self, semaphore: vk::Semaphore, stage: vk::PipelineStageFlags) {
+        self.wait_semaphores
+            .lock()
+            .push_wait(SemaphoreType::Binary(semaphore), stage);
     }
 
     pub fn add_signal_semaphore(&self, semaphore: vk::Semaphore, semaphore_value: Option<u64>) {

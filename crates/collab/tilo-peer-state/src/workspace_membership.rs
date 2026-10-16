@@ -4,8 +4,8 @@ use tilo_action_policy::roles::AgentPreset;
 use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
 
 use crate::installation::{Installation, InstallationId};
-use tilo_relay_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::delegation::Delegation;
 
 /// A bot's device: its capability-free certificate and its installer's
 /// delegation naming it the installation in this room.

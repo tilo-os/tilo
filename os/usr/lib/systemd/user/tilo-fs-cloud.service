@@ -5,6 +5,9 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
+# Sync is batch work: it yields to everything the person is using and is the
+# first thing the OOM policy reclaims (see os/etc/systemd/user/background.slice.d).
+Slice=background.slice
 Type=simple
 # One mount per enabled cloud storage account (WebDAV, Nextcloud, Google
 # Drive, OneDrive, Dropbox, iCloud Drive) under ~/Remote. The service reads

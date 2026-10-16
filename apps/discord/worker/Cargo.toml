@@ -15,6 +15,7 @@ name = "discord-worker"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
 blake3.workspace = true
 discord-wire = { path = "../../discord-model" }
 futures-util = { workspace = true, features = ["sink"] }
@@ -29,6 +30,7 @@ tokio-websockets = { version = "0.13.3", default-features = false, features = ["
 url.workspace = true
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../../crates/platform/tilo-clock" }
 
 [dev-dependencies]
 fake-discord = { path = "../../../crates/dev/fake-discord" }

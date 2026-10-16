@@ -152,6 +152,10 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
         notices: notices.map(notice),
       };
     },
+    /** Only the people waiting to join, as `list().waiting`: one request. */
+    async requests() {
+      return expect(await ask({Requests: {room}}), 'Requests').map(waiting);
+    },
     /** Admit a waiting person (`requestId` from `list().waiting`). */
     async admit(requestIdHex) {
       return roomOf(await ask({Admit: {room, request_id: bytesOf(requestIdHex)}}));

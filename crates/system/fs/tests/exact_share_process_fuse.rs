@@ -703,6 +703,419 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     loss_viewer.stop();
 }
 
+/// A write the kernel acknowledged survives `systemctl stop fs.service`:
+/// systemd stops the daemon with SIGTERM, which has to end the mount through
+/// the final namespace save like SIGINT does. Killed by the signal instead,
+/// the daemon lost every change younger than the persister's settle time
+/// (`namespace_persist::QUIET`), so a file copied in just before a
+/// shutdown, an update reboot or a restart was gone afterwards.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_acknowledged_before_sigterm_survives_a_restart() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the SIGTERM restart outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let identity = temp.path().join("identity");
+    let mount = temp.path().join("mount");
+    let cache = temp.path().join("cache");
+    let seed = temp.path().join("seed");
+    let clock = temp.path().join("clock-ms");
+    let sockets = temp.path().join("authority-sockets");
+    for path in [&mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("seeded.txt"), PAYLOAD).unwrap();
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&clock, clock_now);
+    install_identity(&identity, rand::random(), rand::random(), true, clock_now);
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let serving = |host: &mut MountedProcess| {
+        host.wait_for_line("Mounting QuickFS");
+        let seeded = mount.join("seeded.txt");
+        wait_for_process(host, "the mount to serve its seed", || {
+            get_xattr(&seeded, fs_protocol::RECORD_ID_XATTR).ok()
+        });
+    };
+
+    let mut host = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut host);
+    let written: Vec<u8> = (0..256 * 1024_u32)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect();
+    let file = mount.join("written-before-stop.bin");
+    // `write` returns after `close`, whose FUSE flush committed the bytes:
+    // from here on the write is acknowledged to the application.
+    std::fs::write(&file, &written).unwrap();
+    let pid = libc::pid_t::try_from(host.child.id()).unwrap();
+    // SAFETY: signalling our own child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    let status = tilo_test_env::wait_for("the daemon to exit on SIGTERM", || {
+        host.child.try_wait().unwrap()
+    });
+    let output = host.logs.lock().unwrap().join("\n");
+    assert!(
+        status.success(),
+        "SIGTERM must end the daemon cleanly, not kill it; it exited with {status}:\n{output}"
+    );
+    assert!(
+        output.contains("Terminated, exiting..."),
+        "the daemon did not take the clean stop path on SIGTERM:\n{output}"
+    );
+    host.stop();
+
+    let mut restarted = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut restarted);
+    let survived = std::fs::read(&file).unwrap_or_else(|error| {
+        let output = restarted.logs.lock().unwrap().join("\n");
+        panic!("a write acknowledged before SIGTERM was lost on restart: {error}\n{output}")
+    });
+    assert!(
+        survived == written,
+        "the restarted mount served {} bytes that differ from the {} written",
+        survived.len(),
+        written.len()
+    );
+    restarted.stop();
+}
+
+/// One owner's `fs serve` over its own cache, restarted on the same cache
+/// as `systemctl restart fs.service` or a reboot would.
+#[cfg(target_os = "linux")]
+struct SoloHost {
+    _temp: TempDir,
+    identity: PathBuf,
+    sockets: PathBuf,
+    mount: PathBuf,
+    cache: PathBuf,
+    seed: PathBuf,
+    clock: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl SoloHost {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let host = Self {
+            identity: temp.path().join("identity"),
+            sockets: temp.path().join("authority-sockets"),
+            mount: temp.path().join("mount"),
+            cache: temp.path().join("cache"),
+            seed: temp.path().join("seed"),
+            clock: temp.path().join("clock-ms"),
+            _temp: temp,
+        };
+        for path in [&host.mount, &host.seed, &host.sockets] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::write(host.seed.join("seeded.txt"), PAYLOAD).unwrap();
+        let clock_now = tilo_clock::unix_now_ms();
+        write_clock(&host.clock, clock_now);
+        install_identity(
+            &host.identity,
+            rand::random(),
+            rand::random(),
+            true,
+            clock_now,
+        );
+        host
+    }
+
+    /// Starts the daemon and returns once the mount serves its seed.
+    fn start(&self) -> MountedProcess {
+        let mut process = spawn_host(
+            Path::new(env!("CARGO_BIN_EXE_fs")),
+            &self.identity,
+            &self.sockets,
+            &self.mount,
+            &self.cache,
+            &self.seed,
+            &self.clock,
+        );
+        process.wait_for_line("Mounting QuickFS");
+        let seeded = self.mount.join("seeded.txt");
+        wait_for_process(&mut process, "the mount to serve its seed", || {
+            get_xattr(&seeded, fs_protocol::RECORD_ID_XATTR).ok()
+        });
+        process
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal(process: &MountedProcess, signal: libc::c_int) {
+    let pid = libc::pid_t::try_from(process.child.id()).unwrap();
+    // SAFETY: signalling our own child process.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+}
+
+/// What the mount shows for one path: everything a restart must keep.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct Shown {
+    directory: bool,
+    bytes: Option<Vec<u8>>,
+    modified: std::time::SystemTime,
+    record_id: Option<Vec<u8>>,
+    pin: Option<Vec<u8>>,
+}
+
+/// Every path under `mount` and what it shows, read through the kernel.
+#[cfg(target_os = "linux")]
+fn show_tree(mount: &Path) -> std::collections::BTreeMap<String, Shown> {
+    let mut shown = std::collections::BTreeMap::new();
+    let mut pending = vec![mount.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            let directory = metadata.is_dir();
+            if directory {
+                pending.push(path.clone());
+            }
+            let relative = path.strip_prefix(mount).unwrap().display().to_string();
+            shown.insert(
+                relative,
+                Shown {
+                    directory,
+                    bytes: (!directory).then(|| std::fs::read(&path).unwrap()),
+                    modified: metadata.modified().unwrap(),
+                    record_id: (!directory)
+                        .then(|| get_xattr(&path, fs_protocol::RECORD_ID_XATTR).unwrap()),
+                    pin: get_xattr(&path, fs_protocol::PIN_XATTR).ok(),
+                },
+            );
+        }
+    }
+    shown
+}
+
+/// Where two trees differ, without dumping file contents.
+#[cfg(target_os = "linux")]
+fn differences(
+    before: &std::collections::BTreeMap<String, Shown>,
+    after: &std::collections::BTreeMap<String, Shown>,
+) -> String {
+    let brief = |shown: Option<&Shown>| {
+        shown.map(|shown| {
+            format!(
+                "directory {}, {:?} bytes (blake3 {:?}), modified {:?}, record id {:?}, pin {:?}",
+                shown.directory,
+                shown.bytes.as_ref().map(Vec::len),
+                shown
+                    .bytes
+                    .as_ref()
+                    .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
+                shown.modified,
+                shown.record_id,
+                shown.pin.as_deref().map(String::from_utf8_lossy),
+            )
+        })
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .map(|path| {
+            format!(
+                "{path}\n  before: {:?}\n  after:  {:?}",
+                brief(before.get(path)),
+                brief(after.get(path))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Patterned bytes, so a short or shifted read cannot match.
+#[cfg(target_os = "linux")]
+fn patterned(len: u32, salt: u32) -> Vec<u8> {
+    (0..len)
+        .map(|index| u8::try_from(index.wrapping_add(salt) % 251).unwrap())
+        .collect()
+}
+
+/// A workspace that `systemctl stop fs.service` (SIGTERM) and a restart
+/// pass through unchanged, as the kernel showed it: every name and
+/// directory, the exact bytes, the modification times, the stable record
+/// ids (a file stays the same file, not a copy with a new identity) and
+/// pins, a file's own and one inherited from its folder. Files created, overwritten, appended, renamed into a new directory
+/// and deleted, all within the persister's settle time and then stopped at
+/// once: only the stop path's final save can have written them.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_name_byte_time_identity_and_pin_survives_a_stop_and_restart() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the stop/restart round trip outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let solo = SoloHost::new();
+    let mount = &solo.mount;
+    let mut host = solo.start();
+
+    std::fs::write(mount.join("created.bin"), patterned(256 * 1024, 0)).unwrap();
+    std::fs::create_dir(mount.join("docs")).unwrap();
+    // Pinned before anything is in it: what lands in it later inherits it.
+    set_xattr(&mount.join("docs"), fs_protocol::PIN_XATTR, b"pinned").unwrap();
+    std::fs::create_dir(mount.join("empty-dir")).unwrap();
+    std::fs::write(mount.join("docs/nested.txt"), b"nested in a new directory").unwrap();
+    std::fs::write(mount.join("rename-me.txt"), b"moved, never copied").unwrap();
+    std::fs::rename(mount.join("rename-me.txt"), mount.join("docs/renamed.txt")).unwrap();
+    std::fs::write(mount.join("deleted.txt"), b"gone before the stop").unwrap();
+    std::fs::remove_file(mount.join("deleted.txt")).unwrap();
+    std::fs::write(mount.join("seeded.txt"), b"the seed, overwritten in place").unwrap();
+    std::fs::write(mount.join("appended.log"), b"first line\n").unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(mount.join("appended.log"))
+        .unwrap()
+        .write_all(b"second line\n")
+        .unwrap();
+    set_xattr(
+        &mount.join("created.bin"),
+        fs_protocol::PIN_XATTR,
+        b"pinned",
+    )
+    .unwrap();
+    let before = show_tree(mount);
+    assert_eq!(
+        before.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "appended.log",
+            "created.bin",
+            "docs",
+            "docs/nested.txt",
+            "docs/renamed.txt",
+            "empty-dir",
+            "seeded.txt",
+        ],
+        "the mount did not show the changes it acknowledged"
+    );
+    assert_eq!(
+        before["appended.log"].bytes.as_deref(),
+        Some(b"first line\nsecond line\n".as_slice())
+    );
+    let pins = before
+        .iter()
+        .map(|(path, shown)| (path.as_str(), shown.pin.as_deref()))
+        .collect::<Vec<_>>();
+    let pinned = Some(b"pinned".as_slice());
+    let automatic = Some(b"automatic".as_slice());
+    assert_eq!(
+        pins,
+        [
+            ("appended.log", automatic),
+            ("created.bin", pinned),
+            ("docs", pinned),
+            ("docs/nested.txt", pinned),
+            ("docs/renamed.txt", pinned),
+            ("empty-dir", automatic),
+            ("seeded.txt", automatic),
+        ],
+        "every file reports its own or its folder's pin"
+    );
+
+    signal(&host, libc::SIGTERM);
+    let status = tilo_test_env::wait_for("the daemon to exit on SIGTERM", || {
+        host.child.try_wait().unwrap()
+    });
+    let output = host.logs.lock().unwrap().join("\n");
+    assert!(
+        status.success(),
+        "SIGTERM ended the daemon with {status}:\n{output}"
+    );
+    host.stop();
+
+    let mut restarted = solo.start();
+    let after = show_tree(mount);
+    let output = restarted.logs.lock().unwrap().join("\n");
+    assert!(
+        after == before,
+        "the restarted mount differs from what was acknowledged before the stop:\n{}\n{output}",
+        differences(&before, &after)
+    );
+    restarted.stop();
+}
+
+/// A daemon that dies without a stop path (a crash, the OOM killer, the
+/// SIGKILL after `TimeoutStopSec=`) keeps what was synced: a database
+/// journal written and `fsync`ed while still open, and a document saved
+/// the safe way (write a temporary, `fsync` it, rename it over the
+/// target, `fsync` the directory). Both happen within the persister's
+/// settle time, so only the syncs can have made the names durable, and a
+/// synced file must come back under its own name, not as a recovered copy.
+#[cfg(target_os = "linux")]
+#[test]
+fn synced_files_and_renames_survive_a_daemon_crash() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the crash round trip outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let solo = SoloHost::new();
+    let mount = &solo.mount;
+    let mut host = solo.start();
+
+    let journal_bytes = patterned(64 * 1024, 7);
+    let mut journal = std::fs::File::create(mount.join("journal.db")).unwrap();
+    journal.write_all(&journal_bytes).unwrap();
+    journal.sync_all().unwrap();
+
+    std::fs::create_dir(mount.join("reports")).unwrap();
+    let report_bytes = patterned(32 * 1024, 13);
+    let temporary = mount.join("reports/.report.txt.tmp");
+    let mut report = std::fs::File::create(&temporary).unwrap();
+    report.write_all(&report_bytes).unwrap();
+    report.sync_all().unwrap();
+    drop(report);
+    std::fs::rename(&temporary, mount.join("reports/report.txt")).unwrap();
+    std::fs::File::open(mount.join("reports"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    let journal_id = get_xattr(&mount.join("journal.db"), fs_protocol::RECORD_ID_XATTR).unwrap();
+    let report_id = get_xattr(
+        &mount.join("reports/report.txt"),
+        fs_protocol::RECORD_ID_XATTR,
+    )
+    .unwrap();
+
+    signal(&host, libc::SIGKILL);
+    tilo_test_env::wait_for("the daemon to die on SIGKILL", || {
+        host.child.try_wait().unwrap()
+    });
+    // The journal's descriptor outlived its daemon, as a database's would.
+    drop(journal);
+    host.stop();
+
+    let mut restarted = solo.start();
+    let after = show_tree(mount);
+    let output = restarted.logs.lock().unwrap().join("\n");
+    assert_eq!(
+        after.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["journal.db", "reports", "reports/report.txt", "seeded.txt"],
+        "the synced names did not survive the crash exactly:\n{output}"
+    );
+    assert!(
+        after["journal.db"].bytes.as_deref() == Some(journal_bytes.as_slice()),
+        "the synced journal lost bytes across the crash:\n{output}"
+    );
+    assert!(
+        after["reports/report.txt"].bytes.as_deref() == Some(report_bytes.as_slice()),
+        "the synced, renamed report lost bytes across the crash:\n{output}"
+    );
+    assert_eq!(
+        after["journal.db"].record_id.as_deref(),
+        Some(journal_id.as_slice())
+    );
+    assert_eq!(
+        after["reports/report.txt"].record_id.as_deref(),
+        Some(report_id.as_slice())
+    );
+    restarted.stop();
+}
+
 /// Voluntary wakeups per second an idle `fs serve` may make across all of
 /// its threads. An idle thread blocks once and stays blocked, so
 /// each voluntary switch is a timer or a poll that fired. Preemptions are

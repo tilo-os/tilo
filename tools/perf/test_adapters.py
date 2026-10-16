@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -219,17 +220,15 @@ class WorkspaceSwitch(unittest.TestCase):
         self.assertEqual(nightly, produced)
 
 
-IDLE_GATE = ROOT / "crates/session/shell/tests/idle_wakeups.rs"
+IDLE_GATE = ROOT / "crates/session/shell/examples/idle-wakeups.rs"
 
 
 def idle_log(total: float, shell: float) -> str:
-    # The shape of a --nocapture run: the table on stderr, the line on stdout.
+    # The executable prints the table on stderr and the record on stdout.
     return "\n".join([
-        "running 1 test",
         "idle wakeups over 10.0 s: 3.40/s across 1 processes",
         f"IDLE-WAKEUPS total_per_s={total:.3f} shell_per_s={shell:.3f} loop_ticks_per_s=0.000 "
         "cpu_percent=0.400 window_ms=10012 threads_started=0",
-        "test idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget ... ok",
     ])
 
 
@@ -467,6 +466,59 @@ class FrameworkFocus(unittest.TestCase):
         self.assertEqual(budgeted, produced)
 
 
+NOTES_LATENCY = ROOT / "apps/notes/examples/notes-latency.rs"
+
+
+def notes_latency_log(scale: float, gpu: bool = True) -> str:
+    """notes-latency's output: the table, then its one JSON line."""
+    def figures(values: list[float]) -> dict:
+        values = [value * scale for value in values]
+        return {"samples": len(values), "p50": sorted(values)[len(values) // 2], "p99": max(values),
+                "max": max(values), "values": values}
+    workloads = {workload: {"to_frame_ms": figures([1.0, 2.0, 3.0]),
+                            "to_raster_ms": figures([2.0, 3.0, 4.0]) if gpu else None}
+                 for workload in adapters.NOTES_LATENCY_WORKLOADS}
+    report = {"pages": 27, "blocks": 838, "gpu": gpu, "workloads": workloads}
+    return "\n".join([
+        "Notes input latency, 27 notes / 838 blocks, 1280x900 at scale 1, release build, x86_64",
+        "type             3     2.00     3.00     3.00     3.00     4.00     4.00",
+        f"NOTES-LATENCY {json.dumps(report)}",
+    ])
+
+
+class NotesLatency(unittest.TestCase):
+    def test_every_input_is_a_sample_of_its_workload(self):
+        records = {item.kpi: item for item in adapters.notes_latency(
+            [notes_latency_log(1.0), notes_latency_log(2.0)], ENV)}
+        typing = records["render.notes_latency.type.to_frame_ms"]
+        self.assertEqual((typing.unit, typing.n, typing.max), ("ms", 6, 6.0))
+        self.assertEqual(records["render.notes_latency.open.to_raster_ms"].max, 8.0)
+        self.assertEqual(records["render.notes_latency.scroll.to_frame_ms"].meta, {"runs": "2"})
+
+    def test_a_run_without_its_line_fails(self):
+        with self.assertRaisesRegex(ValueError, "NOTES-LATENCY"):
+            adapters.notes_latency([notes_latency_log(1.0), "workload  samples  to frame"], ENV)
+
+    def test_a_run_without_a_gpu_fails(self):
+        with self.assertRaisesRegex(ValueError, "no GPU"):
+            adapters.notes_latency([notes_latency_log(1.0, gpu=False)], ENV)
+
+    def test_the_example_prints_what_the_adapter_reads(self):
+        source = NOTES_LATENCY.read_text()
+        self.assertIn('"NOTES-LATENCY {record}"', source)
+        for field in ("to_frame_ms", "to_raster_ms", "values", *adapters.NOTES_LATENCY_WORKLOADS):
+            self.assertIn(f'"{field}"', source)
+
+    def test_every_kpi_has_a_budget_and_the_render_job_runs_it(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.notes_latency.")}
+        produced = {item.kpi for item in adapters.notes_latency([notes_latency_log(1.0)], ENV)}
+        self.assertEqual(budgeted, produced)
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        self.assertIn("--example notes-latency", workflow)
+        self.assertIn("adapters.py notes-latency", workflow)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 
@@ -564,8 +616,247 @@ class HostingLoad(unittest.TestCase):
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("hosting.")}
         produced = {item.kpi for item in adapters.hosting_load(load_report(), self.prices, ENV)}
+        # ... and the room host job, at the guest count the nightly runs.
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        [guests] = re.findall(r"tilo-room-load bench --guests (\d+)", workflow)
+        config = {**room_report()["config"], "guests": int(guests)}
+        produced |= {item.kpi for item in adapters.room_load([room_report(config=config, joined=int(guests))], ENV)}
         self.assertTrue(budgeted, "the hosting group has budgets")
         self.assertLessEqual(budgeted, produced)
+
+
+BROWSER_HARNESS = ROOT / "scripts/perf/browser_qualification.mjs"
+BROWSER_ENV = {**ENV, "profile": "release", "renderer": "swiftshader"}
+
+
+def browser_report(**changes) -> dict:
+    """The shape scripts/perf/browser_qualification.mjs writes, reduced."""
+    report = {
+        "schema": 1, "renderer": "swiftshader",
+        "bundle": {"revision": "a" * 40, "dirty": False, "profile": "release", "digest": "d" * 64,
+                   "runtimeSha256": "e" * 64},
+        "adapter": {"vendor": "google", "architecture": "swiftshader", "device": "", "description": ""},
+        "browser": {"product": "Chrome/153.0.8010.12"},
+        "viewport": {"width": 1920, "height": 1080, "deviceScaleFactor": 1},
+        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1,
+                     "demoSeconds": 5},
+        "samples": {"load_ms": [900.0, 1100.0], "open_ms": [20.0, 30.0, 25.0, 35.0],
+                    "open_ready_ms": [60.0, 90.0, 70.0, 80.0], "activate_ms": [12.0, 14.0, 40.0],
+                    "demo_interval_ms": [16.0, 17.0, 33.0, 18.0], "demo_work_ms": [9.0, 10.0, 11.0],
+                    "idle_per_s": [0.0, 0.5]},
+    }
+    for key, value in changes.items():
+        if key in report["bundle"]:
+            report["bundle"] = {**report["bundle"], key: value}
+        elif key in report["workload"]:
+            report["workload"] = {**report["workload"], key: value}
+        else:
+            report[key] = value
+    return report
+
+
+ROOM_LOAD = ROOT / "crates/dev/room-load/src"
+
+
+def room_report(join_p99: float = 400.0, rss: int = 700, **changes) -> dict:
+    """A `tilo-room-load bench` report, with the fields the adapter reads."""
+    report = {
+        "config": {"guests": 300, "rooms": 1, "cursor_hz": 30.0, "chat_every_s": 60.0, "host_threads": None},
+        "joined": 300, "chat_rx": 12000, "failures": {},
+        "join_ms": {"p50": 90.0, "p95": 300.0, "p99": join_p99, "max": 500.0},
+        "chat_ms": {"p50": 20.0, "p95": 60.0, "p99": 90.0, "max": 200.0},
+        "host": {"rss_mib_peak": rss, "hold_cpu_cores": 1.5, "machine_cores": 12},
+    }
+    report.update(changes)
+    return report
+
+
+class RoomLoad(unittest.TestCase):
+    def test_each_run_is_one_sample_of_each_kpi(self):
+        records = {item.kpi: item for item in adapters.room_load(
+            [room_report(400.0, 700), room_report(500.0, 720), room_report(450.0, 710)], ENV)}
+        self.assertEqual(set(records), {f"{kpi}.g300" for kpi in adapters.ROOM_LOAD_KPIS})
+        join = records["hosting.room.join_p99_ms.g300"]
+        self.assertEqual((join.n, join.p50, join.max), (3, 450.0, 500.0))
+        self.assertEqual(records["hosting.room.rss_mib_peak.g300"].unit, "MiB")
+        self.assertEqual(records["hosting.room.cpu_percent.g300"].p50, 150.0)
+        self.assertEqual(join.meta["runs"], "3")
+
+    def test_a_run_with_failures_or_missing_guests_is_not_a_measurement(self):
+        for broken in (room_report(failures={"join: no Ready before the timeout": 2}),
+                       room_report(joined=298),
+                       room_report(chat_rx=0)):
+            with self.assertRaises(ValueError):
+                adapters.room_load([room_report(), broken], ENV)
+        with self.assertRaises(ValueError):
+            adapters.room_load([room_report(), room_report(config={**room_report()["config"], "guests": 50})], ENV)
+
+    def test_the_fields_read_are_the_ones_the_bench_writes(self):
+        source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(ROOM_LOAD.glob("*.rs")))
+        for field in ('"p99"', '"rss_mib_peak"', '"hold_cpu_cores"', '"machine_cores"', '"chat_rx"',
+                      '"joined"', '"failures"', '"cursor_hz"', '"chat_every_s"', '"host_threads"'):
+            self.assertIn(field, source)
+
+
+class BrowserQualification(unittest.TestCase):
+    def test_each_sample_list_becomes_its_kpi(self):
+        records = {item.kpi: item for item in adapters.browser_qualification(browser_report(), BROWSER_ENV)}
+        self.assertEqual(set(records), {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+        interval = records["browser.demo.frame_interval"]
+        self.assertEqual((interval.unit, interval.n, interval.p50, interval.max), ("ms", 4, 17.0, 33.0))
+        idle = records["browser.idle.presented_per_s"]
+        self.assertEqual((idle.unit, idle.n, idle.max), ("per_s", 2, 0.5))
+        self.assertEqual(records["browser.activate.first_frame"].p99, 40.0)
+        meta = interval.meta
+        self.assertEqual((meta["runtime_sha256"], meta["viewport"], meta["adapter"]),
+                         ("e" * 64, "1920x1080@1", "google swiftshader"))
+
+    def test_a_report_of_another_environment_is_refused(self):
+        for report, reason in ((browser_report(renderer="gpu"), "not the env's swiftshader"),
+                               (browser_report(profile="dev"), "dev build"),
+                               (browser_report(revision="b" * 40), "built from b"),
+                               (browser_report(dirty=True), "dirty"),
+                               (browser_report(cpuThrottle=4), "throttled 4x"),
+                               (browser_report(schema=2), "schema")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.browser_qualification(report, BROWSER_ENV)
+
+    def test_the_ab_lane_accepts_its_untracked_output_but_not_another_commit(self):
+        records = adapters.browser_qualification(browser_report(dirty=True), BROWSER_ENV, require_clean=False)
+        self.assertTrue(records)
+        with self.assertRaisesRegex(ValueError, "built from b"):
+            adapters.browser_qualification(browser_report(revision="b" * 40), BROWSER_ENV, require_clean=False)
+
+    def test_a_measurement_without_samples_fails(self):
+        report = browser_report()
+        report["samples"] = {**report["samples"], "activate_ms": []}
+        with self.assertRaisesRegex(ValueError, "activate_ms"):
+            adapters.browser_qualification(report, BROWSER_ENV)
+
+    def test_the_fields_are_the_harnesses(self):
+        """The harness writes every sample list the adapter reads."""
+        source = BROWSER_HARNESS.read_text()
+        written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s)): rounds", source[source.index("samples: {"):]))
+        self.assertEqual(written, set(adapters.BROWSER_KPIS))
+
+    def test_a_run_without_the_demo_reports_everything_else(self):
+        report = browser_report(demoSeconds=0)
+        report["samples"] = {field: values for field, values in report["samples"].items()
+                             if field not in adapters.BROWSER_DEMO_FIELDS}
+        records = {item.kpi for item in adapters.browser_qualification(report, BROWSER_ENV)}
+        self.assertNotIn("browser.demo.frame_interval", records)
+        self.assertIn("browser.activate.first_frame", records)
+        with self.assertRaisesRegex(ValueError, "demo samples from a run without the demo"):
+            adapters.browser_qualification(browser_report(demoSeconds=0), BROWSER_ENV)
+
+    def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        """The nightly job runs without the demo (perf-scheduled.yml: --demo-seconds 0)."""
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("browser.")}
+        self.assertEqual(budgeted, {kpi for field, (kpi, _) in adapters.BROWSER_KPIS.items()
+                                    if field not in adapters.BROWSER_DEMO_FIELDS})
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        self.assertIn("--demo-seconds 0", workflow)
+
+
+STREAM_HARNESS = ROOT / "scripts/perf/native_stream_qualification.mjs"
+
+
+def stream_report(**changes) -> dict:
+    """The shape scripts/perf/native_stream_qualification.mjs writes, reduced."""
+    report = {
+        "schema": 1, "renderer": "swiftshader",
+        "bundle": {"revision": "a" * 40, "dirty": False, "profile": "release", "digest": "d" * 64},
+        "browser": {"product": "Chrome/153.0.8010.12"},
+        "viewport": {"width": 960, "height": 540, "deviceScaleFactor": 1},
+        "session": {"encoder": "x264enc (software, software)", "hardware": False, "fps": 30, "width": 1280,
+                    "height": 720, "codec": "h264"},
+        "workload": {"seconds": 10, "inputs": 20, "carrier": "webtransport", "codec": "h264"},
+        "counts": {"sent": 300, "deliveredPercent": 99.33},
+        "correctness": {"failures": []},
+        "samples": {"startup_ms": [640.0], "frame_latency_ms": [30.0, 35.0, 80.0], "frame_interval_ms": [33.0, 34.0],
+                    "encode_ms": [4.0, 5.0], "input_ms": [3.0, 6.0]},
+    }
+    for key, value in changes.items():
+        if key in report["bundle"]:
+            report["bundle"] = {**report["bundle"], key: value}
+        else:
+            report[key] = value
+    return report
+
+
+def codec_report(codec: str) -> dict:
+    """A report of a session streaming `codec` (`vp9`: a session without an H.264 encoder)."""
+    report = stream_report()
+    return stream_report(session={**report["session"], "encoder": f"{codec} (software, software)", "codec": codec},
+                         workload={**report["workload"], "codec": codec})
+
+
+class NativeStream(unittest.TestCase):
+    def test_each_sample_list_becomes_its_kpi_and_misses_one_more(self):
+        records = {item.kpi: item for item in adapters.native_stream(stream_report(), BROWSER_ENV)}
+        self.assertEqual(set(records), {kpi for kpi, _ in adapters.STREAM_KPIS.values()} | {"stream.frame.missed"})
+        latency = records["stream.frame.latency"]
+        self.assertEqual((latency.unit, latency.n, latency.p50, latency.max), ("ms", 3, 35.0, 80.0))
+        missed = records["stream.frame.missed"]
+        self.assertEqual((missed.unit, missed.n, missed.max), ("percent", 1, 0.67))
+        self.assertEqual((latency.meta["encoder_hardware"], latency.meta["window"], latency.meta["carrier"],
+                          latency.meta["codec"]), ("false", "1280x720", "webtransport", "h264"))
+
+    def test_a_vp9_stream_is_its_own_series(self):
+        """VP9's records carry the codec in their ids, so no H.264 baseline ever judges them."""
+        records = {item.kpi: item for item in adapters.native_stream(codec_report("vp9"), BROWSER_ENV)}
+        self.assertEqual(set(records), {"stream.vp9.startup.first_picture", "stream.vp9.frame.latency",
+                                        "stream.vp9.frame.interval", "stream.vp9.encode.frame",
+                                        "stream.vp9.input.latency", "stream.vp9.frame.missed"})
+        latency = records["stream.vp9.frame.latency"]
+        self.assertEqual((latency.unit, latency.n, latency.p50, latency.meta["codec"]), ("ms", 3, 35.0, "vp9"))
+        self.assertEqual(records["stream.vp9.frame.missed"].max, 0.67)
+
+    def test_a_session_that_streamed_another_codec_is_refused(self):
+        """A session that fell back to H.264 must not fill VP9's series, nor the reverse."""
+        fell_back, upgraded, garbled = codec_report("vp9"), stream_report(), codec_report("VP9.x")
+        fell_back["session"]["codec"] = "h264"
+        upgraded["session"]["codec"] = "vp9"
+        for report, reason in ((fell_back, "streamed h264, not the requested vp9"),
+                               (upgraded, "streamed vp9, not the requested h264"),
+                               (garbled, "names codec")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream(report, BROWSER_ENV)
+
+    def test_a_report_of_another_environment_or_an_incorrect_stream_is_refused(self):
+        for report, reason in ((stream_report(renderer="gpu"), "not the env's swiftshader"),
+                               (stream_report(profile="dev"), "dev build"),
+                               (stream_report(revision="b" * 40), "built from b"),
+                               (stream_report(dirty=True), "dirty"),
+                               (stream_report(schema=2), "schema"),
+                               (stream_report(correctness={"failures": ["2 corrupt pictures"]}), "corrupt"),
+                               (stream_report(counts={"sent": 3, "deliveredPercent": 140.0}), "not a share")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream(report, BROWSER_ENV)
+
+    def test_a_measurement_without_samples_fails(self):
+        report = stream_report()
+        report["samples"] = {**report["samples"], "input_ms": []}
+        with self.assertRaisesRegex(ValueError, "input_ms"):
+            adapters.native_stream(report, BROWSER_ENV)
+
+    def test_the_fields_are_the_harnesses(self):
+        """The harness writes every sample list the adapter reads."""
+        source = STREAM_HARNESS.read_text()
+        samples = source[source.index("samples: {"):source.index("counts: {")]
+        self.assertEqual(set(re.findall(r"\b([a-z_]+_ms):", samples)), set(adapters.STREAM_KPIS))
+
+    def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        """Each codec the nightly streams (H.264 by default, then each `--codec`) has a budget for every KPI."""
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text().replace("\\\n", " ")
+        runs = [line for line in workflow.splitlines() if line.lstrip().startswith("node scripts/perf/native_stream")]
+        codecs = {(re.findall(r"--codec (\w+)", run) or [adapters.STREAM_DEFAULT_CODEC])[0] for run in runs}
+        self.assertEqual(codecs, {"h264", "vp9"})
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("stream.")}
+        produced = {item.kpi for codec in codecs for item in adapters.native_stream(codec_report(codec), BROWSER_ENV)}
+        self.assertEqual(budgeted, produced)
 
 
 if __name__ == "__main__":

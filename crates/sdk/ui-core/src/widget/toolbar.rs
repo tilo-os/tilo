@@ -37,6 +37,9 @@ pub enum Orientation {
     Vertical,
 }
 
+/// Paints a command's mark into the glyph square it is given.
+pub type GlyphPainter = fn(&mut Scene, Affine, Rect, &Theme);
+
 /// One command of a toolbar and what it carries.
 pub struct ToolbarCommand {
     /// The command's visible label, or the accessible name and tooltip of
@@ -47,6 +50,10 @@ pub struct ToolbarCommand {
     /// A colour well shown instead of a label or icon (the colour the next
     /// mark takes); the label is its accessible name and tooltip.
     pub swatch: Option<vello::peniko::Color>,
+    /// A mark the host paints in the command's glyph square instead of a
+    /// label, icon or swatch (a product mark in its own colours); the label
+    /// is its accessible name, tooltip and overflow row.
+    pub glyph: Option<GlyphPainter>,
     /// `Some` for a toggle; `Some(true)` paints the lift.
     pub active: Option<bool>,
     /// What assistive technology and the More menu call it, when that
@@ -75,6 +82,7 @@ impl ToolbarCommand {
             label: label.to_string(),
             icon: None,
             swatch: None,
+            glyph: None,
             active: None,
             accessible_name: None,
             enabled: true,
@@ -280,6 +288,20 @@ impl Toolbar {
     ) -> Self {
         let mut command = ToolbarCommand::new(name, Box::new(on_click));
         command.swatch = Some(color);
+        self.push_command(command)
+    }
+    /// A command shown as a mark `paint` draws in its glyph square (a
+    /// product mark in its own colours); `name` is its accessible name,
+    /// tooltip and overflow row.
+    #[must_use]
+    pub fn push_glyph(
+        self,
+        paint: GlyphPainter,
+        name: &str,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        let mut command = ToolbarCommand::new(name, Box::new(on_click));
+        command.glyph = Some(paint);
         self.push_command(command)
     }
     /// A command that opens `items` as a menu anchored to it (Sort, Insert,
@@ -703,7 +725,9 @@ impl Toolbar {
             .enumerate()
             .map(|(index, item)| match item {
                 ToolbarItem::Button(command)
-                    if command.icon.is_some() || command.swatch.is_some() =>
+                    if command.icon.is_some()
+                        || command.swatch.is_some()
+                        || command.glyph.is_some() =>
                 {
                     square
                 }
@@ -1363,10 +1387,6 @@ fn count_to_f32(n: usize) -> f32 {
     f32::from(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded logical layout dimensions"
-)]
 impl crate::widget::controls::ActionControls for Toolbar {
     fn install_control_custody(
         &mut self,
@@ -1741,10 +1761,11 @@ impl Widget for Toolbar {
             };
             match self.items.get(index) {
                 Some(ToolbarItem::Button(command)) => {
-                    let (label, icon, swatch, active, enabled, dot, name) = (
+                    let (label, icon, swatch, glyph, active, enabled, dot, name) = (
                         command.label.clone(),
                         command.icon,
                         command.swatch,
+                        command.glyph,
                         command.active.unwrap_or(false),
                         command.is_enabled(),
                         command.dot,
@@ -1753,9 +1774,10 @@ impl Widget for Toolbar {
                     let open = self.item_menu.as_ref().is_some_and(|(i, _)| *i == index);
                     // A colour well is a bare face (its lift on hover and
                     // press) with the colour standing in for the label.
-                    let (shown, name) = match swatch {
-                        Some(_) => ("", name.as_deref().or(Some(label.as_str()))),
-                        None => (label.as_str(), name.as_deref()),
+                    let (shown, name) = if swatch.is_some() || glyph.is_some() {
+                        ("", name.as_deref().or(Some(label.as_str())))
+                    } else {
+                        (label.as_str(), name.as_deref())
                     };
                     self.draw_button(
                         &mut PaintCtx::new(scene, transform, text, theme),
@@ -1772,6 +1794,15 @@ impl Widget for Toolbar {
                         crate::widget::ColorSwatchFace::new(well, color, &label)
                             .target_rect(rect)
                             .paint(scene, transform, text, theme);
+                    }
+                    if let Some(paint) = glyph {
+                        let side = f64::from(theme.tokens.metrics.icon_md);
+                        paint(
+                            scene,
+                            transform,
+                            Rect::from_center_size(rect.center(), (side, side)),
+                            theme,
+                        );
                     }
                     if dot {
                         paint_dot(scene, transform, rect, theme);
@@ -2628,6 +2659,38 @@ mod tests {
             .map(|index| tb.separator_shown(index))
             .collect();
         assert_eq!(shown, [false, true, false, false]);
+    }
+
+    /// A painted mark is a pointer-target square the host draws into, named
+    /// by its label for assistive technology and the More menu.
+    #[test]
+    fn glyph_commands_are_named_squares_the_host_paints() {
+        use std::cell::Cell;
+        thread_local!(static PAINTED: Cell<Option<Rect>> = const { Cell::new(None) });
+        fn mark(_: &mut Scene, _: Affine, rect: Rect, _: &Theme) {
+            PAINTED.with(|painted| painted.set(Some(rect)));
+        }
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tb = Toolbar::new(Orientation::Horizontal).push_glyph(mark, "Product menu", || {});
+        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+        let square = tb.item_rects[0];
+        assert_eq!(
+            square.width(),
+            f64::from(theme.tokens.metrics.min_pointer_target)
+        );
+        let node = Widget::accessibility(&tb).expect("toolbar semantics");
+        assert_eq!(node.children[0].name.as_deref(), Some("Product menu"));
+        let mut scene = Scene::new();
+        tb.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let painted = PAINTED.with(Cell::get).expect("the host painted its mark");
+        assert!((painted.center() - square.center()).hypot() < 0.5);
     }
 
     /// Icon commands are pointer-target squares, toggles report their state

@@ -7,8 +7,9 @@ reports), and the environment that produced it:
 
 - `commit`: the source revision measured;
 - `profile`: release, thin-app or dev;
-- `renderer`: gpu, llvmpipe, lavapipe, virgl, or none for a KPI that draws
-  nothing (bytes, filesystem latency);
+- `renderer`: gpu, llvmpipe, lavapipe, virgl, swiftshader (Chrome's
+  software WebGPU, for the browser runtime on a runner without a GPU), or none
+  for a KPI that draws nothing (bytes, filesystem latency);
 - `virtualization`: none, kvm or tcg;
 - `runner`: the runner class (`runner`, a device slot) or none for a
   runner-independent counter;
@@ -52,7 +53,7 @@ SCHEMA = 1
 UNITS = frozenset({"ms", "us", "s", "bytes", "MiB", "count", "W", "fps", "pixels", "percent", "per_s",
                    "usd"})
 PROFILES = frozenset({"release", "thin-app", "dev"})
-RENDERERS = frozenset({"gpu", "llvmpipe", "lavapipe", "virgl", "none"})
+RENDERERS = frozenset({"gpu", "llvmpipe", "lavapipe", "virgl", "swiftshader", "none"})
 VIRTUALIZATIONS = frozenset({"none", "kvm", "tcg"})
 KPI = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+")
 ENV_FIELDS = ("commit", "profile", "renderer", "virtualization", "runner", "hardware", "started_at")

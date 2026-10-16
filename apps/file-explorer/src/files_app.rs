@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::lock::MutexRecover as _;
 use ui::paint::PaintCtx;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
@@ -1343,10 +1344,6 @@ impl FileExplorerWidget {
     /// so the standard favourites are deterministic without depending on the
     /// build machine's locale.
     #[doc(hidden)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the constructor declares the complete stable widget state in one auditable place"
-    )]
     pub fn with_persistence_dirs(
         config_dir: Option<&Path>,
         home: Option<PathBuf>,
@@ -1976,6 +1973,10 @@ impl FileExplorerWidget {
                 self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
                 None
             }
+            FilesEffect::ImportOnce { entry, folder } => {
+                self.import_once(&entry, &folder)?;
+                None
+            }
             FilesEffect::CopyTo { entry, folder } => {
                 self.copy_into_folder(&entry, &folder)?;
                 None
@@ -2267,6 +2268,51 @@ impl FileExplorerWidget {
     fn account_named(&self, id: &str) -> Result<crate::remote_accounts::RemoteAccount, String> {
         self.remote_account(id)
             .ok_or_else(|| "remote account is no longer available".to_string())
+    }
+
+    fn importable_cloud_entry(&self, path: &Path) -> bool {
+        self.remote_account_snapshot().iter().any(|account| {
+            matches!(
+                account.kind,
+                crate::remote_accounts::RemoteAccountKind::GoogleDrive
+                    | crate::remote_accounts::RemoteAccountKind::Dropbox
+            ) && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
+                && account
+                    .mount
+                    .as_ref()
+                    .is_some_and(|mount| path.starts_with(mount))
+        })
+    }
+
+    /// Import uses the ordinary queued copy path: kernel reads hydrate the
+    /// mounted source, while the destination contains independent local bytes.
+    /// No credential, mount, pin or sync relationship is created here.
+    fn import_once(&mut self, entry: &str, folder: &str) -> Result<(), String> {
+        let source = self
+            .visible_entry_path(entry)
+            .ok_or_else(|| "file entry is no longer visible".to_string())?;
+        if !self.importable_cloud_entry(&source) {
+            return Err(t("files-import-source-unavailable"));
+        }
+        let folder = Path::new(folder);
+        // Validate the submitted spelling before canonicalization makes even a
+        // relative path absolute. Retain the validated target, not its alias,
+        // when the document outbox executes the copy on a later frame.
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err(format!("{} is not an existing folder.", folder.display()));
+        }
+        let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
+        if self
+            .remote_account_snapshot()
+            .iter()
+            .filter_map(|account| account.mount.as_ref())
+            .any(|mount| {
+                std::fs::canonicalize(mount).is_ok_and(|mount| destination.starts_with(mount))
+            })
+        {
+            return Err(t("files-import-local-destination"));
+        }
+        self.copy_into_folder(entry, &destination.to_string_lossy())
     }
 
     /// Copy the entry `entry` names into `folder`, keeping its name: a
@@ -4366,6 +4412,27 @@ impl FileExplorerWidget {
             FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
             FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
+            FileCommand::ImportOnceToDownloads => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let (Some(entry), Some(home)) = (entry, self.home_path.as_ref()) {
+                    self.perform(crate::effects::FilesEffect::ImportOnce {
+                        entry: Self::entry_resource_id(&entry),
+                        folder: self
+                            .user_dirs
+                            .downloads
+                            .clone()
+                            .unwrap_or_else(|| home.join("Downloads"))
+                            .display()
+                            .to_string(),
+                    });
+                    true
+                } else {
+                    false
+                }
+            }
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
@@ -5122,9 +5189,9 @@ impl FileExplorerWidget {
         self.favs.borrow().favorites.clone()
     }
 
-    /// Shared favourites store (tests / the headless shots demo).
-    #[doc(hidden)]
-    pub fn favorites_store(&self) -> FavStore {
+    /// Shared favourites store.
+    #[cfg(test)]
+    pub(crate) fn favorites_store(&self) -> FavStore {
         self.favs.clone()
     }
 
@@ -5857,7 +5924,8 @@ impl FileExplorerWidget {
 
     /// Replace the editable rename text. The next `sync` seeds the local
     /// editor; this test seam deliberately has no document side effect.
-    pub fn set_rename_buffer(&mut self, s: String) {
+    #[cfg(test)]
+    pub(crate) fn set_rename_buffer(&mut self, s: String) {
         self.rename_buffer = s;
         self.rename_seed_pending = true;
     }
@@ -6278,7 +6346,7 @@ impl CommandRunner for SystemRunner {
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
-/// The daemon still validates exact bytes and may reject malformed qdoc,
+/// The daemon still validates exact bytes and may reject a malformed serialized document,
 /// invalid UTF-8, overlapping edits, or a stale signed conflict.
 fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
@@ -6331,7 +6399,8 @@ where
 
 /// Remove the installed route, restoring the standalone fallback. Used by
 /// tests, which share the thread-local with each other.
-pub fn clear_document_opener() {
+#[cfg(test)]
+pub(crate) fn clear_document_opener() {
     DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = None);
 }
 
@@ -6379,7 +6448,8 @@ impl FileExplorerWidget {
     /// # Errors
     ///
     /// Returns the OS error if launching the entry's associated app fails.
-    pub fn open_entry<R: CommandRunner>(
+    #[cfg(test)]
+    pub(crate) fn open_entry<R: CommandRunner>(
         &mut self,
         idx: usize,
         runner: &mut R,
@@ -6503,6 +6573,18 @@ impl FileExplorerWidget {
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
             spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            if single
+                && self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned())
+                    .is_some_and(|entry| self.importable_cloud_entry(&entry.path))
+            {
+                spec.push((
+                    t("files-import-once-downloads"),
+                    Some(FileCommand::ImportOnceToDownloads),
+                ));
+            }
             if can_paste {
                 spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
             }
@@ -7495,10 +7577,6 @@ impl FileExplorerWidget {
 
     /// Drain and apply all queued commands. Returns whether any command
     /// changed the structure.
-    #[allow(
-        clippy::needless_collect,
-        reason = "collecting drops the RefCell borrow before the loop; apply_command can itself queue follow-up commands into the same self.cmds sink, and iterating the drain directly would hold the borrow_mut across that and panic"
-    )]
     /// What shows the row a search hit or an agent's `open` names: queued,
     /// and opened before the next frame is laid out.
     pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
@@ -7668,10 +7746,7 @@ impl FileExplorerWidget {
         std::thread::spawn(move || {
             let outcome = crate::model::read_merge_preflight(&path, conflict_id)
                 .ok_or_else(|| t("files-merge-review-unavailable"));
-            *result
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((conflict_id, version_id, outcome));
+            *result.lock_recover() = Some((conflict_id, version_id, outcome));
         });
     }
 
@@ -8278,10 +8353,6 @@ impl FileExplorerWidget {
         }
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
-    )]
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
@@ -8330,10 +8401,6 @@ impl FileExplorerWidget {
         resource
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
-    )]
     fn append_nearby_decision_actions(
         &self,
         resource: &mut Resource,
@@ -8431,6 +8498,15 @@ impl FileExplorerWidget {
             .bound_asking(&["folder"]);
             copy_to.label = "Copy to folder…".into();
             resource.actions.push(copy_to);
+            if self.importable_cloud_entry(&entry.path) {
+                let mut import = FilesEffect::ImportOnce {
+                    entry: id(),
+                    folder: String::new(),
+                }
+                .bound_asking(&["folder"]);
+                import.label = t("files-import-once");
+                resource.actions.push(import);
+            }
             resource.actions.push(row_action(
                 &FilesEffect::SendNearby { entry: id() },
                 "send-nearby",
@@ -8619,10 +8695,6 @@ impl FileExplorerWidget {
             .collect()
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "remote account payloads are fixed local strings"
-    )]
     fn live_remote_account_resources(&self) -> Vec<Resource> {
         // External file accounts are the folders the storage daemon's cloud
         // service mounts under `~/Remote`. Files never talks to the server or
@@ -8690,7 +8762,6 @@ impl Collaborative for FileExplorerWidget {
         if let Some(result) = self.local_clipboard.timeout(now) {
             self.complete_clipboard_publication(result);
         }
-        self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
@@ -8880,7 +8951,11 @@ impl Widget for FileExplorerWidget {
         let changed_directory = (self.directory_changed && !read_deferred).then(|| {
             self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
         });
-        Some(self.nearby_send.next_poll())
+        // Nearby Send asks only when the shell announces a change; the asks
+        // that announcement queued go out on the next pump, at once.
+        self.nearby_send
+            .has_requests()
+            .then(Instant::now)
             .into_iter()
             .chain(self.next_metadata_refresh)
             .chain(changed_directory)
@@ -9225,10 +9300,6 @@ impl Widget for FileExplorerWidget {
         self.collab_panel.is_some() && self.collab_panel_focused
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "custom-painted file, collaboration, and empty-state surfaces require one matching semantic tree"
-    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         if self.app_chooser_open() {
@@ -9550,19 +9621,6 @@ pub(crate) mod published {
 #[cfg(unix)]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
-
-#[cfg(test)]
-mod merge_support_tests {
-    use super::merge_supported_path;
-
-    #[test]
-    fn merge_is_never_offered_for_binary_or_unsupported_names() {
-        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
-        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
-        assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-}
 
 impl FileExplorerWidget {
     pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {

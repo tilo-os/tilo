@@ -81,7 +81,10 @@ pub type XWindow = u32;
 #[inline]
 pub fn register_xlib_error_hook(hook: XlibErrorHook) {
     // Append new hook.
-    crate::platform_impl::XLIB_ERROR_HOOKS.lock().unwrap().push(hook);
+    crate::platform_impl::XLIB_ERROR_HOOKS
+        .lock()
+        .unwrap()
+        .push(hook);
 }
 
 /// Additional methods on [`ActiveEventLoop`] that are specific to X11.
@@ -210,8 +213,10 @@ impl WindowAttributesExtX11 for WindowAttributes {
 
     #[inline]
     fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
-        self.platform_specific.name =
-            Some(crate::platform_impl::ApplicationName::new(general.into(), instance.into()));
+        self.platform_specific.name = Some(crate::platform_impl::ApplicationName::new(
+            general.into(),
+            instance.into(),
+        ));
         self
     }
 

@@ -157,9 +157,6 @@ pub(crate) fn generic_font_family(name: &str) -> &'static str {
     }
 }
 
-/// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
-pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
-
 /// Document formats the platform opens as an editable rich-text resource — the OS source of
 /// truth for "this file is an editable document", independent of which codecs a given binary
 /// compiles (a file manager asks this without linking any of them).

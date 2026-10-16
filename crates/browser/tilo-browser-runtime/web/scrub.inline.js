@@ -1,13 +1,13 @@
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
-// before any module loads: a link's secrets (invite, ticket, token, pair) leave
-// the address bar here, so copying the URL, a crash report or a later
-// share-link never sees them. They stay in page memory for admission to
-// read once. This only splits off the four known keys; the Rust parser
+// before any module loads: a link's secrets (invite, ticket, token, pair,
+// install) leave the address bar here, so copying the URL, a crash report
+// or a later share-link never sees them. They stay in page memory for admission to
+// read once. This only splits off the five known keys; the Rust parser
 // reads everything else. Secrets that are not the trailing parameters in
 // grammar order are still removed, and flagged, so admission refuses the
 // link instead of acting on one Tilo did not write.
-var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket','token','pair'],last=-1,bad=false;
+var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket','token','pair','install'],last=-1,bad=false;
 if(mark>=0){
  var keep=[],parts=hash.slice(mark+1).split('&');
  for(var i=0;i<parts.length;i++){

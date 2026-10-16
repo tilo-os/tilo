@@ -10,7 +10,6 @@
 )]
 
 pub mod evidence;
-pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]
 pub mod typed_collab;
@@ -200,6 +199,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
+            | CollabRequest::PublishActionSurface { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
             | CollabRequest::ClearContinuation { .. }

@@ -1022,8 +1022,10 @@ mod tests {
                 > rect.height()
         );
         host.verify_retained_geometry().unwrap();
+        let nodes = host.layout_node_ids();
         host.resize((640, 120)).unwrap();
-        assert!(host.last_relayout().rebuilt);
+        assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
+        assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
         assert!(
             host.targets()
                 .get("slider")

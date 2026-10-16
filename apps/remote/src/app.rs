@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
-use std::sync::{Mutex, PoisonError};
 
 use iroh_base::{EndpointId, SecretKey};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -56,6 +56,7 @@ use crate::view::{
     StatusModel,
 };
 use crate::vnc::{VncConfig, VncInput, VncSession};
+use ui::lock::MutexRecover as _;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
 /// feeding the terminal grid; VNC is an RFB client
@@ -139,13 +140,13 @@ impl TiloSession {
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
                 while encoded_rx.recv().is_ok() {
-                    let Some(encoded) = lock_recover(&encoded_worker).take() else {
+                    let Some(encoded) = encoded_worker.lock_recover().take() else {
                         continue;
                     };
                     let Some(frame) = h264_decoder.decode(&encoded) else {
                         continue;
                     };
-                    *lock_recover(&decoded_worker) = Some(frame);
+                    *decoded_worker.lock_recover() = Some(frame);
                 }
                 decoder_available_worker.store(false, Ordering::Release);
             })
@@ -168,7 +169,7 @@ impl TiloSession {
         // Store first, then wake. If a wake is already pending, that worker
         // pass observes this replacement; at most one stale decode can be
         // in progress and no queue of old frames accumulates.
-        *lock_recover(&self.encoded) = Some(encoded);
+        *self.encoded.lock_recover() = Some(encoded);
         match self.encoded_wake.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
             Err(TrySendError::Disconnected(())) => {
@@ -179,12 +180,8 @@ impl TiloSession {
     }
 
     fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
-        lock_recover(&self.decoded).take()
+        self.decoded.lock_recover().take()
     }
-}
-
-fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 enum PendingResourceOperation {
@@ -964,8 +961,7 @@ impl RemoteApp {
     /// The time "last used" reads against, in milliseconds since the Unix
     /// epoch.
     fn now_ms(&self) -> i64 {
-        self.now_override
-            .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
+        self.now_override.unwrap_or_else(ui::time::unix_now_ms_i64)
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a

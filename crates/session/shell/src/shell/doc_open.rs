@@ -23,6 +23,7 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::launcher::{self, InstalledApp, LaunchError};
 use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId, WorkspaceTree};
 use crate::shell::tab_binding::Placement;
+use tilo_lock::MutexRecover as _;
 
 /// What opening `path` would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,7 +369,7 @@ fn open_package(
         None => {}
     }
 
-    // Must precede launch: `launch_document_in_workspace` publishes the
+    // Must precede launch: `queue_document_in_workspace` publishes the
     // capability list as it stands at call time.
     grant_read_for_open(&app.package_id, path, chrome)?;
 
@@ -393,20 +394,32 @@ fn open_package(
         tree.queue_save();
         workspace
     };
-    let launched = workspace.map(|workspace| {
-        launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
-    });
+    // The launch's file work (a synced capability file, the identity
+    // registry, the authority binding) runs on the preflight worker: this is
+    // the compositor thread, and a click must not wait on the disk. A refusal
+    // arrives as a launch event, after the stale note below is dropped.
+    let Some(workspace) = workspace else {
+        forget_document(&record);
+        return Err(OpenError::NoWorkspace);
+    };
+    let package_id = app.package_id.clone();
+    let refused_record = record.clone();
+    let launched = launcher::queue_document_in_workspace(
+        app.clone(),
+        &workspace,
+        path.to_path_buf(),
+        move || {
+            // Otherwise the stale note would make the next attempt believe
+            // this document is already opening and refuse to try again.
+            forget_document(&refused_record);
+            launcher::clear_pending_placement(&package_id);
+        },
+    );
     match launched {
-        Some(Ok(app)) => Ok(Opened::Launched { app }),
-        // Otherwise the stale note would make the next attempt believe
-        // this document is already opening and refuse to try again.
-        Some(Err(e)) => {
+        Ok(()) => Ok(Opened::Launched { app }),
+        Err(e) => {
             forget_document(&record);
             Err(OpenError::Launch(e))
-        }
-        None => {
-            forget_document(&record);
-            Err(OpenError::NoWorkspace)
         }
     }
 }
@@ -587,7 +600,12 @@ pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
 /// A document opened elsewhere belongs *with* whatever asked for it —
 /// a tab in the focused group rather than a new column.
 fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
-    focused_group(chrome).map(Placement::TabIn)
+    // The group whose "+" asked beats the focused one.
+    let explicit = {
+        let st = chrome.borrow();
+        crate::shell::placement::explicit_group_placement(&st.tree(), st.open_target)
+    };
+    explicit.or_else(|| focused_group(chrome).map(Placement::TabIn))
 }
 
 /// `None` when there's no strip or group to be "beside" — adoption
@@ -653,10 +671,7 @@ pub(crate) struct OpenDocument {
 fn lock_open_documents(
     session: &launcher::LaunchSession,
 ) -> std::sync::MutexGuard<'_, Vec<OpenDocument>> {
-    session
-        .open_documents
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    session.open_documents.lock_recover()
 }
 
 /// Focus needs all four coordinates — a subset leaves the user looking
@@ -1443,7 +1458,7 @@ mod tests {
                     .window_groups
                     .first_mut()
                 {
-                    g.active_tab = first_tab;
+                    g.activate_tab(first_tab);
                 }
             }
 

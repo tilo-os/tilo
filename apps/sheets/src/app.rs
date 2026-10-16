@@ -3156,6 +3156,14 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
+
+    /// The grid fills its node and places everything in it in
+    /// `apply_layout`: there is never a size for the layout solver to
+    /// measure, so a frame that only moves the window (a strip pan) solves
+    /// none.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
@@ -4207,6 +4215,7 @@ pub(crate) mod tests {
     use automerge::AutoCommit;
     use automerge::transaction::Transactable as _;
     use ui::framework::testing::TestApp;
+    use ui::lock::MutexRecover as _;
     use ui::portal::PortalOutcome;
 
     /// Serializes tests that round-trip through the process-global system
@@ -4781,6 +4790,31 @@ pub(crate) mod tests {
                 "{id} is published"
             );
         }
+        // Each import opens the file a launch names, for its own type only.
+        for (id, extension) in [
+            ("import-csv", "csv"),
+            ("import-xlsx", "xlsx"),
+            ("import-ods", "ods"),
+        ] {
+            let import = workbook
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(import.contract.opens_path(), "{id} opens a path");
+            assert_eq!(
+                import.contract.opened_extensions().collect::<Vec<_>>(),
+                [extension]
+            );
+        }
+        assert!(
+            workbook
+                .actions
+                .iter()
+                .filter(|action| action.id.starts_with("export-"))
+                .all(|action| !action.contract.opens_path()),
+            "an export takes a path but opens nothing"
+        );
         let sales = workbook
             .children
             .iter()
@@ -5525,9 +5559,7 @@ pub(crate) mod tests {
     /// step.
     #[test]
     fn a_paste_is_one_change() {
-        let _clipboard = CLIP_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clipboard = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
         app.grid.select_range_public((0, 1), (3, 3)); // A2:D4
         app.copy_selection(false);
@@ -5552,9 +5584,7 @@ pub(crate) mod tests {
         {
             // Copy a currency cell into an empty one; the raw and the currency
             // format both come across, and it recomputes to the same number.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2 = 1200, currency
             app.copy_selection(false);
@@ -5573,9 +5603,7 @@ pub(crate) mod tests {
             // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
             // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
             // AVERAGE, and the pasted formula recomputes against the new operands.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2
             app.copy_selection(false);
@@ -5588,9 +5616,7 @@ pub(crate) mod tests {
 
         // Case `cut_moves_cell_and_clears_source`.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 0)); // A1 = "Category"
             app.copy_selection(true); // cut
@@ -5604,9 +5630,7 @@ pub(crate) mod tests {
         // A **cut** moves a formula verbatim — its references follow the cells and
         // are *not* re-relativised (unlike a copy). The real cut→paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(true); // cut
@@ -5622,9 +5646,7 @@ pub(crate) mod tests {
         // each destination cell's relative references by its own position — the
         // real range-paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(false);

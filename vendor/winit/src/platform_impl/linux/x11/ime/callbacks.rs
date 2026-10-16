@@ -120,8 +120,10 @@ unsafe fn replace_im(inner: *mut ImeInner) -> Result<(), ReplaceImError> {
         let spot = old_context.as_ref().map(|old_context| old_context.ic_spot);
 
         // Check if the IME was allowed on that context.
-        let is_allowed =
-            old_context.as_ref().map(|old_context| old_context.is_allowed()).unwrap_or_default();
+        let is_allowed = old_context
+            .as_ref()
+            .map(|old_context| old_context.is_allowed())
+            .unwrap_or_default();
 
         let new_context = {
             let result = unsafe {
@@ -199,7 +201,7 @@ pub unsafe extern "C" fn xim_destroy_callback(
                 Err(err) => {
                     // We have no usable input methods!
                     panic!("Failed to open fallback input method: {err:?}");
-                },
+                }
             }
         }
     }

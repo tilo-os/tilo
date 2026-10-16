@@ -18,7 +18,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/added_line_policy.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +232,67 @@ class CommitHookTests(unittest.TestCase):
         result = self.ci()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Incomplete new history", result.stderr)
+
+    def test_ci_rejects_bypassed_credential_conflict_marker_and_dbg(self):
+        # Each rule on its own --no-verify commit, removed again later: CI
+        # inspects every new commit, not only the final tree.
+        seeded = {
+            "keys.env": (b"AWS=AKIA" + b"QZ7RXW2MPLK4TNVB\n", "keys.env:1: possible AWS access key"),
+            "notes.md": (b"text\n" + b"<" * 7 + b" HEAD\n", "notes.md:2: merge-conflict marker"),
+            "src/lib.rs": (b"fn f() {\n    dbg" + b"!(1);\n}\n", "src/lib.rs:2: dbg!"),
+        }
+        for name, (data, expected) in seeded.items():
+            with self.subTest(name=name):
+                self.base = self.git("rev-parse", "HEAD").stdout.strip()
+                (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+                self.stage(name, data)
+                self.git("commit", "--no-verify", "-qm", "test: seed " + name)
+                self.git("rm", "-q", "--", name)
+                self.git("commit", "--no-verify", "-qm", "test: remove " + name)
+                result = self.ci()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertIn("only exception", result.stderr)
+                self.assertNotIn("QZ7RXW2MPLK4TNVB", result.stderr)
+
+    def test_ci_charges_only_added_lines_and_honours_the_allow_word(self):
+        os.makedirs(self.root / "src")
+        self.stage("src/lib.rs", b"fn f() {\n    dbg" + b"!(1);\n}\n")
+        self.git("commit", "--no-verify", "-qm", "test: legacy dbg before the base")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.stage("src/lib.rs", b"fn f() {\n    dbg" + b"!(1);\n}\nfn g() {}\n")
+        self.stage("fixture.env", b"AWS=AKIA" + b"QZ7RXW2MPLK4TNVB # example key\n")
+        os.makedirs(self.root / "vendor/up")
+        self.stage("vendor/up/lib.rs", b"fn f() { dbg" + b"!(1); }\n")
+        self.git("commit", "-qm", "test: touch a file with an existing dbg")
+        result = self.ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ci_charges_a_merge_only_with_its_resolution(self):
+        dbg = b"    dbg" + b"!(1);\n"
+        self.git("switch", "-qc", "side")
+        self.stage("shared.rs", b"side\n" + dbg)
+        self.stage("side.rs", dbg)
+        self.git("commit", "--no-verify", "-qm", "test: side work checked on its own")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("switch", "-q", "main")
+        self.stage("shared.rs", b"main\n")
+        self.git("commit", "-qm", "test: main work")
+        self.git("merge", "--no-commit", "side", check=False)
+        self.stage("shared.rs", b"main\nside\n" + dbg)
+        self.git("commit", "--no-verify", "-qm", "Merge branch 'side'")
+        result = self.ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        merge = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("reset", "-q", "--hard", "HEAD^")
+        self.git("merge", "--no-commit", "side", check=False)
+        self.stage("shared.rs", b"main\n" + b"=" * 7 + b"\nside\n")
+        self.git("commit", "--no-verify", "-qm", "Merge branch 'side'")
+        self.assertNotEqual(self.git("rev-parse", "HEAD").stdout.strip(), merge)
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shared.rs:2: merge-conflict marker", result.stderr)
+        self.assertNotIn("side.rs", result.stderr.replace("shared.rs", ""))
 
     def test_fake_merge_on_ordinary_commit_fails_locally_and_in_ci(self):
         self.stage("source", b"text\n")

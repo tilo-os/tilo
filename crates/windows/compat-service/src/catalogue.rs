@@ -49,10 +49,15 @@ pub fn load_shipped_catalogue(
 ) -> Result<CatalogueLoadReport, CatalogueLoadError> {
     let builtin_meta = fs::symlink_metadata(&paths.builtins)?;
     require_regular(&paths.builtins, &builtin_meta)?;
-    if builtin_meta.len() > MAX_BUILTIN_BYTES {
-        return Err(CatalogueLoadError::OversizedBuiltins);
-    }
-    let builtins = Catalogue::from_json(&fs::read_to_string(&paths.builtins)?)?;
+    let builtins = tilo_files::native::bounded::read_or(
+        &paths.builtins,
+        MAX_BUILTIN_BYTES,
+        CatalogueLoadError::OversizedBuiltins,
+    )?
+    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let builtins = String::from_utf8(builtins)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let builtins = Catalogue::from_json(&builtins)?;
     if builtins
         .records
         .iter()

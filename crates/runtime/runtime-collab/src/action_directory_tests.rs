@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::collab_capnp;
+use crate::{SHAPE_ID_BYTES, ShapeId, SurfaceDelta, SurfaceResource, SurfaceTable};
 use tilo_actions::{
     ActionContract, ActionKind, ActionParam, ConfirmationPolicy, ExecutionMode, OperationKind,
     ParamType, ResourcePresentation, ResourceViewDescriptor, ResourceViewRangeSpec, RiskLevel,
@@ -393,4 +394,76 @@ fn directory_row_estimates_bound_their_encoded_size() {
             "field length {length}: estimated {estimated} < encoded {encoded}"
         );
     }
+}
+
+#[test]
+fn a_surface_delta_round_trips_and_expands_to_the_published_actions() {
+    let original = action_row().descriptor.unwrap();
+    let mut second = original.clone();
+    second.resource = "files.folder:archive".into();
+    second.resource_label = "Archive".into();
+    second.semantic_identity = Some(ResourceSemanticIdentity {
+        kind: "files.folder".into(),
+        key: "source-folder:archive".into(),
+    });
+    let shape = original.shape();
+    assert_eq!(shape, second.shape(), "one catalogue entry for both");
+    let id: ShapeId = [7; SHAPE_ID_BYTES];
+    let template: ShapeId = [8; SHAPE_ID_BYTES];
+    let delta = SurfaceDelta {
+        reset: true,
+        shapes: vec![(id, shape)],
+        templates: vec![(template, vec![id])],
+        resources: [&original, &second]
+            .into_iter()
+            .map(|action| SurfaceResource {
+                resource: action.resource.clone(),
+                fields: action.resource_fields(),
+                template,
+            })
+            .collect(),
+        removed: vec!["gone".into()],
+    };
+
+    let mut message = capnp::message::Builder::new_default();
+    write_surface_delta(
+        message
+            .init_root::<collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>>(
+            ),
+        "so.tilo.files",
+        &delta,
+    )
+    .unwrap();
+    let reader = message
+        .get_root_as_reader::<collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>>()
+        .unwrap();
+    assert_eq!(
+        reader.get_app_id().unwrap().to_str().unwrap(),
+        "so.tilo.files"
+    );
+    let decoded = decode_surface_delta(reader).unwrap();
+    assert_eq!(decoded, delta);
+
+    let mut table = SurfaceTable::default();
+    table.apply(&decoded).unwrap();
+    assert_eq!(table.actions(), vec![original, second]);
+}
+
+#[test]
+fn a_surface_delta_with_a_malformed_shape_id_is_refused() {
+    let mut message = capnp::message::Builder::new_default();
+    {
+        let mut root = message
+            .init_root::<collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>>(
+            );
+        let mut shapes = root.reborrow().init_shapes(1);
+        let mut row = shapes.reborrow().get(0);
+        row.set_id(&[1, 2, 3]);
+        write_exported_action(row.init_action(), &action_row().descriptor.unwrap().shape())
+            .unwrap();
+    }
+    let reader = message
+        .get_root_as_reader::<collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>>()
+        .unwrap();
+    assert!(decode_surface_delta(reader).is_err());
 }

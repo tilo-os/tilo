@@ -952,24 +952,28 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Decorator::accessibility_shared(self).map(ui::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// The editor's tree, each block's row with its Duplicate button, which
+    /// the editor keeps with the row while the button is the same.
+    fn accessibility_shared(&self) -> Option<ui::a11y::SharedAccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let mut tree = self.editor.accessibility()?;
         let disabled = self.source.read_only() || self.is_composing();
-        for row in &mut tree.children {
-            let Some(id) = row
-                .semantic_key
-                .as_deref()
-                .and_then(|key| key.strip_prefix("notes.block:"))
-            else {
-                continue;
-            };
-            let mut duplicate = AccessNode::new(Role::Button)
-                .with_name(ui::i18n!("widget-block-duplicate"))
+        let duplicate_label = ui::i18n!("widget-block-duplicate");
+        let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(duplicate_label.clone())
                 .with_action_target(format!("notes.block-duplicate:{id}"))
-                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
-            duplicate.bounds = row.bounds;
-            row.children.push(duplicate);
-        }
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
+                .with_bounds(bounds)
+        };
+        let mut tree =
+            self.editor
+                .accessibility_shared_with(Some(&ui::widget::block_editor::RowControl {
+                    key: u64::from(disabled),
+                    build: &duplicate,
+                }))?;
         let selection_disabled = disabled || self.editor.selected_block_range().is_none();
         let mut duplicate = AccessNode::new(Role::Button)
             .with_name(ui::i18n!("widget-block-duplicate-selection"))
@@ -979,8 +983,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                     .focusable(!selection_disabled)
                     .disabled(selection_disabled),
             );
-        duplicate.bounds = tree.bounds;
-        tree.children.push(duplicate);
+        duplicate.bounds = tree.node.bounds;
+        tree.children.push(std::sync::Arc::new(duplicate));
         for up in [true, false] {
             let disabled = disabled || self.editor.selected_block_move(up).is_none();
             let mut movement = AccessNode::new(Role::Button)
@@ -995,8 +999,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                     "notes.editor:move-down"
                 })
                 .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
-            movement.bounds = tree.bounds;
-            tree.children.push(movement);
+            movement.bounds = tree.node.bounds;
+            tree.children.push(std::sync::Arc::new(movement));
         }
         Some(tree)
     }

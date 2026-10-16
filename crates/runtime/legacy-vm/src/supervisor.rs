@@ -614,8 +614,7 @@ fn same_user(stream: &UnixStream) -> bool {
             std::ptr::from_mut(&mut length),
         )
     };
-    // SAFETY: getuid has no failure mode.
-    result == 0 && credentials.uid == unsafe { libc::getuid() }
+    result == 0 && credentials.uid == rustix::process::getuid().as_raw()
 }
 
 fn wait_for_socket(socket: &Path, daemon: &mut Child) -> bool {

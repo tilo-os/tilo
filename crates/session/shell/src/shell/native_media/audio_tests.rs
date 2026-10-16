@@ -20,7 +20,6 @@ use super::super::collab_broker_capnp::LocalSessionAuthority;
 use super::*;
 use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
 use media::voice::gst::{OpusDecoder, OpusEncoder};
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use tilo_moq::client::{self, CapturedOpus, Client, ClientAuthority, ConnectionScope};
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
@@ -173,7 +172,7 @@ impl MediaSession for AudioBackend {
             let mut index = 0u64;
             loop {
                 ticker.tick().await;
-                let _send = evidence.send.lock().unwrap_or_else(PoisonError::into_inner);
+                let _send = evidence.send.lock_recover();
                 if !capturing.load(Ordering::SeqCst) || !current() {
                     break;
                 }
@@ -201,7 +200,7 @@ impl MediaSession for AudioBackend {
             self.evidence.clone(),
         );
         Some(Arc::new(move || {
-            let _send = evidence.send.lock().unwrap_or_else(PoisonError::into_inner);
+            let _send = evidence.send.lock_recover();
             capturing.store(false, Ordering::SeqCst);
             client.stop_publication();
             evidence.stops.fetch_add(1, Ordering::SeqCst);
@@ -211,11 +210,7 @@ impl MediaSession for AudioBackend {
         self.stop_capture();
     }
     fn stop_capture(&mut self) {
-        let _send = self
-            .evidence
-            .send
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _send = self.evidence.send.lock_recover();
         self.capturing.store(false, Ordering::SeqCst);
         self.client.stop_publication();
         self.evidence.stops.fetch_add(1, Ordering::SeqCst);

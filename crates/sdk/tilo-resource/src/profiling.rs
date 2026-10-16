@@ -7,7 +7,7 @@
 //! scope reads no clock, and builds without `test-support` record nothing.
 
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub use recorder::{Sample, observe};
+pub use recorder::{Sample, observe, unobserved};
 
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use recorder::Phase;
@@ -24,6 +24,16 @@ impl Phase {
     pub const fn start(_name: &'static str) -> Self {
         Self
     }
+}
+
+/// Run `operation` without recording its scopes in an active observation:
+/// work a debug build does only to verify the production path (re-running
+/// what that path proved it could skip) is not the path an observation
+/// measures.
+#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+#[inline]
+pub fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
+    operation()
 }
 
 /// Run `operation` as the scope `phase`.
@@ -120,6 +130,20 @@ mod recorder {
         }
     }
 
+    /// Run `operation` with the active observation, if any, set aside: its
+    /// scopes are not recorded, and the observation resumes afterwards.
+    pub fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
+        struct Resume(Option<Capture>);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                let capture = self.0.take();
+                RECORDS.with(|records| *records.borrow_mut() = capture);
+            }
+        }
+        let _resume = Resume(RECORDS.with(RefCell::take));
+        operation()
+    }
+
     /// Run the real operation and return every scope it ran, by name.
     ///
     /// # Panics
@@ -145,7 +169,7 @@ mod recorder {
 #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
 mod tests {
     use super::recorder::MAX_PHASES;
-    use super::{Phase, measure, observe};
+    use super::{Phase, measure, observe, unobserved};
 
     #[test]
     fn recording_is_opt_in_and_aggregates_nested_scopes_by_name() {
@@ -161,6 +185,20 @@ mod tests {
             .map(|sample| (sample.phase, sample.calls))
             .collect();
         assert_eq!(calls, [("inner", 2), ("outer", 1)]);
+        assert!(observe(|| ()).1.is_empty());
+    }
+
+    #[test]
+    fn unobserved_scopes_are_left_out_and_the_observation_resumes() {
+        let ((), samples) = observe(|| {
+            drop(Phase::start("before"));
+            unobserved(|| measure("hidden", || ()));
+            drop(Phase::start("after"));
+        });
+        let names: Vec<_> = samples.iter().map(|sample| sample.phase).collect();
+        assert_eq!(names, ["before", "after"]);
+        // Outside an observation it records nothing and leaves none behind.
+        unobserved(|| drop(Phase::start("alone")));
         assert!(observe(|| ()).1.is_empty());
     }
 

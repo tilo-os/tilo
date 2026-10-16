@@ -285,6 +285,10 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
+    /// The page only watches the rooms it joins, as a public room's
+    /// spectator ([`PeerConfig::watching`]).
+    #[serde(default)]
+    watching: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -773,6 +777,8 @@ struct JsPresence {
     drag: Option<JsDrag>,
     #[serde(default)]
     participant: Option<JsParticipant>,
+    #[serde(default)]
+    place: Option<String>,
 }
 
 fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
@@ -904,6 +910,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             })
             .transpose()?,
         participant: value.participant.map(participant_from_js).transpose()?,
+        place: value.place,
     })
 }
 
@@ -927,6 +934,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             size,
         }),
         participant: frame.participant.map(participant_to_js),
+        place: frame.place,
     }
 }
 
@@ -1047,6 +1055,33 @@ pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
 pub fn live_record_track(record_json: &str) -> Result<String, JsError> {
     let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
     Ok(format!("ops/{}", hex::encode(record.digest())))
+}
+
+/// One of [`WasmPeer::here`]'s actions as the page sends it.
+#[derive(serde::Deserialize)]
+struct JsHereAction {
+    id: String,
+    action: String,
+    #[serde(default)]
+    resource: String,
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    at_ms: u64,
+}
+
+/// One person of [`WasmPeer::here`]'s answer as the page reads it.
+#[derive(serde::Serialize)]
+struct JsHerePerson {
+    device: String,
+    user: String,
+    label: String,
+    window: Option<String>,
+    status: String,
+    recent: String,
+    sources: Vec<String>,
+    generated: bool,
+    updated_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1366,8 +1401,8 @@ pub fn verify_agent_delegation(
         clippy::cast_sign_loss,
         reason = "a page clock in milliseconds is well inside u64 nanoseconds"
     )]
-    let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
-    delegation.verify(&user, now_ns).map_err(js_error)?;
+    let at_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
+    delegation.verify(&user, at_ns).map_err(js_error)?;
     let agent_id = delegation
         .delegate
         .agent_id()
@@ -1407,7 +1442,8 @@ pub struct WasmPeer {
 #[wasm_bindgen]
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
-    /// [`certify_device`], optionally with `displayName`. With `namespace`
+    /// [`certify_device`], optionally with `displayName`, and `watching:
+    /// true` for a page that only watches public rooms. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1472,6 +1508,7 @@ impl WasmPeer {
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
+                watching: config.watching,
             },
             Arc::new(signer),
             store,
@@ -1849,6 +1886,86 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
+    /// Post this person's display name, the window they focus (`window`:
+    /// tab id in hex) and own recent semantic actions in `room` (`actions`:
+    /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles
+    /// only) and resolve to who is here there: a JSON array of `{device,
+    /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
+    /// ids in hex. An empty array only fetches.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or out-of-bounds actions, or when the host is not
+    /// reached or this device is not admitted to `room`.
+    #[wasm_bindgen(js_name = here)]
+    pub async fn here(
+        &self,
+        room: String,
+        label: String,
+        window: Option<String>,
+        actions: String,
+    ) -> Result<String, JsError> {
+        let actions: Vec<JsHereAction> = serde_json::from_str(&actions).map_err(js_error)?;
+        let request = tilo_relay_protocol::web::HereRequest {
+            workspace_id: workspace(&room)?,
+            label: label
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(tilo_relay_protocol::web::MAX_HERE_LABEL_CHARS)
+                .collect(),
+            window: window
+                .map(|window| u64::from_str_radix(&window, 16))
+                .transpose()
+                .map_err(js_error)?,
+            actions: actions
+                .into_iter()
+                .map(|action| {
+                    let id: [u8; 16] = hex::decode(&action.id)
+                        .ok()
+                        .and_then(|id| id.try_into().ok())
+                        .ok_or_else(|| js_error("action id is not 32 hex"))?;
+                    Ok(tilo_relay_protocol::web::HereAction {
+                        id,
+                        action: action.action,
+                        resource: action.resource,
+                        app: action.app,
+                        at_ms: action.at_ms,
+                    })
+                })
+                .collect::<Result<_, JsError>>()?,
+        };
+        request.validate().map_err(js_error)?;
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .here_then(
+                request,
+                Box::new(move |here| {
+                    let _ = reply.send(here);
+                }),
+            )
+            .map_err(js_error)?;
+        let here = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        let people: Vec<JsHerePerson> = here
+            .people
+            .into_iter()
+            .map(|person| JsHerePerson {
+                device: hex::encode(person.device),
+                user: hex::encode(person.user),
+                label: person.label,
+                window: person.window.map(|window| format!("{window:x}")),
+                status: person.status,
+                recent: person.recent,
+                sources: person.sources.iter().map(hex::encode).collect(),
+                generated: person.generated,
+                updated_ms: person.updated_ms,
+            })
+            .collect();
+        serde_json::to_string(&people).map_err(js_error)
+    }
+
     /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally
     /// tagged: `{"PointerMotion": {"x": 1, "y": 2}}`) for the legacy window
     /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
@@ -1896,8 +2013,41 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// How many changes this page made to its room's records and sent:
-    /// above zero once the person posted or created something.
+    /// Tell the host which video codecs this page decodes (`codecs`, a JSON
+    /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
+    /// sessions stream their legacy windows in `room` in one every member
+    /// plays. Resolves `false` when the host predates codec adverts.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed arguments, or when the host is not reached or
+    /// refuses the advert.
+    #[wasm_bindgen(js_name = legacyCodecs)]
+    pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
+        let request = tilo_relay_protocol::legacy_window::CodecsRequest {
+            workspace_id: workspace(&room)?,
+            decode: serde_json::from_str(&codecs).map_err(js_error)?,
+        };
+        if !request.valid() {
+            return Err(js_error("codecs out of bounds"));
+        }
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .legacy_codecs_then(
+                request,
+                Box::new(move |taken| {
+                    let _ = reply.send(taken);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
+
+    /// How many changes this page made to its room: records it sent, and
+    /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]
     pub fn authored_changes(&self) -> f64 {
         #[expect(

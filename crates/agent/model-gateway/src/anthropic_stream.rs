@@ -140,6 +140,7 @@ impl MessageAssembly {
                 id,
                 name,
                 arguments: String::new(),
+                extra_content: None,
             });
             Some(self.calls.len().saturating_sub(1))
         } else {

@@ -79,6 +79,14 @@ struct Shared {
     done: Condvar,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Writes this thread handed to [`DurableWriter::submit`], so a test can
+    /// tell a call that queued a write from one that found nothing to do.
+    pub(crate) static SUBMITS_ON_THIS_THREAD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// A single background thread that performs queued state writes.
 pub struct DurableWriter {
     shared: Arc<Shared>,
@@ -113,6 +121,8 @@ impl DurableWriter {
     /// Queue `job`, the write that produces `key`, replacing any write for
     /// `key` that has not started.
     pub fn submit(&self, key: PathBuf, job: impl FnOnce() + Send + 'static) {
+        #[cfg(test)]
+        SUBMITS_ON_THIS_THREAD.with(|submits| submits.set(submits.get().saturating_add(1)));
         if self.thread.is_none() {
             job();
             return;
@@ -182,6 +192,13 @@ impl DurableWriter {
     /// write it would wait for is the one running it.
     pub fn flush_timeout(&self, limit: Duration) -> bool {
         self.flush_within(Instant::now().checked_add(limit))
+    }
+
+    /// How many submitted writes are on disk: it advances whenever the
+    /// writer completes one, so two equal readings a while apart mean it
+    /// completed nothing in between.
+    pub fn progress(&self) -> u64 {
+        self.shared.queue.lock().durable_through()
     }
 
     #[allow(
@@ -263,6 +280,17 @@ mod tests {
         });
         running.recv().expect("blocker started");
         (writer, release)
+    }
+
+    #[test]
+    fn progress_advances_only_as_writes_complete() {
+        let (writer, release) = blocked_writer();
+        let before = writer.progress();
+        writer.submit(PathBuf::from("queued"), || {});
+        assert_eq!(writer.progress(), before, "nothing completes while blocked");
+        release.send(()).unwrap();
+        writer.flush();
+        assert!(writer.progress() > before);
     }
 
     #[test]

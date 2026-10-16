@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 use std::fs;
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 
 use tilo_identity_ceremony::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
@@ -255,10 +255,12 @@ impl Drop for ActiveConnectionGuard {
 }
 
 fn prepare_private_directory(path: &Path, label: &str) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
-            if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            if !metadata.file_type().is_dir()
+                || !tilo_files::native::private::owned_by_me(&metadata)
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!("{label} must be a user-owned real directory"),
@@ -276,7 +278,7 @@ fn prepare_private_directory(path: &Path, label: &str) -> io::Result<()> {
 }
 
 fn read_private_file(path: &Path, limit: u64) -> io::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let mut file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -288,8 +290,7 @@ fn read_private_file(path: &Path, limit: u64) -> io::Result<Option<zeroize::Zero
     };
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.permissions().mode() & 0o077 != 0
+        || !tilo_files::native::private::private_to_me(&metadata)
         || metadata.len() > limit
     {
         return Err(io::Error::new(
@@ -579,7 +580,7 @@ fn prepare_private_host_identity_tree(root: &std::path::Path) -> io::Result<()> 
     std::fs::create_dir_all(parent)?;
     let parent_meta = std::fs::metadata(parent)?;
     if !parent_meta.is_dir()
-        || parent_meta.uid() != unsafe { libc::geteuid() }
+        || !tilo_files::native::private::owned_by_me(&parent_meta)
         || parent_meta.mode() & 0o022 != 0
     {
         return Err(io::Error::new(
@@ -595,7 +596,9 @@ fn prepare_private_host_identity_tree(root: &std::path::Path) -> io::Result<()> 
     ] {
         match std::fs::symlink_metadata(&directory) {
             Ok(metadata) => {
-                if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                if !metadata.file_type().is_dir()
+                    || !tilo_files::native::private::owned_by_me(&metadata)
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         format!(
@@ -694,8 +697,7 @@ impl IdentityStore for DiskIdentityStore {
         };
         let metadata = file.metadata().map_err(IdentityFlowError::Io)?;
         if !metadata.file_type().is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
+            || !tilo_files::native::private::private_to_me(&metadata)
             || metadata.len() > 1024 * 1024
         {
             return Err(IdentityFlowError::Io(io::Error::new(
@@ -894,6 +896,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+    use std::os::unix::fs::PermissionsExt;
     use std::time::SystemTime;
     use threshold_identity::ThresholdIdentity;
     use tilo_identity_ceremony::MemoryIdentityStore;

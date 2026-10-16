@@ -1,4 +1,4 @@
-//! `editor` — binds a `qdoc` canonical rich-text document into a host automerge
+//! `editor` — binds a `tilo-doc` canonical rich-text document into a host automerge
 //! doc (e.g. `ui::State.doc`) so the document reuses the UI toolkit's
 //! undo / incremental-sync / presence machinery without a message layer.
 //!
@@ -16,8 +16,6 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]

@@ -10,7 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const REALTIME_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_REALTIME_WIRE_BYTES: usize = 8 * 1024;
 pub const MAX_REALTIME_TOKEN_BYTES: usize = 128;
 pub const MAX_CAPTURE_AUTHORIZATIONS: usize = 4;

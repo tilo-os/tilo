@@ -58,8 +58,7 @@ struct Definitions(Vec<Registered>);
 static DEFINITIONS: OnceLock<Arc<Definitions>> = OnceLock::new();
 
 fn effective_uid() -> u32 {
-    // SAFETY: reads the current process identity; no pointer or mutable state.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn load(path: &Path) -> Result<Definitions, String> {
@@ -225,9 +224,7 @@ impl NativeChecks {
             return Err("approved project host device changed".into());
         }
         self.owner
-            .owner
-            .as_ref()
-            .ok_or("committed project host unavailable")?
+            .opened_owner("committed project host unavailable")?
             .with_current(room, |view| {
                 let host = view.host().unwrap_or_else(|| view.governor());
                 if host.device_public_key != binding.host {

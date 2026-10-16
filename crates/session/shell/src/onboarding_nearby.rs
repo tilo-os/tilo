@@ -430,9 +430,16 @@ impl NearbyPairing {
             if let Some(detail) = &failure.detail {
                 status.insert("error".into(), detail.clone().into());
             }
+            // The status of a pairing child that no longer runs: removed
+            // before every pairing and never read after a restart, so it is
+            // not synced. This runs on the compositor's loop, where a sync
+            // under I/O pressure froze the desktop.
             if let Ok(bytes) = serde_json::to_vec(&status) {
-                let _ =
-                    tilo_files::native::atomic::write_with_mode(&self.status_path, &bytes, 0o600);
+                let _ = tilo_files::native::atomic::write_regenerable_with_mode(
+                    &self.status_path,
+                    &bytes,
+                    0o600,
+                );
             }
         }
         NearbyEvent::Failed(failure)
@@ -488,41 +495,9 @@ fn available_output(stream: &mut std::process::ChildStderr) -> String {
 
 /// Stop `child` and every process in its group, bounded.
 pub(crate) fn terminate(child: &mut Option<Child>) {
-    let Some(mut child) = child.take() else {
-        return;
-    };
-    let Ok(pid) = i32::try_from(child.id()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    let group = pid.saturating_neg();
-    // SAFETY: the process is spawned with `process_group(0)`, making its
-    // validated PID the process-group ID. A negative target is confined to
-    // that group and cannot signal the compositor's own group.
-    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
-    loop {
-        let leader_finished = child.try_wait().ok().flatten().is_some();
-        // Signal 0 only checks whether any descendant still occupies the
-        // dedicated group. Do not return just because the leader exited: a
-        // worker it started may still be winding down.
-        let group_gone = unsafe { libc::kill(group, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if leader_finished && group_gone {
-            return;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if let Some(mut child) = child.take() {
+        bounded_command::terminate_tree(&mut child, Duration::from_millis(750));
     }
-    // SAFETY: same dedicated process group as above. This is the bounded
-    // fallback for a worker that ignored SIGTERM.
-    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -769,6 +744,31 @@ mod tests {
                 NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
+    }
+
+    /// The onboarding view polls the pairing from the compositor's loop;
+    /// recording a failed attempt must not wait for the disk there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recording_a_failed_pairing_never_waits_for_the_disk() {
+        let fixture = fixture();
+        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+        let event = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            poll_until_over(&mut pairing)
+        });
+        assert_eq!(
+            event,
+            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+        );
+        assert!(
+            matches!(read_progress(&fixture.status), NearbyProgress::Failed(_)),
+            "the failure is recorded for the screen"
+        );
+        let mode = std::fs::metadata(&fixture.status)
+            .expect("status")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

@@ -29,6 +29,7 @@ mod workspace_activity {
             active_tab: (7 << 48) | 3,
             width: WindowWidth::Wide,
             maximized: false,
+            focus_history: Vec::new(),
         });
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", room.to_string()).unwrap();

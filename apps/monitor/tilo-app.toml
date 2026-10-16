@@ -28,6 +28,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.paths", "processes", "system-info"]
 
+[resources]
+kinds = ["monitor.processes"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

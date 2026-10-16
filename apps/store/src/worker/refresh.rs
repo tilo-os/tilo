@@ -1,9 +1,9 @@
 //! Independent, bounded catalogue reads on the worker's existing host connection.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
-use app_host::client::{FlatpakStatus, PendingRead};
+use app_host::client::{FlatpakStatus, ListedPackage, PackageAbout, PendingRead};
 use package_store::InstalledPackage;
 
 use super::{
@@ -18,6 +18,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(90);
 
 enum Source {
+    /// The catalogue the host last verified from a repository, read without
+    /// the network so the repository's apps are described at once.
+    LastVerified(RegistryConfig),
     Native(RegistryConfig),
     Flatpak(Remote),
 }
@@ -25,7 +28,8 @@ enum Source {
 enum Read {
     Status(PendingRead<FlatpakStatus>),
     Repositories(PendingRead<String>),
-    Installed(PendingRead<Vec<InstalledPackage>>),
+    Installed(PendingRead<Vec<ListedPackage>>),
+    LastVerified(RegistryConfig, PendingRead<String>),
     Native(RegistryConfig, PendingRead<String>),
     Flatpak(Remote, PendingRead<String>),
     Popular(PendingRead<Vec<crate::flathub_client::AppStreamRecord>>),
@@ -34,7 +38,8 @@ enum Read {
 enum Response {
     Status(Result<FlatpakStatus, String>),
     Repositories(Result<String, String>),
-    Installed(Result<Vec<InstalledPackage>, String>),
+    Installed(Result<Vec<ListedPackage>, String>),
+    LastVerified(RegistryConfig, Result<String, String>),
     Native(RegistryConfig, Result<String, String>),
     Flatpak(Remote, Result<String, String>),
     Popular(Result<Vec<crate::flathub_client::AppStreamRecord>, String>),
@@ -46,6 +51,9 @@ impl Read {
             Self::Status(read) => read.poll(host).map(Response::Status),
             Self::Repositories(read) => read.poll(host).map(Response::Repositories),
             Self::Installed(read) => read.poll(host).map(Response::Installed),
+            Self::LastVerified(registry, read) => read
+                .poll(host)
+                .map(|result| Response::LastVerified(registry.clone(), result)),
             Self::Native(registry, read) => read
                 .poll(host)
                 .map(|result| Response::Native(registry.clone(), result)),
@@ -62,6 +70,7 @@ impl Read {
             Self::Status(_) => Response::Status(Err(error)),
             Self::Repositories(_) => Response::Repositories(Err(error)),
             Self::Installed(_) => Response::Installed(Err(error)),
+            Self::LastVerified(registry, _) => Response::LastVerified(registry.clone(), Err(error)),
             Self::Native(registry, _) => Response::Native(registry.clone(), Err(error)),
             Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(error)),
             Self::Popular(_) => Response::Popular(Err(error)),
@@ -78,8 +87,13 @@ pub(super) struct Refresh {
     active: Vec<ActiveRead>,
     queued: VecDeque<Source>,
     installed: Option<Vec<InstalledPackage>>,
+    /// What each installed package's own manifest says about it, by id.
+    about: HashMap<String, PackageAbout>,
     registries: Option<Vec<RegistryConfig>>,
     native: HashMap<String, Vec<crate::registry_client::VerifiedEntry>>,
+    /// Repositories that answered this refresh; their catalogue replaces the
+    /// last verified one and is never replaced by it.
+    answered: HashSet<String>,
     flatpak: HashMap<String, Vec<StoreItem>>,
     popular: Option<Vec<crate::flathub_client::AppStreamRecord>>,
     cached: Vec<StoreItem>,
@@ -130,8 +144,10 @@ impl Refresh {
             active,
             queued: VecDeque::new(),
             installed: None,
+            about: HashMap::new(),
             registries: None,
             native: HashMap::new(),
+            answered: HashSet::new(),
             flatpak: HashMap::new(),
             popular: records,
             cached: state.base_items.clone(),
@@ -236,6 +252,10 @@ impl Refresh {
                 continue;
             }
             let read = match source {
+                Source::LastVerified(registry) => {
+                    let read = host.begin_last_verified_catalogue(&registry.name);
+                    Read::LastVerified(registry, read)
+                }
                 Source::Native(registry) => {
                     let read = host.begin_registry_catalogue(&registry.name);
                     Read::Native(registry, read)
@@ -274,10 +294,17 @@ impl Refresh {
                     Some(format!("Could not read Flatpak on this device: {error}"));
             }
             Response::Repositories(result) => self.repositories(result),
-            Response::Installed(Ok(installed)) => self.installed = Some(installed),
+            Response::Installed(Ok(listed)) => {
+                self.about = listed
+                    .iter()
+                    .map(|listed| (listed.package.id.clone(), listed.about.clone()))
+                    .collect();
+                self.installed = Some(listed.into_iter().map(|listed| listed.package).collect());
+            }
             Response::Installed(Err(error)) => self
                 .errors
                 .push((0, format!("Could not read apps on this device: {error}"))),
+            Response::LastVerified(registry, result) => self.last_verified(registry, result),
             Response::Native(registry, result) => self.native_response(registry, result),
             Response::Flatpak(remote, result) => {
                 if let Some(current) = state
@@ -311,18 +338,31 @@ impl Refresh {
         });
         match parsed {
             Ok(file) => {
-                self.queued.extend(
-                    file.registries
-                        .iter()
-                        .filter(|registry| registry.enabled)
-                        .cloned()
-                        .map(Source::Native),
-                );
+                // The stored catalogues are local reads: ask for them first,
+                // so a slow repository is already described while it answers.
+                let enabled = || file.registries.iter().filter(|registry| registry.enabled);
+                self.queued
+                    .extend(enabled().cloned().map(Source::LastVerified));
+                self.queued.extend(enabled().cloned().map(Source::Native));
                 self.registries = Some(file.registries);
             }
             Err(error) => self
                 .errors
                 .push((0, format!("Could not read app repositories: {error}"))),
+        }
+    }
+
+    /// The host's last verified catalogue stands in until the repository
+    /// answers. Without one (none accepted yet, expired, or a host that
+    /// predates it) the fresh read alone decides, so this reports nothing.
+    fn last_verified(&mut self, registry: RegistryConfig, result: Result<String, String>) {
+        if self.answered.contains(&registry.name) {
+            return;
+        }
+        if let Ok(entries) = result.and_then(|json| {
+            serde_json::from_str(&json).map_err(|error: serde_json::Error| error.to_string())
+        }) {
+            self.native.insert(registry.name, entries);
         }
     }
 
@@ -333,6 +373,7 @@ impl Refresh {
         });
         match entries {
             Ok(entries) => {
+                self.answered.insert(registry.name.clone());
                 self.native.insert(registry.name, entries);
             }
             Err(error) => self
@@ -389,7 +430,10 @@ impl Refresh {
             }
             for entry in installed {
                 if !items.iter().any(|item| item.id == entry.id) {
-                    items.push(installed_tilo_to_store_item(entry));
+                    items.push(installed_tilo_to_store_item(
+                        entry,
+                        self.about.get(&entry.id),
+                    ));
                 }
             }
         }
@@ -471,6 +515,14 @@ impl Refresh {
 
     fn rebuild(&self, state: &mut State) {
         state.base_items = merge(self.native_items(), self.flatpak_items(state));
+        // Pending or failed alike: what these list is not current yet.
+        state.unanswered_repositories = self
+            .registries
+            .iter()
+            .flatten()
+            .filter(|registry| registry.enabled && !self.answered.contains(&registry.name))
+            .map(|registry| registry.name.clone())
+            .collect();
         // Preserve the established source error order rather than letting
         // response timing put an optional popular-feed outage before a
         // configured repository failure in the bounded public summary.
@@ -492,6 +544,172 @@ impl Refresh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MAIN: &str = "Tilo main";
+
+    fn main_registry() -> RegistryConfig {
+        RegistryConfig {
+            name: MAIN.into(),
+            base_url: "https://apps.tilo.so".into(),
+            owner_pubkey_hex: "11".repeat(32),
+            enabled: true,
+            channel: app_cli::ReleaseChannel::Stable,
+        }
+    }
+
+    /// The bundled Mail app as app-host lists it: the system store row and
+    /// its signed manifest's name and category.
+    fn bundled_mail() -> ListedPackage {
+        let mut package = crate::sources::tests::installed_package(
+            "so.tilo.mail",
+            "0.4.0",
+            "ab".repeat(32),
+            false,
+            false,
+        );
+        package.payload_bytes = 2_400_000;
+        ListedPackage {
+            package,
+            about: PackageAbout {
+                name: "Mail".into(),
+                names: std::collections::BTreeMap::new(),
+                category: Some("Office".into()),
+            },
+        }
+    }
+
+    /// A verified catalogue listing Mail, as the host serialises one.
+    fn catalogue_with_mail(version: &str) -> String {
+        let mut entry = crate::sources::tests::tilo_entry("so.tilo.mail", "Mail", version, [3; 32]);
+        entry.description = "Read and write email.".into();
+        serde_json::to_string(&[crate::sources::tests::verified(entry)]).unwrap()
+    }
+
+    /// A refresh that has read this device's apps and repositories.
+    fn refresh_with_bundled_mail() -> (State, Refresh) {
+        let mut state = super::super::tests::state_with_items(
+            Vec::new(),
+            crate::search::StoreDirectory::default(),
+        );
+        let mut refresh = Refresh::start(&state, None);
+        refresh.apply(
+            &mut state,
+            Response::Repositories(Ok(serde_json::json!({
+                "registry": [{
+                    "name": MAIN, "base_url": "https://apps.tilo.so",
+                    "owner_pubkey_hex": "11".repeat(32), "enabled": true
+                }]
+            })
+            .to_string())),
+        );
+        refresh.apply(&mut state, Response::Installed(Ok(vec![bundled_mail()])));
+        (state, refresh)
+    }
+
+    fn mail(state: &State) -> &StoreItem {
+        state
+            .base_items
+            .iter()
+            .find(|item| item.id == "so.tilo.mail")
+            .expect("the installed app is always listed")
+    }
+
+    fn details(state: &State) -> serde_json::Value {
+        let mut app = crate::StoreApp::new();
+        app.set_items(state.base_items.clone());
+        app.set_unanswered_repositories(state.unanswered_repositories.clone());
+        app.admit(crate::StoreEffect::ShowDetails {
+            app: "so.tilo.mail".into(),
+        })
+        .unwrap();
+        app.inspect_catalogue(Some("so.tilo.mail")).unwrap()
+    }
+
+    #[test]
+    fn a_bundled_app_with_no_reachable_catalogue_shows_its_manifest_details() {
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        refresh.apply(
+            &mut state,
+            Response::LastVerified(main_registry(), Err("no verified catalogue".into())),
+        );
+        refresh.apply(
+            &mut state,
+            Response::Native(main_registry(), Err("error sending request".into())),
+        );
+        refresh.rebuild(&mut state);
+
+        let item = mail(&state);
+        assert_eq!(item.name, "Mail");
+        assert_eq!(item.categories, ["Office"]);
+        assert_eq!(item.latest_version(), "0.4.0");
+        assert_eq!(item.versions[0].size_bytes, 2_400_000);
+        assert!(
+            item.description.is_empty(),
+            "no row repeats a sentence about missing details: {:?}",
+            item.description
+        );
+        assert!(!item.installed.update_available());
+        assert_eq!(item.action_kind(true), crate::ActionKind::Open);
+
+        // The details page names the repository that has not answered, once.
+        let shown = details(&state);
+        assert_eq!(shown["detail"]["name"], "Mail");
+        let notice = shown["detail"]["notice"].as_str().unwrap();
+        assert!(notice.contains(MAIN), "{notice}");
+        assert!(notice.contains("description and updates"), "{notice}");
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_last_verified_catalogue() {
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        refresh.apply(
+            &mut state,
+            Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
+        );
+        refresh.apply(
+            &mut state,
+            Response::Native(main_registry(), Err("error sending request".into())),
+        );
+        refresh.rebuild(&mut state);
+
+        let item = mail(&state);
+        assert_eq!(item.description, "Read and write email.");
+        assert!(
+            matches!(&item.source, StoreSource::Tilo { registry_name } if registry_name == MAIN)
+        );
+        // Still within its validity, the verified catalogue's update stands.
+        assert!(item.installed.update_available());
+        assert!(details(&state)["detail"].get("notice").is_none());
+        // The outage itself is still reported.
+        assert!(
+            state
+                .catalogue_error
+                .as_deref()
+                .is_some_and(|error| error.contains(MAIN))
+        );
+    }
+
+    #[test]
+    fn a_verified_catalogue_fills_the_details_and_outranks_the_stored_one() {
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        refresh.apply(
+            &mut state,
+            Response::Native(main_registry(), Ok(catalogue_with_mail("0.6.0"))),
+        );
+        // A stored catalogue answering late must not replace the fresh one.
+        refresh.apply(
+            &mut state,
+            Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
+        );
+        refresh.rebuild(&mut state);
+
+        let item = mail(&state);
+        assert_eq!(item.name, "Mail");
+        assert_eq!(item.description, "Read and write email.");
+        assert_eq!(item.latest_version(), "0.6.0");
+        assert!(state.unanswered_repositories.is_empty());
+        assert!(details(&state)["detail"].get("notice").is_none());
+    }
 
     #[test]
     fn installed_flatpak_survives_native_name_collision_and_remains_selected() {

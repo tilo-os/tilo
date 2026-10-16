@@ -1,7 +1,8 @@
 # Development Guide
 
-Build dependencies, local development and testing. See `AGENTS.md` for repository
-conventions.
+Build dependencies, local development and testing. The project's rules, and the
+check that enforces each, are in [`docs/policies.md`](docs/policies.md); `AGENTS.md`
+is what agents working here are told.
 
 ## Dev VMs (tilo-vm)
 
@@ -134,51 +135,69 @@ at low volume.
 
 ## Routine delivery workflow
 
-Routine changes land through pull requests to `main`. Each PR head revision gets
-its own affected-package check and fast-quality lint result. Both test the head
-merged onto the tip of its base branch (`main`, or the lower branch of a stack)
-at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. A green result stands when `main` moves on; the
-lander re-checks only results older than six hours, and that re-check only
-re-runs the packages and suites `main`'s new commits reach. A newer commit on
-the PR cancels the older revision's runs; every push to `main` keeps its own.
+Changes reach users in two steps: everyone pushes to `main`, and a stabilizer
+moves `stable` forward from `main`. Releases are cut from `stable`. The rules are
+the same for people and agents.
 
-Do not merge `main` into your branch to keep it current, and do not wait for a
-conflict to clear. When a ready PR conflicts with `main`, the merge assistant
-merges `main` into its branch, builds and tests what the merge touched, and
-pushes the merge commit; the PR then lands like any other. If it cannot resolve
-the conflict, it converts the PR to a draft and comments with what is in the
-way; resolve that and mark the PR ready again.
+### Landing on `main`
 
-A ready (non-draft) PR lands by itself: within a minute of both required checks
-passing on its current head, the lander merges it with a merge commit. The
-required checks are `CI / affected packages / checks (pull_request)` and
-`CI / fast quality / quality (pull_request)`. The branch does not have to be up to
-date with `main`; Forgejo only refuses a PR with conflicts. Do not rebase just
-because `main` moved, and do not merge by hand or wait around for the merge.
-Opening the PR ready is the request to land it; open it as a draft, add the
-`hold` label or start the title with `WIP` to park it. PRs numbered below 342
-predate this and land only with the `land` label. In a stack, the upper PR
-brings the lower ones with it when it lands first.
+Push your commits straight to `main`; a pull request is not needed. Before you
+push:
 
-Every push to `main` runs the same checks. If they fail on a merge while the
-merge before it was green, which usually means two PRs that passed separately
-broke each other, the lander reverts that merge on `main` within a minute or two
-and comments on the PR. To reland, branch from `main`, `git revert` the revert
-commit, fix the failure and open a new PR. The lander logs every revert in
-tilo/tilo#376; see `apps/forgejo/lander` in tilo/infra.
+1. Run the checks your change affects with [`t`](docs/t.md): `t` in your
+   checkout runs the default checks on your files, uncommitted changes included,
+   on the shared t server. Fix what fails because of you. Exit code `3` means
+   everything that failed also fails on `main` already; that is not yours to fix
+   before pushing.
+2. Rebase on the current `main` (`git pull --rebase`) and push. A push that is
+   not a fast-forward is refused; rebase again and push. `.githooks/pre-push`
+   refuses a push that leaves `crates/workspace-hack` stale.
 
-Review is optional and informational for every change. Review requests,
-approvals and change requests never affect whether a PR can merge.
+Keep each push a small, coherent, tested increment. Open a pull request only when
+you want discussion or a review before landing; once it is settled, push the
+result to `main` yourself. Review is optional and informational for every change.
 
-The CI scheduler assigns runners and queue order. Submit normally; do not reserve
-build slots or negotiate them with other agents. The repository's Codex hook sends
-final CI status back to the task after a successful normal `git push` when the
-hook is installed in the running environment. Use `fgj pr checks <number>` or
-`fgj actions` to inspect missing notifications or failures, rather than repeatedly
-polling queued jobs.
+### CI on `main`
 
-After a merge, app packaging selects directly changed apps and apps that depend
+The t server follows `main` and runs every check on each new commit. CI on `main`
+informs; it does not gate. Nothing on `main` is reverted automatically, and a red
+check does not stop anyone from pushing.
+
+`t main` lists what fails on `main`, since which commit, and who is on it. If a
+failure is yours, fix it forward. If you start fixing someone else's failure,
+`t claim <check>` it so nobody duplicates the work, and `t release <check>` when
+you stop. `t` tells you when a failure you see is already on the board, so you
+do not chase what was broken before you started.
+
+### `stable`
+
+A dedicated stabilizer, usually an agent, keeps `stable` releasable. From time
+to time it picks a recent `main` commit with few failures, one that contains the
+current `stable`, and runs every required check on it. For each failure it makes
+one of two kinds of commit:
+
+- a **fix**, a real repair, which it then brings back to `main`;
+- an **exclusion**, which reverts or disables unfinished work for this release
+  only. Exclusions stay on `stable`, and each gets an issue saying what was
+  excluded, why, and which check it broke.
+
+It never weakens a check to make it pass: no deleted or ignored tests and no
+loosened budgets. When every required check passes, it fast-forwards `stable` to
+its branch, then merges `stable` back into `main` with the exclusions undone.
+Only the stabilizer pushes to `stable`.
+
+### Why
+
+Many people and agents change Tilo at once. Gating every change on a full CI
+round trip serialized them, and automatic reverts fought the fixes that followed.
+This way landing is fast for everyone, and releasability is one place's actual
+job instead of a property every push has to prove. The cost is that `main` is
+sometimes red; `t main` makes that visible, and `t` keeps it from being
+confusing.
+
+### Packaging and publication
+
+After a push to `main`, app packaging selects directly changed apps and apps that depend
 on changed shared crates, then reuses unchanged collection members. PRs run the
 selection plan without release-mode packaging. Shared runtime or toolchain changes
 can still select every app; see [Preview affected applications](#preview-affected-applications)
@@ -271,7 +290,7 @@ Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
 
 Use operation `clippy` to meet CI's lint gate before pushing, including for
-crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the Linux-only code a Mac does not compile (`shell`, `tilo-relay`, `launcher`). It runs
 the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
 `-D warnings`, the workspace lint table), on the runner label, builder image,
 environment and checkout path of CI's `clippy` job, so the two share compiler
@@ -286,6 +305,13 @@ jq -n --arg source "$(git rev-parse HEAD)" \
 ```
 
 The source commit must be pushed (any branch) so the runner can fetch it.
+
+On a Mac, `cargo check --locked -p shell --tests` and `-p tilo-relay --tests`
+compile locally. Code that needs Linux (the Wayland compositor state, `ush`,
+namespaces, netlink, `/proc`) and the tests that drive it sit behind
+`#[cfg(target_os = "linux")]`, so a passing Mac check is a quick first gate,
+not a replacement for the Linux run. A test that needs only portable code
+should stay ungated.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
@@ -609,6 +635,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
 | `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
 | `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
+| `xwayland-satellite` `Xwayland` (binaries) | `xwayland-satellite` `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge; they fail, not skip, without it |
 
 The sandbox, language-server, and rollback mechanism tests require the binary
 tools listed above. Install them where Cargo runs, including inside a build
@@ -625,7 +652,7 @@ From an ARM64 host, run:
 
 ```powershell
 cargo test -p imager --lib --features host-media-writer --target aarch64-pc-windows-msvc --locked
-cargo test -p ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
+cargo test -p tilo-ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
 ```
 
 Use `x86_64-pc-windows-msvc` on an x64 host. Keep the target explicit: an
@@ -641,7 +668,7 @@ workspace root:
 
 ```bash
 brew install pkgconf gstreamer
-cargo run -p video_editor
+cargo run -p video-editor
 ```
 
 The editor enables GStreamer playback and export by default. Homebrew's
@@ -1069,8 +1096,8 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui-examples --example windows-host
---features notifications`. The helper accepts `history so.tilo.clocks` to inspect
+For device verification, build `cargo build --locked -p ui-examples --example windows-host`.
+The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.
@@ -1105,7 +1132,7 @@ $gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
-cargo test --locked -p media --features decode,encode --lib
+cargo test --locked -p tilo-media --features decode,encode --lib
 cargo check --locked -p video-player --tests
 cargo test --locked -p video-player --test real_decode
 ```
@@ -1338,6 +1365,13 @@ golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($golden)"
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
 ```
+
+The fixtures it caches live in `~/.cache/tilo/test-env` (`TILO_TEST_CACHE_DIR`),
+one set per generator revision. On Tilo OS your `tilo-cache-gc.timer` removes a
+set nothing has read for 14 days, never one a running test holds the lock of;
+`tilo os clean` does it now, `tilo os status` says what went, and
+`~/.config/tilo/cache-gc.toml` changes the policy (see
+`/etc/tilo/cache-gc.toml`).
 
 ### Tests and the process environment
 
@@ -1613,6 +1647,49 @@ it is `vello` + `wgpu` unoptimised — so expect the nested one to feel soft.
 not hand you a seat the running desktop owns, and fails with `ENOSYS` (error
 code 38), which is a refusal, not an unimplemented backend.
 
+### Nested desktop with Tilo's own apps
+
+A bare `shell --backend winit` has an empty launcher: it lists only installed,
+signed `.tapp` packages. One command builds the shell and the apps through
+`$CARGO` (a remote cargo drop-in that mirrors artifacts back with `--fetch`), packages and signs the apps with a development key, installs them
+with their runtime bundle into a private store, and starts the nested shell
+beside the model gateway:
+
+```bash
+dist/dev/nested-session.sh                                  # core apps + agent
+dist/dev/nested-session.sh --apps "notes chat agent"        # a smaller set
+dist/dev/nested-session.sh --headless --fresh-desktop       # no window at all
+```
+
+Everything lives in `~/.local/state/tilo-nested` (`--state DIR`): a scratch
+HOME and XDG tree, the app store, the runtime, the publisher key and a
+throwaway identity (re-minted before its 24-hour expiry). The shell gets a
+private `XDG_RUNTIME_DIR` and D-Bus session, so it cannot collide with your
+desktop or another Tilo session. Re-running repackages only the apps whose
+binary, manifest or surface changed. The script prints the `tilo-control`
+command line for driving the session; logs are under `logs/` in the state
+directory. Configure a model provider in the nested Settings app before
+asking the agent to act. The browser installs without its Chromium engine and
+offers to fetch it itself. `--fresh-desktop` forgets saved workspaces and
+windows but keeps the identity and the installed apps. The window opens at
+1280x800 logical pixels at the host's scale, which leaves the task centre room
+for its cards; `TILO_WINIT_SIZE=WxH` (physical pixels) overrides it.
+
+`--headless` starts the same stack on the offscreen backend and needs no
+Wayland session: nothing appears on your desktop, and you drive it only
+through the printed `tilo-control` line (`actions invoke`, `key`, `type`,
+`click-at`, `read APP`, and `snapshot FILE`, which renders the 1280x800 output,
+or `TILO_HEADLESS_SIZE`). Use it for scripted and agent end-to-end runs.
+
+On the first start the script makes the Home workspace a native room: agent
+tasks act with a room's native authority, and the throwaway person has no
+second device to govern one. It runs the packaged-desktop governor fixture,
+which signs an invitation with the session's own device, and the shell
+redeems it at boot; `logs/native.log` says when the room is native. Later
+starts restore it from the saved desktop, and `--fresh-desktop` enrols a new
+one. Admit an agent to the room (`so.tilo.desktop` `add-agent`) before queuing
+tasks for it.
+
 ### Edit → build → log into your own build
 
 After installing `tilo-session-devel`, or while the transient developer entry is
@@ -1785,12 +1862,23 @@ checks all new commits and exact blobs in its comparison range, catching
 `--no-verify` commits and intermediate binary additions later deleted. It fails
 when history cannot be inspected. Existing exceptions remain migration work.
 
+The lines a commit adds carry no credential, merge-conflict marker or `dbg!`
+(`dbg!` only in Rust outside `vendor/`). One definition,
+`tools/policy/added_line_policy.py`, serves the hook, `scripts/scan-secrets.sh`
+and fast quality, which repeats it on every new commit, so `--no-verify` does
+not get past it. A line counts as added when no parent's version of the file
+holds it: an existing string does not fire again when its file is touched, and
+a merge answers only for its resolution. A credential-shaped string that is not
+one needs `example` or `placeholder` on the same line; that is the only
+exception.
+
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`).
+CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged
 exactly as the merged-in side has it already passed that side's checks, so the

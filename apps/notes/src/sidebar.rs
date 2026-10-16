@@ -174,15 +174,21 @@ impl PageTree {
             roots: Vec::new(),
             entries: HashMap::new(),
         };
+        // Every note's children in notebook order, gathered in one pass:
+        // asking the workspace per note scanned every note for each one.
+        let mut children_of: HashMap<Option<PageId>, Vec<&crate::model::PageMeta>> = HashMap::new();
+        for page in workspace.pages() {
+            children_of.entry(page.parent).or_default().push(page);
+        }
         let mut registry = keys.borrow_mut();
         let mut stack: Vec<(Option<PageId>, NodeId)> = vec![(None, ROOT)];
         while let Some((page, key)) = stack.pop() {
-            let children: Vec<NodeId> = workspace
-                .children_of(page)
+            let siblings = children_of.get(&page).map_or(&[][..], Vec::as_slice);
+            let children: Vec<NodeId> = siblings
                 .iter()
                 .map(|child| registry.key(child.id))
                 .collect();
-            for child in workspace.children_of(page) {
+            for child in siblings {
                 let child_key = registry.key(child.id);
                 tree.entries.insert(
                     child_key,

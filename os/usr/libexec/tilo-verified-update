@@ -6,7 +6,7 @@ BOOTC="${TILO_IMAGE_TRUST_BOOTC:-/usr/bin/bootc}"
 TRUST_DIR="${TILO_IMAGE_TRUST_DIR:-/var/lib/tilo/image-trust}"
 GATE="${TILO_IMAGE_TRUST_GATE:-/usr/libexec/tilo-image-trust-staged}"
 UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-/run/tilo-verified-update.lock}"
-SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor.py}"
+SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor}"
 
 # One lock spans download, identity verification, rollback-floor publication,
 # and activation. It is taken even before owner trust is armed: `tilo-image-trust

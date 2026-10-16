@@ -5,6 +5,11 @@
 set -eu
 compiler=${1:?expected compiler}
 shift
+# A leading -E is unambiguously preprocessing-only. Do not interpret later
+# operands or option values: those retain the launcher's existing parser.
+case "${1-}" in
+    -E) exec "$compiler" "$@" ;;
+esac
 for argument do
     case "$argument" in
         certs/system_certificates.S|*/certs/system_certificates.S|arch/x86/boot/compressed/piggy.S|*/arch/x86/boot/compressed/piggy.S|arch/x86/boot/compressed/sbat.S|*/arch/x86/boot/compressed/sbat.S)

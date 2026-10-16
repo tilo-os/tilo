@@ -59,15 +59,6 @@ pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
     v.insert(to, item);
 }
 
-/// Insert a clone of the item at `index` immediately after it. A no-op when
-/// `index` is out of range.
-pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
-    let Some(copy) = v.get(index).cloned() else {
-        return;
-    };
-    v.insert(index.saturating_add(1), copy);
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuAction {
     Duplicate,
@@ -198,17 +189,6 @@ impl Default for RailMetrics {
 /// it again.
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
-}
-
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(base: Affine, x: f64, y: f64) -> Affine {
-    base * Affine::translate((x, y))
 }
 
 /// Offsets a rect vertically. `Rect`'s `Add<Vec2>` is pure `f64` geometry
@@ -744,7 +724,7 @@ impl PageSidebar {
                 scene,
                 &self.header,
                 c.text_dim,
-                translated(base, self.rect.x0 + self.m.pad, hy),
+                base.pre_translate((self.rect.x0 + self.m.pad, hy).into()),
                 None,
                 &style.clone().with_weight(TextWeight::Semibold),
             );
@@ -962,7 +942,7 @@ impl PageSidebar {
             scene,
             &label,
             col,
-            translated(base, lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly),
+            base.pre_translate((lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly).into()),
             None,
             &style.clone().with_weight(weight),
         );
@@ -1004,7 +984,7 @@ impl PageSidebar {
             scene,
             &self.add_label,
             c.text_primary,
-            translated(base, x0 + icon + gap, ty),
+            base.pre_translate((x0 + icon + gap, ty).into()),
             None,
             &style,
         );
@@ -1070,7 +1050,7 @@ impl PageSidebar {
                 scene,
                 label,
                 col,
-                translated(base, row.x0 + f64::from(theme.padding_standard), ty),
+                base.pre_translate((row.x0 + f64::from(theme.padding_standard), ty).into()),
                 None,
                 &style,
             );
@@ -1124,15 +1104,6 @@ mod tests {
             assert_eq!(v, vec![0, 1]);
             move_item(&mut v, 5, 0);
             assert_eq!(v, vec![0, 1]);
-        }
-
-        // Case `duplicate_after_inserts_clone`.
-        {
-            let mut v = vec!['a', 'b', 'c'];
-            duplicate_after(&mut v, 1);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
-            duplicate_after(&mut v, 99);
-            assert_eq!(v, vec!['a', 'b', 'b', 'c']);
         }
 
         // Case `themed_metrics_read_the_spacing_scale_the_constants_restate`.

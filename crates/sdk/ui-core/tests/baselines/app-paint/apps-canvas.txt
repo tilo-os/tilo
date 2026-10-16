@@ -4,7 +4,6 @@
 apps/canvas/src/panels/gradient.rs raw_paint 1
 apps/canvas/src/panels/well.rs raw_paint 1
 apps/canvas/src/preview.rs raw_paint 2
-apps/canvas/src/render.rs literal_alpha 1
 apps/canvas/src/render.rs raw_paint 32
 apps/canvas/src/surface.rs literal_alpha 8
 apps/canvas/src/surface.rs raw_paint 27

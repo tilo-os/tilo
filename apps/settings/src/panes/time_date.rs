@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -38,10 +38,11 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, error_row, rows, setting_row, value_row};
+use crate::widgets::{Item, block, card, error_row, note, rows, setting_row, value_row};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
+use ui::lock::MutexRecover as _;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeZonePoint {
@@ -673,20 +674,11 @@ impl Default for SampleClock {
 
 impl Clock for SampleClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
-        Ok(self
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone())
+        Ok(self.status.lock_recover().clone())
     }
 
     fn ntp(&self) -> Result<bool, String> {
-        Ok(self
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ntp_enabled
-            .unwrap_or(true))
+        Ok(self.status.lock_recover().ntp_enabled.unwrap_or(true))
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
@@ -706,18 +698,12 @@ impl Clock for SampleClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
-        self.status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ntp_enabled = Some(enabled);
+        self.status.lock_recover().ntp_enabled = Some(enabled);
         Ok(())
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
-        self.status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .timezone = Some(timezone.to_owned());
+        self.status.lock_recover().timezone = Some(timezone.to_owned());
         Ok(())
     }
 }
@@ -894,7 +880,7 @@ impl TimeDatePane {
     }
 
     /// The automatic-time switch, or why its position is unknown.
-    fn auto_row(&self) -> Box<dyn Widget> {
+    fn auto_row(&self) -> Item {
         match (&self.auto_error, self.sync_status.ntp_enabled) {
             (Some(error), _) => error_row(
                 &t("time-auto"),
@@ -908,7 +894,7 @@ impl TimeDatePane {
     }
 
     /// The zone chooser, or why there is nothing to choose from.
-    fn zone_row(&self) -> Box<dyn Widget> {
+    fn zone_row(&self) -> Item {
         match &self.timezones_error {
             Some(error) => error_row(
                 &t("time-timezone"),
@@ -985,18 +971,18 @@ impl TimeDatePane {
             &t("time-display-title"),
             rows(vec![
                 value_row(&t("time-clock-format"), &clock_format),
-                caption(&t("time-display-caption")),
+                note(&t("time-display-caption")),
             ]),
         );
 
         let map = card(
             &t("time-map-title"),
             rows(vec![
-                Box::new(
+                block(Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
                         .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE))),
-                ),
-                caption(&map_note),
+                )),
+                note(&map_note),
             ]),
         );
 
@@ -1008,22 +994,19 @@ impl TimeDatePane {
                         &t("time-sync"),
                         &t_args("time-status-error", &[("error", error.as_str().into())]),
                     ),
-                    caption(&t("time-source-caption")),
+                    note(&t("time-source-caption")),
                 ],
                 None => vec![
                     value_row(&t("time-sync"), &sync),
                     value_row(&t("time-source"), &source_name),
-                    caption(&t("time-source-caption")),
+                    note(&t("time-source-caption")),
                 ],
             }),
         );
 
         let mut cards = vec![clock, map, source, formats];
         if let Some(notice) = &self.notice_shown {
-            cards.insert(
-                0,
-                card(&t("time-notice-title"), rows(vec![caption(notice)])),
-            );
+            cards.insert(0, card(&t("time-notice-title"), rows(vec![note(notice)])));
         }
         crate::widgets::cards(cards)
     }

@@ -28,6 +28,7 @@ use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_
 use crate::canonical_frame::{self, CanonicalFrameError};
 use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
+use tilo_lock::MutexRecover as _;
 
 pub const NAMED_SHARE_ENVELOPE_VERSION: u16 = 1;
 pub const NAMED_SHARE_INBOX_VERSION: u16 = 1;
@@ -229,10 +230,7 @@ impl NamedShareOutbox {
         if recipient_devices.is_empty() {
             return Err(NamedShareInboxError::NoRecipientDevices);
         }
-        let mut current = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.entries.lock_recover();
         if let Some(existing) = current.get(&envelope.invite.id) {
             return if existing.envelope == envelope
                 && existing.recipient_devices == recipient_devices
@@ -271,10 +269,7 @@ impl NamedShareOutbox {
 
     /// Return non-expired deliveries that have not yet succeeded.
     pub fn pending_at(&self, now_ms: u64) -> Vec<NamedShareOutboxEntryV1> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         entries
             .values()
             .filter(|entry| {
@@ -305,10 +300,7 @@ impl NamedShareOutbox {
         delivered_to: Option<Ed25519PublicKey>,
         now_ms: u64,
     ) -> Result<(), NamedShareInboxError> {
-        let mut current = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.entries.lock_recover();
         let Some(existing) = current.get(&grant_id) else {
             return Err(NamedShareInboxError::UnknownGrant);
         };
@@ -333,11 +325,7 @@ impl NamedShareOutbox {
 
     /// Return one queued delivery, if present.
     pub fn get(&self, grant_id: Uuid) -> Option<NamedShareOutboxEntryV1> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&grant_id)
-            .cloned()
+        self.entries.lock_recover().get(&grant_id).cloned()
     }
 
     /// Cancel one queued delivery.
@@ -350,10 +338,7 @@ impl NamedShareOutbox {
         reason = "the lock is held across persist so the file and the in-memory map change together"
     )]
     pub fn cancel(&self, grant_id: Uuid) -> Result<bool, NamedShareInboxError> {
-        let mut current = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.entries.lock_recover();
         if !current.contains_key(&grant_id) {
             return Ok(false);
         }
@@ -716,10 +701,7 @@ impl NamedShareInbox {
         now_ms: u64,
     ) -> Result<bool, NamedShareInboxError> {
         envelope.validate_for_at(self.local_person, now_ms)?;
-        let mut current = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.entries.lock_recover();
         if let Some(existing) = current.get(&envelope.invite.id) {
             return if existing == &envelope {
                 Ok(false)
@@ -747,10 +729,7 @@ impl NamedShareInbox {
 
     /// Return envelopes that remain valid at `now_ms`.
     pub fn entries_at(&self, now_ms: u64) -> Vec<NamedShareEnvelopeV1> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         entries
             .values()
             .filter(|entry| entry.validate_for_at(self.local_person, now_ms).is_ok())
@@ -772,11 +751,14 @@ fn load_entries<T: serde::de::DeserializeOwned + Serialize>(
         Err(error) => return Err(error.into()),
     };
     validate_owner_only(&metadata)?;
-    if metadata.len() > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-        return Err(NamedShareInboxError::StateTooLarge);
-    }
-    let document: EntriesDocumentV1<Vec<T>> = serde_json::from_slice(&std::fs::read(path)?)
-        .map_err(|_| NamedShareInboxError::MalformedState)?;
+    let bytes = tilo_files::native::bounded::read_or(
+        path,
+        MAX_NAMED_SHARE_INBOX_FILE_BYTES,
+        NamedShareInboxError::StateTooLarge,
+    )?
+    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let document: EntriesDocumentV1<Vec<T>> =
+        serde_json::from_slice(&bytes).map_err(|_| NamedShareInboxError::MalformedState)?;
     if document.schema_version != NAMED_SHARE_INBOX_VERSION {
         return Err(NamedShareInboxError::UnsupportedVersion);
     }

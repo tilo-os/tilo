@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::Manifest;
 use crate::{Hydrator, Namespace};
+use tilo_lock::MutexRecover as _;
 
 /// A full replica is deliberately bounded even for an authorised writer. The
 /// namespace cap alone does not constrain an adversarial manifest's vector or
@@ -308,8 +309,7 @@ pub async fn hydrate_full_workspace(
 ) -> FullReplicaStatus {
     let mut status = FullReplicaStatus::syncing();
     let root_scan = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN);
     let roots = match root_scan {
         Ok(roots) => roots,
@@ -430,9 +430,7 @@ pub async fn prune_obsolete_workspace_content(
     _history: Option<&crate::FileHistoryStore>,
 ) -> Result<u64> {
     let (roots, generation) = {
-        let mut namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut namespace = namespace.lock_recover();
         let roots =
             namespace.live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
         (roots, namespace.heads())
@@ -474,9 +472,7 @@ pub async fn prune_obsolete_workspace_content(
             .unwrap_or_else(tokio::runtime::Handle::current);
         let generation = generation.clone();
         let batch_removed = tokio::task::spawn_blocking(move || -> Result<Option<u64>> {
-            let mut namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut namespace = namespace.lock_recover();
             if namespace.heads() != generation {
                 return Ok(None);
             }

@@ -95,7 +95,7 @@ STAGING_PLACEHOLDER_BYTES = 64 * 1024
 LIVE_FLAGS = frozenset({'rw', 'quiet', 'splash', 'slab_nomerge', 'plymouth.ignore-serial-consoles',
                         'tilo.install'})
 LIVE_VALUES = {'root': 'tilo-auto', 'rd.luks.options': 'tpm2-device=auto,fido2-device=auto',
-               'tilo.mode': 'normal', 'init_on_alloc': '1', 'init_on_free': '1',
+               'tilo.mode': 'normal', 'init_on_alloc': '1',
                'lockdown': 'integrity', 'randomize_kstack_offset': 'on', 'page_alloc.shuffle': '1',
                'vsyscall': 'none', 'preempt': 'full', 'systemd.import_credentials': 'no'}
 

@@ -43,21 +43,13 @@
 //! [`UserDir`] and its shorthands ([`document_dir`], [`download_dir`], …)
 //! resolve the user's content folders, localized through `user-dirs.dirs`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 mod app;
 mod caps;
 mod location;
+pub mod login;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
@@ -243,6 +235,22 @@ pub mod xdg {
     #[must_use]
     pub fn runtime_dir() -> Option<PathBuf> {
         Base::Runtime.resolve(&env, home)
+    }
+
+    /// [`runtime_dir`], else where the platform keeps it without the
+    /// variable: `/run/user/<euid>` as systemd-logind creates it, the per-user
+    /// `$TMPDIR` on macOS. For callers that must name a per-user socket or
+    /// file even in a session started without `$XDG_RUNTIME_DIR`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn runtime_dir_or_default() -> PathBuf {
+        runtime_dir().unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                std::env::temp_dir()
+            } else {
+                PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
+            }
+        })
     }
 
     /// `$XDG_DATA_DIRS` in preference order, else `/usr/local/share` and

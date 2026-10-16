@@ -69,18 +69,14 @@ impl TrustedHumanDirectory {
     /// Returns an error when the projection cannot be read within its bound or
     /// its schema and identity data fail validation.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
+        let bytes = match tilo_files::native::bounded::read(path, MAX_TRUSTED_IDENTITIES_BYTES) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                return Err("Identity directory exceeds its size bound".into());
             }
             Err(error) => return Err(format!("Identity directory unavailable: {error}")),
         };
-        if metadata.len() > MAX_TRUSTED_IDENTITIES_BYTES {
-            return Err("Identity directory exceeds its size bound".into());
-        }
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("Identity directory unavailable: {error}"))?;
         let header: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Identity directory is invalid: {error}"))?;
         match header

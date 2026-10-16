@@ -180,6 +180,51 @@ pub async fn agent_live_grant(
     .await
 }
 
+/// Post this person's own recent semantic actions in `request.workspace_id`
+/// and get everyone's "who is here and what are they doing" line back.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when this device is not admitted there.
+pub async fn here(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::HereRequest,
+) -> Result<tilo_relay_protocol::web::HereReply, LinkError> {
+    call(
+        client,
+        tilo_relay_protocol::web::HERE_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await
+}
+
+/// Take a record's channel content keys from the room's steward, as a
+/// public room's spectator, which is no channel member and asks nothing
+/// over the channel.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when the room keeps them from this device:
+/// it is no seated spectator, the room is not public, the record is kept
+/// from some of the room, or its channel does not exist yet.
+pub async fn channel_keys(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::ChannelKeysRequest,
+) -> Result<channel_crypto::ChannelContentKeys, LinkError> {
+    let reply: tilo_relay_protocol::web::ChannelKeys = call(
+        client,
+        tilo_relay_protocol::web::CHANNEL_KEYS_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await?;
+    channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
+        .map_err(|error| LinkError::Malformed(error.to_string()))
+}
+
 /// Send a member's input for a legacy window
 /// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
 /// this device may drive it. `Ok(false)`: it may not.
@@ -204,6 +249,40 @@ pub async fn legacy_input(
     match status {
         204 => Ok(true),
         403 => Ok(false),
+        401 => Err(LinkError::Refused(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        _ => Err(LinkError::Unavailable(format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))),
+    }
+}
+
+/// Tell the host which video codecs this page decodes
+/// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
+/// stream legacy windows in one of them. `Ok(false)`: the host predates
+/// codec adverts, and this page counts as decoding H.264 only.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or refuses the advert.
+pub async fn legacy_codecs(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::legacy_window::CodecsRequest,
+) -> Result<bool, LinkError> {
+    let (status, bytes) = client
+        .post(
+            &path(tilo_relay_protocol::legacy_window::CODECS_ROUTE),
+            Some(session),
+            encode(request)?,
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        204 => Ok(true),
+        404 => Ok(false),
         401 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),
@@ -301,7 +380,7 @@ impl HttpsLink {
             return Err(LinkError::Refused("host is not the pinned device".into()));
         }
         let sig_over_server_nonce = signer
-            .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
+            .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
         let (grant, features) = decode_grant(

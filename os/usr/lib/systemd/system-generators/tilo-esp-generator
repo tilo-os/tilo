@@ -1,0 +1,147 @@
+#!/usr/bin/bash
+# Mount the ESP this machine booted from where the boot tools look for it,
+# when nothing else does: at /boot/efi beside a separate Linux /boot, or at
+# /boot itself when nothing mounts /boot at all.
+#
+# Every Tilo tool that touches the boot loader looks for the ESP at /boot or
+# /boot/efi: the boot-entry maintenance that gives an update its try counter
+# (tilo-deployment entries), its writer (tilo-esp-write@), the blessing of a
+# good boot (systemd-bless-boot), Secure Boot signing and the repair entry.
+#
+#   sealed disk      /etc/fstab mounts the ESP at /boot. Left alone.
+#   dev disk         the entry's systemd.mount-extra mounts the ESP at /boot.
+#                    Left alone.
+#   installed        tilo-install's signed target UKI mounts a separate ext4
+#                    /boot by label (systemd.mount-extra=LABEL=TILO_BOOT:...):
+#                    the ESP goes to /boot/efi, a mount point on TILO_BOOT.
+#   installed, after an update
+#                    the update's own UKI mounts no /boot and there is no
+#                    fstab: the ESP goes to /boot.
+#
+# systemd-gpt-auto-generator would mount the ESP at an unclaimed /boot, but it
+# mounts nothing on this composefs layout, and the image has no /efi. Without
+# this an installed machine's maintenance found no boot loader, said "nothing to
+# maintain", and no update was ever put on trial, so a broken one was never
+# rolled back; and systemd-bless-boot found no ESP to bless a good boot on.
+#
+# The ESP is the one the boot loader reports (LoaderDevicePartUUID), never the
+# first ESP of some type on some disk: an install beside another operating
+# system has two. Everyone sees it read-only; the services that write it remount
+# it writable in their own mount namespace. tilo-esp-mount says why that is a
+# read-only bind of a writable superblock and not a plain read-only mount.
+set -eu
+out="${1:-/run/systemd/generator}"
+fstab="${TILO_ESP_FSTAB:-/etc/fstab}"
+blkid_bin="${TILO_ESP_BLKID:-blkid}"
+
+say() { printf 'tilo-esp-generator: %s\n' "$*" >&2; }
+
+# The initrd mounts the root, not /boot.
+[ ! -e "${TILO_ESP_INITRD_RELEASE:-/etc/initrd-release}" ] || exit 0
+cmdline="$(cat "${TILO_ESP_CMDLINE_FILE:-/proc/cmdline}" 2>/dev/null)" || exit 0
+# The live installer (tilo.install) checks that the ESP it installs to is not
+# mounted, and a staged installer boots from the very ESP it installs to.
+case " $cmdline " in *" tilo.install "*) exit 0 ;; esac
+
+# What mounts /boot, as "SOURCE FSTYPE" lines: the command line's
+# systemd.mount-extra= first, then /etc/fstab.
+boot_mounts=""
+for word in $cmdline; do
+  case "$word" in
+    systemd.mount-extra=*) ;;
+    *) continue ;;
+  esac
+  IFS=: read -r what where fstype _options <<<"${word#systemd.mount-extra=}"
+  [ "$where" = /boot ] || continue
+  boot_mounts+="$what ${fstype:-auto}"$'\n'
+done
+if [ -r "$fstab" ]; then
+  if awk '$1 !~ /^#/ && $2 == "/boot/efi" { found = 1 } END { exit !found }' "$fstab"; then
+    say "/etc/fstab mounts /boot/efi; leaving it to that entry"
+    exit 0
+  fi
+  boot_mounts+="$(awk '$1 !~ /^#/ && $2 == "/boot" { print $1, ($3 == "" ? "auto" : $3) }' "$fstab")"
+fi
+
+partuuid="${TILO_ESP_LOADER_PARTUUID:-}"
+if [ -z "$partuuid" ]; then
+  var="${TILO_ESP_EFIVARS:-/sys/firmware/efi/efivars}/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+  if [ ! -r "$var" ]; then
+    # Boards started by U-Boot and other loaders without the Boot Loader
+    # Interface: nothing names an ESP, and none is guessed.
+    [ -z "$boot_mounts" ] \
+      || say "the boot loader did not report its ESP (no LoaderDevicePartUUID); /boot/efi stays unmounted"
+    exit 0
+  fi
+  partuuid="$(dd if="$var" bs=1 skip=4 status=none | tr -d '\000')"
+fi
+partuuid="$(printf '%s' "$partuuid" | tr '[:upper:]' '[:lower:]')"
+case "$partuuid" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) say "invalid LoaderDevicePartUUID '$partuuid'; the ESP stays unmounted"; exit 0 ;;
+esac
+esp="/dev/disk/by-partuuid/$partuuid"
+
+# Is SOURCE (an fstab-style spec) the boot loader's ESP? yes, no, or unknown.
+is_esp() {
+  local spec="$1" key value have
+  case "$spec" in
+    UUID=*|LABEL=*|PARTUUID=*|PARTLABEL=*) key="${spec%%=*}" value="${spec#*=}" ;;
+    /dev/*) [ "$(readlink -f "$spec" 2>/dev/null)" = "$(readlink -f "$esp" 2>/dev/null)" ] && echo yes || echo no; return ;;
+    *) echo unknown; return ;;
+  esac
+  if [ "$key" = PARTUUID ]; then
+    [ "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" = "$partuuid" ] && echo yes || echo no
+    return
+  fi
+  have="$("$blkid_bin" -o value -s "$key" "$esp" 2>/dev/null)" || { echo unknown; return; }
+  [ -n "$have" ] || { echo unknown; return; }
+  [ "$(printf '%s' "$have" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" ] \
+    && echo yes || echo no
+}
+
+if [ -z "$boot_mounts" ]; then
+  # Nothing claims /boot: the ESP is /boot, as systemd-gpt-auto-generator
+  # would have made it.
+  where=/boot
+else
+  # A separate /boot: one mounted from a Linux file system, or (type `auto`)
+  # from anything that is positively not the boot loader's ESP. FAT is the
+  # ESP's own type; a dev disk's `UUID=<ESP>:/boot:auto` entry is the ESP.
+  separate_boot=no
+  while read -r what fstype; do
+    [ -n "$what" ] || continue
+    case "$fstype" in
+      ext2|ext3|ext4|xfs|btrfs) separate_boot=yes ;;
+      vfat|msdos|fat) ;;
+      *) [ "$(is_esp "$what")" = no ] && separate_boot=yes ;;
+    esac
+  done <<<"$boot_mounts"
+  [ "$separate_boot" = yes ] || exit 0
+  where=/boot/efi
+fi
+
+# The device unit of /dev/disk/by-partuuid/UUID: in a UUID only `-` is escaped.
+device="dev-disk-by\\x2dpartuuid-${partuuid//-/\\x2d}.device"
+after_boot=""
+[ "$where" = /boot ] || after_boot=$'\n'"RequiresMountsFor=/boot"
+install -d -m 0755 "$out" "$out/local-fs.target.wants"
+cat >"$out/tilo-esp-mount.service" <<EOF
+# Generated by tilo-esp-generator: the ESP the boot loader started from.
+[Unit]
+Description=Boot loader's EFI System Partition, read-only at $where
+Documentation=file:///usr/share/doc/tilo/recovery.md
+DefaultDependencies=no$after_boot
+Wants=$device
+After=$device local-fs-pre.target
+Before=local-fs.target
+ConditionPathIsMountPoint=!$where
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-esp-mount $esp $where
+EOF
+# Wants, not Requires: an ESP that cannot be mounted costs the boot entries
+# their maintenance, never the boot itself.
+ln -sf ../tilo-esp-mount.service "$out/local-fs.target.wants/tilo-esp-mount.service"

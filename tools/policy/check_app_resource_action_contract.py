@@ -4,9 +4,11 @@
 Every graphical app must publish its current resources from the widget tree and
 describe its operations with ``ActionSpec``. The headless agent is the one
 application-model consumer: it surveys peer resources and invokes their action
-descriptors. Source rules reject bespoke command buses and applications without
-an OS-visible surface; the runtime ``--native-audit`` verifies the live
-accessibility/resource/control inventory.
+descriptors. A compute package (a ``service`` whose ``cli`` entrypoint a
+compute worker runs for another app's action) publishes nothing either: the
+action is the requesting app's. Source rules reject bespoke command buses and
+applications without an OS-visible surface; the runtime ``--native-audit``
+verifies the live accessibility/resource/control inventory.
 """
 
 from __future__ import annotations
@@ -15,11 +17,10 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import line_number  # noqa: E402
+from rust_source import blank_test_items, code_only, line_number  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -151,7 +152,7 @@ RATCHETS = {
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
 # its durable state is the resource's document, and nothing beside
 # `Action::apply` writes that document. These count production code only (test
-# files and the trailing `#[cfg(test)]` module are exempt) and may only go down.
+# files and `#[cfg(test)]` items are exempt) and may only go down.
 MODEL_RATCHETS = {
     "app_action_host": (
         re.compile(r"\bActionHost\b"),
@@ -336,7 +337,6 @@ RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in LEGACY_API_RATCHETS.items()},
 }
-TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
 
 def is_test_source(relative: str) -> bool:
@@ -350,11 +350,8 @@ def is_test_source(relative: str) -> bool:
 
 
 def production_code(text: str) -> str:
-    """Code up to the conventional trailing test module, without comments or literals."""
-    found = TEST_MODULE_START.search(text)
-    if found:
-        text = text[: found.start()]
-    return rust_code_only(text)
+    """Code without comments, literals or test-only items."""
+    return blank_test_items(code_only(text))
 
 
 @dataclass(frozen=True)
@@ -406,6 +403,30 @@ def package_name(alias: str, specification: object) -> str:
         if isinstance(package, str):
             return package
     return alias
+
+
+def is_compute_package(app_dir: Path) -> bool:
+    """A windowless package whose `[cli]` commands a compute worker runs.
+
+    Its `tilo-app.toml` declares `kind = "service"`, a `cli` entrypoint and
+    at least one `[cli]` command. It publishes no resource or action of its
+    own: the action that runs it belongs to the app that requested the job,
+    which runs the same code locally when no worker takes it.
+    """
+    manifest_path = app_dir / "tilo-app.toml"
+    if not manifest_path.is_file():
+        return False
+    with manifest_path.open("rb") as handle:
+        manifest = tomllib.load(handle)
+    package = manifest.get("package", {})
+    entrypoint = manifest.get("entrypoint", {})
+    commands = manifest.get("cli", {}).get("commands", [])
+    return (
+        package.get("kind") == "service"
+        and entrypoint.get("type") == "cli"
+        and isinstance(commands, list)
+        and bool(commands)
+    )
 
 
 def is_ui_core_dependency(alias: str, specification: object) -> bool:
@@ -470,7 +491,7 @@ def audit_ratchets(
         workspace = root.resolve() == ROOT.resolve()
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
-        code = rust_code_only(source_text)
+        code = code_only(source_text)
         rules = (
             []
             if legacy_only
@@ -519,69 +540,6 @@ def audit_ratchets(
             )
 
 
-CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
-RUST_CODE_RUN = re.compile(r"[^/'\"]+")
-
-
-# Rules inspect the same immutable text repeatedly. Bound retained strings,
-# and key by content so an edit at the same path is always rescanned.
-@lru_cache(maxsize=128)
-def rust_code_only(text: str) -> str:
-    """Remove comments and literals so prose cannot satisfy the protocol gate."""
-    out: list[str] = []
-    i = 0
-    block_depth = 0
-    while i < len(text):
-        # Ordinary code cannot start a comment or literal. Copy its entire run;
-        # keep the existing lexical handling at each delimiter below.
-        if not block_depth and (code := RUST_CODE_RUN.match(text, i)):
-            out.append(code.group())
-            i = code.end()
-            continue
-        if block_depth:
-            if text.startswith("/*", i):
-                block_depth += 1
-                i += 2
-            elif text.startswith("*/", i):
-                block_depth -= 1
-                i += 2
-            else:
-                out.append("\n" if text[i] == "\n" else " ")
-                i += 1
-        elif text.startswith("//", i):
-            end = text.find("\n", i)
-            if end < 0:
-                out.extend(" " * (len(text) - i))
-                break
-            out.extend(" " * (end - i))
-            i = end
-        elif text.startswith("/*", i):
-            block_depth = 1
-            out.extend("  ")
-            i += 2
-        elif text[i] == "'" and (char_literal := CHAR_LITERAL.match(text, i)):
-            # A char literal ('"', '\\'); a lifetime has no closing quote.
-            out.extend(" " * (char_literal.end() - i))
-            i = char_literal.end()
-        elif text[i] == '"':
-            quote = text[i]
-            out.append(" ")
-            i += 1
-            while i < len(text):
-                char = text[i]
-                out.append("\n" if char == "\n" else " ")
-                i += 1
-                if char == "\\" and i < len(text):
-                    out.append(" ")
-                    i += 1
-                elif char == quote:
-                    break
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out)
-
-
 def brace_body(text: str, start: int) -> str | None:
     """Return the balanced body following ``start`` (sufficient for Rust fn bodies)."""
     opening = text.find("{", start)
@@ -623,7 +581,7 @@ def reachable_handler_code(text: str) -> str:
             for called in re.findall(
                 r"(?:(?:crate|self|super)::(?:[A-Za-z_][A-Za-z0-9_]*::)*)?"
                 r"([a-z_][A-Za-z0-9_]*)\s*\(",
-                rust_code_only(body),
+                code_only(body),
             ):
                 if called in bodies and called not in seen:
                     pending.append(called)
@@ -649,7 +607,7 @@ def live_launch_registration_code(text: str) -> str:
         seen.add(name)
         for body in bodies.get(name, []):
             reached.append(body)
-            code = rust_code_only(body)
+            code = code_only(body)
             pending.extend(
                 callback
                 for callback in re.findall(
@@ -674,11 +632,11 @@ def prepared_launch_registry_wired(text: str) -> bool:
     block, and simple forwarding callbacks (including map_err). Merely reaching
     a helper that registers an unrelated registry must not satisfy the contract.
     """
-    code = rust_code_only(text)
+    code = code_only(text)
     bodies = function_bodies(code)
     pending = re.findall(
         r"\.prepare_legacy_with_args\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
-        rust_code_only(live_launch_registration_code(text)),
+        code_only(live_launch_registration_code(text)),
     )
     seen: set[str] = set()
     returned_registry = re.compile(
@@ -715,14 +673,14 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
     passed to ``actions::register`` reaches ``AppComponent::new``. This keeps
     test-only or disconnected registration helpers from satisfying the gate.
     """
-    main = rust_code_only(live_launch_registration_code(main_text))
+    main = code_only(live_launch_registration_code(main_text))
     if not (
         re.search(r"(?:::|\.)from_definition\s*\(", main)
         and re.search(r"\.component_host\s*\(", main)
     ):
         return False
 
-    code = rust_code_only(crate_text)
+    code = code_only(crate_text)
     bodies = function_bodies(code)
     pending = re.findall(
         r"\bcreate\s*:\s*\|[^|]*\|\s*([a-z_][A-Za-z0-9_]*)\s*\(", code
@@ -763,7 +721,7 @@ def unattached_handler_entries(text: str) -> list[str]:
     entries = [("literal", value) for value in re.findall(r'"([A-Za-z0-9_.-]+)"', body)]
     entries.extend(
         ("constant", value)
-        for value in re.findall(r"\b([A-Z][A-Z0-9_]+)\b", rust_code_only(body))
+        for value in re.findall(r"\b([A-Z][A-Z0-9_]+)\b", code_only(body))
     )
     reachable = reachable_handler_code(text)
     missing: list[str] = []
@@ -771,7 +729,7 @@ def unattached_handler_entries(text: str) -> list[str]:
         present = (
             f'"{value}"' in reachable
             if kind == "literal"
-            else re.search(rf"\b{re.escape(value)}\b", rust_code_only(reachable)) is not None
+            else re.search(rf"\b{re.escape(value)}\b", code_only(reachable)) is not None
         )
         if not present:
             missing.append(value)
@@ -785,7 +743,7 @@ def audit_search_provider_limits(
     found: set[str] = set()
     truncating_paths: set[str] = set()
     for source, raw in sources:
-        code = rust_code_only(raw)
+        code = code_only(raw)
         relative = source.relative_to(root).as_posix()
         if TRUNCATING_SEARCH.search(code):
             truncating_paths.add(relative)
@@ -891,9 +849,9 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     if root.resolve() == ROOT.resolve():
         app_host_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
         app_action_path = app_host_path.parent / "app" / "actions.rs"
-        app_host = rust_code_only(app_host_path.read_text(encoding="utf-8"))
+        app_host = code_only(app_host_path.read_text(encoding="utf-8"))
         if app_action_path.is_file():
-            app_host += "\n" + rust_code_only(app_action_path.read_text(encoding="utf-8"))
+            app_host += "\n" + code_only(app_action_path.read_text(encoding="utf-8"))
         if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
             app_host
         ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_host):
@@ -935,7 +893,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         facades = [
             specification for alias, specification in runtime_dependencies if alias == "ui"
         ]
-        if not facades or any(
+        # An app model crate (`apps/*-model`) is data shared with an app and
+        # may have no UI, nor may a compute package; any `ui` either does
+        # depend on is still the facade.
+        compute_package = is_compute_package(manifest_path.parent)
+        facade_required = not manifest_path.parent.name.endswith("-model") and not compute_package
+        if (facade_required and not facades) or any(
             not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
         ):
@@ -960,7 +923,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         for source in sorted((manifest_path.parent / "src").rglob("*.rs")):
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
-        combined = rust_code_only(combined_raw)
+        combined = code_only(combined_raw)
         # Hand-built effect/view specs are judged by what ships: a test may
         # assert the kind of an operation the framework publishes.
         shipped = "\n".join(
@@ -970,7 +933,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         )
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
-        main_code = rust_code_only(live_launch_registration_code(main_raw))
+        main_code = code_only(live_launch_registration_code(main_raw))
         audit_ratchets(root, sources, ratchet_baseline, violations)
         found_providers = audit_search_provider_limits(root, sources, violations)
         for key in SEARCH_LIMIT_EXEMPTIONS:
@@ -987,7 +950,8 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         # through the broker's task-bound action surfaces. An `apps/*-model`
         # crate is a record shape apps embed (the portability rules let apps
         # depend on it), not an app: the apps embedding it publish its actions.
-        if app_name != "agent" and not app_name.endswith("-model"):
+        # A compute package runs for the action of the app that requested it.
+        if app_name != "agent" and not app_name.endswith("-model") and not compute_package:
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None
@@ -1092,7 +1056,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             [*(app_dir / "src").rglob("*.rs"), *(app_dir / "tests").rglob("*.rs")]
         ):
             raw = source.read_text(encoding="utf-8")
-            for match in RAW_OPERATION_PROTOCOL.finditer(rust_code_only(raw)):
+            for match in RAW_OPERATION_PROTOCOL.finditer(code_only(raw)):
                 violations.append(
                     Violation(
                         source,

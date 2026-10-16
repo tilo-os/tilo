@@ -18,13 +18,20 @@ const DEVICE_GRANTS: &str = "state/device-grants";
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tilo_action_broker::{
     app_actions::{AppActionAccess, AppActionAccessResolver},
-    services::{LaunchableApplication, LauncherServices},
+    services::{
+        AuthenticatedApplicationLaunch, LaunchContent, LaunchPlace, LaunchableApplication,
+        Launched as LaunchOutcome, LauncherServices,
+    },
 };
 use tilo_installed_apps::InstalledApp;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod creation;
@@ -58,7 +65,7 @@ impl Apps {
     /// the environment names.
     #[must_use]
     pub fn from_env(profile: &Path, room: &str) -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = tilo_paths::home();
         Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
@@ -254,6 +261,27 @@ impl Apps {
         }
         Ok(launch)
     }
+
+    /// [`Self::start`] `app` in `workspace`, forgetting its record once the
+    /// process is reaped; the launch's ticket.
+    fn start_watched(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Result<Option<u64>, String> {
+        let launch = self.start(app, &workspace.room.to_string())?;
+        let ticket = self.launched.ticket(launch.pid);
+        let launched = Arc::clone(&self.launched);
+        std::thread::Builder::new()
+            .name("tilo-app-reaper".into())
+            .spawn(move || {
+                let pid = launch.pid;
+                launch.wait();
+                launched.forget(pid);
+            })
+            .map(|_| ticket)
+            .map_err(|error| format!("could not watch the launched app: {error}"))
+    }
 }
 
 impl LauncherServices for Apps {
@@ -277,23 +305,47 @@ impl LauncherServices for Apps {
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
         _: Option<&str>,
-        _: &tilo_action_broker::services::LaunchPlace,
+        _: &LaunchPlace,
     ) -> Result<(), String> {
-        let launch = self.start(app, &workspace.room.to_string())?;
-        let launched = Arc::clone(&self.launched);
-        std::thread::Builder::new()
-            .name("tilo-app-reaper".into())
-            .spawn(move || {
-                let pid = launch.pid;
-                launch.wait();
-                launched.forget(pid);
-            })
-            .map(|_| ())
-            .map_err(|error| format!("could not watch the launched app: {error}"))
+        self.start_watched(app, workspace).map(drop)
+    }
+
+    /// A plain launch answers the ticket its process connects with; this
+    /// runtime stages no launch content.
+    fn launch_content(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        content: LaunchContent<'_>,
+        _: &LaunchPlace,
+    ) -> Result<LaunchOutcome, String> {
+        if !content.hash.is_empty() {
+            return Err("opening launch content is unsupported on this host".into());
+        }
+        Ok(self
+            .start_watched(app, workspace)?
+            .map_or(LaunchOutcome::Unconfirmed, |ticket| {
+                LaunchOutcome::Started { ticket }
+            }))
     }
 
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         self.launched.attest(pid, app, room)
+    }
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        if !self.launched.attest(pid, app, room) {
+            return Ok(None);
+        }
+        Ok(Some(AuthenticatedApplicationLaunch {
+            creation: self.launched.creation(pid, app, room),
+            continuation_instance: None,
+            launch_ticket: self.launched.ticket(pid),
+        }))
     }
     fn application_creation_evidence(
         &self,
@@ -386,15 +438,19 @@ impl Launch {
 }
 
 /// The processes this runtime launched, by pid, with the start time that
-/// tells a live launch from a later process reusing its pid.
+/// tells a live launch from a later process reusing its pid, and the last
+/// launch ticket handed out.
 #[derive(Default)]
-struct Launched(Mutex<HashMap<u32, LaunchRecord>>);
+struct Launched(Mutex<HashMap<u32, LaunchRecord>>, AtomicU64);
 
 struct LaunchRecord {
     start_time: u64,
     app: String,
     room: String,
     creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
+    /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
+    /// for the broker to tie the process's connection back to it.
+    ticket: u64,
 }
 
 impl Launched {
@@ -410,25 +466,29 @@ impl Launched {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                pid,
-                LaunchRecord {
-                    start_time,
-                    app: app.to_owned(),
-                    room: room.to_owned(),
-                    creation,
-                },
-            );
+        let ticket = self.1.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        self.0.lock_recover().insert(
+            pid,
+            LaunchRecord {
+                start_time,
+                app: app.to_owned(),
+                room: room.to_owned(),
+                creation,
+                ticket,
+            },
+        );
         true
+    }
+
+    /// The ticket of the launch recorded for `pid`, whatever it attests.
+    fn ticket(&self, pid: u32) -> Option<u64> {
+        self.0.lock_recover().get(&pid).map(|record| record.ticket)
     }
 
     /// Whether `pid` is still the process recorded for exactly `app` and
     /// `room`.
     fn attest(&self, pid: u32, app: &str, room: &str) -> bool {
-        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let launches = self.0.lock_recover();
         let Some(record) = launches.get(&pid) else {
             return false;
         };
@@ -446,7 +506,7 @@ impl Launched {
         room: &str,
     ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
         let start = process_start_time(pid)?;
-        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let launches = self.0.lock_recover();
         let record = launches.get(&pid)?;
         let creation = (record.start_time == start && record.app == app && record.room == room)
             .then(|| record.creation.clone())
@@ -459,10 +519,7 @@ impl Launched {
 
     /// Forget `pid`, once its process has been reaped.
     fn forget(&self, pid: u32) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&pid);
+        self.0.lock_recover().remove(&pid);
     }
 }
 

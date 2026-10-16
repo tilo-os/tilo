@@ -53,9 +53,8 @@ pub fn inherit(fd: RawFd, path: &Path) -> Result<std::fs::File, String> {
     let observed = inherited.metadata().map_err(|error| error.to_string())?;
     let probe = open_readonly_without_symlinks(path).map_err(|error| error.to_string())?;
     let expected = probe.metadata().map_err(|error| error.to_string())?;
-    // SAFETY: geteuid has no pointer arguments and cannot fail.
     if !observed.is_file()
-        || observed.uid() != unsafe { libc::geteuid() }
+        || observed.uid() != rustix::process::geteuid().as_raw()
         || observed.mode() & 0o777 != 0o600
         || observed.nlink() != 1
         || observed.dev() != expected.dev()

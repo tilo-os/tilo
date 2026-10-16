@@ -36,7 +36,6 @@ tilo-desktop-search = { version = "0.1.0", path = "../../session/desktop-search"
 # The native shell's chrome widgets: top bar, backdrop, launchpad.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-desktop = { version = "0.1.0", path = "../../session/desktop" }
-chrono = { workspace = true, features = ["clock", "wasmbind"] }
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
@@ -62,9 +61,13 @@ workspace = true
 
 [features]
 default = []
+# The bundling crate supplies the Activity pane's code through
+# `defer_activity_pane`, which the browser desktop fetches as its own module
+# the first time someone opens Activity. Without it the pane is linked in.
+deferred-activity = []
 
 [dependencies]
-
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

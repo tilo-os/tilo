@@ -1143,6 +1143,9 @@ pub struct PhysicalDeviceProperties {
     cooperative_matrix_properties: Vec<wgt::CooperativeMatrixProperties>,
 }
 
+/// `VK_EXT_queue_family_foreign`.
+pub(super) const FOREIGN_QUEUE_FAMILY: &CStr = c"VK_EXT_queue_family_foreign";
+
 impl PhysicalDeviceProperties {
     pub fn properties(&self) -> vk::PhysicalDeviceProperties {
         self.properties
@@ -1292,6 +1295,33 @@ impl PhysicalDeviceProperties {
         // Optional `VK_EXT_external_memory_dma`
         if self.supports_extension(ext::external_memory_dma_buf::NAME) {
             extensions.push(ext::external_memory_dma_buf::NAME);
+
+            // Optional `VK_EXT_image_drm_format_modifier` (Tilo patch): lets a
+            // dma-buf import state its exact plane layout (offset, row pitch,
+            // modifier) instead of hoping the driver's linear pitch matches the
+            // producer's. Its dependencies (bind_memory2, sampler_ycbcr_conversion,
+            // image_format_list) are core from Vulkan 1.2, so it is only asked
+            // for there.
+            if self.device_api_version >= vk::API_VERSION_1_2
+                && self.supports_extension(ext::image_drm_format_modifier::NAME)
+            {
+                extensions.push(ext::image_drm_format_modifier::NAME);
+            }
+
+            // Optional `VK_EXT_queue_family_foreign` (Tilo patch): a dma-buf a
+            // non-Vulkan client wrote is acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT`
+            // before it is first sampled, which the spec requires for a
+            // compressed layout the producer's metadata describes.
+            if self.supports_extension(FOREIGN_QUEUE_FAMILY) {
+                extensions.push(FOREIGN_QUEUE_FAMILY);
+            }
+
+            // Optional `VK_KHR_external_semaphore_fd` (Tilo patch): a client
+            // dma-buf's implicit write fence, exported as a sync file, is
+            // imported as a semaphore the submission sampling it waits for.
+            if self.supports_extension(khr::external_semaphore_fd::NAME) {
+                extensions.push(khr::external_semaphore_fd::NAME);
+            }
         }
 
         // Optional `VK_EXT_memory_budget`
@@ -2771,6 +2801,7 @@ impl super::Adapter {
             family_index,
             relay_semaphores: Mutex::new(relay_semaphores),
             signal_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Signal)),
+            wait_semaphores: Mutex::new(SemaphoreList::new(SemaphoreListMode::Wait)),
         };
 
         let allocation_sizes = AllocationSizes::from_memory_hints(memory_hints).into();

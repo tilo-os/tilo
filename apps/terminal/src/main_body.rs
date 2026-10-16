@@ -79,32 +79,6 @@ pub(crate) fn classify_pty_read(
     }
 }
 
-/// Whether the peer still holds a hosted session's lifetime socket open. The
-/// probe peeks without blocking and without changing the descriptor's flags,
-/// which it shares with the widget's own handle.
-#[cfg(unix)]
-pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> bool {
-    use std::os::fd::AsRawFd as _;
-    let mut byte = 0u8;
-    // SAFETY: `byte` is valid writable storage for the one byte requested and
-    // the descriptor stays open for the duration of the call.
-    let received = unsafe {
-        libc::recv(
-            socket.as_raw_fd(),
-            (&raw mut byte).cast::<libc::c_void>(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    if received >= 0 {
-        return received > 0;
-    }
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EAGAIN | libc::EINTR)
-    )
-}
-
 /// What the session banner says once the shell has exited.
 const SESSION_ENDED_MESSAGE: &str =
     "Session ended. The shell has exited, so typing no longer reaches it.";
@@ -655,6 +629,12 @@ pub struct TerminalWidget {
     /// system clipboard, not just the primary selection. Off by default;
     /// the primary selection is always set so middle-click paste works.
     select_to_copy: bool,
+    /// Whether a program may set the clipboard through OSC 52. Off by
+    /// default: anything that writes to the PTY — a `cat` of a hostile file,
+    /// a remote host, a container shell — would otherwise replace what the
+    /// person pastes next, while every other clipboard effect of this
+    /// terminal is admitted through the host.
+    allow_osc52_clipboard: bool,
     /// Right-click context menu (Copy / Paste), reusing the shared toolkit
     /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
@@ -662,6 +642,7 @@ pub struct TerminalWidget {
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
     copy_on_select_menu_index: Option<usize>,
+    osc52_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
     /// What each effect row of the open menu asks for.
     menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
@@ -806,10 +787,6 @@ impl TerminalWidget {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "terminal MainBody wires many host services at construction"
-    )]
     pub fn new(
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -888,9 +865,11 @@ impl TerminalWidget {
             drag_granularity: Granularity::Char,
             drag_anchor_span: None,
             select_to_copy: false,
+            allow_osc52_clipboard: false,
             context_menu: ContextMenu::new(),
             find_menu_index: None,
             copy_on_select_menu_index: None,
+            osc52_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
             last_cursor_pos: Point::ZERO,
@@ -1423,6 +1402,11 @@ impl TerminalWidget {
     pub fn set_select_to_copy(&mut self, on: bool) {
         self.select_to_copy = on;
     }
+    /// Allow (or refuse, the default) programs to write the clipboard through
+    /// OSC 52.
+    pub fn set_allow_osc52_clipboard(&mut self, on: bool) {
+        self.allow_osc52_clipboard = on;
+    }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
     /// that highlights a range. Coordinates are absolute grid rows/columns
@@ -1656,8 +1640,25 @@ impl TerminalWidget {
         self.banner_rect
     }
 
-    /// Tee subsequent PTY writes so a compositor-path test can see them.
-    #[cfg(any(test, debug_assertions))]
+    /// A hosted terminal in a test has no process behind it and starts
+    /// disconnected; this lets its input reach an attached probe.
+    #[cfg(test)]
+    pub(crate) fn accept_input_for_test(&self) {
+        self.session_disconnected.store(false, Ordering::Release);
+    }
+
+    /// The framework's verdict on `effect` as this terminal's own gesture.
+    #[cfg(test)]
+    pub(crate) fn own_gesture_verdict(
+        &self,
+        effect: &crate::resource::TerminalEffect,
+    ) -> Option<bool> {
+        self.dispatch.as_ref().map(|d| d.is_own_gesture(effect))
+    }
+
+    /// Tee subsequent PTY writes so a compositor-path test can see them, in
+    /// any profile it is built in (`test-support`).
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
         struct ProbeWriter {
             inner: Box<dyn Write + Send>,
@@ -1973,6 +1974,7 @@ impl TerminalWidget {
             title_out: &mut title_out,
             responses: &mut responses,
             print_buf: None,
+            allow_osc52_clipboard: self.allow_osc52_clipboard,
         };
         // vte deliberately discards APC payloads, while Kitty graphics uses
         // APC (`ESC _ G … ESC \\`). A tiny streaming pre-parser extracts only
@@ -2424,18 +2426,23 @@ impl TerminalWidget {
         }
     }
 
-    /// Ask for `effect` as the person's own gesture: through the session's
-    /// host, which checks their role and asks for confirmation as it would
-    /// for any caller, or — for a terminal that has no session record —
-    /// directly.
+    /// Do `effect` as the person's own gesture: a shortcut, a click or a
+    /// menu row in this terminal. Like a keystroke, it reaches the process
+    /// at once when the framework says it is the person's own gesture
+    /// ([`Dispatcher::is_own_gesture`](ui::framework::Dispatcher::is_own_gesture)):
+    /// the person pasting their own clipboard already chose the text. Under
+    /// any invocation, or when the role does not allow it, it goes through
+    /// the session's host, which checks and confirms as for any caller; a
+    /// terminal with no session record performs it directly.
     fn submit_effect(&mut self, effect: crate::resource::TerminalEffect) {
-        match &self.dispatch {
-            Some(dispatch) => dispatch.effect(&effect),
-            None => {
-                if let Err(error) = self.perform(effect) {
-                    tracing::warn!(%error, "terminal gesture failed");
-                }
-            }
+        if let Some(dispatch) = &self.dispatch
+            && !dispatch.is_own_gesture(&effect)
+        {
+            dispatch.effect(&effect);
+            return;
+        }
+        if let Err(error) = self.perform(effect) {
+            tracing::warn!(%error, "terminal gesture failed");
         }
     }
 }
@@ -2962,10 +2969,6 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Terminal painting intentionally keeps grid, selection, cursor, and the find and session bands in one ordered compositing pass"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -4935,10 +4938,16 @@ impl TerminalWidget {
         // row plus separator; its keyboard shortcut and desktop-sized menu
         // still expose the toggle.
         self.copy_on_select_menu_index = None;
+        self.osc52_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.copy_on_select_menu_index = Some(menu.items().len());
             menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
+            self.osc52_menu_index = Some(menu.items().len());
+            menu.push(
+                MenuItem::action("Let programs set the clipboard", || {})
+                    .with_checked(self.allow_osc52_clipboard),
+            );
         }
         // Keep the shared popup aware of the terminal's real viewport. The
         // popup refreshes its geometry when the current theme applies an
@@ -4993,6 +5002,9 @@ impl TerminalWidget {
         }
         if self.copy_on_select_menu_index == Some(index) {
             self.select_to_copy = !self.select_to_copy;
+        }
+        if self.osc52_menu_index == Some(index) {
+            self.allow_osc52_clipboard = !self.allow_osc52_clipboard;
         }
     }
 
@@ -5271,6 +5283,9 @@ pub struct TerminalPerformer<'a> {
     /// from blocking for 10s on a Primary Device Attributes query that never
     /// gets answered.
     pub responses: &'a mut Vec<u8>,
+    /// Whether OSC 52 may write the clipboard this feed (the widget's
+    /// `allow_osc52_clipboard`).
+    pub allow_osc52_clipboard: bool,
     /// Batches consecutive `print`s to the same line so a run of characters
     /// replaces the line once rather than once per cell, which keeps a
     /// screenful of output linear. Any non-`print` action flushes the buffer
@@ -5522,6 +5537,9 @@ impl Perform for TerminalPerformer<'_> {
             // `?` query would need to write back to the PTY, which the parser
             // can't do, so it's ignored.
             52 => {
+                if !self.allow_osc52_clipboard {
+                    return;
+                }
                 let targets = params.get(1).copied().unwrap_or(b"");
                 let data = params.get(2).copied().unwrap_or(b"");
                 if data == b"?" || data.is_empty() {
@@ -6568,7 +6586,7 @@ pub(crate) fn login_shell_from_passwd() -> Option<String> {
     // before copying out). We null-check before dereferencing, and copy the
     // `pw_shell` C string into an owned `String` while the pointer is live.
     unsafe {
-        let uid = libc::getuid();
+        let uid = tilo_process::uid();
         let pw = libc::getpwuid(uid);
         if pw.is_null() {
             return None;
@@ -6802,9 +6820,9 @@ pub fn exec_script(argv: &[String]) -> String {
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// Ownership and refusal retries live with the runtime's service transport.
-static USH_SERVICE: runtime_portal::service_socket::InheritedServiceSocket =
-    runtime_portal::service_socket::InheritedServiceSocket::new("ush");
+/// The inherited control connection is distinct from each session lifetime lease.
+static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
+    runtime_portal::service_socket::InheritedControlSocket::new("ush");
 
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
@@ -7091,18 +7109,19 @@ fn ush_service_backend(
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
-    // SAFETY: this process-wide instance alone owns the launcher's ush fd.
-    let stream = unsafe { USH_SERVICE.take() }.map_err(|error| match error {
-        ServiceSocketError::InUse => OpenError::Unavailable(
-            "This window's shell service is already in use; open a new tab".into(),
-        ),
-        other => OpenError::Failed(other.to_string()),
-    })?;
-    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
-    if opened.as_ref().is_err_and(OpenError::is_refusal) {
-        let _ = USH_SERVICE.retry_after_refusal(stream);
+    // SAFETY: this instance alone owns the inherited fd. ush_backend_on
+    // negotiates protocol two and returns only its independent session lease.
+    unsafe {
+        USH_SERVICE.with_control(|stream| {
+            ush_backend_on(stream, program, target, requested_by, relay_session)
+        })
     }
-    opened
+    .map_err(|error| match error {
+        ServiceSocketError::InUse => {
+            OpenError::Unavailable(t("terminal-service-control-unavailable"))
+        }
+        other => OpenError::Failed(other.to_string()),
+    })?
 }
 
 #[cfg(windows)]
@@ -7176,6 +7195,36 @@ struct UshSessionReply {
     runs: bool,
     #[serde(default)]
     editor_protocol: Option<u8>,
+    /// The control protocol that granted this session's private lease.
+    #[serde(default)]
+    protocol: u16,
+}
+
+impl UshSessionReply {
+    /// Whether the supervisor's session declaration is well formed and matches
+    /// what was asked: a session and relay key of 32 hex digits, an environment
+    /// of sane length, the editor capability only where an editor may be offered,
+    /// and one descriptor more than the plain pair when it is.
+    fn is_valid(
+        &self,
+        descriptor_count: usize,
+        program: &[String],
+        target: &crate::target::SessionTarget,
+    ) -> bool {
+        let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
+        let descriptors = if self.editor_protocol.is_some() { 3 } else { 2 };
+        self.result == "session"
+            && hex_key(&self.session)
+            && !self.environment.is_empty()
+            && self.environment.len() <= 1024
+            && self.relay_session.as_deref().is_none_or(hex_key)
+            && self
+                .editor_protocol
+                .is_none_or(|version| version == runtime_portal::editor::VERSION)
+            && (self.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
+            && self.protocol == 2
+            && descriptor_count == descriptors
+    }
 }
 
 #[cfg(unix)]
@@ -7193,6 +7242,25 @@ pub(crate) fn ush_backend_on(
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
+    {
+        let mut writer = stream;
+        writer
+            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+            .map_err(|e| failed(&e))?;
+        writer.flush().map_err(|e| failed(&e))?;
+    }
+    let (hello, rights) =
+        runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
+    let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
+    if !rights.is_empty()
+        || ready
+            .as_ref()
+            .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
+    {
+        return Err(OpenError::Unavailable(t(
+            "terminal-service-protocol-unavailable",
+        )));
+    }
     let key = crate::runs::new_key();
     let request = ush_request(
         program,
@@ -7224,28 +7292,8 @@ pub(crate) fn ush_backend_on(
     }
     let response: UshSessionReply = serde_json::from_slice(&payload)
         .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
-    if response.result != "session"
-        || response.session.len() != 32
-        || !response.session.bytes().all(|b| b.is_ascii_hexdigit())
-        || response.environment.is_empty()
-        || response.environment.len() > 1024
-        || response.relay_session.as_ref().is_some_and(|session| {
-            session.len() != 32 || !session.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-        || response
-            .editor_protocol
-            .is_some_and(|version| version != runtime_portal::editor::VERSION)
-        || (response.editor_protocol.is_some() && (!program.is_empty() || target.is_host()))
-        || descriptors.len()
-            != if response.editor_protocol.is_some() {
-                2
-            } else {
-                1
-            }
-    {
-        return Err(OpenError::Failed(
-            "Invalid ush session descriptor roles".into(),
-        ));
+    if !response.is_valid(descriptors.len(), program, target) {
+        return Err(OpenError::Failed(t("terminal-service-invalid-session")));
     }
     let native_editor = if response.editor_protocol.is_some() {
         let fd = descriptors
@@ -7255,13 +7303,21 @@ pub(crate) fn ush_backend_on(
     } else {
         None
     };
+    let lifetime = descriptors
+        .pop()
+        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-lease")))?;
     let fd = descriptors
         .pop()
-        .ok_or_else(|| OpenError::Failed("Missing PTY descriptor".into()))?;
+        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-terminal")))?;
 
-    // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
-    // supervisor declares PTY first and, only after negotiation, editor second.
+    // Every descriptor arrived over `SCM_RIGHTS` and this process now owns it.
+    // The supervisor declares PTY first, then the private session lease, and
+    // only after negotiation the editor capability last.
     let master = std::fs::File::from(fd);
+    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
+    lifetime
+        .peer_addr()
+        .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
@@ -7274,7 +7330,7 @@ pub(crate) fn ush_backend_on(
         runs: response.runs.then_some(key),
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
-            stream.try_clone().map_err(|e| failed(&e))?,
+            lifetime,
         )),
     })
 }
@@ -7484,7 +7540,11 @@ impl TerminalWidget {
             .as_ref()
             .and_then(|socket| socket.clone_for_reader().ok());
         #[cfg(unix)]
-        let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
+        let session_open = move || {
+            reader_lifetime
+                .as_ref()
+                .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open)
+        };
         #[cfg(not(unix))]
         let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));

@@ -46,6 +46,7 @@ use smithay::reexports::calloop::{
 use super::backend::drm::input_config::KeyboardSettings;
 use super::xwayland_composer::ComposerClients;
 use crate::shell::host_apps::X11Session;
+use tilo_lock::MutexRecover as _;
 
 const DISPLAY_ATTEMPTS: usize = 64;
 /// Restarting a compatibility bridge forever turns one crashing helper into a
@@ -95,9 +96,7 @@ struct Registry {
 }
 
 fn registry() -> std::sync::MutexGuard<'static, Registry> {
-    REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    REGISTRY.lock_recover()
 }
 
 /// The X11 connection for a host launch into `workspace`, creating that
@@ -170,10 +169,12 @@ pub(crate) struct WorkspaceDisplay {
     cookie: [u8; 16],
     bridge: Option<Bridge>,
     rapid_exits: u8,
-    /// When the running bridge was first observed with no connected client.
+    /// When the running bridge entered its current idle phase.
     idle_since: Option<Instant>,
+    /// The timeout for that phase: no clients or previously mapped clients.
+    idle_limit: Option<Duration>,
     idle_checked: Option<Instant>,
-    /// Satellite has mapped at least one toplevel in this run.
+    /// Satellite has mapped a toplevel since clients were last observed absent.
     saw_toplevel: bool,
     /// The composer process group already asked to serve the running
     /// server, so each server and composer pair is asked once.
@@ -370,6 +371,7 @@ impl WorkspaceDisplay {
                 bridge: None,
                 rapid_exits: 0,
                 idle_since: None,
+                idle_limit: None,
                 idle_checked: None,
                 saw_toplevel: false,
                 composer_asked: None,
@@ -487,6 +489,7 @@ impl WorkspaceDisplay {
                     resources,
                 });
                 self.idle_since = None;
+                self.idle_limit = None;
                 false
             }
             Err(error) => {
@@ -510,20 +513,29 @@ impl WorkspaceDisplay {
         if mapped {
             self.saw_toplevel = true;
         }
-        match idle_deadline(connected, mapped, self.saw_toplevel) {
-            Some(limit) => {
-                let idle_since = *self.idle_since.get_or_insert(now);
-                if now.saturating_duration_since(idle_since) >= limit {
-                    tracing::info!(display = self.number, "stopping idle Xwayland bridge");
-                    self.stop_bridge();
-                }
+        if connected == Some(0) {
+            // The next client is a new app, not the previous app's leftovers.
+            self.saw_toplevel = false;
+        }
+        if let Some(limit) = idle_deadline(connected, mapped, self.saw_toplevel) {
+            if self.idle_limit != Some(limit) {
+                self.idle_limit = Some(limit);
+                self.idle_since = Some(now);
             }
-            None => self.idle_since = None,
+            let idle_since = *self.idle_since.get_or_insert(now);
+            if now.saturating_duration_since(idle_since) >= limit {
+                tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                self.stop_bridge();
+            }
+        } else {
+            self.idle_since = None;
+            self.idle_limit = None;
         }
     }
 
     fn stop_bridge(&mut self) {
         self.idle_since = None;
+        self.idle_limit = None;
         self.idle_checked = None;
         self.saw_toplevel = false;
         self.composer_asked = None;
@@ -1118,6 +1130,18 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
+/// Write a fresh authority file for `display` and return its cookie.
+///
+/// This runs under the display registry lock that the compositor loop takes
+/// every tick, often on the loop thread itself, so it must not wait for the
+/// disk. It deliberately does not fsync: the file is valid only while this
+/// session's X server lives, and it sits in the login's runtime directory
+/// (`$XDG_RUNTIME_DIR`, a tmpfs). Readers see it through the page cache as
+/// soon as the write returns, and after a crash it is regenerated with a new
+/// cookie, so durability buys nothing while an fsync under I/O or memory
+/// pressure has frozen the desktop for seconds. Privacy does not depend on
+/// it either: the file is created exclusively with mode 0600 inside a 0700
+/// directory, and no client learns the path before `bind` returns.
 fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
     let cookie = crate::random::bytes::<16>();
     let mut contents = Vec::with_capacity(64);
@@ -1133,7 +1157,6 @@ fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
         .open(path)
         .map_err(|error| format!("creating Xauthority: {error}"))?;
     file.write_all(&contents)
-        .and_then(|()| file.sync_all())
         .map_err(|error| format!("writing Xauthority: {error}"))?;
     Ok(cookie)
 }
@@ -1535,6 +1558,108 @@ mod tests {
             "a server that has not mapped yet is still starting"
         );
         assert_eq!(idle_deadline(None, false, true), None);
+    }
+
+    #[test]
+    fn a_new_client_after_an_idle_spell_is_not_reaped_as_windowless() {
+        for gap in [3, 30, 59] {
+            let mut fixture = fixture();
+            let (session, _) = fixture.displays.session_for("room-a").unwrap();
+            let _client = connect(&session, &fixture.displays);
+            let start = Instant::now();
+            fixture.displays.poll(start, &mut |_| sleeper());
+            let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+            let pid = display.bridge.as_ref().unwrap().child.id();
+            let mapped = HashSet::from([pid]);
+
+            display.reap_if_idle(start, Some(1), &mapped);
+            display.reap_if_idle(start + Duration::from_secs(1), Some(0), &HashSet::new());
+            let connected_at = start + Duration::from_secs(gap);
+            display.reap_if_idle(connected_at, Some(1), &HashSet::new());
+            assert!(
+                display.bridge.is_some(),
+                "a new client must survive connection after {gap}s"
+            );
+            display.reap_if_idle(
+                connected_at + Duration::from_secs(5),
+                Some(1),
+                &HashSet::new(),
+            );
+            assert!(
+                display.bridge.is_some(),
+                "a new client may take more than two seconds to map"
+            );
+            display.reap_if_idle(connected_at + Duration::from_secs(6), Some(1), &mapped);
+            assert!(
+                display.bridge.is_some(),
+                "the same bridge serves the new window"
+            );
+        }
+    }
+
+    #[test]
+    fn windowless_clock_starts_when_the_window_goes() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+        let mapped = HashSet::from([pid]);
+
+        display.reap_if_idle(start, Some(1), &mapped);
+        display.reap_if_idle(start + Duration::from_secs(50), Some(1), &mapped);
+        let closed_at = start + Duration::from_secs(51);
+        display.reap_if_idle(closed_at, Some(1), &HashSet::new());
+        display.reap_if_idle(
+            closed_at + Duration::from_millis(1999),
+            Some(2),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "Wine helpers do not reset the windowless clock"
+        );
+        display.reap_if_idle(closed_at + Duration::from_secs(2), Some(2), &HashSet::new());
+        assert!(
+            display.bridge.is_none(),
+            "leftover clients lose the bridge after two seconds"
+        );
+    }
+
+    #[test]
+    fn the_empty_bridge_clock_starts_when_the_last_client_leaves() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        fixture.displays.poll(start, &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        let pid = display.bridge.as_ref().unwrap().child.id();
+
+        display.reap_if_idle(start, Some(1), &HashSet::from([pid]));
+        display.reap_if_idle(start + Duration::from_secs(1), Some(1), &HashSet::new());
+        let disconnected_at = start + Duration::from_millis(2500);
+        display.reap_if_idle(disconnected_at, Some(0), &HashSet::new());
+        display.reap_if_idle(
+            disconnected_at + Duration::from_millis(59999),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_some(),
+            "the empty phase gets its own full minute"
+        );
+        display.reap_if_idle(
+            disconnected_at + Duration::from_secs(60),
+            Some(0),
+            &HashSet::new(),
+        );
+        assert!(
+            display.bridge.is_none(),
+            "an empty bridge still expires after one minute"
+        );
     }
 
     #[test]
@@ -2008,6 +2133,45 @@ mod tests {
                     .any(|window| window == b"MIT-MAGIC-COOKIE-1")
             );
         }
+    }
+
+    /// The compositor loop binds a workspace's X display through
+    /// `session_for`, which writes the display's authority file, and its
+    /// supervisor gives the composing input method every cookie. Nothing on
+    /// those paths may wait for the disk: under I/O or memory pressure an
+    /// fsync there froze input and presentation for seconds.
+    #[test]
+    fn binding_a_display_never_waits_for_the_disk() {
+        // The shared guard proves its filter is in force before the body runs.
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let mut fixture = fixture();
+            let (session, fresh) = fixture
+                .displays
+                .session_for("room-a")
+                .expect("binding a display must not sync to disk");
+            assert!(fresh);
+            let display = &fixture.displays.workspaces["room-a"];
+            assert_eq!(session.authority, display.authority);
+            let metadata = fs::metadata(&session.authority).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let runtime = fs::metadata(&fixture.displays.paths.runtime).unwrap();
+            assert_eq!(runtime.permissions().mode() & 0o777, 0o700);
+            let bytes = fs::read(&session.authority).unwrap();
+            assert!(
+                bytes.ends_with(&display.cookie),
+                "the file carries the cookie"
+            );
+
+            let composer = fixture.displays.paths.runtime.join("composer-Xauthority");
+            super::super::xwayland_composer::write_composer_authority(
+                &composer,
+                std::slice::from_ref(&display.authority),
+            )
+            .expect("installing the composer's authority must not sync to disk");
+            let metadata = fs::metadata(&composer).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::read(&composer).unwrap(), bytes);
+        });
     }
 
     #[test]

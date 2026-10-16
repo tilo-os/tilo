@@ -1,9 +1,7 @@
 //! Wall-clock milliseconds and the RFC 3339 timestamps Discord writes.
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    tilo_clock::unix_now_ms()
 }
 
 /// `ms` since the Unix epoch as `2026-10-12T08:30:00.123000+00:00`.

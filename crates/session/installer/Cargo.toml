@@ -14,6 +14,7 @@ name = "tilo-installer"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Mirrors the dep set used by the `ui`-based system apps (greeter /
 # file-explorer): the toolkit plus the trait crates its `Widget` impls
 # reference directly.
@@ -35,6 +36,7 @@ uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 console-control = { path = "../console-control" }
 install-profile-model = { path = "../install-profile-model" }
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

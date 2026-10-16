@@ -43,15 +43,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod accessibility_settings;
 pub mod account_probe;
 pub mod accounts;
@@ -74,6 +65,8 @@ pub mod prefs;
 pub(crate) mod radios;
 pub mod search;
 pub mod settings_app;
+#[cfg(test)]
+mod settings_write_tests;
 pub mod sidebar;
 pub mod speaker_setup;
 pub mod widgets;

@@ -270,9 +270,13 @@ for line in sys.stdin:
     return 0
   }
   [ -n "$log" ] || return 0
-  awk -F'[][]' 'NR == 1 { printf "kernel log starts at %.3fs\n", $2 + 0; exit }' <<<"$log"
+  # Only a line that starts with the kernel's [seconds] stamp carries a time.
+  # A continuation line (the rest of a multi-line message) has none: reading it
+  # as 0 would invent a gap as long as the whole boot up to the next stamp.
+  awk -F'[][]' '/^\[ *[0-9]+\.[0-9]+\]/ { printf "kernel log starts at %.3fs\n", $2 + 0; exit }' <<<"$log"
   printf 'kernel log, longest gaps before the initrd:\n'
   awk -F'[][]' -v end="${initrd_us_for_gaps:-0}" '
+    !/^\[ *[0-9]+\.[0-9]+\]/ { next }
     { t = $2 + 0 }
     end > 0 && t * 1e6 > end { exit }
     p != "" && t - p > 0.2 { printf "  %7.3fs before [%s]%s\n", t - p, $2, substr($3, 1, 110) }

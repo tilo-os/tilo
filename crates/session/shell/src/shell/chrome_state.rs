@@ -92,7 +92,6 @@ mod dropped_content_startup_tests {
             chrome.borrow().hosted_inputs.document(tab),
             Some(HostedDocumentState::Ready(opened))
                 if opened.path == document.canonicalize().unwrap()
-                    && opened.text == "carried words\n"
         ));
         let state = chrome.borrow();
         let tree = state.tree();
@@ -105,10 +104,48 @@ mod dropped_content_startup_tests {
         drop(tree);
         drop(state);
     }
+
+    /// A Wayland drop is handled on the compositor loop, and a file dropped
+    /// from the workspace mount hydrates from a peer on its first read. The
+    /// drop opens the editor on the file without reading it: a file whose
+    /// bytes never arrive (a FIFO nobody writes) still opens at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_a_file_never_reads_it_on_the_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
+            chrome
+                .borrow_mut()
+                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+        });
+        assert!(!read, "the drop read the file on the loop");
+        let tab = tab.expect("the drop opened a tab");
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+        ));
+    }
 }
 
 fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
+}
+
+/// What a [`PendingPrompt`] asks the person.
+#[derive(Debug)]
+pub enum PromptRequest {
+    /// An app asks for a capability.
+    Capability(Capability),
+    /// A client in this login asks to work in a workspace as an agent
+    /// (the session's agent door).
+    AgentAdmission(crate::shell::agent_admission::AgentAdmission),
 }
 
 /// One capability request waiting for the user to answer it. Dropping
@@ -117,8 +154,9 @@ fn notification_unix_ms() -> u64 {
 pub struct PendingPrompt {
     /// Session-local identity; a stale answer must never consume another request.
     pub id: uuid::Uuid,
+    /// Who asks: an app id, or an agent door client's description.
     pub app_id: AppId,
-    pub capability: Capability,
+    pub request: PromptRequest,
     /// Reply channel to a blocked portal request; `None` for
     /// shell-originated prompts nobody is waiting on.
     pub reply: Option<tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>>,
@@ -130,7 +168,7 @@ impl PendingPrompt {
         Self {
             id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: None,
         }
     }
@@ -143,15 +181,54 @@ impl PendingPrompt {
         Self {
             id: uuid::Uuid::new_v4(),
             app_id,
-            capability,
+            request: PromptRequest::Capability(capability),
             reply: Some(reply),
         }
     }
 
+    /// An agent door client waiting to be admitted.
+    pub fn agent_admission(admission: crate::shell::agent_admission::AgentAdmission) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            app_id: admission.facts.subject(),
+            request: PromptRequest::AgentAdmission(admission),
+            reply: None,
+        }
+    }
+
+    /// The capability asked for, when an app asks for one.
+    pub fn capability(&self) -> Option<&Capability> {
+        match &self.request {
+            PromptRequest::Capability(capability) => Some(capability),
+            PromptRequest::AgentAdmission(_) => None,
+        }
+    }
+
     pub fn answer(&mut self, outcome: crate::portal::PromptOutcome) {
+        self.answer_as(outcome, None);
+    }
+
+    /// Answer, admitting an agent door client as `member` when the person
+    /// named one; other prompts ignore it.
+    pub fn answer_as(
+        &mut self,
+        outcome: crate::portal::PromptOutcome,
+        member: Option<crate::shell::agent_admission::MemberChoice>,
+    ) {
         if let Some(tx) = self.reply.take() {
             let _ = tx.send(outcome);
         }
+        if let PromptRequest::AgentAdmission(admission) = &mut self.request {
+            admission.answer(outcome, member);
+        }
+    }
+
+    /// Whether whoever asked has stopped waiting: the prompt is withdrawn.
+    pub fn is_retired(&self) -> bool {
+        self.reply
+            .as_ref()
+            .is_some_and(tokio::sync::oneshot::Sender::is_closed)
+            || matches!(&self.request, PromptRequest::AgentAdmission(admission) if admission.is_retired())
     }
 }
 
@@ -160,7 +237,7 @@ impl std::fmt::Debug for PendingPrompt {
         f.debug_struct("PendingPrompt")
             .field("id", &self.id)
             .field("app_id", &self.app_id)
-            .field("capability", &self.capability)
+            .field("request", &self.request)
             .field("awaiting_portal_reply", &self.reply.is_some())
             .finish()
     }
@@ -549,6 +626,16 @@ impl QuickSettingsState {
     }
 }
 
+/// The loop's wake, as [`ChromeState`] keeps it for its record store.
+#[derive(Clone)]
+struct RecordsWake(crate::session_runtime::Wake);
+
+impl std::fmt::Debug for RecordsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordsWake")
+    }
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -589,6 +676,10 @@ pub struct ChromeState {
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
+    /// What an action that left nothing to see confirms in passing
+    /// ("Enrollment token copied"): one short-lived pill, never a
+    /// notification. Painted and announced beside the OSD.
+    pub acknowledger: ui::widget::acknowledgement::Acknowledger,
     /// What a tablet pad's controls do, while its mode button (or the
     /// button its settings pick) is held. See [`crate::shell::pad_map`].
     pub pad_map: Option<crate::shell::pad_map::PadMap>,
@@ -720,6 +811,12 @@ pub struct ChromeState {
     records: RecordStore,
     pending_tab_records: VecDeque<PendingTabRecordCreation>,
     failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
+    /// Wakes the loop when the record store has opened a document this
+    /// thread declined to wait for ([`Self::open_records_without_waiting`]).
+    records_wake: Option<RecordsWake>,
+    /// Set by that wake: tabs refused while their document was opening ask
+    /// again on the next resync.
+    records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
@@ -774,12 +871,9 @@ pub struct ChromeState {
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
-    /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
+    /// Recently closed tabs, for the Reopen Closed Tab action.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
     pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
-    /// Close toasts still offering Undo: notification id -> closed entry.
-    /// They never enter notification history.
-    undo_toasts: BTreeMap<u64, u64>,
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
@@ -795,6 +889,17 @@ impl IdentitySource {
     fn local_user_for_room(&self, room: &crate::shell::state::RoomId) -> String {
         match self {
             Self::SessionRegistry => crate::shell::state::local_user_id_for_room(room),
+            Self::Explicit(principal) => principal.clone(),
+        }
+    }
+
+    /// [`Self::local_user_for_room`] for callers on the input and frame loop,
+    /// which ask on every key and frame: it never waits for the identity
+    /// directory after the first answer. Whoever records ownership asks
+    /// the exact one.
+    fn local_user_for_room_prompt(&self, room: &crate::shell::state::RoomId) -> String {
+        match self {
+            Self::SessionRegistry => crate::shell::state::local_user_id_for_room_prompt(room),
             Self::Explicit(principal) => principal.clone(),
         }
     }
@@ -859,6 +964,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
@@ -926,11 +1032,12 @@ impl ChromeState {
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
-            undo_toasts: BTreeMap::new(),
             workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
+            records_wake: None,
+            records_opened: std::sync::Arc::default(),
         }))
     }
 
@@ -1129,7 +1236,15 @@ impl ChromeState {
 
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
+    #[track_caller]
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        tracing::info!(
+            target: "tilo::shortcut",
+            ?action,
+            queued = self.shortcut_action_requests.len(),
+            from = %std::panic::Location::caller(),
+            "shortcut action requested"
+        );
         self.shortcut_action_requests.push(action);
         self.bump();
     }
@@ -1227,6 +1342,7 @@ impl ChromeState {
     }
 
     /// Cheap (~10 ns uncontended on `parking_lot::RwLock`).
+    #[track_caller]
     pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
         self.tree_handle.read()
     }
@@ -1253,7 +1369,7 @@ impl ChromeState {
         &self,
         room: &crate::shell::state::RoomId,
     ) -> crate::shell::state::UserId {
-        self.identity_source.local_user_for_room(room)
+        self.identity_source.local_user_for_room_prompt(room)
     }
 
     /// Hand the workspaces made before this session had an identity to the
@@ -1305,7 +1421,29 @@ impl ChromeState {
         self.pending_tab_records.clear();
         self.failed_tab_records.clear();
         self.records = records;
+        self.install_records_wake();
         self.bump();
+    }
+
+    /// Never wait on the disk to open or create a tab's record: this runs on
+    /// the compositor's loop, where a `mkdir` stuck behind the journal froze
+    /// the desktop. The store's own thread opens the document; a tab asks
+    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
+        self.records_wake = Some(RecordsWake(wake));
+        self.install_records_wake();
+    }
+
+    fn install_records_wake(&self) {
+        let Some(RecordsWake(wake)) = self.records_wake.clone() else {
+            return;
+        };
+        let opened = std::sync::Arc::clone(&self.records_opened);
+        self.records
+            .open_without_waiting(std::sync::Arc::new(move || {
+                opened.store(true, std::sync::atomic::Ordering::Release);
+                wake();
+            }));
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.
@@ -1316,7 +1454,9 @@ impl ChromeState {
         };
         match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
             Ok(()) => {}
-            Err(ui::record::RecordOpenError::Busy) => {
+            // Retried by `retry_new_tab_records`; an opening document wakes
+            // the loop for it.
+            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                 self.pending_tab_records
                     .push_back(PendingTabRecordCreation {
                         identity,
@@ -1339,6 +1479,14 @@ impl ChromeState {
             TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
         });
         let mut changed = self.failed_tab_records.len() != before;
+        // A document the store finished opening: tabs that were refused
+        // while it opened bind again on the resync this bump causes.
+        if self
+            .records_opened
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            changed = true;
+        }
         self.pending_tab_records.retain(|pending| {
             TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
                 == Some(&pending.identity)
@@ -1353,7 +1501,7 @@ impl ChromeState {
                 pending.identity.tab,
             ) {
                 Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy) => {
+                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                     self.pending_tab_records.push_back(pending);
                 }
                 Err(error) => {
@@ -1384,6 +1532,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
+    #[track_caller]
     pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
@@ -1739,7 +1888,7 @@ impl ChromeState {
                 .and_then(|w| w.strips.iter_mut().find(|s| s.id == strip))
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
             {
-                g.active_tab = tab;
+                g.activate_tab(tab);
             }
             // Focus is part of the serialized local session view. Commit
             // the complete address together so a compositor restart cannot
@@ -1796,7 +1945,7 @@ impl ChromeState {
         Some(suggestion)
     }
 
-    /// Publish Undo and its toast only after removal. A live client may
+    /// Publish the reopen entry only after removal. A live client may
     /// refuse its close request and keep the tab present.
     pub fn remember_closed_tab_after_removal(
         &mut self,
@@ -1840,46 +1989,10 @@ impl ChromeState {
         }
     }
 
-    /// Remember a completed close and offer a toast whose activation restores it.
+    /// Remember a close for the normal Reopen Closed Tab action. Closing is
+    /// direct visual feedback; it must not create an interruption or history.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
-        use crate::shell::i18n::{t, t_args};
-
-        let heading = if entry.tabs.len() > 1 {
-            t_args(
-                "tab-closed-group-toast",
-                &[("count", entry.tabs.len().into())],
-            )
-        } else {
-            t_args("tab-closed-toast", &[("title", entry.title().into())])
-        };
-        let hint = settings_store::hardware::ShortcutConfig::load()
-            .bindings
-            .get(&settings_store::hardware::ShortcutAction::ReopenClosedTab)
-            .map_or_else(
-                || t("tab-closed-undo-hint-unbound"),
-                |chord| {
-                    t_args(
-                        "tab-closed-undo-hint",
-                        &[(
-                            "chord",
-                            crate::shell::keyboard_shortcuts::chord_text(chord).into(),
-                        )],
-                    )
-                },
-            );
-        let serial = self.closed_tabs.push(entry);
-        let mut toast = Notification::new(heading, hint)
-            .with_severity(NotificationSeverity::Info)
-            .with_icon_kind(NotificationIconKind::Generic);
-        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
-        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
-        // A direct answer to the person's own action, not an interruption.
-        toast.bypass_dnd = true;
-        toast.show_on_lock_screen = false;
-        let id = toast.id;
-        self.undo_toasts.insert(id, serial);
-        self.push_notification_full(toast);
-        serial
+        self.closed_tabs.push(entry)
     }
 
     /// Delete the workspace on screen, here and on the person's other
@@ -1988,17 +2101,10 @@ impl ChromeState {
         self.restore_closed_tab(entry?)
     }
 
-    /// The close toast's Undo: reopen exactly that close.
-    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
-        let entry = self.closed_tabs.take(serial)?;
-        self.restore_closed_tab(entry)
-    }
-
     fn restore_closed_tab(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,
     ) -> Option<crate::shell::state::TabId> {
-        let serial = entry.serial;
         let reopened = {
             let mut tree = self.tree_mut();
             let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
@@ -2007,18 +2113,6 @@ impl ChromeState {
             }
             reopened
         };
-        // The toast would now undo nothing.
-        let stale: Vec<u64> = self
-            .undo_toasts
-            .iter()
-            .filter(|(_, candidate)| **candidate == serial)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in stale {
-            self.undo_toasts.remove(&id);
-            self.notification_log
-                .discard_active_where(|toast| toast.id == id);
-        }
         self.bump();
         reopened
     }
@@ -2090,11 +2184,13 @@ impl ChromeState {
                             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
                     });
                 if is_editor {
+                    // The size is metadata; the bytes are the editor's to
+                    // read. A drop from the workspace mount would hydrate
+                    // the file from a peer, which the loop must not wait for.
                     if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
                         return None;
                     }
-                    hosted_document =
-                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                    hosted_document = Some(canonical);
                 } else {
                     files_directory = canonical.parent().map(std::path::Path::to_path_buf);
                 }
@@ -2130,13 +2226,12 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
-        if let Some((path, text)) = hosted_document {
+        if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,
                 super::hosted_inputs::HostedDocument {
                     provider_id: "org.tilo.Editor",
                     path: path.clone(),
-                    text,
                 },
             );
             self.tree_mut().native_document_tabs.insert(
@@ -2444,6 +2539,7 @@ impl ChromeState {
                 _ => false,
             }
         };
+        tracing::info!(target: "tilo::shortcut", dir, changed, "workspace switch");
         if changed {
             self.bump();
         }
@@ -2454,6 +2550,13 @@ impl ChromeState {
 
     pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
         crate::shell::osd::raise(&mut self.osd, osd);
+        self.bump();
+    }
+
+    /// Confirm in passing an action whose result is out of sight, such as
+    /// a copy to the clipboard. Replaces whatever pill was showing.
+    pub fn acknowledge(&mut self, text: impl Into<String>) {
+        self.acknowledger.say(text);
         self.bump();
     }
 
@@ -2529,9 +2632,7 @@ impl ChromeState {
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
         // An Undo that has lapsed is not something to find later.
-        if self.undo_toasts.remove(&n.id).is_some()
-            || self.workspace_undo_toasts.remove(&n.id).is_some()
-        {
+        if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
         self.notification_log.retain(n);
@@ -2608,10 +2709,6 @@ impl ChromeState {
         let Some(removed) = self.notification_log.take_active(id) else {
             return false;
         };
-        if let Some(serial) = self.undo_toasts.remove(&id) {
-            self.undo_closed_tab(serial);
-            return true;
-        }
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
             return true;
@@ -2788,7 +2885,9 @@ impl ChromeState {
         let Some(store) = self.notification_history_store.as_ref() else {
             return;
         };
-        if let Err(error) = store.save(self.notification_log.history()) {
+        // The write's fsyncs run on the state writer: under I/O pressure they
+        // take seconds, and this runs on the compositor's loop.
+        if let Err(error) = store.save_in_background(self.notification_log.history()) {
             tracing::warn!(
                 path = %store.path().display(),
                 "could not save notification history: {error}"
@@ -3625,6 +3724,7 @@ mod active_tab_tests {
                 active_tab: active_tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
@@ -3785,6 +3885,7 @@ mod active_tab_tests {
                     active_tab: 300,
                     width: StateWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree.persist_path = Some(path.clone());
@@ -3895,6 +3996,7 @@ mod active_tab_tests {
                 active_tab: tab_id,
                 width: StateWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");

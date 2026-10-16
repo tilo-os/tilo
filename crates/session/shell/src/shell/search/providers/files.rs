@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -686,11 +686,6 @@ impl SearchProvider for FilesProvider {
                 .then_with(|| a.id.cmp(&b.id))
         });
         page
-    }
-
-    fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
-        // Files isn't a tab-owning provider yet; the file explorer app owns tabs.
-        false
     }
 
     /// A file's address is its absolute path, so any file or folder under
@@ -1394,6 +1389,7 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::chrome_state::ChromeState;
     use tilo_search::Page;
 
     thread_local! {

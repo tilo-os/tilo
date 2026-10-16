@@ -13,15 +13,6 @@
 //! which serves the compositor's video over [`http`]; [`discovery`] finds
 //! receivers.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod cli;
 mod discovery;
 mod error;

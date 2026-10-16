@@ -15,16 +15,17 @@ name = "flatpak-share-demo"
 path = "src/bin/flatpak-share-demo.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The library uses only the standard library and tracing. The demo binary also
-# depends on the shell's encoder/decoder types and the toolkit's text stack.
+# depends on the compositor's encoder, shared-surface decoder and recording
+# muxer (all in the video-streaming stack) and the toolkit's text stack.
 tracing.workspace = true
 
 # Demo-only dependencies. The demo and library share this workspace crate.
-shell = { path = "../../session/shell", default-features = false }
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder", "recording"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 cosmic-text = { workspace = true, features = ["fontconfig", "swash", "std"] }
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 proptest.workspace = true

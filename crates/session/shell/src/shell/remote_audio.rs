@@ -24,7 +24,7 @@
 //! peers tell a paused source from a dead link.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -49,6 +49,7 @@ use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutCl
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
+use tilo_lock::MutexRecover as _;
 
 const PENDING_TTL: Duration = Duration::from_secs(30);
 /// How long a source waits for the target's consent decision. Longer than
@@ -345,7 +346,7 @@ struct SharedPlayout(Arc<Mutex<RoutePlayout>>);
 
 impl SharedPlayout {
     fn lock(&self) -> std::sync::MutexGuard<'_, RoutePlayout> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock_recover()
     }
 }
 
@@ -1314,7 +1315,7 @@ fn set_role_with(
     role: ChannelRole,
 ) -> Result<(), String> {
     let inactive = || crate::shell::i18n::t("remote-audio-error-route-inactive");
-    let current = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = state.lock_recover();
     let route = current.inbound.get(&session_id).map(|route| {
         (
             route.label.clone(),
@@ -1328,7 +1329,7 @@ fn set_role_with(
     }
     // Opening a stream talks to the daemon; never while holding the state.
     let playback = start_playback(streams, &label, role)?;
-    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state.lock_recover();
     let route = state.inbound.get_mut(&session_id).ok_or_else(inactive)?;
     if let Some(previous) = route.playback.as_ref() {
         let clock = previous.shared.lock().clock;
@@ -1348,8 +1349,7 @@ fn tap_for(
         GroupRouteSource::System => TapSelection::System,
         GroupRouteSource::Picker(token) => {
             let chosen = state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .source_tokens
                 .get(&token)
                 .cloned()
@@ -1380,7 +1380,7 @@ pub fn start_group_send(
 ) -> Result<(), String> {
     let tap = tap_for(state(), source)?;
     let capture = PcmCapture::group_sink(tap.serial())?;
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
         return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
@@ -1426,20 +1426,16 @@ pub fn start_group_local(
         playback,
     )?;
     playback.shared.lock().clock = Some(PeerPlayoutClock::new(0, 0, 0.0));
-    state()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .local
-        .insert(
-            route,
-            LocalGroupRoute {
-                capture,
-                pending: PendingAudio::default(),
-                playback,
-                sequence: 0,
-                _tap: tap,
-            },
-        );
+    state().lock_recover().local.insert(
+        route,
+        LocalGroupRoute {
+            capture,
+            pending: PendingAudio::default(),
+            playback,
+            sequence: 0,
+            _tap: tap,
+        },
+    );
     Ok(())
 }
 
@@ -1462,7 +1458,7 @@ pub fn start_group_receive(
         "Speaker group",
         playback,
     )?;
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
         return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
     }
@@ -1488,7 +1484,7 @@ pub fn start_group_receive(
 
 /// End one group route here. The speaker-group runtime tells the peer.
 pub fn end_group_route(route: [u8; 16]) {
-    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock_recover();
     if state
         .outbound
         .get(&route)
@@ -1511,7 +1507,7 @@ pub fn end_group_route(route: [u8; 16]) {
 /// own clock of the source. `None` once the route is gone.
 #[must_use]
 pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     if let Some(outbound) = state.outbound.get(&route)
         && outbound.tap.is_some()
     {
@@ -1531,7 +1527,7 @@ pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
 /// [`group_route_playout`] for every running group route at once.
 #[must_use]
 pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     let outbound = state
         .outbound
         .iter()
@@ -1555,7 +1551,7 @@ pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
 /// its own when its link or output fails.
 #[must_use]
 pub fn has_group_route(route: [u8; 16]) -> bool {
-    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let state = state().lock_recover();
     state
         .outbound
         .get(&route)
@@ -1684,31 +1680,49 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             accepted,
             authorization,
         } => {
+            let awaiting = |state: &RemoteAudioState| {
+                state
+                    .outbound
+                    .get(session_id)
+                    .filter(|route| {
+                        route.target == envelope.source && route.authorization.is_none()
+                    })
+                    .map(|route| route.selection.clone())
+            };
+            let selection = state().lock().ok().and_then(|state| awaiting(&state));
             let mut remove = false;
-            if let Ok(mut state) = state().lock()
-                && let Some(route) = state.outbound.get_mut(session_id)
-                && route.target == envelope.source
-                && route.authorization.is_none()
-            {
-                if *accepted {
-                    if let Some(authorization) = authorization {
-                        match PcmCapture::start(&route.selection) {
-                            Ok(capture) => {
+            if let Some(selection) = selection {
+                // Starting a capture asks PipeWire for its graph and waits for
+                // the stream (seconds on a busy graph). The route state stays
+                // free meanwhile: the compositor's Quick Settings reads it.
+                let capture = (*accepted)
+                    .then_some(authorization.as_ref())
+                    .flatten()
+                    .map(|_| PcmCapture::start(&selection));
+                let mut unused = None;
+                if let Ok(mut state) = state().lock()
+                    && awaiting(&state).as_ref() == Some(&selection)
+                {
+                    match (capture, authorization) {
+                        (Some(Ok(capture)), Some(authorization)) => {
+                            if let Some(route) = state.outbound.get_mut(session_id) {
                                 let now = Instant::now();
                                 route.authorization = Some(*authorization);
                                 route.capture = Some(capture);
                                 route.last_audio = now;
                                 route.last_heard = now;
                             }
-                            Err(_) => remove = true,
+                        }
+                        (None, _) if *accepted => {}
+                        _ => {
+                            remove = true;
+                            unused = state.outbound.remove(session_id);
                         }
                     }
-                } else {
-                    remove = true;
                 }
-                if remove {
-                    state.outbound.remove(session_id);
-                }
+                // A route or capture that is let go stops its stream, which
+                // joins the stream's thread: not under the state lock.
+                drop(unused);
             }
             if remove && let Some(authorization) = authorization {
                 let _ = network.send_personal_fabric_action(

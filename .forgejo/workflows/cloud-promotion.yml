@@ -1,0 +1,102 @@
+name: Release / Cloud promotion
+
+# Production (the web entry at tilo.coffee, the room service at
+# eu1.tilo.coffee) is pinned by digest in the infra repository and deployed
+# from there after review. This workflow never deploys and holds no cluster
+# credentials:
+#
+# - every run reports drift: which revision each service runs, how far main
+#   is ahead and the newest revision with both images published;
+# - a manual run also plans a promotion of both images from one main commit
+#   (default: the newest that has both) and keeps the exact manifest change
+#   and pull-request body as an artifact. When the repository secret
+#   INFRA_PROMOTION_TOKEN holds a token allowed to open pull requests on the
+#   infra repository, it opens that pull request on a new `promote/` branch.
+#
+# Promotions are batched by hand: each web entry deploy makes open tabs offer
+# a reload, so nothing here promotes on a push.
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Main commit to promote (empty: the newest with both images)"
+        required: false
+        default: ""
+      open-pull-request:
+        description: "Open the infra pull request when INFRA_PROMOTION_TOKEN is set"
+        type: boolean
+        default: true
+
+concurrency:
+  group: cloud-promotion
+  cancel-in-progress: false
+
+jobs:
+  promotion:
+    runs-on: runner-quality
+    timeout-minutes: 20
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        run: git config --global maintenance.auto false
+
+      # Main's whole history without file contents: the report counts and
+      # lists the commits between the deployed revision and main.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Drift report
+        env:
+          INFRA_PROMOTION_TOKEN: ${{ secrets.INFRA_PROMOTION_TOKEN }}
+        run: >-
+          python3 tools/release/cloud_promotion.py drift
+          --summary "$GITHUB_STEP_SUMMARY" --json drift.json
+
+      # Also after a drift problem (say, a rollout that did not happen): the
+      # plan is what fixes it.
+      - name: Plan the promotion
+        if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+        env:
+          REVISION: ${{ inputs.revision }}
+          INFRA_PROMOTION_TOKEN: ${{ secrets.INFRA_PROMOTION_TOKEN }}
+          OPEN_PULL_REQUEST: ${{ inputs.open-pull-request }}
+        run: |
+          set -euo pipefail
+          revision=()
+          if [[ -n $REVISION ]]; then
+            revision=(--revision "$REVISION")
+          fi
+          if [[ -n $INFRA_PROMOTION_TOKEN && $OPEN_PULL_REQUEST == true ]]; then
+            python3 tools/release/cloud_promotion.py propose "${revision[@]}" --out promotion
+          else
+            echo "::notice title=Cloud promotion::No pull request opened (INFRA_PROMOTION_TOKEN unset or not requested); the change is in the promotion artifact."
+            python3 tools/release/cloud_promotion.py plan "${revision[@]}" --out promotion
+          fi
+          {
+            printf '\n'
+            cat promotion/pr-body.md
+            if [[ -s promotion/infra.diff ]]; then
+              printf '\n```diff\n'
+              cat promotion/infra.diff
+              printf '```\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the report and the promotion
+        if: ${{ always() }}
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: cloud-promotion
+          path: |
+            drift.json
+            promotion/
+          if-no-files-found: warn
+          retention-days: 30

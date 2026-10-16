@@ -361,6 +361,7 @@ impl FrameHarness {
     /// Returns why: no such control in this frame, disabled, it does not
     /// take this input, or the action it triggered was refused or failed.
     pub fn operate_control(&mut self, id: &str, input: &ControlInput) -> Result<(), String> {
+        self.invalidate_local();
         let failures = self.control_failures.len();
         self.operate_control_now(id, input)?;
         match self.control_failures.get(failures..) {
@@ -512,9 +513,7 @@ impl FrameHarness {
         };
         let verb = match verb {
             Action::SetValue(_) => Action::SetValue(
-                arguments
-                    .get(tilo_actions::PROMPTED_PARAM)
-                    .and_then(serde_json::Value::as_str)
+                tilo_actions::sole_text_argument(arguments)
                     .ok_or_else(|| tilo_actions::DoorError::MissingArgument(address.clone()))?
                     .to_owned(),
             ),

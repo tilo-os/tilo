@@ -133,15 +133,12 @@ impl EventLog {
         }
         let dropped = before.saturating_sub(self.events.len());
         if dropped > 0 {
-            let temp = self.path.with_extension("jsonl.tmp");
-            let mut file = std::fs::File::create(&temp)?;
+            let mut file = Vec::new();
             for event in &self.events {
-                let mut line = serde_json::to_vec(event)?;
-                line.push(b'\n');
-                file.write_all(&line)?;
+                file.extend(serde_json::to_vec(event)?);
+                file.push(b'\n');
             }
-            file.sync_all()?;
-            std::fs::rename(&temp, &self.path)?;
+            tilo_files::native::atomic::write(&self.path, &file)?;
         }
         Ok(dropped)
     }

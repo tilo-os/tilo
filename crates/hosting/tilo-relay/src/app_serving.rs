@@ -8,7 +8,8 @@
 //! frames addressed to the relay's own device are then answered by it, and
 //! the host advertises [`ServiceCapabilities::app_serving`](crate::ServiceCapabilities::app_serving).
 //! Without one, the capability stays off and such frames are refused as
-//! undeliverable.
+//! undeliverable — all but the governance of the rooms the relay governs,
+//! which it answers itself ([`crate::rooms::GovernedPlane`]).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
 
@@ -25,6 +26,30 @@ pub trait AppServingPlane: Send + Sync {
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>>;
+
+    /// As [`Self::serve`], with the certificate the relay's handshake
+    /// verified for `caller`'s device: what the relay hands every message
+    /// that arrives on a session. The host's own operations need it (they
+    /// admit that certificate to a room); an app-serving plane has no use
+    /// for it, and the default ignores it.
+    fn serve_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        let _ = certificate;
+        self.serve(workspace_id, caller, message)
+    }
+
+    /// Whether this plane answers `message` from `caller` at all. One that
+    /// does not is refused as undeliverable, as by a host that serves no
+    /// apps.
+    fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
+        let _ = (caller, message);
+        true
+    }
 }
 
 /// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.

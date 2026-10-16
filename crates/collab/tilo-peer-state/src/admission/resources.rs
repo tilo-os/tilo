@@ -27,11 +27,19 @@ impl BoundedExactAdmissions {
     }
 }
 
+/// An index's entries as their canonical wire map.
+pub(super) struct WireEntries<'a>(pub(super) &'a ExactAdmissions);
+impl Serialize for WireEntries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_entries(serializer)
+    }
+}
+
 // This single visitor is used by legacy restore and the limited decoder.
 struct WireIndex(ExactAdmissions);
 impl Serialize for WireIndex {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.entries.serialize(serializer)
+        self.0.serialize_entries(serializer)
     }
 }
 impl<'de> Deserialize<'de> for WireIndex {
@@ -52,14 +60,12 @@ impl<'de> Deserialize<'de> for WireIndex {
                 }
                 let mut value = ExactAdmissions::default();
                 while let Some((key, operation_id)) = map.next_entry::<AdmissionKey, [u8; 32]>()? {
-                    if value.entries.contains_key(&key) {
+                    if value.get(&key).is_some() {
                         return Err(A::Error::custom("duplicate exact admission key"));
                     }
                     let admission = DocumentAdmission { key, operation_id };
                     let bytes = value.check(&admission).map_err(A::Error::custom)?;
-                    value.entries.insert(admission.key, admission.operation_id);
-                    // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
-                    value.entry_bytes = value.entry_bytes.saturating_add(bytes);
+                    value.add(admission.key, admission.operation_id, bytes);
                 }
                 Ok(WireIndex(value))
             }

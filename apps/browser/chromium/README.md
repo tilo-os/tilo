@@ -26,7 +26,7 @@ target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 
 Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
 run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
-OS the engine is the signed runtime bundle `tilo-runtime/2026.10.9-chromium`
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.10-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
 browser's manifest lists it under `optional-runtimes`, and the launcher mounts

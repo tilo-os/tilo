@@ -21,6 +21,9 @@ aarch64 = "aarch64"
 required = ["network.http"]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "processes"]
 
+[resources]
+kinds = ["store.catalog"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

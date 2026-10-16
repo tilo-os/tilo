@@ -1363,6 +1363,37 @@ mod tests {
         assert_eq!(follower.changed_sections(&live), sections(&[]));
     }
 
+    /// A hand edit of the keyboard layout must reach the seat keymap: the
+    /// follower names `input`, which asks for the keyboard and the DRM
+    /// keymap, and the section the reload reads types the new layout. A
+    /// document that names no layout types the machine's, never a fixed US.
+    #[test]
+    fn a_keyboard_layout_edit_reaches_every_keymap_and_an_unset_one_follows_the_machine() {
+        let path = scratch("keyboard-layout");
+        write(&path, "input", json!({"tap_to_click": true}));
+        let live = LiveSettings::start_at(path.clone(), || {});
+        let mut follower = SectionFollower::new(&live);
+        assert_eq!(
+            KeyboardSettings::from_section(&live.section(SECTION)).source_ids,
+            settings_store::keyboard_sources::default_sources(),
+            "no chosen layout: the machine's"
+        );
+
+        changed(&live, || {
+            write(
+                &path,
+                "input",
+                json!({"keyboard_layout": "de", "keyboard_layouts": ["de"]}),
+            );
+        });
+        let change = SettingsChange::from(follower.changed_sections(&live));
+        assert!(change.keyboard(), "the seat and Xwayland keymaps reload");
+        assert!(change.input_devices(), "the DRM keymap reloads");
+        let keyboard = KeyboardSettings::from_section(&live.section(SECTION));
+        assert_eq!(keyboard.layouts, "de");
+        assert_eq!(keyboard.source_ids, ["de"]);
+    }
+
     #[test]
     fn only_display_sections_reconcile_outputs_and_only_theme_sections_wake_windows() {
         let change = |names: &[&str]| SettingsChange::from(sections(names));

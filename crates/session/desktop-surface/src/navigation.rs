@@ -564,7 +564,7 @@ pub struct Capabilities {
     /// Per-window back and forward through the tab's own history.
     pub history: bool,
     /// The surface takes sideways wheel input itself: a trackpad swipe pans
-    /// the strip under the fingers and a mouse's wheel click steps focus. A
+    /// the strip, a mouse wheel's spin alike, and focus follows. A
     /// host must leave it the wheel rather than turn it into `pan` commands.
     pub swipe: bool,
     /// The surface shows notification banners and opens the notification
@@ -897,6 +897,7 @@ mod tests {
             active_tab: 4,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         workspace.strips = vec![strip];
         DesktopTree {

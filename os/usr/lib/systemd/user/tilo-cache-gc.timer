@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove your unused test caches daily
+
+[Timer]
+OnStartupSec=30min
+OnUnitInactiveSec=1d
+RandomizedDelaySec=30min
+Persistent=yes
+Unit=tilo-cache-gc.service
+
+[Install]
+WantedBy=timers.target

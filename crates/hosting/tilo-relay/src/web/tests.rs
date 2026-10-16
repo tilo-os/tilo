@@ -7,7 +7,8 @@
 use super::*;
 use crate::{Envelope, RelayClient, RelayConfig};
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_peer_state::{NeighbourMsg, join::MemberRole};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -108,7 +109,9 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
         handshake: challenge.handshake,
         ack2: crate::auth::HelloAck2 {
             sig_over_server_nonce: key
-                .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                .sign(&crate::auth::client_challenge_digest(
+                    &challenge.ack.server_nonce,
+                ))
                 .to_bytes(),
         },
     };
@@ -162,6 +165,29 @@ fn publish(client: &RelayClient, workspace_id: u64, author: [u8; 32], message: &
             .unwrap(),
         })
         .unwrap();
+}
+
+/// The next codec advert `native` receives: presence of the `host` device,
+/// as `(advertised peer, software decode labels)`.
+async fn next_codec_advert(native: &RelayClient, host: &DeviceCert) -> (u64, Vec<String>) {
+    tilo_test_env::within("a codec advert", async {
+        loop {
+            let Some(Envelope::Presence { payload, .. }) = native.recv().await else {
+                continue;
+            };
+            let presence = crate::AttributedPresence::decode(&payload).unwrap();
+            if let Ok(NeighbourMsg::MediaCapabilities {
+                peer,
+                software_decode,
+                ..
+            }) = postcard::from_bytes(&presence.body)
+            {
+                assert_eq!(presence.author, host.device_public_key);
+                return (peer, software_decode);
+            }
+        }
+    })
+    .await
 }
 
 fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
@@ -232,7 +258,9 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
             &challenge.handshake,
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: key
-                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .sign(&crate::auth::client_challenge_digest(
+                        &challenge.ack.server_nonce,
+                    ))
                     .to_bytes(),
             },
         )
@@ -373,7 +401,9 @@ async fn live_grants_follow_announced_changes() {
             &challenge.handshake,
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: key
-                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .sign(&crate::auth::client_challenge_digest(
+                        &challenge.ack.server_nonce,
+                    ))
                     .to_bytes(),
             },
         )
@@ -568,7 +598,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .unwrap();
     let web = Arc::new(Web {
         sessions,
-        grants,
+        grants: grants.clone(),
         legacy: legacy.clone(),
         live: live.relay.clone(),
         host_info: HostInfo {
@@ -585,6 +615,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             envelopes::Kind::Profile,
             relay.state_root().join("profiles"),
         ),
+        here: Arc::new(here::Here::new(None)),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -593,9 +624,52 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
     let online_sessions = web.sessions.clone();
     drop(web);
-    let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
+    let maintaining = tokio::spawn(maintain_legacy(
+        legacy.clone(),
+        grants.clone(),
+        relay.web_context().clone(),
+    ));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
+    // Who is here: a member is listed in their room by their session's
+    // device, and refused in a room they are not in and past the bounds.
+    let here = |workspace_id, action: &str| {
+        postcard::to_allocvec(&protocol::HereRequest {
+            workspace_id,
+            label: "Owner".into(),
+            window: None,
+            actions: vec![protocol::HereAction {
+                id: [1; 16],
+                action: action.into(),
+                resource: "Welcome note".into(),
+                app: "Notes".into(),
+                at_ms: 1,
+            }],
+        })
+        .unwrap()
+    };
+    let (code, body) = post(
+        addr,
+        protocol::HERE_PATH,
+        Some(token),
+        here(room.workspace_id, "Edited the text"),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let listed: protocol::HereReply = postcard::from_bytes(&body).unwrap();
+    assert_eq!(listed.people.len(), 1);
+    assert_eq!(listed.people[0].device, owner.device_public_key);
+    assert_eq!(listed.people[0].user, owner.user_public_key);
+    for (session, request, code) in [
+        (Some(token), here(room.workspace_id ^ 1, "Edited"), 403),
+        (Some(token), here(room.workspace_id, &"x".repeat(97)), 400),
+        (None, here(room.workspace_id, "Edited"), 401),
+    ] {
+        assert_eq!(
+            post(addr, protocol::HERE_PATH, session, request).await.0,
+            code
+        );
+    }
     // Each person with an open session counts once.
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 2);
@@ -720,9 +794,37 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .0,
         204
     );
+    // Text an input method committed on the member's page; text the
+    // session's input firewall would refuse never leaves the relay.
+    for text in [String::new(), "x".repeat(wire::MAX_TEXT_BYTES + 1)] {
+        assert_eq!(
+            post(
+                addr,
+                wire::INPUT_ROUTE,
+                Some(token),
+                input(vec![wire::InputEvent::Text { text }])
+            )
+            .await
+            .0,
+            400
+        );
+    }
+    assert_eq!(
+        post(
+            addr,
+            wire::INPUT_ROUTE,
+            Some(token),
+            input(vec![wire::InputEvent::Text {
+                text: "日本".into()
+            }])
+        )
+        .await
+        .0,
+        204
+    );
     let delivered = tilo_test_env::within("directed native input", async {
         let mut delivered = Vec::new();
-        while delivered.len() < 2 {
+        while delivered.len() < 3 {
             if let Some(Envelope::Presence { payload, .. }) = owner_native.recv().await {
                 let presence = crate::AttributedPresence::decode(&payload).unwrap();
                 if let Ok(NeighbourMsg::RemoteInput { surface, event, .. }) =
@@ -741,7 +843,10 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         delivered,
         [
             wire::InputEvent::PointerAxis { dx: 0.0, dy: 1.0 },
-            wire::InputEvent::PointerEnter { surface: 7 }
+            wire::InputEvent::PointerEnter { surface: 7 },
+            wire::InputEvent::Text {
+                text: "日本".into()
+            }
         ]
     );
     // The other native member must never receive private keyboard/input payloads.
@@ -756,6 +861,65 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             ));
         }
     }
+    // What members' pages decode reaches the room's sessions as this host's
+    // own codec advert, so a session without an H.264 encoder can pick VP9.
+    let codecs = |workspace_id, decode: &[&str]| {
+        postcard::to_allocvec(&wire::CodecsRequest {
+            workspace_id,
+            decode: decode.iter().map(|label| (*label).to_owned()).collect(),
+        })
+        .unwrap()
+    };
+    for (session, request, code) in [
+        (None, codecs(room.workspace_id, &["vp9"]), 401),
+        (Some(token), codecs(room.workspace_id ^ 1, &["vp9"]), 403),
+        (
+            Some(token),
+            codecs(room.workspace_id, &["h264"; wire::MAX_CODEC_LABELS + 1]),
+            400,
+        ),
+    ] {
+        assert_eq!(
+            post(addr, wire::CODECS_ROUTE, session, request).await.0,
+            code
+        );
+    }
+    // The owner's page enters the live plane without saying: H.264 only.
+    let (code, _) = post(
+        addr,
+        "/live/grant",
+        Some(token),
+        postcard::to_allocvec(&room.workspace_id).unwrap(),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let host_handle = tilo_peer_state::peer_handle(&host.device_public_key);
+    assert_eq!(
+        next_codec_advert(&owner_native, &host).await,
+        (host_handle, vec!["h264".to_owned()])
+    );
+    assert_eq!(
+        post(
+            addr,
+            wire::CODECS_ROUTE,
+            Some(token),
+            codecs(room.workspace_id, &["vp9", "hevc", "h264"]),
+        )
+        .await
+        .0,
+        204
+    );
+    tilo_test_env::within("the VP9 advert", async {
+        loop {
+            let (peer, mut labels) = next_codec_advert(&owner_native, &host).await;
+            labels.sort();
+            if labels == ["h264", "vp9"] {
+                assert_eq!(peer, host_handle);
+                break;
+            }
+        }
+    })
+    .await;
     // A viewer cannot manufacture a stream or keep editor input after a role change.
     rooms
         .set_member_role(
@@ -913,4 +1077,192 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
         browser_locator_origin(&development, wildcard).unwrap(),
         Some("https://room.example".into())
     );
+}
+
+/// A public room's spectator takes a channel's content keys from its
+/// steward and opens what was sealed there; nobody else does: not before it
+/// holds a seat, not a member, not in a room that is not public, and never
+/// for a channel nobody created.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its rooms serve the page until the relay shuts down at the end"
+)]
+async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
+    let signer = SigningKey::from_bytes(&[71; 32]);
+    let watcher = SigningKey::from_bytes(&[72; 32]);
+    // A room service's node, which stewards its rooms' channels.
+    let (host_key, host) = device(
+        &signer,
+        73,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
+    let (joined_key, joined) = device(&watcher, 75, DeviceCapabilities::member());
+    let (watch_key, watch) = device(&watcher, 76, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Plaza").await.unwrap();
+    rooms.enter(&room.room, &owner).await.unwrap();
+    // The spectator person is a viewer of the room, as its host makes it.
+    let invitation = rooms
+        .issue(
+            &room.room,
+            &owner,
+            crate::rooms::IssueInvitationRequest {
+                request_id: [1; 32],
+                role: MemberRole::Viewer,
+                recipient_user_public_key: Some(joined.user_public_key),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let verified = tilo_peer_state::join::decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    crate::workspace_join::WorkspaceJoinClient::new(endpoint(&joined_key).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            invitation.signed_invitation,
+            joined.clone(),
+            &joined_key,
+            [2; 32],
+        )
+        .await
+        .unwrap();
+    // A member wrote in the chat's channel.
+    let record = "@tilo:package-primary";
+    let steward = rooms
+        .steward_endpoint_keys(
+            &tilo_browser_peer::DocumentRoute {
+                app_id: "so.tilo.chat".into(),
+                cluster_id: room.room.clone(),
+                record: record.into(),
+            },
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let artifact = collab_types::ArtifactId::new();
+    let (metadata, sealed) = steward
+        .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
+        .unwrap();
+
+    let sessions = Sessions::new(relay.web_context().clone());
+    let grants = live::LiveGrants::new();
+    let live =
+        tilo_moq::live::LoopbackLive::start(Arc::new(live::Authority(grants.clone()))).unwrap();
+    let legacy = legacy::LegacyWindows::new(live.relay.clone(), host.device_public_key);
+    let web = Arc::new(Web {
+        sessions,
+        grants,
+        legacy,
+        live: live.relay.clone(),
+        host_info: HostInfo {
+            host_cert: host.clone(),
+            webtransport_port: Some(0),
+            certificate_sha256: None,
+            webtransport_origin: None,
+        },
+        allowed_origins: vec![],
+        features: 0,
+        rooms: relay.rooms().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web));
+    let ask = |token, record: &str| {
+        post(
+            addr,
+            protocol::CHANNEL_KEYS_PATH,
+            Some(token),
+            postcard::to_allocvec(&protocol::ChannelKeysRequest {
+                app_id: "so.tilo.chat".into(),
+                room: room.room.clone(),
+                record: record.into(),
+            })
+            .unwrap(),
+        )
+    };
+    let spectators = |public| crate::room_access::Spectators {
+        root: watcher.verifying_key().to_bytes(),
+        seats: 4,
+        public,
+    };
+    let watching = browser(addr, &watch_key, &watch).await;
+    let owner_token = browser(addr, &owner_key, &owner).await;
+
+    // Before the room lets anyone watch, and before the page holds a seat.
+    assert_eq!(ask(watching, record).await.0, 403);
+    relay
+        .admit_spectators(room.workspace_id, spectators(true))
+        .await
+        .unwrap();
+    assert_eq!(
+        ask(watching, record).await.0,
+        403,
+        "a spectator without a seat"
+    );
+    let subscription = native(&relay, &watch_key, &watch, room.workspace_id).await;
+    let (code, body) = ask(watching, record).await;
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    let keys: protocol::ChannelKeys = postcard::from_bytes(&body).unwrap();
+    let keys = channel_crypto::ChannelContentKeys::from_bytes(&keys.keys).unwrap();
+    assert_eq!(
+        &keys.open_content(artifact, &metadata, &sealed).unwrap()[..],
+        b"hello",
+        "the spectator opens what a member sealed"
+    );
+    assert_eq!(
+        ask(watching, "@tilo:never-written").await.0,
+        403,
+        "no channel is created for a spectator"
+    );
+    assert_eq!(
+        ask(owner_token, record).await.0,
+        403,
+        "a member takes keys over the channel"
+    );
+    // A room that is not public keeps its members' writing from spectators.
+    relay
+        .admit_spectators(room.workspace_id, spectators(false))
+        .await
+        .unwrap();
+    assert_eq!(ask(watching, record).await.0, 403);
+
+    serving.abort();
+    subscription.close().await;
+    crate::daemon::Relay::shutdown(relay).await;
 }

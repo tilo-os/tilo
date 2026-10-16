@@ -263,12 +263,6 @@ impl Widget for Probe {
                 &FollowUp,
                 tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
             ),
-            8 => {
-                let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());
-                self.actions
-                    .dispatch_optimistic(doc.document_mut(), &mut queue, "bound.apply", &FollowUp)
-                    .unwrap();
-            }
             9 | 10 => {
                 assert_eq!(
                     self.actions
@@ -1616,9 +1610,9 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         }
     }
 
-    // Case `task4_compound_contextual_optimistic_noop_and_failed_producers`.
+    // Case `task4_compound_contextual_noop_and_failed_producers`.
     {
-        for mode in [7, 8, 9, 10] {
+        for mode in [7, 9, 10] {
             COMPOUND_MODE.set(mode);
             let mut fixture = ActionFixture::with_same_record(true);
             let a = fixture.bindings[0].clone();
@@ -2874,9 +2868,10 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         assert_eq!(app.history_chrome_enabled, ordinary);
         assert_eq!(app.native_document_chrome, ordinary);
         assert_eq!(
-            app.document_sync_status().is_some(),
-            ordinary,
-            "an intentionally unattached input service is not a failed document route"
+            app.document_sync_status(),
+            None,
+            "neither a local document outside any room nor an intentionally \
+             unattached input service has lost a route"
         );
         for (width, height) in [(800, 600), (600, 800)] {
             app.init_layout();
@@ -2904,7 +2899,7 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         }
         app.action_publication_failure = Some("explicit publication refusal".into());
         assert_eq!(
-            app.document_sync_status(),
+            app.document_sync_status().as_deref(),
             Some("explicit publication refusal"),
             "system-surface presentation must still expose actual errors"
         );

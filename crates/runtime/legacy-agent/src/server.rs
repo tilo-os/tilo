@@ -6,7 +6,7 @@ use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use legacy_agent_protocol::{
@@ -18,6 +18,7 @@ use crate::launch::{self, GuestView, X_DISPLAY};
 use crate::mounts;
 use crate::system;
 use crate::user::GuestUser;
+use tilo_lock::MutexRecover as _;
 
 /// How long a finished app's output pumps get to drain before the exit is
 /// reported anyway (a daemon it spawned may hold the pipe open forever).
@@ -32,10 +33,6 @@ pub struct Agent {
 }
 
 type Writer<S> = Arc<Mutex<S>>;
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 impl Agent {
     #[must_use]
@@ -81,7 +78,7 @@ impl Agent {
         let answer = match request {
             HostMessage::Health => GuestMessage::Health(self.health()),
             HostMessage::ListRunning => {
-                GuestMessage::Running(lock(&self.running).values().cloned().collect())
+                GuestMessage::Running(self.running.lock_recover().values().cloned().collect())
             }
             HostMessage::Mount { shares } => self.mount(&shares),
             HostMessage::InstalledApps => GuestMessage::InstalledApps(crate::apps::installed(
@@ -101,7 +98,7 @@ impl Agent {
     fn health(&self) -> Health {
         let (mem_total_kib, mem_available_kib) =
             system::meminfo(&std::fs::read_to_string("/proc/meminfo").unwrap_or_default());
-        let running = lock(&self.running);
+        let running = self.running.lock_recover();
         Health {
             uptime_secs: system::uptime_secs(
                 &std::fs::read_to_string("/proc/uptime").unwrap_or_default(),
@@ -120,7 +117,7 @@ impl Agent {
                 message: error.to_string(),
             };
         }
-        let mut shares = lock(&self.shares);
+        let mut shares = self.shares.lock_recover();
         let plan = mounts::plan(&shares, desired);
         let (mounted, failures) = mounts::apply(&shares, &plan);
         shares.clone_from(&mounted);
@@ -140,7 +137,7 @@ impl Agent {
         reason = "held across the spawn so two launches start one Xwayland"
     )]
     fn ensure_xwayland(&self, port: u32) -> Option<&'static str> {
-        let mut xwayland = lock(&self.xwayland);
+        let mut xwayland = self.xwayland.lock_recover();
         if let Some(child) = xwayland.as_mut()
             && matches!(child.try_wait(), Ok(None))
         {
@@ -200,7 +197,7 @@ impl Agent {
 
     fn launch<S: Duplex>(&self, stream: S, request: &Launch) -> Result<(), ProtocolError> {
         let writer: Writer<S> = Arc::new(Mutex::new(stream.try_clone()?));
-        let reply = |message: &GuestMessage| send(&mut *lock(&writer), message);
+        let reply = |message: &GuestMessage| send(&mut *writer.lock_recover(), message);
         if let Err(error) = request.validate() {
             return reply(&GuestMessage::Error {
                 message: error.to_string(),
@@ -219,7 +216,7 @@ impl Agent {
             }
         };
         let pid = child.id();
-        lock(&self.running).insert(
+        self.running.lock_recover().insert(
             pid,
             RunningApp {
                 pid,
@@ -260,7 +257,7 @@ impl Agent {
                 break;
             }
         }
-        lock(&self.running).remove(&pid);
+        self.running.lock_recover().remove(&pid);
         let status = status.map_or(
             ExitStatus {
                 code: None,
@@ -327,7 +324,7 @@ fn pump<S: Duplex, R: Read + Send + 'static>(
                 Ok(read) => read,
             };
             let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-            if send(&mut *lock(&writer), &frame(chunk)).is_err() {
+            if send(&mut *writer.lock_recover(), &frame(chunk)).is_err() {
                 break;
             }
         }
@@ -392,8 +389,10 @@ mod tests {
     use legacy_agent_protocol::client;
 
     fn me() -> GuestUser {
-        // SAFETY: getuid/getgid have no failure mode.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid, gid) = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
         GuestUser {
             name: "me".into(),
             uid,

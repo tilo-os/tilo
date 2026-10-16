@@ -86,9 +86,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .split_whitespace()
         .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()?;
-    // SAFETY: argument-free identity query. Require a single non-root host uid
-    // mapped to namespace root; this helper cannot run with host root authority.
-    if unsafe { libc::geteuid() } != 0
+    // Require a single non-root host uid mapped to namespace root; this
+    // helper cannot run with host root authority.
+    if rustix::process::geteuid().as_raw() != 0
         || numbers.len() != 3
         || numbers.first() != Some(&0)
         || numbers.get(1).is_none_or(|uid| *uid == 0)

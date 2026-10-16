@@ -1035,10 +1035,6 @@ impl OffscreenRenderer {
     ///
     /// Panics if `width` or `height` is zero — that's a caller bug, not a
     /// recoverable environment failure.
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "the width/height assert is a caller-bug panic, not a recoverable failure — every real failure mode already has its own OffscreenError variant"
-    )]
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         Self::try_new_with_preprocessing(
             width,
@@ -1459,13 +1455,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::expect_used,
-        clippy::too_many_lines,
-        reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_regions_gpu_wait(
         &mut self,
         scene: &Scene,

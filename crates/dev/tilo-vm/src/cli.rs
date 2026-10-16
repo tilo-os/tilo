@@ -602,6 +602,78 @@ pub enum InputCommand {
     /// Game controller: buttons, d-pad, sticks.
     #[command(subcommand)]
     Gamepad(GamepadCommand),
+    /// Press combo keys down and keep them down (a held modifier) until `release`.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input hold shift\n  tilo-vm input release shift\n\nGoes to the plugged keyboard profile, else the default keyboard. A key left down\nstays down in the guest until released."
+    )]
+    Hold {
+        /// Combos like shift, ctrl+alt.
+        combo: String,
+    },
+    /// Release what `hold` pressed.
+    #[command(after_help = "Examples:\n  tilo-vm input release shift")]
+    Release {
+        /// The combo given to `hold`.
+        combo: String,
+    },
+    /// Plug and unplug devices that copy real hardware (bus, ids, name, capabilities).
+    #[command(subcommand)]
+    Device(DeviceCommand),
+    /// The plugged touchpad: tap, swipe (move, scroll, gestures), click.
+    #[command(subcommand)]
+    Touchpad(TouchpadCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    /// Plug in a device profile.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input device plug lenovo-83ed-keyboard\n  tilo-vm input device plug lenovo-83ed-touchpad\n\nProfiles are captured from real hardware under os/hardware/profiles/*/input/:\nthe kernel registers a device with that bus, vendor, product, name and capabilities,\nso udev and libinput treat it as that model. A plugged keyboard profile takes over\n`input key` and `input type` from the default keyboard."
+    )]
+    Plug {
+        /// lenovo-83ed-keyboard, lenovo-83ed-touchpad or lenovo-83ed-mouse.
+        profile: String,
+    },
+    /// Unplug a device profile.
+    #[command(after_help = "Examples:\n  tilo-vm input device unplug lenovo-83ed-keyboard")]
+    Unplug {
+        /// The profile given to `plug`.
+        profile: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TouchpadCommand {
+    /// Fingers tap the touchpad's centre (tap-to-click).
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touchpad tap\n  tilo-vm input touchpad tap --fingers 2"
+    )]
+    Tap {
+        /// 1 to 3 fingers.
+        #[arg(long, default_value_t = 1)]
+        fingers: u8,
+    },
+    /// Fingers move DX, DY millimetres: one moves the pointer, two scroll, three swipe.
+    #[command(
+        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture"
+    )]
+    Swipe {
+        /// Millimetres right.
+        #[arg(allow_negative_numbers = true)]
+        dx: i16,
+        /// Millimetres down.
+        #[arg(allow_negative_numbers = true)]
+        dy: i16,
+        /// 1 to 3 fingers.
+        #[arg(long, default_value_t = 1)]
+        fingers: u8,
+        /// How long the movement takes, in milliseconds.
+        #[arg(long, default_value_t = 300)]
+        duration: u32,
+    },
+    /// Press the clickpad's physical button.
+    #[command(after_help = "Examples:\n  tilo-vm input touchpad click")]
+    Click,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]

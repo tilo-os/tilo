@@ -36,7 +36,7 @@ fields = [
   { path = "marks.*.group", type = "String" },
   { path = "marks.*.clip", type = "String" },
   { path = "marks.*.area", type = "String", readonly = true },
-  { path = "media", type = "BTreeMap<String, crate::media::MediumSpec>" },
+  { path = "media", type = "Map<crate::media::MediumSpec>" },
   { path = "reference", type = "Option<Reference>" },
   { path = "selection", type = "Option<Selection>" },
 ]

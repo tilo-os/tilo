@@ -215,7 +215,7 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
 - `crates/sdk/ui-core/src/history_source/` and `crates/sdk/ui-core/src/widget/activity_timeline.rs`: shared history.
 - `crates/sdk/ui-core/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
   `crates/runtime/runtime-portal/`: existing service client and transport boundary.
-- `crates/session/shell/src/compositor/macos.rs`, `crates/session/shell/src/compositor/hosted.rs` and
+- `crates/session/shell/src/compositor/macos.rs`, `crates/session/shell/src/compositor/session_bootstrap.rs` and
   `crates/session/shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.
 - `crates/session/shell/src/shell/launcher.rs` and `crates/session/shell/src/shell/collab_broker_capnp.rs`:
   process attestation, service admission and filtered action-directory serving.

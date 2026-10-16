@@ -109,26 +109,19 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// one writing a unit outside its action's footprint, or, where the room's
 /// governor projected its members' standings (`standings`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
-/// left to the room's devices, which hold them.
+/// left to the room's devices, which hold them. `payloads` reads the
+/// document frame.
 pub(crate) fn refusal(
+    payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
     standings: Option<&crate::workspace::Standings>,
 ) -> Option<String> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
-    let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
-        app_id,
-        cluster_id,
-        record_id,
-        envelope,
-        ..
-    }) = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
-    else {
-        return None;
-    };
+    let (route, envelope) = payloads.open_document(body)?;
     let record = collab_types::Record {
-        room: &cluster_id,
-        app: &app_id,
-        record: &record_id,
+        room: &route.cluster_id,
+        app: &route.app_id,
+        record: &route.record_id,
     };
     let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
     let allows = |node: &tilo_action_policy::TreePath, kind| match author {

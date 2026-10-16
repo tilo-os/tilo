@@ -22,7 +22,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, chart_leaf, handle_chart_event, moved_index,
+    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -128,27 +128,11 @@ impl PolarAreaChart {
             .any(|datum| datum.id == id && datum.value.is_finite() && datum.value >= 0.0)
             .then(|| id.to_owned());
         self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.update_inspection_anchor();
+        self.anchor_hovered();
         self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
         self.inspection.clear();
-    }
-
-    fn update_inspection_anchor(&mut self) {
-        let Some(id) = self.inspection.hovered.as_deref() else {
-            return;
-        };
-        let Some(sector) = self.sectors.iter().find(|sector| sector.id == id) else {
-            return;
-        };
-        let (center, _, _) = self.geometry();
-        let angle = sector.start + sector.sweep / 2.0;
-        let radius = sector.inner.midpoint(sector.outer);
-        self.inspection.pointer = Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
-        );
     }
 
     fn geometry(&self) -> (Point, f64, f64) {
@@ -309,23 +293,22 @@ impl InteractiveChart for PolarAreaChart {
         self.activated = Some(id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
+    fn keyboard_items(&self) -> Vec<String> {
+        let shown = self
             .data
             .iter()
-            .filter(|datum| datum.value.is_finite() && datum.value >= 0.0)
-            .map(|datum| datum.id.as_str())
-            .collect::<Vec<_>>();
-        let current = self
-            .inspection
-            .hovered
-            .as_deref()
-            .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-        self.inspection.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index))
-            .map(|id| (*id).to_owned());
-        self.update_inspection_anchor();
-        self.inspection.hovered.is_some()
+            .filter(|datum| datum.value.is_finite() && datum.value >= 0.0);
+        shown.map(|datum| datum.id.clone()).collect()
+    }
+    fn anchor(&self, id: &String) -> Option<Point> {
+        let sector = self.sectors.iter().find(|sector| sector.id == *id)?;
+        let (center, _, _) = self.geometry();
+        let angle = sector.start + sector.sweep / 2.0;
+        let radius = sector.inner.midpoint(sector.outer);
+        Some(Point::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        ))
     }
 }
 
@@ -343,16 +326,7 @@ impl Widget for PolarAreaChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let (center, inner, outer) = self.geometry();
         let max = self.max();
         let rings = self.style.rings.max(1);
@@ -434,9 +408,7 @@ impl Widget for PolarAreaChart {
             &self.center_title,
             &self.center_subtitle,
         );
-        if self.inspection.keyboard {
-            self.update_inspection_anchor();
-        }
+        self.follow_keyboard_anchor();
         if let Some(datum) = self
             .inspection
             .hovered
@@ -495,15 +467,12 @@ impl Widget for PolarAreaChart {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        let Some(id) = crate::widget::chart_navigation::activated_id(
+        crate::widget::chart_navigation::activate(
+            &mut self.activated,
             action,
             keys,
             self.data.iter().map(|d| &d.id),
-        ) else {
-            return false;
-        };
-        self.activated = Some(id.clone());
-        true
+        )
     }
     fn name(&self) -> &'static str {
         "PolarAreaChart"

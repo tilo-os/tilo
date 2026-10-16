@@ -61,10 +61,10 @@ else
 fi
 
 grep -q '^# tilo-rpm-snapshot-package: virtio-win$' "$CF" \
-  && grep -q 'COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso' "$CF" \
-  && grep -q 'COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe' "$CF" \
-  && ok 'minimal authenticated virtio-win media is part of the immutable image' \
-  || bad 'virtio-win media is not extracted from its pinned RPM'
+  && grep -q 'COPY --from=virtio-win-media /out/virtio-win.iso /tree/usr/share/virtio-win/virtio-win.iso' "$CF" \
+  && grep -q 'COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr/share/virtio-win/' "$CF" \
+  && ok 'minimal authenticated virtio-win media is packed into the Windows compatibility sysext' \
+  || bad 'virtio-win media is not extracted from its pinned RPM into the sysext'
 
 for package in pipewire pipewire-pulseaudio pipewire-utils wireplumber; do
   grep -q "^    $package \\\\$" "$CF" \
@@ -86,9 +86,9 @@ grep -q 'COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo
   && ok 'UMU launcher is installed under the Tilo-owned execution path' \
   || bad 'UMU launcher is not copied into the final image'
 
-grep -q 'COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/tilo/windows-runners/proton/' "$CF" \
-  && ok 'pinned Proton runner is installed in the system runner store' \
-  || bad 'pinned Proton runner is not copied into the final image'
+grep -q 'COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/' "$CF" \
+  && ok 'pinned Proton runner is packed at the system runner store path of the Windows compatibility sysext' \
+  || bad 'pinned Proton runner is not copied into the Windows compatibility sysext'
 
 grep -q 'umu-database-8297d420.csv' "$CF" \
   && grep -q $'^87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8\tumu-database-8297d420.csv\t.*/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv' "$ASSETS" \

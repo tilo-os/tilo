@@ -3,7 +3,7 @@ use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_user_identity::DeviceCert;
 
 const MAX_COMMANDS: usize = 4096;
@@ -51,7 +51,8 @@ impl NativeWorkspaceOwner {
         // Always revalidate current person administration, including retries.
         // Apply to a clone so retry validation cannot publish another mutation.
         let mut peer = candidate.peer.clone();
-        peer.apply_workspace_membership_command(&caller, &command, key, now)?;
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&caller, &command, key, now)?;
         if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
             if existing.receipt.binding != binding {
                 return Err("membership invocation was already bound to another command".into());
@@ -71,7 +72,7 @@ impl NativeWorkspaceOwner {
         let messages =
             peer.durable_mutation_messages(&candidate.peer, key, now, next_generation)?;
         for message in &messages {
-            if matches!(message, tilo_peer_state::NeighbourMsg::AppDocument { .. }) {
+            if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
                 let outgoing = crate::publication::prepare(&crate::publication::request(message)?)?;
                 crate::publication::reserve(&candidate, &outgoing)?;
                 crate::publication::append_local(&mut candidate, outgoing)?;
@@ -109,9 +110,10 @@ mod app_authorship_tests;
 mod tests {
     use super::*;
     use crate::application_record::tests::{Fixture, fixture};
+    use neighbour_wire::NeighbourMsg;
     use tilo_action_policy::roles::AgentPreset;
+    use tilo_peer_state::TransportOrigin;
     use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
 
     fn request(fixture: &Fixture, command: WorkspaceMembershipCommand) -> OwnerCommitRequest {
         OwnerCommitRequest {

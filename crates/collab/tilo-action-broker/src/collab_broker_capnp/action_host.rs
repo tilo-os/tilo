@@ -33,6 +33,8 @@ use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+mod own_device;
+
 /// The longest a waiter on a running invocation sleeps without a signalled
 /// change, so a change nothing signals (an idle expiry) costs latency, never
 /// a stalled shortcut run.
@@ -258,7 +260,13 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
-        contract: tilo_actions::ActionContract::default(),
+        // It answers once the instance it started is up, naming it by
+        // `peer_id` (see `workspace_open`).
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+            result: tilo_actions::ResultSpec::Job,
+            ..tilo_actions::ActionContract::default()
+        },
         // An invocation may carry the content hash of bytes to open
         // read-only as its text argument; without one the app opens empty.
         input: InputSpec::None,
@@ -411,6 +419,16 @@ impl CapnpBrokerState {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
             }
+            // Another of the person's devices is reached only for the app's
+            // own actions there, as the person using it; never under the
+            // app's own identity, which holds no reach across devices.
+            RemoteActionMessage::Invoke(request)
+                if request.target.provider == tilo_actions::remote::own_device::PROVIDER =>
+            {
+                tilo_actions::remote::own_device::Invocation::from_argument(&request.argument)
+                    .is_ok_and(|invocation| invocation.app == app_id)
+                    .then(|| person.clone())
+            }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request) || link_request(request) {
                     Some(person.clone())
@@ -521,7 +539,23 @@ impl CapnpBrokerState {
     /// member.
     fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         match caller.room() {
-            Some(confined) => confined == workspace.room.to_string(),
+            // Confinement says which room a connection was admitted to, not
+            // that an agent still belongs to it: an agent whose membership
+            // was removed must lose its catalogue and authority at once. It
+            // takes part as the unconfined branch decides: an enrolled agent
+            // through its own grant, an agent a person's device handed this
+            // session to (`Caller::delegated_to`) through that person's.
+            Some(confined) => {
+                confined == workspace.room.to_string()
+                    && match caller.principal() {
+                        CallerPrincipal::Agent(_) => {
+                            BrokerActor::for_caller(caller).reads_in(workspace, now)
+                        }
+                        CallerPrincipal::Person(_)
+                        | CallerPrincipal::App(_)
+                        | CallerPrincipal::Bot(_) => true,
+                    }
+            }
             None => match caller.principal() {
                 // An application or a bot is always admitted into one room;
                 // unconfined, it takes part in none.
@@ -586,7 +620,7 @@ impl CapnpBrokerState {
     /// workspace to host services (which read the host's authority
     /// themselves) and so cannot run under the borrow; only the caller's
     /// own workspaces are copied.
-    fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, BrokerActor, u64)> {
+    pub(super) fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, BrokerActor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
         };
@@ -705,6 +739,14 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
+        // Host steps (pairing on this machine's LAN, administering the
+        // identity this machine keeps) run for the person at it: offered
+        // only in the room a local caller's connection was admitted to.
+        let host_steps = if caller.device_public_key().is_none() {
+            super::host_steps::HostSteps::installed(&self.services)
+        } else {
+            Vec::new()
+        };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
             let room = workspace.room.to_string();
@@ -775,6 +817,14 @@ impl CapnpBrokerState {
                     record_id: root.record_id.clone(),
                     browsable: true,
                 });
+            }
+            if caller.room() == Some(room.as_str()) {
+                for steps in host_steps
+                    .iter()
+                    .filter(|steps| scope.wants(steps.provider()))
+                {
+                    Self::host_step_rows((&workspace, &policy, now), steps, &mut rows);
+                }
             }
             let provider = workspace_provider(&room);
             if !scope.wants(&provider) {
@@ -915,6 +965,46 @@ impl CapnpBrokerState {
     /// Mark each of `rows` whose action the room's grants let `actor` take
     /// only after asking: it asks for confirmation, which the person gives
     /// on their own device.
+    /// The rows of host steps `steps` that `actor` is offered in
+    /// `workspace` at `now`, appended to `rows`, each marked where it asks
+    /// first.
+    fn host_step_rows(
+        (workspace, actor, now): (&Workspace, &BrokerActor, u64),
+        steps: &super::host_steps::HostSteps,
+        rows: &mut Vec<CatalogueRow>,
+    ) {
+        let start = rows.len();
+        rows.extend(
+            steps
+                .descriptors()
+                .into_iter()
+                .filter(|descriptor| {
+                    Self::offered(
+                        workspace,
+                        actor,
+                        now,
+                        steps.app_id(),
+                        (
+                            &descriptor.resource_kind,
+                            &descriptor.address.resource,
+                            &descriptor.address.action,
+                        ),
+                        &descriptor.contract,
+                    )
+                })
+                .map(|descriptor| {
+                    CatalogueRow::for_action(
+                        steps.provider().to_owned(),
+                        steps.app_id(),
+                        descriptor,
+                    )
+                }),
+        );
+        if let Some(added) = rows.get_mut(start..) {
+            Self::mark_asks(workspace, actor, now, added);
+        }
+    }
+
     fn mark_asks(workspace: &Workspace, actor: &BrokerActor, now: u64, rows: &mut [CatalogueRow]) {
         for row in rows {
             let app = row.app_id.clone();
@@ -1253,6 +1343,14 @@ impl CapnpBrokerState {
             && let Some(shortcut) = automation::run_target(&request.target.address)
         {
             return Pending::ready(self.invoke_shortcut_run(caller, room, shortcut, request));
+        }
+        if let Some(steps) =
+            super::host_steps::HostSteps::for_provider(&self.services, &request.target.provider)
+        {
+            return Pending::ready(self.invoke_host_step(caller, &steps, request));
+        }
+        if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
+            return Pending::ready(self.invoke_own_device(caller, request));
         }
         Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
     }
@@ -1951,9 +2049,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let stale = || ActionHostError::InvalidRequest {
-            reason: "the action changed since that revision; list it again".into(),
-        };
+        let stale = || ActionHostError::StaleRevision;
         let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::Found { row, revision },
@@ -2476,6 +2572,163 @@ impl CapnpBrokerState {
         Ok(self.receipt_for(request.invocation, job))
     }
 
+    /// Admit one host step (pairing a nearby device, administering the
+    /// person's identity) for `caller` and start it on the host.
+    ///
+    /// Host steps run on this machine, for the person at it: a remote device
+    /// is never offered them, and the caller must be confined to the room its
+    /// connection was admitted to, whose policy decides the step under the
+    /// service's app id. A step whose contract asks first needs the
+    /// person's own confirmation, or the answer they gave on their device.
+    /// The host then decides whether the actor may take it at all. The
+    /// invocation answers `Accepted` at once and records the outcome when
+    /// the host's step ends, which for a pairing approval may be minutes
+    /// later.
+    fn invoke_host_step(
+        self: &Arc<Self>,
+        caller: &Caller,
+        steps: &super::host_steps::HostSteps,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        let abandon = |error: ActionHostError| {
+            if let Ok(mut ledger) = self.remote_invocations.lock() {
+                ledger.abandon(&request.invocation);
+            }
+            error
+        };
+        let reservation = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            })?
+            .reserve(caller, request)?;
+        if matches!(reservation, Reservation::Admitted) {
+            return self
+                .remote_job(caller, &request.invocation)
+                .map(|job| self.receipt_for(request.invocation, job))
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        if caller.device_public_key().is_some() {
+            return Err(abandon(ActionHostError::UnknownAction));
+        }
+        let Some(room) = caller.room() else {
+            return Err(abandon(ActionHostError::NotPermitted));
+        };
+        let address = &request.target.address;
+        let Some(descriptor) = steps
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| &descriptor.address == address)
+        else {
+            return Err(abandon(ActionHostError::UnknownAction));
+        };
+        let Some((workspace, policy, now)) =
+            self.decide_for(caller, room, |workspace, policy, now| {
+                (workspace.clone(), policy.clone(), now)
+            })
+        else {
+            return Err(abandon(ActionHostError::UnknownAction));
+        };
+        let argument = request.argument.to_slot();
+        self.admit_answer(
+            (&workspace, &policy, now),
+            steps.app_id(),
+            &descriptor,
+            (argument.as_deref(), request.confirmation.as_ref()),
+        )
+        .map_err(abandon)?;
+        if !self.confirmed_as_asked(
+            &policy,
+            &descriptor,
+            argument.as_deref(),
+            request.confirmation.as_ref(),
+        ) {
+            return Err(abandon(ActionHostError::ConfirmationRequired));
+        }
+        let started = steps
+            .start(room, &policy, address, argument.as_deref())
+            .map_err(|reason| abandon(ActionHostError::Refused { reason }))?;
+        let id = self.follow_host_step(&policy, started);
+        if let Ok(mut ledger) = self.remote_invocations.lock() {
+            ledger.complete(&request.invocation, id);
+        }
+        Ok(self.receipt_for(request.invocation, id))
+    }
+
+    /// Whether `confirmation` answers `descriptor`'s own confirmation
+    /// policy for `actor` with `argument`: the person's own word when they
+    /// act themselves, else the answer they gave on their device.
+    fn confirmed_as_asked(
+        &self,
+        actor: &BrokerActor,
+        descriptor: &ActionDescriptor,
+        argument: Option<&str>,
+        confirmation: Option<&Confirmation>,
+    ) -> bool {
+        if descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None {
+            return true;
+        }
+        let witnessed = match confirmation {
+            Some(Confirmation::Witnessed(token)) => self.take_witness(
+                token,
+                actor.id(),
+                (&descriptor.address.resource, &descriptor.address.action),
+                argument,
+            ),
+            _ => false,
+        };
+        let own = actor.direct().then_some(confirmation).flatten();
+        witnessed || confirmation_satisfied(&descriptor.contract.confirmation, own)
+    }
+
+    /// Record a host step started for `actor` as an invocation job: accepted
+    /// now, and its outcome once `started` answers, from whichever thread
+    /// completes it. The job's id.
+    fn follow_host_step(
+        self: &Arc<Self>,
+        actor: &BrokerActor,
+        started: Pending<crate::services::DevicePairingOutcome>,
+    ) -> u64 {
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let owner = InvocationOwner::Local {
+            actor: actor.id().to_owned(),
+        };
+        // Accepted first: a step that already answered records its outcome
+        // over it below, never the other way round.
+        self.record_completion(
+            id,
+            owner.clone(),
+            tilo_actions::InvocationUpdate::Accepted { invocation },
+        );
+        let state = Arc::clone(self);
+        started.then(move |outcome| {
+            let update = match outcome {
+                Some(Ok(output)) => {
+                    tilo_actions::InvocationUpdate::Succeeded { invocation, output }
+                }
+                Some(Err(error)) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: *error,
+                },
+                None => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "host_step_stopped".into(),
+                        message: "the host step stopped without an answer".into(),
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            state.record_completion(id, owner, update);
+        });
+        id
+    }
+
     /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
     /// the screen: every step that needs confirmation and every question
     /// waits in [`Self::take_step_prompt`] until the compositor's sheet
@@ -2776,28 +3029,31 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match launcher.launch_content(app_id, workspace, content, place) {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
+        match launcher.launch_content(app_id, workspace, content, place) {
+            // Answered with the instance it started, once that instance
+            // connects with the launch's ticket and publishes.
+            Ok(started) => self.record_launch(
+                (id, invocation),
+                &actor.id,
+                (app_id, &workspace.room.to_string()),
+                started,
+            ),
+            Err(error) => self.record_completion(
+                id,
+                InvocationOwner::Local {
+                    actor: actor.id.clone(),
                 },
-            },
-        };
-        self.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: actor.id.clone(),
-            },
-            update,
-        );
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "launch_failed".into(),
+                        message: error,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            ),
+        }
         Ok(id)
     }
 
@@ -3135,6 +3391,29 @@ mod foreign_caller_tests {
     use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
 
+    #[test]
+    fn an_admitted_bot_sees_only_its_confined_room() {
+        let user = [27; 32];
+        let mut tree = WorkspaceTree::default();
+        for id in [7, 8] {
+            let mut workspace = Workspace::new(WorkspaceId(id), "Bot room");
+            workspace.set_owner(hex::encode(user));
+            tree.workspaces.push(workspace);
+        }
+        let room = tree.workspaces[0].room.to_string();
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let bot = Caller::bot("bridge", user, [9; 32]);
+        assert!(state.rooms_for(&bot).is_empty());
+        assert_eq!(state.rooms_for(&bot.clone().in_room(&room)), vec![room]);
+        assert!(state.rooms_for(&bot.in_room("unknown-room")).is_empty());
+    }
+
     /// Every room is governed by one device.
     struct GovernedBy([u8; 32]);
 
@@ -3446,5 +3725,211 @@ mod argument_size_tests {
             "{reason}"
         );
         assert!(reason.contains("split"), "{reason}");
+    }
+}
+
+#[cfg(test)]
+mod device_pairing_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use super::RowScope;
+    use crate::services::{DevicePairingOutcome, DevicePairingRequest, DevicePairingServices};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+    use tilo_actions::remote::{
+        Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
+        RemoteActionMessage, device_pairing, pending,
+    };
+
+    /// The host's pairing, standing in: it records each step it was asked
+    /// to start and answers when the test completes it.
+    #[derive(Default)]
+    struct Host {
+        started: Mutex<Vec<(String, String, String)>>,
+        answers: Mutex<Vec<Completer<DevicePairingOutcome>>>,
+    }
+
+    impl DevicePairingServices for Host {
+        fn app_id(&self) -> &'static str {
+            "so.tilo.settings"
+        }
+
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            [device_pairing::DISCOVER, device_pairing::APPROVE]
+                .into_iter()
+                .map(|step| {
+                    let mut contract = tilo_actions::ActionContract {
+                        kind: tilo_actions::ActionKind::Outside,
+                        ..tilo_actions::ActionContract::default()
+                    };
+                    if step == device_pairing::APPROVE {
+                        contract.risk = tilo_actions::RiskLevel::Privileged;
+                        contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                    }
+                    tilo_actions::ActionDescriptor {
+                        semantic_identity: None,
+                        address: tilo_actions::ActionAddress::new(device_pairing::RESOURCE, step),
+                        resource_kind: device_pairing::RESOURCE.into(),
+                        resource_label: "Nearby device pairing".into(),
+                        action_label: step.into(),
+                        description: None,
+                        locus: tilo_actions::ExecutionLocus::default(),
+                        kind: tilo_actions::OperationKind::Effect,
+                        contract,
+                        input: tilo_actions::InputSpec::None,
+                        params: Vec::new(),
+                        view: None,
+                    }
+                })
+                .collect()
+        }
+
+        fn start(
+            &self,
+            request: &DevicePairingRequest<'_>,
+        ) -> Result<Pending<DevicePairingOutcome>, String> {
+            self.started.lock().unwrap().push((
+                request.room.to_owned(),
+                request.actor.id().to_owned(),
+                request.address.action.clone(),
+            ));
+            let (answer, pending) = pending();
+            self.answers.lock().unwrap().push(answer);
+            Ok(pending)
+        }
+    }
+
+    fn broker(host: Arc<Host>) -> (Arc<CapnpBrokerState>, String, String) {
+        let owner = hex::encode([41; 32]);
+        let mut workspace = Workspace::new(WorkspaceId(9), "Pairing");
+        workspace.set_owner(owner.clone());
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                device_pairing: Some(host),
+                ..Default::default()
+            },
+        );
+        (state, owner, room)
+    }
+
+    fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: device_pairing::target(step),
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    fn invoked(
+        state: &Arc<CapnpBrokerState>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>
+    {
+        state
+            .action_invoke(caller, None, None, request)
+            .wait_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("admission answers at once")
+    }
+
+    #[test]
+    fn settings_pairs_as_its_person_and_the_outcome_follows_the_host() {
+        let host = Arc::new(Host::default());
+        let (state, owner, room) = broker(Arc::clone(&host));
+        let person = Caller::local_person(owner.clone()).in_room(room.clone());
+
+        let rows = state
+            .eager_catalogue(&person, RowScope::Provider(device_pairing::PROVIDER))
+            .0;
+        assert_eq!(rows.len(), 2, "both steps are offered to the person here");
+        assert!(rows.iter().all(|row| row.app_id == "so.tilo.settings"));
+
+        // Settings reaches the steps as the person using it, without
+        // declaring `[actions] invoke`; another app does not.
+        let discover = RemoteActionMessage::Invoke(request(device_pairing::DISCOVER, None));
+        assert_eq!(
+            state
+                .app_door(&person, "so.tilo.settings", &discover)
+                .map(|caller| caller.principal().clone())
+                .ok(),
+            Some(person.principal().clone())
+        );
+        assert!(state.app_door(&person, "so.tilo.notes", &discover).is_err());
+
+        let unconfirmed = invoked(&state, &person, &request(device_pairing::APPROVE, None));
+        assert_eq!(
+            unconfirmed,
+            Err(tilo_actions::remote::ActionHostError::ConfirmationRequired),
+            "approval needs the person's confirmation"
+        );
+        assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+
+        let receipt = invoked(
+            &state,
+            &person,
+            &request(device_pairing::APPROVE, Some(Confirmation::Confirmed)),
+        )
+        .expect("admitted");
+        assert_eq!(
+            *host.started.lock().unwrap(),
+            [(
+                room.clone(),
+                owner.clone(),
+                device_pairing::APPROVE.to_owned()
+            )]
+        );
+        let job = state
+            .remote_job(&person, &receipt.invocation)
+            .expect("the invocation has a job");
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Accepted { .. })
+        ));
+        let answer = host.answers.lock().unwrap().pop().expect("started");
+        answer.complete(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"device": "aa"})),
+            resources: Vec::new(),
+        }));
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+
+        // A remote device, or a caller confined to no room, is never offered
+        // pairing on this machine.
+        let remote = Caller::authenticated([41; 32], [42; 32]).in_room(room);
+        assert!(
+            state
+                .eager_catalogue(&remote, RowScope::Provider(device_pairing::PROVIDER))
+                .0
+                .is_empty()
+        );
+        assert!(invoked(&state, &remote, &request(device_pairing::DISCOVER, None)).is_err());
+        let unconfined = Caller::local_person(owner);
+        assert!(
+            invoked(
+                &state,
+                &unconfined,
+                &request(device_pairing::DISCOVER, None)
+            )
+            .is_err()
+        );
+        assert_eq!(host.started.lock().unwrap().len(), 1);
     }
 }

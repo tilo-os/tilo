@@ -8,30 +8,22 @@
 //!
 //! Written by a small hand-rolled writer (`pdf`) — no `printpdf`
 //! dependency — for lockfile stability and full control of pagination
-//! and image embedding. Text uses the base-14 Helvetica/Helvetica-Bold
-//! fonts (viewer-shipped); AFM advance widths (`metrics`) drive
-//! accurate word-wrap. Images are decoded with the `image` crate and
+//! and image embedding. Text uses the base-14 Helvetica family —
+//! regular, bold, oblique and bold oblique (viewer-shipped); AFM advance
+//! widths (`metrics`) drive accurate word-wrap. Headings are bold; inline
+//! `strong` and `em` marks set bold and italic per run, wrapped as one
+//! line of mixed runs. Images are decoded with the `image` crate and
 //! embedded as `/DeviceRGB` `Image` `XObjects`.
 //!
 //! ## Known limitations
 //!
 //! Fonts: base-14 Helvetica only — glyphs outside `WinAnsiEncoding` (CJK,
-//! most non-Latin) render as `?`; italic isn't distinguished from
-//! regular, only bold is. Images: re-encoded to raw RGB and
+//! most non-Latin) render as `?`. Images: re-encoded to raw RGB and
 //! Flate-compressed (fine for export, not size-optimal); failures fall
 //! back to a labelled placeholder. Tables: a simple fixed-grid, no
 //! merging/per-cell wrapping beyond one clipped line/row spanning.
-//! Marks: inline bold/italic spans aren't yet applied per-span — bold
-//! comes from block kind/level, not `strong` marks.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
+//! Marks: only `strong` and `em` are drawn; underline, strike, colour,
+//! size and font family are not.
 
 mod metrics;
 mod pdf;
@@ -177,15 +169,61 @@ const TABLE_PAD: f32 = 4.0; // cell text padding
 
 // ---- low-level drawing model ------------------------------------------------
 
+/// Which face of the Helvetica family a run is set in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Style {
+    bold: bool,
+    italic: bool,
+}
+
+impl Style {
+    const BOLD: Self = Self {
+        bold: true,
+        italic: false,
+    };
+
+    /// The advance widths of this face: an oblique face is its upright
+    /// face slanted, so it shares that face's widths.
+    fn widths(self) -> &'static [u16; 256] {
+        if self.bold {
+            &metrics::HELVETICA_BOLD
+        } else {
+            &metrics::HELVETICA
+        }
+    }
+
+    /// The page resource name of this face's font (see [`finish`]).
+    fn font(self) -> &'static str {
+        match (self.bold, self.italic) {
+            (false, false) => "F1",
+            (true, false) => "F2",
+            (false, true) => "F3",
+            (true, true) => "F4",
+        }
+    }
+
+    fn width(self, text: &str, size: f32) -> f32 {
+        metrics::text_width(self.widths(), &pdf::to_winansi(text), size)
+    }
+}
+
+/// The faces a document can use, in resource order: `F1` … `F4`.
+const FACES: [&str; 4] = [
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-Oblique",
+    "Helvetica-BoldOblique",
+];
+
 /// One drawing op accumulated into a page's content stream, collected
 /// per page and serialized at the end so the writer stays a single pass.
 enum Op {
-    /// Show `text` at baseline `(x, y)` in font `bold?` at `size` pt.
+    /// Show `text` at baseline `(x, y)` in face `style` at `size` pt.
     Text {
         x: f32,
         y: f32,
         size: f32,
-        bold: bool,
+        style: Style,
         text: String,
     },
     /// Stroke a 1pt line from `(x1,y1)` to `(x2,y2)`.
@@ -264,19 +302,23 @@ impl Layout {
         }
     }
 
-    /// Draw a single already-wrapped line at the current cursor, then
-    /// advance by `leading`. `size`/`bold` pick the font.
-    fn line(&mut self, text: &str, x: f32, size: f32, leading: f32, bold: bool) {
+    /// Draw a single already-wrapped line of runs at the current cursor,
+    /// each run after the one before it, then advance by `leading`.
+    fn line(&mut self, runs: &[Run], x: f32, size: f32, leading: f32) {
         self.ensure(leading);
         // Baseline sits ~`size` below the cursor's top (approx ascent).
         let baseline = self.y - size * 0.8;
-        self.cur().ops.push(Op::Text {
-            x,
-            y: baseline,
-            size,
-            bold,
-            text: text.to_string(),
-        });
+        let mut x = x;
+        for (text, style) in runs {
+            self.cur().ops.push(Op::Text {
+                x,
+                y: baseline,
+                size,
+                style: *style,
+                text: text.clone(),
+            });
+            x += style.width(text, size);
+        }
         self.y -= leading;
     }
 
@@ -287,7 +329,7 @@ impl Layout {
 
 // ---- public entry point -----------------------------------------------------
 
-/// Render a materialized qdoc snapshot to PDF bytes. Always succeeds for
+/// Render a materialized tilo-doc snapshot to PDF bytes. Always succeeds for
 /// a well-formed snapshot — undecodable image blobs degrade to a
 /// placeholder box rather than erroring; an empty document still yields
 /// a valid, single-page PDF.
@@ -342,8 +384,8 @@ fn render_heading(layout: &mut Layout, block: &BlockView) {
     let leading = size * 1.25;
     layout.gap(PARA_GAP);
     layout.ensure(leading);
-    for line in wrap(&block.text, TEXT_W, size, true) {
-        layout.line(&line, MARGIN, size, leading, true);
+    for line in wrap(&styled(block, Style::BOLD), TEXT_W, size) {
+        layout.line(&line, MARGIN, size, leading);
     }
     layout.gap(PARA_GAP);
 }
@@ -354,8 +396,8 @@ fn render_paragraph(layout: &mut Layout, block: &BlockView) {
         layout.gap(BODY_LEADING);
         return;
     }
-    for line in wrap(&block.text, TEXT_W, BODY_SIZE, false) {
-        layout.line(&line, MARGIN, BODY_SIZE, BODY_LEADING, false);
+    for line in wrap(&styled(block, Style::default()), TEXT_W, BODY_SIZE) {
+        layout.line(&line, MARGIN, BODY_SIZE, BODY_LEADING);
     }
     layout.gap(PARA_GAP);
 }
@@ -385,17 +427,16 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
         metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
     let text_indent = indent + marker_w;
     let avail = (MARGIN + TEXT_W) - text_indent;
-    let lines = wrap(&block.text, avail.max(40.0), BODY_SIZE, false);
+    let lines = wrap(&styled(block, Style::default()), avail.max(40.0), BODY_SIZE);
 
     // Marker on the first line, hung to the left of the wrapped text.
     layout.ensure(BODY_LEADING);
     let first_y_top = layout.y;
     layout.line(
-        lines.first().map_or("", String::as_str),
+        lines.first().map_or(&[], Vec::as_slice),
         text_indent,
         BODY_SIZE,
         BODY_LEADING,
-        false,
     );
     // Place the marker at the same baseline as the first text line.
     let baseline = first_y_top - BODY_SIZE * 0.8;
@@ -403,11 +444,11 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
         x: indent,
         y: baseline,
         size: BODY_SIZE,
-        bold: false,
+        style: Style::default(),
         text: marker,
     });
     for line in lines.iter().skip(1) {
-        layout.line(line, text_indent, BODY_SIZE, BODY_LEADING, false);
+        layout.line(line, text_indent, BODY_SIZE, BODY_LEADING);
     }
 }
 
@@ -480,7 +521,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
                 x: x + TABLE_PAD,
                 y: baseline,
                 size: BODY_SIZE,
-                bold: false,
+                style: Style::default(),
                 text,
             });
         }
@@ -601,7 +642,7 @@ fn placeholder(layout: &mut Layout, label: &str) {
         x: MARGIN + 6.0,
         y: baseline,
         size: BODY_SIZE,
-        bold: false,
+        style: Style::default(),
         text: label,
     });
     layout.y -= h;
@@ -610,73 +651,115 @@ fn placeholder(layout: &mut Layout, label: &str) {
 
 // ---- text wrapping ----------------------------------------------------------
 
-/// Word-wrap `text` to `max_w` points at `size`pt. Hard newlines in the
-/// source split lines; over-long single words are hard-broken so they
-/// never overflow the text column.
-fn wrap(text: &str, max_w: f32, size: f32, bold: bool) -> Vec<String> {
-    let table = if bold {
-        &metrics::HELVETICA_BOLD
-    } else {
-        &metrics::HELVETICA
+/// A run of text set in one face.
+type Run = (String, Style);
+
+/// One character and the face it is set in.
+type Styled = (char, Style);
+
+/// `block`'s characters, each in `base` — made bold under a `strong` mark
+/// and italic under an `em` mark (mark offsets count characters).
+fn styled(block: &BlockView, base: Style) -> Vec<Styled> {
+    let on = |name: &str, at: usize| {
+        block.marks.iter().any(|mark| {
+            mark.name == name
+                && mark.start <= at
+                && at < mark.end
+                && !matches!(mark.value, tilo_doc::document::MarkValue::Bool(false))
+        })
     };
-    let mut out = Vec::new();
-    for src_line in text.split('\n') {
-        if src_line.is_empty() {
-            out.push(String::new());
+    block
+        .text
+        .chars()
+        .enumerate()
+        .map(|(at, ch)| {
+            let style = Style {
+                bold: base.bold || on("strong", at),
+                italic: base.italic || on("em", at),
+            };
+            (ch, style)
+        })
+        .collect()
+}
+
+fn styled_width(chars: &[Styled], size: f32) -> f32 {
+    let mut buffer = [0; 4];
+    chars
+        .iter()
+        .map(|&(ch, style)| style.width(ch.encode_utf8(&mut buffer), size))
+        .sum()
+}
+
+/// `chars` as runs: consecutive characters in one face joined.
+fn runs(chars: &[Styled]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for &(ch, style) in chars {
+        match runs.last_mut() {
+            Some((text, face)) if *face == style => text.push(ch),
+            _ => runs.push((ch.to_string(), style)),
+        }
+    }
+    runs
+}
+
+/// Word-wrap styled characters to `max_w` points at `size`pt, as lines of
+/// runs. Hard newlines in the source split lines; over-long single words
+/// are hard-broken so they never overflow the text column.
+fn wrap(chars: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Run>> {
+    let mut out: Vec<Vec<Styled>> = Vec::new();
+    for source in chars.split(|&(ch, _)| ch == '\n') {
+        if source.is_empty() {
+            out.push(Vec::new());
             continue;
         }
-        let mut line = String::new();
-        for word in src_line.split(' ') {
-            let candidate = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
+        let mut line: Vec<Styled> = Vec::new();
+        // Each piece is a word and the space after it, if any.
+        for piece in source.split_inclusive(|&(ch, _)| ch == ' ') {
+            let word = match piece.split_last() {
+                Some((&(' ', _), word)) => word,
+                _ => piece,
             };
-            let w = metrics::text_width(table, &pdf::to_winansi(&candidate), size);
-            if w <= max_w || line.is_empty() {
-                if w <= max_w {
-                    line = candidate;
-                } else {
-                    // Single word longer than the column: hard-break it.
-                    for chunk in hard_break(word, max_w, size, table) {
-                        out.push(chunk);
-                    }
-                    line.clear();
-                }
+            if styled_width(&line, size) + styled_width(word, size) <= max_w {
+                line.extend_from_slice(piece);
+                continue;
+            }
+            if !line.is_empty() {
+                out.push(trimmed(std::mem::take(&mut line)));
+            }
+            if styled_width(word, size) <= max_w {
+                line.extend_from_slice(piece);
             } else {
-                out.push(std::mem::take(&mut line));
-                line = word.to_string();
-                // The new word alone might still overflow.
-                if metrics::text_width(table, &pdf::to_winansi(&line), size) > max_w {
-                    for chunk in hard_break(&line, max_w, size, table) {
-                        out.push(chunk);
-                    }
-                    line.clear();
-                }
+                // A single word longer than the column: hard-break it.
+                out.extend(hard_break(word, max_w, size));
             }
         }
         if !line.is_empty() {
-            out.push(line);
+            out.push(trimmed(line));
         }
     }
     if out.is_empty() {
-        out.push(String::new());
+        out.push(Vec::new());
     }
-    out
+    out.iter().map(|line| runs(line)).collect()
+}
+
+/// `line` without the spaces it ends in.
+fn trimmed(mut line: Vec<Styled>) -> Vec<Styled> {
+    while line.last().is_some_and(|&(ch, _)| ch == ' ') {
+        line.pop();
+    }
+    line
 }
 
 /// Break a single overlong word into column-width chunks (char granularity).
-fn hard_break(word: &str, max_w: f32, size: f32, table: &[u16; 256]) -> Vec<String> {
+fn hard_break(word: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Styled>> {
     let mut chunks = Vec::new();
-    let mut cur = String::new();
-    for ch in word.chars() {
-        let candidate = format!("{cur}{ch}");
-        if metrics::text_width(table, &pdf::to_winansi(&candidate), size) > max_w && !cur.is_empty()
-        {
-            chunks.push(std::mem::take(&mut cur));
-            cur.push(ch);
-        } else {
-            cur = candidate;
+    let mut cur: Vec<Styled> = Vec::new();
+    for &styled in word {
+        cur.push(styled);
+        if styled_width(&cur, size) > max_w && cur.len() > 1 {
+            cur.pop();
+            chunks.push(std::mem::replace(&mut cur, vec![styled]));
         }
     }
     if !cur.is_empty() {
@@ -711,9 +794,17 @@ fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
 
 /// Turn the accumulated pages into the final PDF byte stream.
 fn finish(mut layout: Layout) -> Vec<u8> {
-    // Font objects (shared across pages).
-    let helv = layout.writer.add(font_dict("Helvetica").into_bytes());
-    let helv_bold = layout.writer.add(font_dict("Helvetica-Bold").into_bytes());
+    // Font objects (shared across pages), `/F1` … `/F4` in `FACES` order.
+    let fonts = {
+        use std::fmt::Write as _;
+        let mut fonts = String::new();
+        for (index, face) in FACES.iter().enumerate() {
+            let font = layout.writer.add(font_dict(face).into_bytes());
+            // Writing to a `String` cannot fail.
+            let _ = write!(fonts, "/F{} {} 0 R ", index.saturating_add(1), font.0);
+        }
+        fonts
+    };
 
     // Reserve the pages-tree object so each page can reference its parent.
     let pages_obj = layout.writer.reserve();
@@ -742,10 +833,7 @@ fn finish(mut layout: Layout) -> Vec<u8> {
             }
             xobjects.push_str(">>");
         }
-        let resources = format!(
-            "<< /Font << /F1 {} 0 R /F2 {} 0 R >>{} >>",
-            helv.0, helv_bold.0, xobjects
-        );
+        let resources = format!("<< /Font << {fonts}>>{xobjects} >>");
         // `PAGE_W`/`PAGE_H` are fixed page-geometry constants (612.0,
         // 792.0), not derived from any document input, so this truncation
         // is provably exact.
@@ -794,10 +882,10 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
                 x,
                 y,
                 size,
-                bold,
+                style,
                 text,
             } => {
-                let font = if *bold { "F2" } else { "F1" };
+                let font = style.font();
                 let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (");
                 s.extend_from_slice(&escape_pdf_text(text));
                 let _ = writeln!(s, ") Tj ET");

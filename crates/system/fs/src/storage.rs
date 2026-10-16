@@ -9,15 +9,20 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 use iroh_blobs::Hash;
 use runtime_fs::storage::{
-    EvictionReport, EvictionSelection, STORAGE_FRAMING, StorageAggregate, StorageRequest,
-    StorageResponse, SyncStorageSnapshot, SyncedFileState,
+    CacheFreed, EvictionReport, EvictionSelection, ResidencySplit, ResidencySummary,
+    STORAGE_FRAMING, StorageAggregate, StorageRequest, StorageResponse, SyncStorageSnapshot,
+    SyncedFileState, WorkspaceResidency,
 };
 
-use crate::availability::{AvailabilityRegistry, RecordAvailability, pinned_in_snapshot};
+use crate::availability::{
+    AvailabilityRegistry, RecordAvailability, RecordKind, pinned_in_snapshot,
+};
 use crate::clock::unix_now_ms;
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
-use crate::namespace::NodeKind;
+use crate::namespace::{NodeKind, ROOT_INO};
+use crate::store::area::Retention;
 use crate::{FileHistoryStore, Hydrator, Namespace};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone)]
 pub struct StorageAuthority {
@@ -31,6 +36,9 @@ pub struct StorageAuthority {
     history: Option<Arc<FileHistoryStore>>,
     eviction: Arc<tokio::sync::Mutex<()>>,
     workspace: String,
+    /// The person's prefetch switch and cache budget; `None` answers the
+    /// policy requests with an error.
+    cache_policy: Option<Arc<crate::cache_policy::CachePolicies>>,
 }
 
 /// Serve the narrow storage protocol.  The caller owns socket placement and
@@ -56,6 +64,25 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                         Ok(report) => StorageResponse::Evicted(report),
                         Err(error) => StorageResponse::Error(error.to_string()),
                     },
+                    StorageRequest::CachePolicy => authority.cache_policy(None).await,
+                    StorageRequest::SetCachePolicy(policy) => {
+                        authority.cache_policy(Some(policy)).await
+                    }
+                    StorageRequest::Residency => {
+                        StorageResponse::Residency(authority.residency().await)
+                    }
+                    StorageRequest::FreeCache { workspace } => {
+                        match authority.free_cache(&workspace).await {
+                            Ok(freed) => StorageResponse::CacheFreed(freed),
+                            Err(error) => StorageResponse::Error(error.to_string()),
+                        }
+                    }
+                    StorageRequest::KeepHere { workspace, keep } => {
+                        match authority.keep_here(&workspace, keep) {
+                            Ok(()) => StorageResponse::Kept { keep },
+                            Err(error) => StorageResponse::Error(error.to_string()),
+                        }
+                    }
                 };
                 if STORAGE_FRAMING
                     .write_value_async(&mut stream, &response)
@@ -104,15 +131,38 @@ impl StorageAuthority {
             history,
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
+            cache_policy: None,
+        }
+    }
+
+    /// Answer the cache-policy requests from `policies`.
+    #[must_use]
+    pub fn with_cache_policy(mut self, policies: Arc<crate::cache_policy::CachePolicies>) -> Self {
+        self.cache_policy = Some(policies);
+        self
+    }
+
+    /// The policy in force, after replacing it with `set` if given. Setting
+    /// a smaller budget evicts at once, so it runs off the async workers.
+    async fn cache_policy(&self, set: Option<runtime_fs::storage::CachePolicy>) -> StorageResponse {
+        let Some(policies) = self.cache_policy.clone() else {
+            return StorageResponse::Error("this mount keeps no cache policy".into());
+        };
+        let answer = tokio::task::spawn_blocking(move || match set {
+            Some(policy) => policies.set(policy),
+            None => Ok(policies.current()),
+        })
+        .await;
+        match answer {
+            Ok(Ok(policy)) => StorageResponse::CachePolicy(policy),
+            Ok(Err(error)) => StorageResponse::Error(format!("{error:#}")),
+            Err(error) => StorageResponse::Error(error.to_string()),
         }
     }
 
     /// The live files the namespace knows about, filtered to regular files.
     fn logical_files(&self) -> Vec<LogicalFile> {
-        let mut ns = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ns = self.namespace.lock_recover();
         ns.live_node_ids()
             .into_iter()
             .filter_map(|identity| {
@@ -216,24 +266,8 @@ impl StorageAuthority {
     pub async fn snapshot(&self) -> SyncStorageSnapshot {
         let logical = self.logical_files();
         let online = !self.hydrator.known_peers().is_empty();
-        let dirty = self
-            .dirty
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .copied()
-            .collect::<HashSet<_>>();
-        let records = self
-            .availability
-            .as_ref()
-            .map_or_else(Vec::new, |registry| {
-                registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .records()
-                    .cloned()
-                    .collect()
-            });
+        let dirty = self.dirty_inodes();
+        let records = self.records();
         // One captured registry generation and one superset history catalog
         // serve every row. A failed/changed catalog yields no reclaimable UI
         // rows rather than re-planning files independently.
@@ -261,6 +295,152 @@ impl StorageAuthority {
             apps: aggregate(files.iter().filter_map(|f| f.app.as_ref().map(|a| (a, f)))),
             files,
         }
+    }
+
+    fn dirty_inodes(&self) -> HashSet<u64> {
+        self.dirty.lock_recover().keys().copied().collect()
+    }
+
+    fn records(&self) -> Vec<RecordAvailability> {
+        self.availability
+            .as_ref()
+            .map_or_else(Vec::new, |registry| {
+                registry.lock_recover().records().cloned().collect()
+            })
+    }
+
+    fn root_record(&self) -> Option<fs_protocol::FileRecordId> {
+        self.namespace.lock_recover().record_id_for(ROOT_INO)
+    }
+
+    fn check_workspace(&self, workspace: &str) -> Result<()> {
+        anyhow::ensure!(
+            workspace == self.workspace,
+            "this device mounts no workspace named {workspace}"
+        );
+        Ok(())
+    }
+
+    /// What this device holds of the workspace, split by what losing the
+    /// device would cost ([`classify`]). It is answered to the person's own
+    /// devices, so it carries counts and never a path.
+    pub async fn residency(&self) -> ResidencySummary {
+        let logical = self.logical_files();
+        let dirty = self.dirty_inodes();
+        let records = self.records();
+        let by_id: HashMap<_, _> = records
+            .iter()
+            .map(|record| (record.record_id, record))
+            .collect();
+        // A pin reaches every file below the folder it is set on, whether
+        // or not the file has a record of its own yet.
+        let pinned: HashSet<u64> = {
+            let mut ns = self.namespace.lock_recover();
+            logical
+                .iter()
+                .filter(|file| kept_by_policy(&mut ns, file.inode, &by_id))
+                .map(|file| file.inode)
+                .collect()
+        };
+        // The same receipts the cache budget gives up content for first.
+        let held_elsewhere = self
+            .availability
+            .as_ref()
+            .map(|registry| registry.lock_recover().held_elsewhere())
+            .unwrap_or_default();
+        let files = self.hydrator.store.files();
+        let mut split = ResidencySplit::default();
+        for file in logical {
+            let unsaved = dirty.contains(&file.inode);
+            let facts = match file.hash {
+                // Never written: whatever it holds is staged here.
+                None => FileFacts {
+                    local_bytes: file.logical_bytes,
+                    unsaved,
+                    ..FileFacts::default()
+                },
+                Some(hash) => {
+                    let residence = self.hydrator.residency(hash).await;
+                    FileFacts {
+                        local_bytes: residence.hydrated_bytes,
+                        unsaved,
+                        pinned: pinned.contains(&file.inode),
+                        cached: files
+                            .entry(hash.as_bytes())
+                            .is_some_and(|entry| entry.retention == Retention::Cached),
+                        acknowledged: held_elsewhere.contains(hash.as_bytes()),
+                        fetched: residence.remote_source.is_some() || residence.remotely_durable,
+                    }
+                }
+            };
+            add_to(&mut split, &facts);
+        }
+        let kept_here = self.root_record().is_some_and(|root| {
+            by_id
+                .get(&root)
+                .is_some_and(|record| record.policy == fs_protocol::AvailabilityPolicy::Pinned)
+        });
+        ResidencySummary {
+            workspaces: vec![WorkspaceResidency {
+                workspace: self.workspace.clone(),
+                kept_here,
+                split,
+            }],
+        }
+    }
+
+    /// Drop the workspace's cache: the content this device fetched from
+    /// another one and keeps only to open it again quickly. What is being
+    /// written or fetched right now stays; pinned and local-only content is
+    /// never cache. A dropped file downloads again when it is opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `workspace` is not this one or an entry's
+    /// removal cannot be recorded.
+    pub async fn free_cache(&self, workspace: &str) -> Result<CacheFreed> {
+        self.check_workspace(workspace)?;
+        let _exclusive = self.eviction.lock().await;
+        let dirty = self.dirty_inodes();
+        let mut keys = self
+            .logical_files()
+            .into_iter()
+            .filter(|file| !dirty.contains(&file.inode))
+            .filter_map(|file| file.hash)
+            .filter(|hash| !self.hydrator.is_fetching(*hash))
+            .map(|hash| *hash.as_bytes())
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys.dedup();
+        let files = Arc::clone(self.hydrator.store.files());
+        tokio::task::spawn_blocking(move || drop_cached(&files, &keys)).await?
+    }
+
+    /// Keep the whole workspace on this device ("Keep offline" on its root),
+    /// or stop keeping it. Pinned content is fetched in the background.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `workspace` is not this one, or the policy
+    /// cannot be recorded.
+    pub fn keep_here(&self, workspace: &str, keep: bool) -> Result<()> {
+        self.check_workspace(workspace)?;
+        let registry = self
+            .availability
+            .as_ref()
+            .ok_or_else(|| anyhow!("durable availability registry is unavailable"))?;
+        let root = self
+            .root_record()
+            .ok_or_else(|| anyhow!("the workspace has no root record"))?;
+        let policy = if keep {
+            fs_protocol::AvailabilityPolicy::Pinned
+        } else {
+            fs_protocol::AvailabilityPolicy::Automatic
+        };
+        registry
+            .lock_recover()
+            .set_policy_along(&[(root, RecordKind::Directory, None)], policy)?;
+        Ok(())
     }
 
     /// # Errors
@@ -294,11 +474,7 @@ impl StorageAuthority {
                     .push(format!("{} changed since preview", file.path));
                 continue;
             }
-            let still_dirty = self
-                .dirty
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(&file.inode);
+            let still_dirty = self.dirty.lock_recover().contains_key(&file.inode);
             if still_dirty {
                 report
                     .skipped
@@ -336,10 +512,6 @@ impl StorageAuthority {
         Ok(report)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the availability lock intentionally spans plan revalidation and GC handoff so a pin, receipt, or version cannot race destructive authorization"
-    )]
     async fn enqueue_canonical_eviction(
         &self,
         record_id: fs_protocol::FileRecordId,
@@ -363,12 +535,8 @@ impl StorageAuthority {
                     // replacement namespace revision. Holding both guards
                     // therefore prevents either local or remote mutation from
                     // slipping between token validation and backend GC.
-                    let dirty = dirty
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let mut namespace = namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let dirty = dirty.lock_recover();
+                    let mut namespace = namespace.lock_recover();
                     validate_live_eviction_token(
                         &mut namespace,
                         &dirty,
@@ -466,6 +634,124 @@ fn has_fresh_signed_ack_at(record: &RecordAvailability, now: u64) -> bool {
         )
         .unwrap_or(u32::MAX)
             >= requirements.minimum_durable
+}
+
+/// What one file's bytes here are, by what losing this device would cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Holding {
+    /// Kept by the person's choice, and held elsewhere too.
+    Pinned,
+    /// Kept, and held elsewhere too.
+    Replicated,
+    /// Held by no other device this one knows of.
+    OnlyHere,
+    /// Fetched from elsewhere; dropped again when space is short.
+    Cache,
+}
+
+/// What [`classify`] knows of one file on this device.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact from its own source, not a state machine"
+)]
+#[derive(Clone, Copy, Debug, Default)]
+struct FileFacts {
+    /// Its bytes on this device.
+    local_bytes: u64,
+    /// It has changes not yet saved as a version.
+    unsaved: bool,
+    /// The person keeps it here ("Keep offline", itself or a folder above).
+    pinned: bool,
+    /// The content store holds it as cache.
+    cached: bool,
+    /// Another device signed a receipt for its current version
+    /// ([`AvailabilityRegistry::held_elsewhere`]). An expired one counts: a
+    /// content id is immutable, and this only says where else the bytes are,
+    /// it never permits dropping them (safe eviction asks for fresh ones).
+    acknowledged: bool,
+    /// Its bytes arrived from a peer while this daemon ran.
+    fetched: bool,
+}
+
+/// Where a file's bytes here stand. Another device is known to hold it when
+/// it signed a receipt for the current version, or when the bytes came from
+/// a peer (cache, or fetched in this run); without either, and while it has
+/// unsaved changes, it is only here, pinned or not, because that is what a
+/// wiped device would lose. `None` when it has no bytes here.
+fn classify(facts: &FileFacts) -> Option<Holding> {
+    if facts.local_bytes == 0 {
+        return None;
+    }
+    let elsewhere = facts.acknowledged || facts.cached || facts.fetched;
+    Some(if facts.unsaved || !elsewhere {
+        Holding::OnlyHere
+    } else if facts.pinned {
+        Holding::Pinned
+    } else if facts.cached {
+        Holding::Cache
+    } else {
+        Holding::Replicated
+    })
+}
+
+fn add_to(split: &mut ResidencySplit, facts: &FileFacts) {
+    let bytes = facts.local_bytes;
+    let total = match classify(facts) {
+        None => return,
+        Some(Holding::Pinned) => &mut split.pinned_bytes,
+        Some(Holding::Replicated) => &mut split.replicated_bytes,
+        Some(Holding::Cache) => &mut split.cache_bytes,
+        Some(Holding::OnlyHere) => {
+            split.only_here_files = split.only_here_files.saturating_add(1);
+            &mut split.only_here_bytes
+        }
+    };
+    *total = total.saturating_add(bytes);
+}
+
+/// Whether "Keep offline" is set on the inode `ino` or a folder above it.
+fn kept_by_policy(
+    ns: &mut Namespace,
+    ino: u64,
+    records: &HashMap<fs_protocol::FileRecordId, &RecordAvailability>,
+) -> bool {
+    let mut cursor = Some(ino);
+    // A namespace is a tree; the bound only keeps a corrupt one finite.
+    for _ in 0..MAX_POLICY_DEPTH {
+        let Some(current) = cursor else {
+            return false;
+        };
+        if ns
+            .record_id_for(current)
+            .and_then(|id| records.get(&id))
+            .is_some_and(|record| record.policy == fs_protocol::AvailabilityPolicy::Pinned)
+        {
+            return true;
+        }
+        cursor = ns.parent_ino(current);
+    }
+    false
+}
+
+/// Deepest folder nesting [`kept_by_policy`] walks.
+const MAX_POLICY_DEPTH: usize = 4096;
+
+/// Remove the cached entries among `keys` from the content store's file
+/// area. Entries of any other retention stay.
+fn drop_cached(files: &crate::store::area::FileArea, keys: &[[u8; 32]]) -> Result<CacheFreed> {
+    let mut freed = CacheFreed::default();
+    for key in keys {
+        let Some(entry) = files.entry(key) else {
+            continue;
+        };
+        if entry.retention != Retention::Cached {
+            continue;
+        }
+        files.remove(key)?;
+        freed.files = freed.files.saturating_add(1);
+        freed.freed_bytes = freed.freed_bytes.saturating_add(entry.resident);
+    }
+    Ok(freed)
 }
 
 fn snapshot_candidate_ids(
@@ -570,6 +856,67 @@ mod tests {
         assert!(closed.is_none());
     }
 
+    /// Settings' client sets and reads the cache policy through the socket,
+    /// and the daemon applies it to the predictive worker and the cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_cache_policy_is_set_and_read_through_the_socket() {
+        use runtime_fs::storage::{CachePolicy, MIN_CACHE_BUDGET_BYTES, StorageClient};
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::Minimal)
+            .await
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::store::ContentStore::memory()),
+        ));
+        let heuristics = Arc::new(crate::smart::Heuristics::new(Arc::clone(&hydrator)));
+        let (policies, loaded) = crate::cache_policy::CachePolicies::load(
+            Some(dir.path().join(crate::cache_policy::CACHE_POLICY_FILE)),
+            Arc::clone(&heuristics),
+            Arc::clone(hydrator.store.files()),
+        );
+        loaded.unwrap();
+        let authority = StorageAuthority::new(
+            Arc::new(Mutex::new(Namespace::new("storage").unwrap())),
+            Arc::clone(&hydrator),
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            None,
+            None,
+            "work",
+        )
+        .with_cache_policy(Arc::new(policies));
+        let socket = dir.path().join("storage.sock");
+        let server = tokio::spawn(serve(
+            tokio::net::UnixListener::bind(&socket).unwrap(),
+            authority,
+        ));
+
+        let wanted = CachePolicy {
+            prefetch: false,
+            budget_bytes: Some(MIN_CACHE_BUDGET_BYTES * 4),
+        };
+        let (applied, read, refused) = tokio::task::spawn_blocking(move || {
+            let mut client = StorageClient::connect(&socket).unwrap();
+            let applied = client.set_cache_policy(wanted).unwrap();
+            let read = client.cache_policy().unwrap();
+            let refused = client.set_cache_policy(CachePolicy {
+                prefetch: true,
+                budget_bytes: Some(1),
+            });
+            (applied, read, refused)
+        })
+        .await
+        .unwrap();
+        assert_eq!((applied, read), (wanted, wanted));
+        assert!(refused.is_err(), "a budget below the minimum is refused");
+        assert!(!heuristics.prefetch_enabled());
+        assert_eq!(hydrator.store.files().budget(), MIN_CACHE_BUDGET_BYTES * 4);
+
+        server.abort();
+        endpoint.close().await;
+    }
+
     #[tokio::test]
     async fn storage_frames_over_sixteen_mebibytes_are_refused() {
         let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
@@ -586,6 +933,226 @@ mod tests {
                 .await,
             Err(wire_frame::FrameError::Truncated)
         ));
+    }
+
+    /// Bytes another device is known to hold are kept, cache or pinned;
+    /// the rest, and anything unsaved, are only here, pinned or not.
+    #[test]
+    fn local_bytes_are_split_by_what_losing_the_device_costs() {
+        let held = |facts: FileFacts| FileFacts {
+            local_bytes: 10,
+            ..facts
+        };
+        let cases = [
+            (FileFacts::default(), None),
+            (held(FileFacts::default()), Some(Holding::OnlyHere)),
+            (
+                held(FileFacts {
+                    pinned: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::OnlyHere),
+            ),
+            (
+                held(FileFacts {
+                    acknowledged: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::Replicated),
+            ),
+            (
+                held(FileFacts {
+                    fetched: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::Replicated),
+            ),
+            (
+                held(FileFacts {
+                    cached: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::Cache),
+            ),
+            (
+                held(FileFacts {
+                    cached: true,
+                    pinned: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::Pinned),
+            ),
+            (
+                held(FileFacts {
+                    acknowledged: true,
+                    pinned: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::Pinned),
+            ),
+            (
+                held(FileFacts {
+                    acknowledged: true,
+                    cached: true,
+                    pinned: true,
+                    unsaved: true,
+                    ..FileFacts::default()
+                }),
+                Some(Holding::OnlyHere),
+            ),
+        ];
+        let mut split = ResidencySplit::default();
+        for (facts, holding) in cases {
+            assert_eq!(classify(&facts), holding, "{facts:?}");
+            add_to(&mut split, &facts);
+        }
+        assert_eq!(
+            split,
+            ResidencySplit {
+                pinned_bytes: 20,
+                replicated_bytes: 20,
+                only_here_bytes: 30,
+                only_here_files: 3,
+                cache_bytes: 10,
+            }
+        );
+        assert_eq!(split.total_bytes(), 80);
+    }
+
+    /// Freeing the cache removes cached entries and nothing kept.
+    #[test]
+    fn freeing_the_cache_drops_only_cached_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = crate::store::area::FileArea::open(dir.path(), u64::MAX).unwrap();
+        let (cached, local, pinned) = ([1; 32], [2; 32], [3; 32]);
+        area.adopt_bytes(&cached, &[7; 100], Retention::Cached, &[])
+            .unwrap();
+        area.adopt_bytes(&local, &[7; 200], Retention::LocalOnly, &[])
+            .unwrap();
+        area.adopt_bytes(&pinned, &[7; 300], Retention::Pinned, &[])
+            .unwrap();
+        let freed = drop_cached(&area, &[cached, local, pinned, [4; 32]]).unwrap();
+        assert_eq!(
+            freed,
+            CacheFreed {
+                files: 1,
+                freed_bytes: 100
+            }
+        );
+        assert!(area.entry(&cached).is_none());
+        assert!(area.entry(&local).is_some() && area.entry(&pinned).is_some());
+    }
+
+    /// Through the storage socket's authority: a workspace's residency, its
+    /// cache freed, and the whole of it kept here, each refused for a
+    /// workspace this device does not mount.
+    #[tokio::test]
+    async fn the_authority_reports_frees_and_keeps_a_workspace() {
+        use iroh::endpoint::{Endpoint, presets};
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(crate::ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let namespace = Arc::new(Mutex::new(Namespace::new("residency").unwrap()));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        // Three large files, stored the way an authored write stores them;
+        // one is then cache, as if it had been fetched, and a host signs a
+        // receipt for another.
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let mut hashes = Vec::new();
+        let mut inodes = Vec::new();
+        for (name, byte) in [
+            ("authored.bin", 1_u8),
+            ("fetched.bin", 2),
+            ("backed-up.bin", 3),
+        ] {
+            let hash = store
+                .write_content(&vec![byte; usize::try_from(size).unwrap()])
+                .await
+                .unwrap()
+                .unwrap();
+            inodes.push(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .create_file(ROOT_INO, name, Some(&hash), size, 1)
+                    .unwrap(),
+            );
+            hashes.push(hash);
+        }
+        store
+            .files()
+            .set_retention(hashes[1].as_bytes(), Retention::Cached)
+            .unwrap();
+        let backed_up = namespace.lock().unwrap().record_id_for(inodes[2]).unwrap();
+        let version = fs_protocol::FileVersionId::new();
+        let mut record = RecordAvailability::new(backed_up, RecordKind::File);
+        record.current_version = Some(version);
+        crate::availability::test_receipts::acknowledge(
+            &mut record,
+            version,
+            fs_protocol::ContentHash(*hashes[2].as_bytes()),
+            unix_now_ms(),
+        );
+        registry.lock().unwrap().put(record).unwrap();
+        let authority = StorageAuthority::new(
+            namespace,
+            hydrator,
+            Arc::new(Mutex::new(crate::fs::WriteStages::new())),
+            Some(registry),
+            None,
+            None,
+            "notes",
+        );
+
+        let summary = authority.residency().await;
+        let [workspace] = summary.workspaces.as_slice() else {
+            panic!("one workspace: {summary:?}");
+        };
+        assert_eq!(workspace.workspace, "notes");
+        assert!(!workspace.kept_here);
+        assert_eq!(workspace.split.only_here_files, 1);
+        assert!(workspace.split.only_here_bytes >= size);
+        assert!(workspace.split.cache_bytes >= size);
+        assert!(
+            (size..2 * size).contains(&workspace.split.replicated_bytes),
+            "a receipt for the current version is another device holding it: {workspace:?}"
+        );
+        assert_eq!(workspace.split.pinned_bytes, 0);
+
+        assert!(authority.keep_here("elsewhere", true).is_err());
+        authority.keep_here("notes", true).unwrap();
+        let summary = authority.residency().await;
+        let workspace = &summary.workspaces[0];
+        assert!(workspace.kept_here);
+        assert!(
+            workspace.split.pinned_bytes >= 2 * size
+                && workspace.split.cache_bytes == 0
+                && workspace.split.replicated_bytes == 0,
+            "kept content another device holds is pinned: {workspace:?}"
+        );
+        assert_eq!(
+            workspace.split.only_here_files, 1,
+            "keeping it here does not make authored content safe"
+        );
+        authority.keep_here("notes", false).unwrap();
+
+        assert!(authority.free_cache("elsewhere").await.is_err());
+        let freed = authority.free_cache("notes").await.unwrap();
+        assert_eq!(freed.files, 1);
+        assert!(freed.freed_bytes >= size);
+        assert!(store.files().entry(hashes[1].as_bytes()).is_none());
+        assert!(
+            store.files().entry(hashes[0].as_bytes()).is_some(),
+            "authored content is never cache"
+        );
+        let summary = authority.residency().await;
+        assert_eq!(summary.workspaces[0].split.cache_bytes, 0);
+        assert!(!summary.workspaces[0].kept_here);
+
+        endpoint.close().await;
     }
 
     #[test]

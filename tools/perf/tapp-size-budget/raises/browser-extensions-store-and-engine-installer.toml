@@ -1,0 +1,5 @@
+reason = "the browser gained extensions (CRX packages, an extension toolbar and manager), installing from the Chrome Web Store, an installer for the missing browser engine with progress, and omnibox suggestions, about 4.3k lines; main measured 1,745,920 B on aarch64 and 1,885,696 B on x86_64, round 2's run 107196 measured 1,914,880 B and 2,082,816 B, over the budgets of 1,835,008 B and 1,966,080 B by 79,872 B and 116,736 B; these add the overage with the ratchet's headroom"
+run = 107196
+
+[apps."so.tilo.browser"]
+aarch64 = 131072

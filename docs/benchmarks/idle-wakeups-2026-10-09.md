@@ -7,10 +7,18 @@ value comes from the scheduled lane's `wakeups.*` records, not from this page
 
 ## Method
 
-`crates/session/shell/tests/idle_wakeups.rs`, run as
-`cargo test --locked -p shell --test it idle_wakeups:: -- --exact --nocapture`
-through **Dev / focused test** on the shared x86-64 `runner` class (KVM
-guest, debug build, headless backend, lavapipe):
+`crates/session/shell/examples/idle-wakeups.rs` (originally the
+`idle_wakeups::` integration test). To run the current executable:
+
+```bash
+cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+cargo build --locked -p shell --bin shell
+TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+  bash tools/test-env.sh target/debug/examples/idle-wakeups
+```
+
+The measurements below were collected through **Dev / focused test** on the
+shared x86-64 `runner` class (KVM guest, debug build, headless backend, lavapipe):
 
 1. The production `shell` binary starts headless on a private runtime with a
    completed identity (no onboarding), a saved session holding one Notes tab,
@@ -85,7 +93,7 @@ Those are held by thread probes in their own crates.
 ## Budgets set from it
 
 - `IDLE_WAKEUP_BUDGET` 3000/s and `LOOP_TICK_BUDGET` 1500/s in
-  `idle_wakeups.rs`: the spinning measurement plus a half, because whether a
+  `examples/idle-wakeups.rs`: the spinning measurement plus a half, because whether a
   run sees the spin depends on the wall clock and a spin's rate on the
   runner. #3986 dropped them to the parked measurement plus a quarter
   and 1/s (see "#3986" below).

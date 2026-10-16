@@ -5,8 +5,7 @@
 //! is for organizing, reviewing and revoking them.
 
 use accounts::{
-    CredentialGrant, CredentialOwner, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem,
-    SecretStore,
+    CredentialGrant, CredentialOwner, SecretCustody, SecretId, SecretItem, SecretStore,
 };
 use std::collections::HashMap;
 
@@ -231,37 +230,6 @@ impl PasswordsModel {
     pub fn health(&self) -> VaultHealth {
         analyze_health(&self.items())
     }
-    /// Save a login, generating a password when `password` is empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns a people-facing error when the origin is invalid, password
-    /// generation fails, or the secret store cannot persist the item.
-    pub fn save_login(
-        &mut self,
-        title: &str,
-        username: &str,
-        password: &str,
-        origin: Option<&str>,
-    ) -> Result<SecretId, String> {
-        let password = if password.is_empty() {
-            GeneratedPasswordPolicy::default()
-                .generate()
-                .map_err(|e| format!("password generation failed: {e:?}"))?
-                .to_string()
-        } else {
-            password.to_string()
-        };
-        let mut item = SecretItem::login(title, username, password);
-        if let Some(origin) = origin {
-            item.add_origin(origin)
-                .map_err(|e| format!("invalid sign-in address: {e:?}"))?;
-        }
-        let id = item.id.clone();
-        self.edit(|store| store.put(&mut item))?
-            .map_err(|e| format!("could not save login: {e:?}"))?;
-        Ok(id)
-    }
     /// Persist any supported secret item.
     ///
     /// # Errors
@@ -325,18 +293,17 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 mod tests {
     use super::*;
     #[test]
-    fn every_secret_kind_persists_round_trips_and_generates_missing_passwords() {
-        eprintln!("phase empty_password_is_generated_and_crud_round_trips");
+    fn every_secret_kind_persists_and_round_trips() {
+        eprintln!("phase a login's crud round trips");
         {
             let root =
                 std::env::temp_dir().join(format!("tilo-passwords-test-{}", std::process::id()));
             let mut model = PasswordsModel::open_in(&root);
-            let id = model
-                .save_login("Example", "ada", "", Some("https://example.com/login"))
-                .unwrap();
+            let mut item = SecretItem::login("Example", "ada", "original secret");
+            item.add_origin("https://example.com/login").unwrap();
+            let id = model.save_item(&mut item).unwrap();
             let item = model.items().pop().unwrap();
             assert_eq!(item.id, id);
-            assert!(item.password.len() >= 20);
             assert!(item.origins.contains("https://example.com"));
             assert_eq!(model.search("EXAMP").len(), 1);
             let mut edited = item;

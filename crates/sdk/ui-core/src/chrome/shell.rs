@@ -7,7 +7,7 @@
 //! without a per-theme branch.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::color_compat::ColorCompat;
@@ -1479,7 +1479,9 @@ pub const RIBBON_SEG_H_FOCUSED: f64 = 40.0;
 /// rects tile without overlapping, so a click near a boundary belongs to
 /// exactly one strip.
 pub const RIBBON_GAP: f64 = RIBBON_HIT_W - RIBBON_SEG_H;
-pub const RIBBON_MARGIN: f64 = 5.0;
+/// Flush with the screen's right edge: the segments are an edge mark, and
+/// a gap between them and the edge read as a stray, misplaced control.
+pub const RIBBON_MARGIN: f64 = 0.0;
 /// Minimum pointer target (HIG §9.6) — the segment itself is 6 px wide.
 pub const RIBBON_HIT_W: f64 = 32.0;
 
@@ -1573,14 +1575,15 @@ impl StripRibbon {
         Some(Rect::new(x0, y, x1, y + h))
     }
 
-    /// Widened past the visible segment to the minimum pointer target.
+    /// Widened past the visible segment to the minimum pointer target,
+    /// inward from the screen edge the segment sits on.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
-        let cx = seg.center().x;
+        let x1 = self.content.x1;
         Some(Rect::new(
-            cx - RIBBON_HIT_W / 2.0,
+            x1 - RIBBON_HIT_W,
             seg.y0 - RIBBON_GAP / 2.0,
-            cx + RIBBON_HIT_W / 2.0,
+            x1,
             seg.y1 + RIBBON_GAP / 2.0,
         ))
     }
@@ -1608,8 +1611,9 @@ impl StripRibbon {
                 theme,
                 SelectionState::new(i == self.focused, hover == Some(i), false),
             );
-            let shape =
-                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            // Square where it meets the screen edge, rounded inward.
+            let r = ChromeRole::Selector.radius(theme, seg.width());
+            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, 0.0, 0.0, r));
             let fill = ribbon_fill(theme, i == self.focused, hover == Some(i));
             scene.fill(
                 Fill::NonZero,
@@ -1656,7 +1660,9 @@ pub const RAIL_SEG_H: f64 = 6.0;
 pub const RAIL_SEG_W: f64 = 22.0;
 pub const RAIL_SEG_W_FOCUSED: f64 = 40.0;
 pub const RAIL_GAP: f64 = RAIL_HIT_H - RAIL_SEG_W;
-pub const RAIL_MARGIN: f64 = 10.0;
+/// Flush with the screen's bottom edge, for the same reason as
+/// [`RIBBON_MARGIN`]; ten pixels up it floated over the windows' bottom margin.
+pub const RAIL_MARGIN: f64 = 0.0;
 /// Minimum pointer target (HIG §9.6) across the rail's short axis.
 pub const RAIL_HIT_H: f64 = 32.0;
 
@@ -1724,15 +1730,15 @@ impl StripRail {
     }
 
     /// Widened past the visible segment to the minimum pointer target
-    /// across the rail's short axis.
+    /// across the rail's short axis, upward from the screen's bottom edge.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
-        let cy = seg.center().y;
+        let y1 = self.content.y1;
         Some(Rect::new(
             seg.x0 - RAIL_GAP / 2.0,
-            cy - RAIL_HIT_H / 2.0,
+            y1 - RAIL_HIT_H,
             seg.x1 + RAIL_GAP / 2.0,
-            cy + RAIL_HIT_H / 2.0,
+            y1,
         ))
     }
 
@@ -1759,8 +1765,9 @@ impl StripRail {
                 continue;
             };
             let present = self.visible.contains(&i);
-            let shape =
-                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            // Square where it meets the screen edge, rounded inward.
+            let r = ChromeRole::Selector.radius(theme, seg.height());
+            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, r, 0.0, 0.0));
             let fill = rail_fill(theme, i == self.focused, hover == Some(i), present);
             scene.fill(
                 Fill::NonZero,
@@ -1827,8 +1834,14 @@ mod rail_tests {
             assert!(
                 rects
                     .iter()
-                    .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
-                "every segment sits on the rail's baseline"
+                    .all(|s| (s.y1 - r.content.y1).abs() < f64::EPSILON),
+                "every segment sits flush on the screen's bottom edge"
+            );
+            assert!(
+                (0..4).all(|i| r
+                    .hit_rect(i)
+                    .is_some_and(|h| (h.y1 - r.content.y1).abs() < f64::EPSILON)),
+                "each target runs to the edge, so the pointer pinned there hits it"
             );
         }
 
@@ -2040,6 +2053,23 @@ mod ribbon_tests {
         {
             let r = ribbon(3, 1);
             assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
+        }
+
+        // Case `segments_and_targets_sit_flush_on_the_right_edge`.
+        {
+            let r = ribbon(3, 1);
+            for i in 0..3 {
+                let seg = r.segment_rect(i).unwrap();
+                let hit = r.hit_rect(i).unwrap();
+                assert!(
+                    (seg.x1 - r.content.x1).abs() < f64::EPSILON,
+                    "segment {i} {seg:?}"
+                );
+                assert!(
+                    (hit.x1 - r.content.x1).abs() < f64::EPSILON,
+                    "target {i} {hit:?}"
+                );
+            }
         }
     }
 }

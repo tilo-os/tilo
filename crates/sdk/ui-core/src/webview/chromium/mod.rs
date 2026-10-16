@@ -3,6 +3,8 @@
     clippy::disallowed_methods,
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
+mod audio;
+pub mod install;
 mod protocol;
 pub mod runtime;
 mod shared;
@@ -22,6 +24,7 @@ use super::{
     WebViewEvent,
 };
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
 
@@ -33,6 +36,7 @@ struct NavigationRequests {
 
 #[derive(Default)]
 struct Shared {
+    audio: audio::PageAudio,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -89,23 +93,16 @@ impl Shared {
     }
 
     fn cancel_navigation(&self, request_id: u32) {
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         owners.pending.remove(&request_id);
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
     }
 
     fn fail_navigations(&self, message: &str) {
         let pending: Vec<_> = self
             .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .pending
             .iter()
             .map(|(&id, uri)| (id, uri.clone()))
@@ -125,17 +122,11 @@ impl Shared {
         };
         // Reserve the queue slot before send; hold ownership through enqueue
         // so an admission cannot race a completing request's reservation.
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         if owners.pending.remove(request_id).is_none() {
             return;
         }
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         if events.len() >= 512 {
             if let Some(index) = events.iter().position(|event| {
                 !matches!(
@@ -167,10 +158,7 @@ impl Shared {
             event,
             WebViewEvent::RendererTerminated | WebViewEvent::TabClosed | WebViewEvent::TabDetached
         ) {
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
         }
         // Renderer termination is visual: the host names each affected owner
         // explicitly. Its delayed generic event cannot invalidate a recovery
@@ -237,10 +225,7 @@ impl Shared {
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
             self.fail_navigations(&message);
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
             self.event(WebViewEvent::LoadFailed {
                 uri,
@@ -402,11 +387,7 @@ impl Drop for Runtime {
         }
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
-        if let Some(supervisor) = self
-            .supervisor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        if let Some(supervisor) = self.supervisor.lock_recover().take()
             && supervisor.thread().id() != std::thread::current().id()
         {
             let _ = supervisor.join();
@@ -414,9 +395,7 @@ impl Drop for Runtime {
     }
 }
 fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
-    let mut events = queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut events = queue.lock_recover();
     if let WebViewEvent::DownloadUpdated { id, .. } = &event {
         events.retain(
             |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
@@ -432,8 +411,7 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
 
 fn fail_routes(routes: &Routes, message: &str) {
     let endpoints: Vec<_> = routes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .values()
         .filter_map(Weak::upgrade)
         .collect();
@@ -478,6 +456,7 @@ impl UnavailableEngine {
         Arc::new(Self {
             message,
             shared: Shared {
+                audio: audio::PageAudio::default(),
                 text_input: Mutex::default(),
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
@@ -645,9 +624,7 @@ fn spawn_frame_reader(
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
-    slot.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    slot.lock_recover().take()
 }
 
 fn supervise_child(
@@ -723,6 +700,25 @@ fn host_command(host: &Path) -> Command {
     command
 }
 
+/// Engine audio switches.
+///
+/// A governed (sandboxed) app is given no PipeWire/Pulse socket and no
+/// `/dev/snd`; its sound goes through the host's output service, which
+/// Chromium cannot speak. `--tilo-audio-bridge` makes the host take every
+/// page's PCM itself (CEF's audio handler) and send it here, to play through
+/// that service (see `audio`). Chromium then opens no device, so it does not
+/// probe the PulseAudio and ALSA endpoints the sandbox withholds; while the
+/// service is unavailable the PCM is dropped, which keeps media
+/// playing silently as the fake audio manager would. An app that is not
+/// governed keeps Chromium's own audio.
+fn host_audio_switches(governed: bool) -> &'static [&'static str] {
+    if governed {
+        &["--tilo-audio-bridge"]
+    } else {
+        &[]
+    }
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
@@ -730,6 +726,7 @@ fn launch_host(
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
     let mut command = host_command(host);
+    command.args(host_audio_switches(media::audio_output::is_governed()));
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -982,10 +979,7 @@ impl ChromiumEngine {
             }
         };
         if wait_for_private_cleanup {
-            *runtime
-                .supervisor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(supervisor);
+            *runtime.supervisor.lock_recover() = Some(supervisor);
         }
         cleanup_on_error.disarm();
         Ok(Arc::new(Self {
@@ -1110,12 +1104,7 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared
-            .open_tabs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.shared.open_tabs.lock_recover().drain(..).collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -1134,11 +1123,7 @@ impl WebViewEngine for ChromiumEngine {
                 return;
             }
             WebViewCommand::CancelScopedNavigation { request_id } => {
-                let _ordering = self
-                    .shared
-                    .navigation_commands
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ordering = self.shared.navigation_commands.lock_recover();
                 self.shared.cancel_navigation(request_id);
                 let error = if super::navigation_request_id(request_id) {
                     self.tx.push(json!({"op":"cancel_navigation","tab":self.tab,"request_id":request_id})).err()
@@ -1272,11 +1257,7 @@ impl Drop for ChromiumEngine {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
         let retire = {
-            let mut routes = self
-                .runtime
-                .routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut routes = self.runtime.routes.lock_recover();
             if let Some(route) = routes.get_mut(&self.tab) {
                 *route = Weak::new();
                 true
@@ -1372,12 +1353,15 @@ fn route_native_event(
             drop(requests);
             shared.wake();
         }
+        if matches!(event_name, "audio_start" | "audio" | "audio_stop") {
+            shared.audio.event(event_name, value);
+            return Ok(());
+        }
+        if matches!(event_name, "closed" | "tab_detached") {
+            shared.audio.stop();
+        }
         if event_name == "text_input_result" {
-            shared
-                .text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .reply(value);
+            shared.text_input.lock_recover().reply(value);
             shared.wake();
             return Ok(());
         }
@@ -1535,6 +1519,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
+        "devtools_result" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+                && value["body"]
+                    .as_str()
+                    .is_some_and(|body| body.len() <= 1024 * 1024)
+        }
         "context_closed" | "permission_closed" => valid_id(value),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
@@ -1550,6 +1543,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_f64()
             .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
         "fullscreen" => value["fullscreen"].is_boolean(),
+        "audio_start" | "audio" | "audio_stop" => audio::valid_event(event, value),
         "renderer_terminated" => value
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
@@ -1667,6 +1661,19 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Credentials(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
+        }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && method.len() <= 128
+                && params.is_object()
+                && params.to_string().len() <= 64 * 1024
+                && session.as_ref().is_none_or(|session| session.len() <= 128)
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             *request_id > 0
@@ -1818,10 +1825,7 @@ impl CommandQueue {
         }
     }
     fn close(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .2 = true;
+        self.state.lock_recover().2 = true;
         self.ready.notify_all();
     }
 }
@@ -1835,6 +1839,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
+        "devtools_result" => WebViewEvent::DevToolsResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            ok: value["ok"].as_bool()?,
+            body: value["body"].as_str()?.into(),
+        },
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
@@ -2054,6 +2063,18 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetUserScripts(scripts) => json!({"op":"scripts","scripts": &*scripts}),
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
+        }
+        WebViewCommand::DevTools {
+            request_id,
+            method,
+            params,
+            session,
+        } => {
+            let mut command = json!({"op":"devtools_call","request_id":request_id,"method":method,"params":params});
+            if let Some(session) = session {
+                command["session"] = json!(session);
+            }
+            command
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             json!({"op":"site_status","request_id":request_id,"origin":origin})

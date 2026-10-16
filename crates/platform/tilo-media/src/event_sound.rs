@@ -65,13 +65,11 @@ fn command_exists(name: &str) -> bool {
 /// `$XDG_DATA_HOME/sounds` then each `$XDG_DATA_DIRS/sounds`, per the
 /// freedesktop sound-theme spec.
 fn sound_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    roots.extend(tilo_paths::xdg::data_home());
-    let data_dirs = std::env::var_os("XDG_DATA_DIRS")
-        .filter(|dirs| !dirs.is_empty())
-        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    roots.extend(std::env::split_paths(&data_dirs).filter(|path| path.is_absolute()));
-    roots.into_iter().map(|root| root.join("sounds")).collect()
+    tilo_paths::xdg::data_home()
+        .into_iter()
+        .chain(tilo_paths::xdg::data_dirs())
+        .map(|root| root.join("sounds"))
+        .collect()
 }
 
 /// An installed sound theme.

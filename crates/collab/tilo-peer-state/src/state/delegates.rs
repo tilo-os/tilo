@@ -4,7 +4,7 @@
 //! person's root signed, and a root-signed [`Delegation`] naming the
 //! device an agent, how it is shown, the rooms and apps it may act in and
 //! until when. The room's governor admits it as a governed identity that
-//! carries that delegation ([`StatePeer::admit_agent`]), so every member
+//! carries that delegation ([`PeerGovernanceMut::admit_agent`](crate::PeerGovernanceMut::admit_agent)), so every member
 //! knows the device, the person it acts for, and its window: its changes
 //! are signed by its own key and attributed to it, never to the device that
 //! launched it.
@@ -19,12 +19,13 @@
 //! identity stays on the roster, so the history it wrote stays attributed,
 //! but it is no reader of the room's channels and no op of it is admitted.
 
+use super::facades::{PeerGovernance, PeerGovernanceMut};
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
-use tilo_relay_protocol::delegation::{Delegate, Delegation};
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::delegation::{Delegate, Delegation};
 
-use super::{GovernedIdentity, Role, SigningKey, StatePeer, SystemTime, err, now_ns, room};
+use super::{GovernedIdentity, Role, SigningKey, SystemTime, err, now_ns, room};
 
 /// What a governed identity carries when its device is a delegate of its
 /// person: an agent, or an installed bot.
@@ -91,7 +92,7 @@ impl GovernedDelegateRow {
         delegation
             .verify(&cert.user_public_key, now_ns)
             .map_err(|_| DelegateInactive::Delegation)?;
-        let workspace = tilo_relay_protocol::room_workspace_id(room)
+        let workspace = tilo_workspace_join::room_workspace_id(room)
             .map_err(|_| DelegateInactive::OtherRoom)?;
         if !delegation.permits_workspace(workspace) {
             return Err(DelegateInactive::OtherRoom);
@@ -157,7 +158,65 @@ pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
         || capabilities.can_administer_devices)
 }
 
-impl StatePeer {
+impl PeerGovernance<'_> {
+    /// The certificate and delegation of agent `device` as this room's
+    /// governance records them, and when it was withdrawn: what a governor
+    /// decides an agent's place in the room from again.
+    pub fn governed_agent(
+        self,
+        device: &[u8; 32],
+    ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
+        let doc = self.peer.core.room_doc.as_ref()?;
+        let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
+        let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
+        let agent = identity.delegate?;
+        agent.delegation.delegate.agent_id()?;
+        Some((
+            identity.device_cert,
+            agent.delegation,
+            agent.withdrawn_at_ns,
+        ))
+    }
+    /// Every delegated agent on this room's roster, acting or not at `now`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if room governance is missing or malformed.
+    pub fn governed_agents(self, now: SystemTime) -> Result<Vec<GovernedAgent>, String> {
+        let doc = self
+            .peer
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("room governance missing")?;
+        let mut agents = Vec::new();
+        for bytes in doc.policy().identities.values() {
+            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let acting = identity
+                .delegate_acting(&self.peer.core.room, now_ns(now))
+                .is_ok();
+            let Some(agent) = identity.delegate else {
+                continue;
+            };
+            let Some(agent_id) = agent.delegation.delegate.agent_id().map(str::to_owned) else {
+                continue;
+            };
+            agents.push(GovernedAgent {
+                device_public_key: identity.device_cert.device_public_key,
+                user_public_key: identity.device_cert.user_public_key,
+                agent_id,
+                label: agent.delegation.label,
+                color: agent.delegation.color,
+                expires_at_ns: agent.delegation.expires_at_ns,
+                withdrawn_at_ns: agent.withdrawn_at_ns,
+                acting,
+            });
+        }
+        agents.sort_by_key(|agent| agent.device_public_key);
+        Ok(agents)
+    }
+}
+impl PeerGovernanceMut<'_> {
     /// Admit the certified agent device `cert` to this room as a delegated
     /// agent of its person, bound to `delegation`. Only the pinned room
     /// authority may, and only an agent of the authority's own person: one
@@ -174,7 +233,7 @@ impl StatePeer {
     /// Returns why the agent may not be admitted, or why governance could
     /// not be updated.
     pub fn admit_agent(
-        &mut self,
+        self,
         cert: DeviceCert,
         delegation: Delegation,
         key: &SigningKey,
@@ -183,9 +242,9 @@ impl StatePeer {
         if delegation.delegate.agent_id().is_none() {
             return Err("the delegation is not an agent's".into());
         }
-        self.require_governance_writer(key, now)?;
+        self.peer.require_governance_writer(key, now)?;
         if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN
-            && cert.user_public_key != self.core.authority.user_public_key
+            && cert.user_public_key != self.peer.core.authority.user_public_key
         {
             return Err("only the room owner's agents are admitted".into());
         }
@@ -193,10 +252,15 @@ impl StatePeer {
             return Err("an agent's certificate holds no capability".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
+        if self
+            .peer
+            .core
+            .revocations
+            .is_revoked(&cert.device_public_key)
+        {
             return Err("device revoked".into());
         }
-        if let Some(old) = self.core.certificates.get(&cert.device_public_key)
+        if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != &cert
         {
             return Err("certificate conflict".into());
@@ -206,9 +270,10 @@ impl StatePeer {
             withdrawn_at_ns: None,
             installation: None,
         };
-        row.acting(&cert, &self.core.room, now_ns(now))
+        row.acting(&cert, &self.peer.core.room, now_ns(now))
             .map_err(|reason| reason.to_string())?;
         let doc = self
+            .peer
             .core
             .room_doc
             .clone()
@@ -262,9 +327,8 @@ impl StatePeer {
                 prior
             }
         };
-        self.put_identity(doc, &identity, key, now)
+        self.peer.put_identity(doc, &identity, key, now)
     }
-
     /// Withdraw the agent `device` from this room as the pinned authority
     /// `key`: from `now` on it reads and writes nothing here, and its
     /// earlier changes stay attributed to it. Returns whether governance
@@ -276,13 +340,14 @@ impl StatePeer {
     /// Returns an error if `key` is not the governance writer, the device is
     /// a member rather than an agent, or governance cannot be updated.
     pub fn withdraw_agent(
-        &mut self,
+        self,
         device: [u8; 32],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
+        self.peer.require_governance_writer(key, now)?;
         let doc = self
+            .peer
             .core
             .room_doc
             .clone()
@@ -305,64 +370,7 @@ impl StatePeer {
             return Ok(false);
         }
         agent.withdrawn_at_ns = Some(now_ns(now));
-        self.put_identity(doc, &identity, key, now)
-    }
-
-    /// The certificate and delegation of agent `device` as this room's
-    /// governance records them, and when it was withdrawn: what a governor
-    /// decides an agent's place in the room from again.
-    pub fn governed_agent(
-        &self,
-        device: &[u8; 32],
-    ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
-        let doc = self.core.room_doc.as_ref()?;
-        let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
-        let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
-        let agent = identity.delegate?;
-        agent.delegation.delegate.agent_id()?;
-        Some((
-            identity.device_cert,
-            agent.delegation,
-            agent.withdrawn_at_ns,
-        ))
-    }
-
-    /// Every delegated agent on this room's roster, acting or not at `now`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
-    pub fn governed_agents(&self, now: SystemTime) -> Result<Vec<GovernedAgent>, String> {
-        let doc = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room governance missing")?;
-        let mut agents = Vec::new();
-        for bytes in doc.policy().identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            let acting = identity
-                .delegate_acting(&self.core.room, now_ns(now))
-                .is_ok();
-            let Some(agent) = identity.delegate else {
-                continue;
-            };
-            let Some(agent_id) = agent.delegation.delegate.agent_id().map(str::to_owned) else {
-                continue;
-            };
-            agents.push(GovernedAgent {
-                device_public_key: identity.device_cert.device_public_key,
-                user_public_key: identity.device_cert.user_public_key,
-                agent_id,
-                label: agent.delegation.label,
-                color: agent.delegation.color,
-                expires_at_ns: agent.delegation.expires_at_ns,
-                withdrawn_at_ns: agent.withdrawn_at_ns,
-                acting,
-            });
-        }
-        agents.sort_by_key(|agent| agent.device_public_key);
-        Ok(agents)
+        self.peer.put_identity(doc, &identity, key, now)
     }
 }
 

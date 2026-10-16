@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
+description = "CRDT rich-text word processor: a ui app over tilo-doc with .odt support."
 
 [lib]
 name = "word_processor"
@@ -67,6 +67,8 @@ path = "tests/it.rs"
 settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
+# The PDF viewer's engine: the agent benchmark reopens its PDF export with it.
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

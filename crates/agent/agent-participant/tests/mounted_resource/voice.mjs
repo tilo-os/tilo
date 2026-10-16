@@ -188,8 +188,11 @@ try {
     devices:2, syntheticAudio:true, physicalMicrophone:false, decodedRmsThreshold:0.015,
     observations, stages, checkpoints}, null, 2) + '\n');
 } catch (error) {
-  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint, error:error.name, checkpoints}, null, 2));
-  throw Error(`Mounted Chat voice failed at ${currentStage}: ${error.name}`);
+  // The fixture is ephemeral, so what failed can be said in full: a bare
+  // error name leaves a timeout and a refused action indistinguishable.
+  const reason = String(error?.message ?? error).slice(0, 500);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint, error:error.name, reason, checkpoints}, null, 2));
+  throw Error(`Mounted Chat voice failed at ${currentStage} (checkpoint ${currentCheckpoint}): ${error.name}: ${reason}`);
 } finally {
   clearTimeout(deadline);
   input.close();

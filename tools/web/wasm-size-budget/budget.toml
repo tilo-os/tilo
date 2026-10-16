@@ -12,6 +12,11 @@ headroom = 0.01
 # All web-capable Tilo apps, as the app-sdk web-size lane builds them:
 # `tilo-app build --target web --bundle desktop --release apps/calculator`.
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
-# larger.)
+# larger.) The module is split (tools/web/wasm-split): this budget holds the
+# start module, which the page loads first; each app's own code, including
+# its instantiations of the resource, action and view framework, is in the
+# module fetched when the app first opens and is not counted here. Measured
+# at 22123991 bytes by the sdk-web-size steps with the page image decoders
+# fetched on first use.
 [bundles.desktop]
-bytes = 84738048
+bytes = 22347776

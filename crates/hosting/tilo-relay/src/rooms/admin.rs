@@ -1,13 +1,20 @@
-//! Owner-only room administration and admitted members' self-attributed audit:
-//! the relay's side of
+//! Removing a member from a room this relay governs: the one command the
+//! relay still answers at
 //! [`ROOM_ADMIN_ALPN`](tilo_relay_session::rooms::ROOM_ADMIN_ALPN).
+//!
+//! Everything else this door once answered is served as actions on the
+//! relay's own remote-action envelope (`super::actions`): a room's
+//! governance as `tilo.workspace`, the host's own operations (create, list,
+//! enter) as `tilo.host`, and a member's own namespace claim and effect
+//! receipt as `tilo.member`. A device still sending one of those here is
+//! refused with the action that replaced it. Removing a member stays here
+//! because the actions do not run it until the person's own confirmation can
+//! be asked for; this door goes when they do.
 //!
 //! One bounded postcard request and reply per bidirectional stream, as in the
 //! workspace-join protocol. The request names the caller's certificate; the
 //! relay accepts it only for the authenticated Iroh endpoint it arrived on
 //! ([`auth::authenticate_endpoint_bound`]).
-//! The wire vocabulary and the device's `RoomAdminClient` live in
-//! `tilo_relay_session::rooms`.
 
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tilo_relay_session::rooms::{
@@ -20,10 +27,12 @@ use tilo_user_identity::DeviceCert;
 use crate::auth::{self, AuthError, AuthenticatedPeer, HandshakeTrust};
 
 use super::Rooms;
+use tilo_lock::RwLockRecover as _;
 
 const MAX_CONCURRENT_EXCHANGES: usize = 64;
 
-/// Serves [`RoomCommand`]s for the rooms this relay governs.
+/// Serves [`RoomCommand::Remove`] for the rooms this relay governs, and
+/// refuses every other [`RoomCommand`] with the action that replaced it.
 #[derive(Clone, Debug)]
 pub struct RoomAdminProtocol {
     rooms: Rooms,
@@ -75,19 +84,17 @@ impl RoomAdminProtocol {
     }
 
     /// The caller's certificate, bound to the Iroh endpoint `remote` that
-    /// QUIC already authenticated, valid and unrevoked. Who may run which
-    /// command is each command's own decision: the owner's devices
-    /// administer, and admitted members record their own receipts.
+    /// QUIC already authenticated, valid and unrevoked. Whether it may
+    /// remove someone is the room's decision ([`Rooms::authorize`]): the
+    /// owner's devices may, and members as far as their room's governance
+    /// lets them.
     fn authenticate(
         &self,
         device: &DeviceCert,
         remote: &[u8; 32],
     ) -> Result<AuthenticatedPeer, AuthError> {
         let host = &self.rooms.inner.host;
-        let revocations = host
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revocations = host.revocations.read_recover();
         auth::authenticate_endpoint_bound(
             device,
             remote,
@@ -99,84 +106,23 @@ impl RoomAdminProtocol {
     }
 
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
-        let result = match command {
-            RoomCommand::Create { name } => {
-                match self
-                    .rooms
-                    .authorize(device, tilo_clock::unix_now_ns(), "room.create")
-                {
-                    Ok(()) => self
-                        .rooms
-                        .create(&name)
-                        .await
-                        .map(RoomReply::Room)
-                        .map_err(Into::into),
-                    Err(error) => Err(error),
-                }
-            }
-            RoomCommand::List => {
-                match self
-                    .rooms
-                    .authorize(device, tilo_clock::unix_now_ns(), "room.list")
-                {
-                    Ok(()) => Ok(RoomReply::Rooms(self.rooms.list().await)),
-                    Err(error) => Err(error),
-                }
-            }
-            RoomCommand::Enter { room } => self
-                .rooms
-                .enter(&room, device)
-                .await
-                .map(|changed| RoomReply::Entered { changed }),
-            RoomCommand::Invite { room, request } => self
-                .rooms
-                .issue(&room, device, request)
-                .await
-                .map(RoomReply::Invitation),
-            RoomCommand::Cancel { room, request } => self
-                .rooms
-                .cancel(&room, device, request)
-                .await
-                .map(|()| RoomReply::Done),
-            RoomCommand::Pending { room } => self
-                .rooms
-                .pending(&room, device)
-                .await
-                .map(RoomReply::Pending),
-            RoomCommand::SetRole { room, request } => self
-                .rooms
-                .set_member_role(&room, device, request)
-                .await
-                .map(|done| RoomReply::Governance {
-                    generation: done.generation,
-                }),
-            RoomCommand::Remove { room, request } => self
-                .rooms
-                .remove_member(&room, device, request)
-                .await
-                .map(|done| RoomReply::Governance {
-                    generation: done.generation,
-                }),
-            RoomCommand::ClaimTopologyNamespace { room, salt } => self
-                .rooms
-                .claim_topology_namespace(&room, device, salt)
-                .await
-                .map(|done| RoomReply::Governance {
-                    generation: done.generation,
-                }),
-            RoomCommand::RecordEffectReceipt {
-                room,
-                invocation,
-                redacted,
-            } => self
-                .rooms
-                .record_member_effect_receipt(&room, device, invocation, &redacted)
-                .await
-                .map(|done| RoomReply::Governance {
-                    generation: done.generation,
-                }),
+        if let Some((provider, action)) = command.replaced_by() {
+            return RoomReply::Refused(format!(
+                "this relay serves that as the `{action}` action of `{provider}`"
+            ));
+        }
+        let RoomCommand::Remove { room, request } = command else {
+            return RoomReply::Refused("not a room administration command".into());
         };
-        result.unwrap_or_else(|error| RoomReply::Refused(error.to_string()))
+        self.rooms
+            .remove_member(&room, device, request)
+            .await
+            .map_or_else(
+                |error| RoomReply::Refused(error.to_string()),
+                |done| RoomReply::Governance {
+                    generation: done.generation,
+                },
+            )
     }
 }
 

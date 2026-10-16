@@ -813,7 +813,7 @@ mode = "off"
             );
             assert_eq!(
                 manifest.package.optional_runtimes,
-                ["tilo-runtime/2026.10.9-chromium"]
+                ["tilo-runtime/2026.10.10-chromium"]
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
         }

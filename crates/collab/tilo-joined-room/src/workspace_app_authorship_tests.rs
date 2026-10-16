@@ -1,6 +1,6 @@
 use crate::application_record::tests::fixture;
 use crate::{RoomId, testing};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[test]
@@ -116,7 +116,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 .permissions(fixture.certificate.device_public_key, fixture.now)?
                 .person;
             let mut candidate = before.clone();
-            candidate.put_governed_grants(
+            candidate.governance_mut().put_governed_grants(
                 &[tilo_action_policy::Grant::new(
                     "app-open-read-only-person",
                     tilo_action_policy::Subject::Person(person.clone()),
@@ -155,6 +155,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         .with_current(room, |view| {
             assert!(
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(
                         fixture.certificate.device_public_key,
                         fixture.now

@@ -39,6 +39,12 @@ pub(crate) fn subscribe() -> watch::Receiver<u64> {
     epoch().subscribe()
 }
 
+/// The epoch now. A decision made after reading it, from facts that only
+/// narrow with a [`bump`], holds for as long as the epoch reads the same.
+pub(crate) fn current() -> u64 {
+    *epoch().borrow()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -143,7 +143,7 @@ pub(in crate::state) fn restore(
                 covered_snapshot: document
                     .covered_snapshot
                     .map(|original| NativeCheckpoint { original }),
-                sealed: Vec::new(),
+                sealed: super::SealedLog::default(),
             },
         );
     }

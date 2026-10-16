@@ -17,6 +17,7 @@ use fs_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
 const AUTHORITY_VERSION: u16 = 1;
@@ -91,12 +92,13 @@ impl ShareAuthority {
     /// inconsistent persisted grant.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ShareAuthorityError> {
         let path = path.into();
-        let state = match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.len() > MAX_SHARE_AUTHORITY_FILE_BYTES => {
-                return Err(ShareAuthorityError::StateTooLarge);
-            }
-            Ok(_) => {
-                let bytes = std::fs::read(&path)?;
+        let too_large = ShareAuthorityError::StateTooLarge;
+        let state = match tilo_files::native::bounded::read_or(
+            &path,
+            MAX_SHARE_AUTHORITY_FILE_BYTES,
+            too_large,
+        )? {
+            Some(bytes) => {
                 let state: AuthorityState = serde_json::from_slice(&bytes)?;
                 if state.version != AUTHORITY_VERSION {
                     return Err(ShareAuthorityError::UnsupportedVersion(state.version));
@@ -104,11 +106,10 @@ impl ShareAuthority {
                 validate_state(&state)?;
                 state
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => AuthorityState {
+            None => AuthorityState {
                 version: AUTHORITY_VERSION,
                 grants: BTreeMap::new(),
             },
-            Err(e) => return Err(e.into()),
         };
         Ok(Self {
             path,
@@ -250,8 +251,7 @@ impl ShareAuthority {
     #[must_use]
     pub fn has_unrevoked_grants(&self) -> bool {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .grants
             .values()
             .any(|grant| !grant.revoked)
@@ -398,10 +398,7 @@ impl ShareAuthority {
         record_id: fs_protocol::FileRecordId,
         now_ms: u64,
     ) -> ShareProjectionV1 {
-        let current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.state.lock_recover();
         let grants = current
             .grants
             .iter()

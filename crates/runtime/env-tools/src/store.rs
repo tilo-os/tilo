@@ -103,15 +103,7 @@ impl ToolStore for PackageStoreTools {
 /// Where a device's builder keeps its index, dnf caches and scratch:
 /// `$XDG_CACHE_HOME/tilo/env-tools` (all of it can be rebuilt).
 pub fn default_state_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|home| PathBuf::from(home).join(".cache"))
-        })
-        .map(|cache| cache.join("tilo/env-tools"))
+    tilo_paths::xdg::cache_home().map(|cache| cache.join("tilo/env-tools"))
 }
 
 /// The catalog a device consults: the document at `TILO_TOOL_CATALOG`, or

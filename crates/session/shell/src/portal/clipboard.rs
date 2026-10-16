@@ -501,10 +501,7 @@ fn valid_mime(mime: &str) -> bool {
         && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 fn mimes(options: &HashMap<String, OwnedValue>) -> Result<Vec<String>, zbus::fdo::Error> {
-    let values = options
-        .get("mime_types")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| Vec::<String>::try_from(v).ok())
+    let values = crate::portal::option::<Vec<String>>(options, "mime_types")
         .ok_or_else(|| zbus::fdo::Error::InvalidArgs("mime_types must be a string array".into()))?;
     if values.is_empty()
         || values.len() > MAX_MIME_TYPES

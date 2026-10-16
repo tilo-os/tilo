@@ -86,7 +86,7 @@ fn picture(len: usize) -> Vec<u8> {
 fn content_one_host_was_offered_reaches_the_other_in_verified_pieces() {
     let (a, b, wire_b) = pair(true);
     let bytes = picture(PIECE_BYTES * 2 + 17);
-    let hash = content_hash(&bytes);
+    let hash = hash_bytes(&bytes);
     a.offer(&route(), &hash, &bytes).unwrap();
 
     let mut arrivals = b.subscribe(&route());
@@ -118,7 +118,7 @@ fn content_one_host_was_offered_reaches_the_other_in_verified_pieces() {
 fn a_device_that_may_not_read_the_record_gets_nothing() {
     let (a, b, _) = pair(false);
     let bytes = picture(100);
-    let hash = content_hash(&bytes);
+    let hash = hash_bytes(&bytes);
     a.offer(&route(), &hash, &bytes).unwrap();
     let mut arrivals = b.subscribe(&route());
     b.want(&route(), &hash);
@@ -129,7 +129,7 @@ fn a_device_that_may_not_read_the_record_gets_nothing() {
 fn content_of_another_record_scope_is_not_served() {
     let (a, b, _) = pair(true);
     let bytes = picture(100);
-    let hash = content_hash(&bytes);
+    let hash = hash_bytes(&bytes);
     a.offer(
         &CrdtRoute::record("so.tilo.slides", "another-room", "deck-1"),
         &hash,
@@ -148,7 +148,7 @@ fn content_of_another_record_scope_is_not_served() {
 fn bytes_that_are_not_the_content_are_refused() {
     let (a, b, _) = pair(true);
     let bytes = picture(100);
-    let hash = content_hash(&bytes);
+    let hash = hash_bytes(&bytes);
     assert!(a.offer(&route(), &hash, b"other bytes").is_err());
     let mut arrivals = b.subscribe(&route());
     b.want(&route(), &hash);
@@ -170,7 +170,7 @@ fn bytes_that_are_not_the_content_are_refused() {
 fn pieces_nobody_asked_for_are_dropped() {
     let (_, b, _) = pair(true);
     let bytes = picture(10);
-    let hash = content_hash(&bytes);
+    let hash = hash_bytes(&bytes);
     let mut arrivals = b.subscribe(&route());
     b.peer_piece(
         &route(),
@@ -194,7 +194,7 @@ fn a_person_record_s_content_lives_in_the_person_s_room() {
     let person = CrdtRoute::record("so.tilo.tube", "person-room", "history");
     let window = CrdtRoute::record("so.tilo.tube", "room-1", "");
     let poster = picture(PIECE_BYTES + 3);
-    let hash = content_hash(&poster);
+    let hash = hash_bytes(&poster);
     a.offer(&person, &hash, &poster).unwrap();
 
     let mut in_window = b.subscribe(&window);

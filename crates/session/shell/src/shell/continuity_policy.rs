@@ -7,56 +7,17 @@
 use serde_json::{Map, Value};
 
 use super::device_fabric::PersonalFabricAction;
+use tilo_lock::MutexRecover as _;
 
-/// Independently switchable continuity data planes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContinuityCapability {
-    Clipboard,
-    Notifications,
-    WifiSettings,
-    Media,
-    DisplayInput,
-    FileTransfer,
-    RealtimeSessions,
-    TypedGamepad,
-    AppContinuations,
-}
-
-impl ContinuityCapability {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Clipboard => "clipboard",
-            Self::Notifications => "notification",
-            Self::WifiSettings => "Wi-Fi/settings",
-            Self::Media => "media",
-            Self::DisplayInput => "display/input",
-            Self::FileTransfer => "file-transfer",
-            Self::RealtimeSessions => "realtime-session",
-            Self::TypedGamepad => "typed-gamepad",
-            Self::AppContinuations => "app-continuation",
-        }
-    }
-}
+pub use settings_store::continuity_privacy::ContinuityCapability;
 
 /// An immutable, typed view of the committed device-local policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "privacy capabilities are independent opt-in switches"
-)]
 pub struct ContinuityPolicySnapshot {
     enabled: bool,
-    clipboard: bool,
-    notifications: bool,
-    wifi_settings: bool,
-    media: bool,
-    display_input: bool,
     automatic_display_input: bool,
-    file_transfer: bool,
-    realtime_sessions: bool,
-    typed_gamepad: bool,
-    app_continuations: bool,
+    /// Each capability's own switch, one bit per [`ContinuityCapability`].
+    allowed: u16,
 }
 
 impl ContinuityPolicySnapshot {
@@ -69,21 +30,27 @@ impl ContinuityPolicySnapshot {
         let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
         Self {
             enabled: flag("enabled"),
-            clipboard: flag("clipboard"),
-            notifications: flag("notifications"),
-            wifi_settings: flag("wifi_settings"),
-            media: flag("media"),
-            display_input: flag("display_input"),
             automatic_display_input: flag("automatic_display_input"),
-            file_transfer: flag("file_transfer"),
-            realtime_sessions: flag("realtime_sessions"),
-            typed_gamepad: flag("typed_gamepad"),
-            app_continuations: flag("app_continuations"),
+            allowed: ContinuityCapability::ALL
+                .into_iter()
+                .filter(|capability| flag(capability.key()))
+                .fold(0, |allowed, capability| allowed | bit(capability)),
         }
     }
 
+    /// The committed policy, without reading the settings document once the
+    /// session follows its live settings ([`follow`]): then it is one atomic
+    /// load unless the settings changed, so the compositor's loop and a check
+    /// per fabric message may ask. Before that (startup, tools, tests that
+    /// install no live settings) it reads the document as it always did.
     #[must_use]
-    pub fn load() -> Self {
+    pub fn current() -> Self {
+        FOLLOWED.current(Self::load)
+    }
+
+    /// Read and parse the settings document: a file read when no host source
+    /// is installed. Never on the compositor's loop; see [`Self::current`].
+    fn load() -> Self {
         Self::from_document(&settings_store::load())
     }
 
@@ -100,18 +67,7 @@ impl ContinuityPolicySnapshot {
 
     #[must_use]
     pub const fn permits(self, capability: ContinuityCapability) -> bool {
-        self.enabled
-            && match capability {
-                ContinuityCapability::Clipboard => self.clipboard,
-                ContinuityCapability::Notifications => self.notifications,
-                ContinuityCapability::WifiSettings => self.wifi_settings,
-                ContinuityCapability::Media => self.media,
-                ContinuityCapability::DisplayInput => self.display_input,
-                ContinuityCapability::FileTransfer => self.file_transfer,
-                ContinuityCapability::RealtimeSessions => self.realtime_sessions,
-                ContinuityCapability::TypedGamepad => self.typed_gamepad,
-                ContinuityCapability::AppContinuations => self.app_continuations,
-            }
+        self.enabled && self.allowed & bit(capability) != 0
     }
 
     /// Whether applying `self` must tear down live state for a capability
@@ -239,6 +195,11 @@ impl ContinuityPolicySnapshot {
     }
 }
 
+/// `capability`'s bit in [`ContinuityPolicySnapshot::allowed`].
+const fn bit(capability: ContinuityCapability) -> u16 {
+    1 << capability as u16
+}
+
 /// The policy in a live settings document, parsed once per settings
 /// generation — for a per-tick reader that must not read the file.
 pub struct ContinuityPolicyCache {
@@ -269,10 +230,93 @@ impl ContinuityPolicyCache {
     }
 }
 
+/// The live settings the whole process reads its policy from, once the
+/// session follows them.
+static FOLLOWED: FollowedPolicy = FollowedPolicy::new();
+
+/// Read the continuity policy from `settings` from now on: every
+/// [`ContinuityPolicySnapshot::current`] (fabric message checks on the
+/// compositor's loop, broker requests, Quick Settings actions) then parses
+/// it once per settings generation instead of reading the document on each
+/// call. The settings watch behind `settings` is what invalidates it.
+pub fn follow(settings: &settings_store::live::LiveSettings) {
+    FOLLOWED.follow(settings);
+}
+
+/// A policy cache that may not be followed yet.
+struct FollowedPolicy(std::sync::Mutex<Option<ContinuityPolicyCache>>);
+
+impl FollowedPolicy {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    fn follow(&self, settings: &settings_store::live::LiveSettings) {
+        *self.0.lock_recover() = Some(ContinuityPolicyCache::new(settings));
+    }
+
+    /// The followed policy, or `unfollowed()` while nothing is followed.
+    fn current(
+        &self,
+        unfollowed: impl FnOnce() -> ContinuityPolicySnapshot,
+    ) -> ContinuityPolicySnapshot {
+        let followed = self
+            .0
+            .lock_recover()
+            .as_mut()
+            .map(ContinuityPolicyCache::current);
+        followed.unwrap_or_else(unfollowed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Fabric messages check the policy on the compositor's loop, one check
+    /// per message. Once followed, those checks never read the settings
+    /// document; a change still reaches them through the settings watch.
+    #[test]
+    fn a_followed_policy_is_read_without_the_settings_document() {
+        use settings_store::SettingsSource as _;
+        let followed = FollowedPolicy::new();
+        let reads = std::cell::Cell::new(0_usize);
+        let unfollowed = || {
+            reads.set(reads.get().saturating_add(1));
+            ContinuityPolicySnapshot::default()
+        };
+        let _ = followed.current(unfollowed);
+        assert_eq!(reads.get(), 1, "unfollowed, the document is read");
+
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        followed.follow(&settings);
+        for _ in 0..1000 {
+            assert!(
+                !followed
+                    .current(unfollowed)
+                    .permits(ContinuityCapability::FileTransfer)
+            );
+        }
+        assert_eq!(reads.get(), 1, "followed, a check reads no document");
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "file_transfer": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(
+            followed
+                .current(unfollowed)
+                .permits(ContinuityCapability::FileTransfer),
+            "the settings watch carries a change to the next check"
+        );
+        assert_eq!(reads.get(), 1);
+    }
 
     #[test]
     fn the_cached_policy_follows_each_settings_generation() {

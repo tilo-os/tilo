@@ -618,13 +618,6 @@ impl SpeakerFabricState {
     }
 }
 
-/// Where a live audio route or a "play here" should go.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AudioTarget {
-    Device(DeviceId),
-    SpeakerGroup(SpeakerGroupId),
-}
-
 /// Whether `value` is a usable group name: trimmed, bounded, printable.
 #[must_use]
 pub fn valid_group_name(value: &str) -> bool {

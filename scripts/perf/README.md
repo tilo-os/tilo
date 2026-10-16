@@ -33,6 +33,28 @@ executable stand-alone; the higher-level flow is described below.
   KMS presentation, through `tilo-vm`); see
   [reference hardware](../../docs/benchmarks/reference-hardware.md).
 
+- `browser_qualification.mjs BUNDLE_DIR --out REPORT --renderer R` — the
+  browser runtime's qualification: a release desktop bundle in headless Chrome
+  at FHD, fresh-context rounds of load, first opens, window activation, the
+  demo workload (a strip panned by 120 Hz wheel input: frame intervals and the
+  runtime's CPU per frame) and an idle desktop, judged against the 30 fps
+  minimum, 120 fps and 50 ms activation goals. It refuses to report when the
+  bundle's bytes, revision or profile, the WebGPU adapter or a quiet host
+  (`--max-load`) cannot be proven. **Perf / scheduled** runs it nightly as the
+  `browser` group (`tools/perf/adapters.py browser-qualification`);
+  `docs/measurements/performance.md` has the hardware invocation.
+
+- `native_stream_qualification.mjs BUNDLE_DIR --out REPORT --relay BIN --source BIN
+  --renderer R` — a native window on the browser desktop: a session (tilo-relay's
+  `legacy_stream_source` example, the production H.264 encoder over a window
+  whose every frame carries its number) through a `tilo-relay dev` host to a
+  desktop bundle in headless Chrome, which decodes it with WebCodecs. Every
+  picture drawn is read back: startup to the first picture, capture-to-picture
+  latency, frame rate, frames never drawn and click-to-session input latency,
+  and a failure for any corrupt, misnamed or older picture, decoder error,
+  wrong last frame or lost press. **Perf / scheduled** runs it nightly as the
+  `stream` group (`tools/perf/adapters.py native-stream`).
+
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
   given dir) for shell + terminal + file-explorer + tilo-relay + fs +
   tilo-install, emit a `{name: bytes}` JSON blob on stdout.

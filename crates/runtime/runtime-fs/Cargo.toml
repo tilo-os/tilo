@@ -32,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["test-support"] }

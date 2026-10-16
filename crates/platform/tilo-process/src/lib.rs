@@ -11,6 +11,8 @@
 #[cfg(feature = "native-editor")]
 pub mod editor;
 pub use tilo_platform_caps::{Availability, availability, available};
+#[cfg(unix)]
+pub mod local_socket;
 pub mod rendezvous;
 
 /// A capability of this crate.
@@ -59,6 +61,21 @@ impl tilo_platform_caps::Feature for Feature {
 #[must_use]
 pub fn id() -> Option<u32> {
     backend::id()
+}
+
+/// The real user id this process runs as.
+#[cfg(unix)]
+#[must_use]
+pub fn uid() -> u32 {
+    rustix::process::getuid().as_raw()
+}
+
+/// The effective user id this process acts with: the owner it creates files
+/// as and is checked against.
+#[cfg(unix)]
+#[must_use]
+pub fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
 }
 
 /// How many files process `pid` has open, where the system says (Linux's

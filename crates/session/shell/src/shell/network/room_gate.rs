@@ -67,6 +67,7 @@ impl ShellNetwork {
             // requests and acks are how a reader obtains and confirms keys.
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. } => Some((TreePath::root(), ActionKind::Read)),
             // Settled before the room gate: identity is how a sender becomes
             // known at all, a codec advert describes the sender's device, and

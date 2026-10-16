@@ -1,8 +1,8 @@
 //! What the relay holds and allocates, measured with a counting global allocator.
 //!
 //! A pinned workspace materializes a long run of remote deltas: a device types and writes
-//! settings in 20 rounds of 1000 ops; the relay takes each round in through anti-entropy ingest,
-//! as it would from a peer. Its growth is compared with the same document loaded from a full
+//! settings in 20 rounds of 1000 ops; the relay takes each round in through the fan-out a peer
+//! relay's delta takes. Its growth is compared with the same document loaded from a full
 //! save. Separately, classifying a routed multi-megabyte delta must not copy it.
 
 #![allow(
@@ -18,6 +18,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT};
 use tilo_automerge::heap::{self, ThreadCounting};
 use tilo_relay::workspace::{Membership, WorkspaceRuntime};
+use tilo_relay::{Envelope, PeerRole};
 
 #[global_allocator]
 static HEAP: ThreadCounting = ThreadCounting;
@@ -53,12 +54,17 @@ fn a_pinned_workspace_holds_what_its_saved_document_holds() {
             typed += TYPED_RUN.len();
         }
         let delta = remote.save_incremental();
+        let envelope = Envelope::Delta {
+            workspace_id: WORKSPACE,
+            author_device_public_key: [0; 32],
+            authored_at_ns: round + 1,
+            delta: delta.clone(),
+            signature: [0; 64],
+        };
         let before = heap::held();
-        assert!(
-            workspace
-                .ingest_sync_changes(WORKSPACE, &delta, round + 1)
-                .unwrap()
-        );
+        workspace
+            .fanout_delta(&[0; 32], PeerRole::PeerRelay, &envelope, &delta, round + 1)
+            .unwrap();
         grown += heap::held() - before;
     }
     assert_eq!(
@@ -91,7 +97,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         std::time::UNIX_EPOCH,
         1,
     );
-    let body = postcard::to_stdvec(&tilo_peer_state::NeighbourMsg::AppDocument {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
         peer: 3,
         app_id: "so.tilo.notes".into(),
         cluster_id: "cluster".into(),
@@ -115,8 +121,19 @@ fn classifying_a_routed_checkpoint_does_not_copy_it() {
     assert!(delta.len() > SIZE);
 
     // The compactor sees every delta a session admits.
-    assert!(tilo_relay::compaction::Compactor::observe(&delta).is_some());
-    let observed = heap::allocated_by(|| tilo_relay::compaction::Compactor::observe(&delta));
+    assert!(
+        tilo_relay::compaction::Compactor::observe_with(
+            &tilo_relay::payloads::NeighbourPayloads,
+            &delta
+        )
+        .is_some()
+    );
+    let observed = heap::allocated_by(|| {
+        tilo_relay::compaction::Compactor::observe_with(
+            &tilo_relay::payloads::NeighbourPayloads,
+            &delta,
+        )
+    });
     assert!(
         observed < BUDGET,
         "observing a {SIZE}-byte checkpoint allocated {observed} bytes"

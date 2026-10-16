@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::app::catalog_resource_id;
 use crate::resource::DbEffect;
 use crate::session::Session;
+use ui::lock::RwLockRecover as _;
 
 const KIND: &str = "Database";
 
@@ -43,10 +44,7 @@ impl DbSearchIndex {
     /// previous valid snapshot remains available.
     pub fn sync(&self, session: &Session) -> Result<(), String> {
         let revision = revision(session);
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.read_recover();
         if state.revision.as_deref() == Some(&revision) {
             return Ok(());
         }
@@ -290,15 +288,10 @@ fn apply_catalog_snapshot(
     let mut seen = std::collections::HashSet::new();
     if let Some((duplicate, _)) = rows.iter().find(|(id, _)| !seen.insert(id.as_str())) {
         let error = format!("Database search index refresh failed: `{duplicate}` is listed twice");
-        state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last_error = Some(error.clone());
+        state.write_recover().last_error = Some(error.clone());
         return Err(error);
     }
-    let mut state = state
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = state.write_recover();
     state.revision = Some(revision);
     state.entries = rows.into_iter().map(|(_, entry)| entry).collect();
     state.resources = resources;
@@ -323,11 +316,7 @@ impl DbSearchIndex {
 
     /// Every row of the catalogue as a search entry.
     pub fn entries(&self) -> Vec<SearchEntry> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .clone()
+        self.state.read_recover().entries.clone()
     }
 
     /// The bounded top of the live catalog: the open database and its
@@ -343,8 +332,7 @@ impl DbSearchIndex {
         ];
         let mut rows: Vec<Resource> = self
             .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .resources
             .values()
             .filter(|resource| TOP.contains(&resource.kind.as_str()))
@@ -355,20 +343,11 @@ impl DbSearchIndex {
     }
 
     pub fn resource(&self, id: &str) -> Option<Resource> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .resources
-            .get(id)
-            .cloned()
+        self.state.read_recover().resources.get(id).cloned()
     }
 
     pub fn last_error(&self) -> Option<String> {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last_error
-            .clone()
+        self.state.read_recover().last_error.clone()
     }
 }
 

@@ -50,27 +50,61 @@ impl Drop for WorkerThread {
 }
 
 impl NativeTaskReview {
+    /// Built on the compositor's loop with the session broker, so the owner
+    /// is resolved on the review's own worker, which may wait for its open.
+    /// Until then a room without a snapshot reads as requiring review, and
+    /// requests queue for the worker.
     pub(crate) fn new(
         tree: super::state::WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
     ) -> Result<Self, String> {
+        // Without a state file there is no owner to wait for. An open that
+        // failed is tried again on the worker.
+        if tree.read().persist_path.is_none() {
+            return Err("native task owner unavailable".into());
+        }
         let commit = Arc::new(super::broker_services::NativeOwnerCommitService::new(
             tree, network,
         ));
-        let owner = commit.owner().ok_or("native task owner unavailable")?;
-        Self::start(worker::Worker::new(owner, commit))
+        Self::spawn(BTreeSet::new(), move || {
+            let owner = commit.resolve_owner()?;
+            Ok(worker::Worker::new(owner, commit))
+        })
     }
 
-    fn start(mut worker: worker::Worker) -> Result<Self, String> {
+    #[cfg(test)]
+    fn start(worker: worker::Worker) -> Result<Self, String> {
+        Self::spawn(worker.rooms(), move || Ok(worker))
+    }
+
+    /// Run the worker `make` builds on a thread of its own. A worker that
+    /// cannot be built answers every request with why.
+    fn spawn(
+        native_rooms: BTreeSet<String>,
+        make: impl FnOnce() -> Result<worker::Worker, String> + Send + 'static,
+    ) -> Result<Self, String> {
         let state = Arc::new(Mutex::new(State {
-            native_rooms: worker.rooms(),
+            native_rooms,
             ..State::default()
         }));
         let (queue, receiver) = mpsc::sync_channel(MAX_PENDING);
-        worker.state = Arc::clone(&state);
+        let shared = Arc::clone(&state);
         let worker_thread = std::thread::Builder::new()
             .name("tilo-task-review".into())
-            .spawn(move || worker.run(receiver))
+            .spawn(move || match make() {
+                Ok(mut worker) => {
+                    let rooms = worker.rooms();
+                    if let Ok(mut state) = shared.lock() {
+                        state.native_rooms.extend(rooms);
+                    }
+                    worker.state = shared;
+                    worker.run(receiver);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "native task review has no owner");
+                    worker::refuse(&shared, &receiver, &error);
+                }
+            })
             .map_err(|error| error.to_string())?;
         Ok(Self {
             queue,

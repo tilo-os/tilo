@@ -45,13 +45,96 @@ fn session() -> Result<std::sync::MutexGuard<'static, Option<Session>>, SecretEr
         .lock()
         .map_err(|_| SecretError::Failed("secret session poisoned".into()))?;
     if guard.is_none() {
-        let connection = Connection::session().map_err(unavailable)?;
-        let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
-            .call("OpenSession", &("plain", Value::from("")))
-            .map_err(unavailable)?;
-        *guard = Some(Session { connection, path });
+        *guard = Some(open_session()?);
     }
     Ok(guard)
+}
+
+fn open_session() -> Result<Session, SecretError> {
+    let connection = Connection::session().map_err(unavailable)?;
+    // A process the store cannot examine proves who it is first; one it can
+    // examine does nothing here. A failed proof is not an error of its own:
+    // the store then refuses the calls, as it would have without it.
+    let _proved = crate::device_proof::prove_blocking(&connection);
+    let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
+        .call("OpenSession", &("plain", Value::from("")))
+        .map_err(unavailable)?;
+    Ok(Session { connection, path })
+}
+
+/// Why one attempt at a call failed: the service no longer knows this
+/// process's session (it restarted since the session was opened), it
+/// refused a process that identifies itself by proof (a restarted service
+/// has forgotten the proof too), or anything else.
+enum Attempt {
+    StaleSession,
+    Refused(SecretError),
+    Failed(SecretError),
+}
+
+impl From<SecretError> for Attempt {
+    fn from(error: SecretError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// [`failed`] for a call that names this process's session: a service that
+/// restarted since the session was opened answers `NoSession`.
+fn session_call_failed(error: zbus::Error) -> Attempt {
+    if let zbus::Error::MethodError(name, _, _) = &error {
+        if name.as_str() == "org.freedesktop.Secret.Error.NoSession" {
+            return Attempt::StaleSession;
+        }
+        if name.as_str() == "org.freedesktop.Secret.Error.AccessDenied"
+            && crate::device_proof::in_use()
+        {
+            return Attempt::Refused(failed(error));
+        }
+    }
+    Attempt::Failed(failed(error))
+}
+
+/// Run `call` with the process's session. A session the service has
+/// forgotten (it restarted, through D-Bus activation or its unit's
+/// `Restart=`) is reopened and the call made once more, so a long-lived
+/// client's first call after a restart does not fail. A process that
+/// proves who it is gets the same second attempt after a refusal, on a
+/// connection that proved again.
+fn with_session<T>(call: impl Fn(&Session) -> Result<T, Attempt>) -> Result<T, SecretError> {
+    let mut guard = session()?;
+    let result = call_reopening(&mut guard, call);
+    reset_on_disconnect(&mut guard, &result);
+    drop(guard);
+    result
+}
+
+/// [`with_session`]'s call on `current`, reopening it once if the service
+/// forgot it.
+fn call_reopening<T>(
+    current: &mut Option<Session>,
+    call: impl Fn(&Session) -> Result<T, Attempt>,
+) -> Result<T, SecretError> {
+    let attempt = |current: &Option<Session>| match current {
+        Some(session) => call(session),
+        None => Err(Attempt::Failed(SecretError::Denied)),
+    };
+    let mut result = attempt(current);
+    if matches!(result, Err(Attempt::StaleSession | Attempt::Refused(_))) {
+        *current = None;
+        result = match open_session() {
+            Ok(session) => {
+                *current = Some(session);
+                attempt(current)
+            }
+            Err(error) => Err(Attempt::Failed(error)),
+        };
+    }
+    result.map_err(|attempt| match attempt {
+        Attempt::StaleSession => {
+            SecretError::Failed("the Secret Service forgot a session it had just opened".into())
+        }
+        Attempt::Refused(error) | Attempt::Failed(error) => error,
+    })
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "a `map_err` adapter")]
@@ -123,10 +206,10 @@ fn unlock(connection: &Connection, objects: Vec<OwnedObjectPath>) -> Result<(), 
 fn items(
     connection: &Connection,
     attributes: &HashMap<&str, &str>,
-) -> Result<Vec<OwnedObjectPath>, SecretError> {
+) -> Result<Vec<OwnedObjectPath>, Attempt> {
     let (mut unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service(connection)?
         .call("SearchItems", &(attributes,))
-        .map_err(failed)?;
+        .map_err(session_call_failed)?;
     if !locked.is_empty() {
         unlock(connection, locked.clone())?;
         unlocked.extend(locked);
@@ -206,9 +289,7 @@ impl SecretBackend for SecretService {
 
 /// Store `value` under `app` and `key` in the default collection.
 fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
-    let mut guard = session()?;
-    let result = (|| {
-        let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
+    with_session(|Session { connection, path }| {
         let collection = proxy(
             connection,
             DEFAULT_COLLECTION,
@@ -234,57 +315,47 @@ fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretE
         );
         let (_item, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
             .call("CreateItem", &(properties, secret, true))
-            .map_err(failed)?;
+            .map_err(session_call_failed)?;
         if complete_prompt(connection, &prompt)? {
             Ok(())
         } else {
-            Err(SecretError::Denied)
+            Err(SecretError::Denied.into())
         }
-    })();
-    reset_on_disconnect(&mut guard, &result);
-    result
+    })
 }
 
 /// The first item carrying `attributes`, in search order, as `secret-tool
 /// lookup` reads it.
 fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Secret>, SecretError> {
-    let mut guard = session()?;
-    let result = (|| {
-        let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
+    with_session(|Session { connection, path }| {
         let found = items(connection, attributes)?;
         if found.is_empty() {
             return Ok(None);
         }
         let secrets: HashMap<OwnedObjectPath, WireSecret> = service(connection)?
             .call("GetSecrets", &(found.clone(), path))
-            .map_err(failed)?;
+            .map_err(session_call_failed)?;
         Ok(found
             .iter()
             .find_map(|item| secrets.get(item))
             .map(|(_, _, value, _)| Secret::new(value.clone())))
-    })();
-    reset_on_disconnect(&mut guard, &result);
-    result
+    })
 }
 
 /// Delete every item carrying `attributes`.
 fn remove(attributes: &HashMap<&str, &str>) -> Result<(), SecretError> {
-    let mut guard = session()?;
-    let result = (|| {
-        let Session { connection, .. } = guard.as_ref().ok_or(SecretError::Denied)?;
+    with_session(|Session { connection, .. }| {
         for item in items(connection, attributes)? {
             let prompt: OwnedObjectPath =
                 proxy(connection, item.as_str(), "org.freedesktop.Secret.Item")?
                     .call("Delete", &())
                     .map_err(failed)?;
             if !complete_prompt(connection, &prompt)? {
-                return Err(SecretError::Denied);
+                return Err(SecretError::Denied.into());
             }
         }
         Ok(())
-    })();
-    reset_on_disconnect(&mut guard, &result);
-    result
+    })
 }
 
 /// Drop the session after a transport failure, so the next call reconnects

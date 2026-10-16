@@ -149,7 +149,7 @@ pub mod offscreen {
         );
         let mut first_paint_seen = false;
         for name in scenes {
-            let mut driver = ShellDriver::new(viewport);
+            let mut driver = ShellDriver::for_scene(name, viewport);
             if let Some(outputs) = outputs {
                 driver.set_outputs(outputs);
             }
@@ -217,8 +217,8 @@ pub mod recording {
         frames_per_step_for, scenario,
     };
 
-    use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
     use shell::network::encoder::VideoEncoder;
+    use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
 
     /// What a recording produced: the codec and its first access unit (a
     /// keyframe), so a caller can check the content decodes.
@@ -473,7 +473,7 @@ mod tests {
 
     use std::fs;
 
-    use shell::network::decoder::VideoDecoder;
+    use tilo_callstream::surface_decoder::VideoDecoder;
 
     use super::super::scenario::lookup;
 
@@ -502,8 +502,8 @@ mod tests {
         assert_eq!(frame.width, 128);
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
-            shell::network::DecodedPixels::Rgba8(bytes) => bytes,
-            other @ shell::network::DecodedPixels::P010 { .. } => {
+            tilo_callstream::surface_decoder::DecodedPixels::Rgba8(bytes) => bytes,
+            other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                 panic!("an SDR decoder should yield RGBA pixels, got {other:?}")
             }
         };
@@ -548,6 +548,38 @@ mod tests {
         match host.content() {
             ui::widget::TileContent::App(app) => assert_eq!(app.app_title(), "Notes"),
             _ => panic!("the booted Notes tab is not the Notes app"),
+        }
+    }
+
+    /// The edge-overlay scenario addresses the top bar's chips by name, so
+    /// it reaches the same chip at every viewport of the sweep; each name
+    /// must resolve when the scenario reaches it, or the click is dropped
+    /// and the snapshot shows the wrong state.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
+    )]
+    fn overlay_edges_reaches_every_named_chip() {
+        let scenario = lookup("overlay_edges").expect("overlay_edges in catalogue");
+        for size in [(1280, 720), (1920, 1080)] {
+            let mut driver = ShellDriver::new(size);
+            for action in &scenario.actions {
+                if let scenario::Action::ClickNamed(name)
+                | scenario::Action::MoveCursorNamed(name) = action
+                {
+                    assert!(
+                        driver.resolve_named_centre(name).is_some(),
+                        "{size:?}: '{name}' does not resolve when overlay_edges reaches it"
+                    );
+                }
+                let step = Scenario {
+                    name: "_overlay_edges_step",
+                    description: "",
+                    actions: vec![action.clone()],
+                };
+                scenario::run(&mut driver, &step, &mut NullSink);
+            }
         }
     }
 }

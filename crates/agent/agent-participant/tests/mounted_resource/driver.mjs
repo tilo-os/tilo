@@ -42,14 +42,20 @@ const stages = [];
 const stage = name => {stages.push(name); observer?.mark(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
+/** What the page says, and what its graphics start-up waits on while its
+ * first frame is late (`data-gpu-step`: device, pipelines, surface,
+ * first-frame). */
+const pageState = () => Promise.race([
+  tab?.evaluate(`JSON.stringify({status: document.querySelector("#status")?.textContent ?? "",
+    gpuStep: document.documentElement.dataset.gpuStep ?? null})`, {timeout:250})
+    .then(JSON.parse).catch(() => ({status: 'status unavailable'})) ?? {status: 'status unavailable'},
+  new Promise(resolve => setTimeout(() => resolve({status: 'status observation unavailable'}), 250)),
+]);
 const deadline = setTimeout(async () => {
-  const pageStatus = await Promise.race([
-    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
-      .catch(() => 'status unavailable'),
-    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
-  ]);
+  const page = await pageState();
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
-    lastStage:stages.at(-1) ?? null, pageStatus: String(pageStatus ?? '').slice(0, 500)}, null, 2) + '\n');
+    lastStage:stages.at(-1) ?? null, pageStatus: String(page.status ?? '').slice(0, 500),
+    gpuStep: page.gpuStep ?? null}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
   await observer?.finish().catch(error => console.error('main-thread evidence unavailable', error));
   await browser?.close();
@@ -215,7 +221,9 @@ try {
   // refused (no access) or failed.
   const entryOutcome = 'document.documentElement.dataset.entry';
   const chooseAccount = async name => {
-    await tab.waitFor('document.querySelectorAll(".tilo-entry-card button").length === 2');
+    await tab.waitFor(`document.documentElement.dataset.entry !== undefined
+      || document.querySelectorAll('.tilo-entry-card button').length === 2`);
+    assert.equal(await tab.evaluate(entryOutcome), undefined, 'entry must offer account choice before completing');
     await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
   };
   observer.mark('navigate-link');
@@ -257,14 +265,10 @@ try {
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
 } catch (error) {
-  const pageStatus = await Promise.race([
-    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
-      .catch(() => 'status unavailable'),
-    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
-  ]);
+  const page = await pageState();
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
-    lastStage:stages.at(-1) ?? null, pageStatus:String(pageStatus ?? '').slice(0, 500),
-    error:String(error).slice(0, 500)}, null, 2) + '\n');
+    lastStage:stages.at(-1) ?? null, pageStatus:String(page.status ?? '').slice(0, 500),
+    gpuStep: page.gpuStep ?? null, error:String(error).slice(0, 500)}, null, 2) + '\n');
   throw error;
 } finally {
   clearTimeout(deadline);

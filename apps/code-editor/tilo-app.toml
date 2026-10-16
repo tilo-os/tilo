@@ -40,6 +40,9 @@ semantic-schema = "text-position-v1"
 required = ["files.paths"]
 optional = ["clipboard", "files.open", "files.save", "app-files", "threads", "processes"]
 
+[resources]
+kinds = ["code_editor.project", "terminal.history", "terminal.session"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

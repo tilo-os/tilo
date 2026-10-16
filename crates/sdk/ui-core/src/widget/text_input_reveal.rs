@@ -123,6 +123,10 @@ impl RevealToggle {
 }
 
 impl Widget for RevealToggle {
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -294,12 +298,6 @@ impl Widget for RevealToggle {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.contains(point)
             .then_some(winit::window::CursorIcon::Pointer)
-    }
-
-    /// An inline accessory is not a Tab stop; the pointer, assistive
-    /// technology and agents reach it.
-    fn is_focusable(&self) -> bool {
-        false
     }
 
     fn is_enabled(&self) -> bool {

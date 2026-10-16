@@ -13,7 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable as _};
 use taffy::prelude::*;
@@ -484,6 +484,37 @@ impl FramePaint {
         self
     }
 
+    /// This frame in place of `older`, a frame handed to the presenter before
+    /// it and never rendered ([`crate::shell::present::PresentPipe`]: latest
+    /// wins). The presenter then goes straight from the frame it holds, the
+    /// one `older` was relative to, to this one: the damage is the union of
+    /// both frames' damage, relative to `older`'s predecessor, when this frame
+    /// was produced right after `older`, and the whole output otherwise.
+    /// Copies are dropped: they move pixels of `older`'s image, which the
+    /// presenter never had, and `damage_regions` already repaints where they
+    /// land.
+    #[must_use]
+    pub fn superseding(mut self, older: &Self) -> Self {
+        self.repaint_copies();
+        let chained = self.revision != 0
+            && older.revision != 0
+            && self.previous_revision == Some(older.revision);
+        self.damage_regions = match (&self.damage_regions, &older.damage_regions) {
+            (Some(newer), Some(earlier)) if chained => {
+                let mut union = earlier.clone();
+                union.extend_from_slice(newer);
+                Some(without_contained_regions(&union))
+            }
+            _ => None,
+        };
+        self.previous_revision = if chained {
+            older.previous_revision
+        } else {
+            None
+        };
+        self
+    }
+
     /// Drop the copies: `damage_regions` already repaints where they land.
     fn repaint_copies(&mut self) {
         self.scroll_copies = None;
@@ -764,7 +795,8 @@ pub struct FrameBuilder {
     /// chrome wears for the active workspace, and what each app window is
     /// sent for the workspace it is in.
     windows: super::window_appearance::WindowAppearances,
-    theme_store_stamp: Option<SystemTime>,
+    /// The generation of the followed settings the theme was last read at.
+    theme_store_stamp: Option<u64>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
     night_light: bool,
@@ -806,6 +838,8 @@ pub struct FrameBuilder {
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
     /// Per-output fullscreen client painted above the unchanged tiled scene.
     fullscreen_overlay: Option<(u64, ForeignSurfaceWidget)>,
+    /// A system-modal prompt is up: the desktop is dimmed beneath it.
+    system_modal_scrim: bool,
     /// The session is locked: a capture sees nothing of the desktop at all.
     session_locked: bool,
     /// XDG and input-method transient surfaces.  These are intentionally
@@ -878,7 +912,7 @@ pub struct FrameBuilder {
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AnimationDemand {
     pub host: u32,
     pub floating: bool,
@@ -896,7 +930,7 @@ struct FramePresentationInputs {
     text_renderer: TextRenderer,
     theme: Theme,
     own_identity: String,
-    theme_store_stamp: Option<std::time::SystemTime>,
+    theme_store_stamp: Option<u64>,
 }
 
 /// Every counter that moves when the desktop tree may have changed: a peer's
@@ -987,6 +1021,24 @@ impl FrameBuilder {
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
     /// the peer-sync palette rows on or off.
     ///
+    /// As [`Self::with_tree`], with `inputs` as its owned fixture's hosted
+    /// inputs: a capture gives them the clock its frames show.
+    pub fn with_tree_and_inputs(
+        tree: &WorkspaceTree,
+        viewport: (u32, u32),
+        inputs: crate::shell::hosted_inputs::HostedTileInputs,
+    ) -> Self {
+        Self::from_parts(
+            crate::shell::build_tilo_overlay_host_with_inputs(
+                tree.clone().shared(),
+                false,
+                ui::record::RecordStore::in_memory(),
+                inputs,
+            ),
+            viewport,
+        )
+    }
+
     /// The compositor needs this rather than [`Self::with_tree`] because
     /// peer-sync writes into the same tree the chrome reads: a replica
     /// applying a peer's change and the strip that paints it must look at
@@ -1065,8 +1117,7 @@ impl FrameBuilder {
             theme: Self::shots_theme_override().unwrap_or_else(Theme::dark),
             text_renderer: TextRenderer::new(),
             own_identity: crate::shell::state::local_user_id(),
-            theme_store_stamp: settings_store::settings_path()
-                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            theme_store_stamp: None,
         };
         Self::from_parts_with_presentation(parts, viewport, presentation)
     }
@@ -1130,6 +1181,7 @@ impl FrameBuilder {
             osk_overlay: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
+            system_modal_scrim: false,
             session_locked: false,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
@@ -1947,6 +1999,17 @@ impl FrameBuilder {
         }
     }
 
+    /// Install adversarial app content while retaining the real host, pump,
+    /// layout and paint passes for native scheduling regression tests.
+    #[cfg(test)]
+    pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let mut frame = Self::new((800, 600));
+        frame.node_map.clear();
+        *frame.host = ShellOverlayHost::with_fixture_content(content);
+        frame.rebuild_layout_tree();
+        frame
+    }
+
     /// Run the widget tree's per-frame pump (`sync` then `update`).
     /// Returns `true` when something changed and the frame should repaint.
     /// The compositor's frame loop needs this too, or a hosted app that
@@ -2006,6 +2069,15 @@ impl FrameBuilder {
                 sync_ms = sync_done.duration_since(rooms_done).as_secs_f64() * 1_000.0,
                 update_ms = update_done.duration_since(sync_done).as_secs_f64() * 1_000.0,
                 "widget app pump stalled compositor input"
+            );
+            // The session log carries stderr lines; the tracing target above
+            // is filtered out of it by default.
+            eprintln!(
+                "SLOW-APP-PUMP total={total:?} (records={:?} rooms={:?} sync={:?} update={:?})",
+                records_done.duration_since(started),
+                rooms_done.duration_since(records_done),
+                sync_done.duration_since(rooms_done),
+                update_done.duration_since(sync_done),
             );
         }
         changed || settled
@@ -2275,6 +2347,7 @@ impl FrameBuilder {
                 &self.presence,
             );
         }
+        self.draw_system_modal_scrim(&mut scene);
         for (_, surface) in &mut self.transient_overlays {
             if surface.is_mapped() {
                 surface.draw(
@@ -2337,9 +2410,13 @@ impl FrameBuilder {
     pub fn paint_with_damage(&mut self) -> FramePaint {
         // This producer owns the policy even when invoked during another draw.
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
+        let mut phases = ScenePhases::start();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
+        // Theme, locale and workspace temperature can rebuild the whole layout
+        // tree here; named apart so a slow scene says whether it was this.
+        phases.mark("refresh");
         let global_filter = self.global_filter();
         // A presenter that moves pixels within its target gets what a scroll
         // in an app moved, while the scene is one display's view of the
@@ -2436,6 +2513,10 @@ impl FrameBuilder {
                 crate::shell::scanout_candidate::DrawnOnTop::last_in(scene, draws_before);
             Some(vec![bounds?])
         });
+        overlay_part(above, "shell.system-modal-scrim", desktop, |scene| {
+            self.draw_system_modal_scrim(scene);
+            self.system_modal_scrim.then(|| vec![desktop])
+        });
         overlay_part(above, "shell.popups", desktop, |scene| {
             self.transient_overlays
                 .iter_mut()
@@ -2465,6 +2546,7 @@ impl FrameBuilder {
             )?])
         });
         drop(retained_scope);
+        phases.mark("draw-sections");
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
@@ -2550,6 +2632,7 @@ impl FrameBuilder {
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
             .map(|regions| without_contained_regions(&regions));
+        phases.mark("damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -2614,6 +2697,7 @@ impl FrameBuilder {
                 },
             }
         });
+        phases.mark("frame-cache");
         if layered.is_some() {
             self.layers_generation = generation;
             if !self.drawing_layers_at_rest {
@@ -2623,6 +2707,7 @@ impl FrameBuilder {
         }
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
+        phases.mark("backdrop");
         // A layered frame's scene is the one a full render of it draws,
         // composed from the layers exactly as the presenter composites them.
         // No filter is on (filters keep the strips in screen space) and no
@@ -2638,6 +2723,8 @@ impl FrameBuilder {
                 self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
             (scene, scanout, None)
         };
+        phases.mark("compose");
+        phases.report();
 
         let after_layers = self
             .last_produced_sections
@@ -2953,9 +3040,14 @@ impl FrameBuilder {
 
     /// A floating surface shows a blur of what is below it, which can change
     /// without its own section changing (a ticking clock under its edge, a
-    /// repaint inside the blur's reach). Any frame that repaints part of the
-    /// screen therefore repaints every blurred surface too. An unchanged
-    /// frame (`Some` and empty) stays unchanged: nothing below moved.
+    /// repaint inside the blur's reach). A blurred surface is therefore
+    /// repainted with any damage that falls within its bounds and the reach
+    /// of its blur ([`RecordedBackdrop::reach`]): the blur reads nothing
+    /// further away, so damage elsewhere cannot change it, and a surface on
+    /// no display shows nothing to repair. (Every blurred surface used to join
+    /// every damage, so one tooltip's blur made a typed character repaint
+    /// the palette, the notifications and Quick Settings with it.) An
+    /// unchanged frame (`Some` and empty) stays unchanged: nothing below moved.
     fn with_backdrop_damage(
         &self,
         damage: Option<Vec<FineDamageRect>>,
@@ -2965,8 +3057,26 @@ impl FrameBuilder {
         if regions.is_empty() || surfaces.is_empty() {
             return Some(regions);
         }
+        let damaged = regions.clone();
         for surface in surfaces {
-            regions.push(self.native_damage_rect(Some(surface.bounds))?);
+            let Some(bounds) = self.native_damage_rect(Some(surface.bounds)) else {
+                // On no display: nothing of it is shown.
+                continue;
+            };
+            let reach = self
+                .native_damage_rect(Some(
+                    surface.bounds.inflate(surface.reach(), surface.reach()),
+                ))
+                .unwrap_or(bounds);
+            let touched = damaged.iter().any(|rect| {
+                rect.x < reach.x.saturating_add(reach.width)
+                    && reach.x < rect.x.saturating_add(rect.width)
+                    && rect.y < reach.y.saturating_add(reach.height)
+                    && reach.y < rect.y.saturating_add(rect.height)
+            });
+            if touched {
+                regions.push(bounds);
+            }
         }
         Some(regions)
     }
@@ -3790,8 +3900,10 @@ impl FrameBuilder {
             return;
         }
         self.last_theme_store_check = Instant::now();
-        let stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        // The followed document's generation, one atomic load: the watcher
+        // that parses the file on change publishes it, so paint never asks
+        // the filesystem whether the settings moved.
+        let stamp = Some(self.followed_settings_generation());
         let phase_changed = self
             .day_phase
             .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
@@ -3920,7 +4032,15 @@ impl FrameBuilder {
     /// Read settings in paint from `settings`, the session's one followed
     /// document, rather than from the file.
     pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
+        self.theme_store_stamp = Some(settings.generation());
         self.live_settings = Some(settings);
+    }
+
+    /// The generation of the settings paint follows.
+    fn followed_settings_generation(&mut self) -> u64 {
+        self.live_settings
+            .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+            .generation()
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -3933,8 +4053,7 @@ impl FrameBuilder {
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
-        self.theme_store_stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        self.theme_store_stamp = Some(self.followed_settings_generation());
         self.rebuild_layout_tree();
         self.relayout();
     }
@@ -4230,6 +4349,13 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
+    /// A frame was painted for presentation. The content is never marked
+    /// drawn here, so motion that steps once per drawn frame (a window
+    /// group's width spring) is told the frame turned.
+    pub fn frame_presented(&mut self) {
+        self.host.frame_presented();
+    }
+
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         &mut self.host
     }
@@ -4246,6 +4372,11 @@ impl FrameBuilder {
     /// the user dismisses the trusted selector without creating an intent.
     pub fn capture_studio_open(&self) -> bool {
         self.host.capture_studio_open()
+    }
+
+    /// See [`ShellOverlayHost::capture_choosing_screenshot`].
+    pub fn capture_choosing_screenshot(&self) -> bool {
+        self.host.capture_choosing_screenshot()
     }
 
     /// Drain app-originated call/navigation/media handoffs. The app keeps
@@ -4643,17 +4774,6 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
-    /// Reconcile authenticated app-owned toplevels with the compositor's
-    /// presentation pass. Widgets are retained by surface id so a geometry
-    /// update never resets buffer sequence, mapping state, or opening chrome.
-    pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect)]) {
-        let surfaces = surfaces
-            .iter()
-            .map(|(id, app, rect)| (*id, app.clone(), *rect, None))
-            .collect::<Vec<_>>();
-        self.set_floating_surfaces_with_input(&surfaces);
-    }
-
     /// Reconcile exact authenticated interactive bounds separately from the
     /// transparent native allocation that contains the surface's shadow.
     pub fn set_floating_surfaces_with_input(
@@ -4694,6 +4814,25 @@ impl FrameBuilder {
             widget.place_floating(rect);
             (surface_id, widget)
         });
+    }
+
+    /// Dim the whole desktop beneath a system-modal prompt.
+    fn draw_system_modal_scrim(&self, scene: &mut Scene) {
+        if !self.system_modal_scrim {
+            return;
+        }
+        let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        ui::overlay::scrim::modal(scene, Affine::IDENTITY, bounds, 1.0, &self.theme);
+    }
+
+    /// Show or hide the scrim a system-modal prompt dims the desktop with.
+    pub fn set_system_modal_scrim(&mut self, shown: bool) {
+        self.system_modal_scrim = shown;
+    }
+
+    /// Whether the desktop is dimmed under a system-modal prompt.
+    pub fn system_modal_scrim(&self) -> bool {
+        self.system_modal_scrim
     }
 
     pub fn fullscreen_surface_rect(&self) -> Option<(u64, Rect)> {
@@ -5751,6 +5890,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "shared");
         workspace.strips = vec![strip];
@@ -5929,6 +6069,7 @@ mod tests {
             tab,
             "Word Processor",
             "Word Processor",
+            "",
         );
         activate(&mut card);
         let wake = frame.peer_windows_poll();
@@ -7057,6 +7198,41 @@ mod tests {
         store.forget(POPUP);
     }
 
+    /// A window that was a tile before it went fullscreen keeps drawing over
+    /// the whole output: the tile's last configure must not leave it a
+    /// centred, tile-sized box floating above the desktop.
+    #[test]
+    fn a_fullscreen_client_that_was_a_tile_fills_the_output_not_its_old_box() {
+        const FULLSCREEN: u64 = 9_900_707;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(FULLSCREEN, &pixels, SIZE.0, SIZE.1);
+        // Its tile: the configure it last received, and so its extent.
+        store.note_placement(FULLSCREEN, Rect::new(780.0, 70.0, 1656.0, 620.0));
+        assert!(store.take_pending_configure(FULLSCREEN).is_some());
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+
+        // The overlay's configure, as `reconcile_fullscreen_overlay` sends it.
+        store.note_fullscreen_extent(FULLSCREEN, (1600, 900));
+        fb.set_fullscreen_surface(Some((FULLSCREEN, "Fullscreen".to_owned(), output)));
+        let frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("alone on top: no bar, wheel or strip chrome over it");
+        assert_eq!(candidate.origin, (0, 0));
+        assert!(candidate.covers((0, 0), SIZE), "it fills the output");
+        assert_eq!(
+            store.surface_origin(FULLSCREEN, output, (0.0, 0.0)),
+            (0.0, 0.0),
+            "input addresses the output's corner"
+        );
+        fb.set_fullscreen_surface(None);
+        store.forget(FULLSCREEN);
+    }
+
     fn key_press(key: Key) -> WindowEvent {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
@@ -7157,6 +7333,55 @@ mod tests {
         );
         assert!(!fb.host().palette_visible());
         assert!(fb.focused_ime_field(None).is_none());
+    }
+
+    fn query_bounds(node: &ui::a11y::AccessNode) -> Option<ui::a11y::AccessBounds> {
+        if node.action_target.as_deref() == Some("command-palette:query") {
+            return node.bounds;
+        }
+        node.children.iter().find_map(query_bounds)
+    }
+
+    #[test]
+    fn search_query_target_is_the_editable_row_and_disappears_on_close() {
+        let mut fb = FrameBuilder::new((1920, 1080));
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        let _ = fb.paint_settled();
+        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Space)),
+            &Modifiers::from(ModifiersState::SUPER),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        let targets = fb.widget_registry();
+        let mut names: Vec<_> = targets.keys().collect();
+        names.sort();
+        println!("open Search targets ({}): {names:?}", targets.len());
+        let query = *targets
+            .get("command-palette:query")
+            .expect("open Search must publish its editable query row, not just its card");
+        let tree = fb
+            .host()
+            .accessibility()
+            .expect("Search accessibility tree");
+        assert_eq!(query_bounds(&tree), Some(query.into()));
+        assert!(query.area() > 0.0, "the target is a visible editable row");
+        let card = fb.host().palette_rect_for_tests();
+        assert!(card.contains(query.center()));
+        assert!(query.height() < card.height());
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        assert!(!fb.widget_registry().contains_key("command-palette:query"));
     }
 
     #[test]
@@ -7271,6 +7496,7 @@ mod tests {
                 active_tab: ids[0],
                 width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
                 maximized: false,
+                focus_history: Vec::new(),
             })
             .collect();
 
@@ -9085,6 +9311,39 @@ mod tests {
             );
         }
 
+        /// Expand keeps the top bar but tucks the workspace switcher disc
+        /// away instead of drawing it over the window's left edge.
+        fn an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar() {
+            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+            let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            first.maximized = true;
+            let group = first.id;
+            let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+            let _ = fb.paint_settled();
+            let before = fb.widget_registry();
+            assert!(
+                rect_named(&before, "SidebarWheelDisc").width() > 1.0,
+                "the disc is there while nothing is expanded"
+            );
+            fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
+            let _ = fb.paint_settled();
+            let during = fb.widget_registry();
+            assert!(
+                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
+                "the disc is tucked while a window is expanded"
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() > 10.0,
+                "Expand keeps the top bar"
+            );
+            fb.with_chrome(|chrome| chrome.set_maximized_group(None));
+            let _ = fb.paint_settled();
+            assert!(
+                rect_named(&fb.widget_registry(), "SidebarWheelDisc").width() > 1.0,
+                "restoring brings the disc back"
+            );
+        }
+
         /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
         /// clients; chrome fullscreen still wins so W07 sees
         /// `fullscreen_group`. Maximize stays beside the wheel.
@@ -9113,15 +9372,87 @@ mod tests {
                 rect_named(&during, "TopBarChrome").height() <= 0.5,
                 "Super+F hides the top bar"
             );
+            assert!(
+                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
+                "the workspace switcher does not show in fullscreen"
+            );
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
             let _ = fb.paint_settled();
             assert!(!fb.chrome().is_fullscreen());
+        }
+
+        /// Super+F on a foreign window of a desktop partitioned across two
+        /// outputs gives it that whole output, not its strip band under the
+        /// hidden top bar, and leaving fullscreen restores its tile.
+        fn super_f_foreign_window_covers_its_output_in_a_partitioned_desktop() {
+            use crate::shell::output_scene::OutputGeometry;
+            use crate::shell::tab_binding::{self, Placement};
+
+            const SURFACE: u64 = 0xfedc_0012;
+            const APP: &str = "tilo.test.fullscreen-partition";
+            let store = crate::shell::foreign::store();
+            store.forget(SURFACE);
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let room = tree.desktop.workspaces[0].room;
+            crate::shell::launcher::set_pending_placement(APP, Placement::NewGroup);
+            assert!(
+                tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room)
+                    .is_some()
+            );
+            store.note_adopted(SURFACE);
+            // Frames on a pinned clock that advances a frame interval each,
+            // so the strip's springs run to rest in simulated time: every
+            // rect compared below is a settled layout, not a frame of motion.
+            let mut at = ui::time::now();
+            let settle = |fb: &mut FrameBuilder, at: &mut ui::time::Instant| {
+                for _ in 0..120 {
+                    *at += ui::time::Duration::from_millis(16);
+                    ui::time::testing::with_monotonic_time(*at, || {
+                        let _ = fb.paint_settled();
+                    });
+                }
+            };
+            let mut fb = FrameBuilder::with_tree(tree, (2944, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1024.0, 640.0).with_id(1),
+            ]);
+            settle(&mut fb, &mut at);
+            let before = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("tiled foreign window");
+            assert!(before.y0 > 0.0);
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            fb.set_fullscreen(None);
+            settle(&mut fb, &mut at);
+            let fullscreen = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("fullscreen foreign window");
+            assert!(
+                fullscreen.y0.abs() < 0.5 && (fullscreen.height() - 1080.0).abs() < 0.5,
+                "Super+F must give the client the whole output height: {fullscreen:?}"
+            );
+            assert!(
+                fullscreen.x0.abs() < 0.5 && (fullscreen.width() - 1920.0).abs() < 0.5,
+                "Super+F must give the client the whole output width: {fullscreen:?}"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            settle(&mut fb, &mut at);
+            let restored = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("restored foreign window");
+            assert_eq!(restored, before, "leaving fullscreen restores the tile");
+            store.forget(SURFACE);
+            crate::shell::launcher::clear_pending_placements();
         }
 
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
         super_f_on_a_tilo_group_covers_the_wheel();
+        an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar();
+        super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
     }
 
     fn both_directions_carry_the_desktop() {
@@ -9837,5 +10168,50 @@ fn scene_px(value: f64) -> u32 {
     )]
     {
         value as u32
+    }
+}
+
+/// Phase timings of one retained scene build, reported only when the build
+/// is slow. A typical build is under a millisecond; the main-thread freezes
+/// seen when a window opens or closes (`SLOW-ITER post_pump_paint` of
+/// 240-490 ms) were not attributable to a phase, and this names it in the
+/// session log (`SLOW-SCENE`).
+struct ScenePhases {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    spans: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl ScenePhases {
+    /// A scene build slower than this is reported.
+    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: now,
+            spans: Vec::with_capacity(8),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.spans.push((phase, now.duration_since(self.last)));
+        self.last = now;
+    }
+
+    fn report(&self) {
+        let total = self.started.elapsed();
+        if total < Self::REPORT_AFTER {
+            return;
+        }
+        let split = self
+            .spans
+            .iter()
+            .map(|(phase, took)| format!("{phase}={took:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("SLOW-SCENE total={total:?} {split}");
     }
 }

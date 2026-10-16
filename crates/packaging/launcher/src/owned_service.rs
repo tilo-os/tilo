@@ -244,8 +244,7 @@ impl ServiceEndpoint {
         }
         let metadata = std::fs::symlink_metadata(&self.path)?;
         if !metadata.file_type().is_socket()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
+            || !tilo_files::native::private::private_to_me(&metadata)
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -266,7 +265,7 @@ impl ServiceEndpoint {
             return Err(io::Error::last_os_error());
         }
         if usize::try_from(length).map_err(io::Error::other)? != std::mem::size_of::<libc::ucred>()
-            || credentials.uid != unsafe { libc::geteuid() }
+            || credentials.uid != rustix::process::geteuid().as_raw()
             || credentials.pid <= 1
         {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -563,13 +562,9 @@ impl Drop for ServiceChild {
         if self.child.try_wait().ok().flatten().is_none() {
             // The privately owned outer group covers setup failure before an
             // init pidfd could be acquired. It cannot mint a checkpoint witness.
-            if let Ok(pid) = i32::try_from(self.child.id()) {
-                // The unreaped child owns this private group, so its number
-                // cannot have been recycled into another session's group.
-                unsafe { libc::kill(pid.checked_neg().unwrap_or(0), libc::SIGKILL) };
-            }
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            // The unreaped child owns this private group, so its number
+            // cannot have been recycled into another session's group.
+            bounded_command::terminate_tree(&mut self.child, Duration::ZERO);
         }
     }
 }

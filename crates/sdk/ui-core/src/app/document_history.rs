@@ -441,7 +441,9 @@ impl App {
 
         let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
         self.refresh_framework_history(width);
-        let status = self.document_sync_status().map(str::to_owned);
+        let status = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
         crate::history_mode::embedded::refresh(
             self.root_widget.as_mut(),
             &self.state.doc,

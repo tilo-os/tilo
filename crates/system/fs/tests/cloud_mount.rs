@@ -101,6 +101,92 @@ fn write_file(volume: &CloudVolume, path: &str, bytes: &[u8]) {
     volume.release(fh).unwrap();
 }
 
+fn oauth_volume(source: Arc<dyn CloudSource>, dir: &Path) -> Arc<CloudVolume> {
+    CloudVolume::open(
+        source,
+        VolumeConfig {
+            dir: dir.to_path_buf(),
+            cache_budget: 64 << 20,
+            poll_interval: Duration::from_secs(30),
+            idle_poll_max: DEFAULT_IDLE_POLL_MAX,
+        },
+        Box::new(|_| {}),
+    )
+    .unwrap()
+}
+
+fn bearer(token: &str) -> Arc<StaticCredential> {
+    Arc::new(StaticCredential(Credential::Bearer {
+        token: zeroize::Zeroizing::new(token.to_owned()),
+        expires: None,
+    }))
+}
+
+#[test]
+fn dropbox_mount_syncs_remote_edits_and_local_writes() {
+    use cloud_source_dropbox::{
+        DropboxSource,
+        fake::{FakeDropbox, TOKEN},
+    };
+    let server = FakeDropbox::start();
+    server.put("/document.txt", b"initial");
+    let dir = tempfile::tempdir().unwrap();
+    let source = DropboxSource::new(server.config(""), bearer(TOKEN)).unwrap();
+    let volume = oauth_volume(Arc::new(source), dir.path());
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"initial");
+    server.put("/document.txt", b"remote edit");
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"remote edit");
+    write_file(&volume, "document.txt", b"local edit");
+    volume.upload_pending().unwrap();
+    assert_eq!(server.get("/document.txt").unwrap(), b"local edit");
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"local edit");
+}
+
+#[test]
+fn drive_mount_syncs_remote_edits_and_local_writes() {
+    use cloud_source_gdrive::{
+        GDrive,
+        fake::{FakeDrive, SOURCE_TOKEN},
+    };
+    let server = FakeDrive::start();
+    let id = server.put_file(&server.root_id(), "document.txt", b"initial");
+    server.put_native(
+        &server.root_id(),
+        "Essay",
+        "application/vnd.google-apps.document",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+    let volume = oauth_volume(Arc::new(source), dir.path());
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"initial");
+    server.write_file(&id, b"remote edit");
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"remote edit");
+    write_file(&volume, "document.txt", b"local edit");
+    volume.upload_pending().unwrap();
+    assert_eq!(server.bytes(&id).unwrap(), b"local edit");
+    volume.sync_once().unwrap();
+    assert_eq!(read_all(&volume, "document.txt"), b"local edit");
+    let link_name = names(&volume, "")
+        .into_iter()
+        .find(|name| name.starts_with("Essay."))
+        .unwrap();
+    let link: serde_json::Value = serde_json::from_slice(&read_all(&volume, &link_name)).unwrap();
+    assert_eq!(link["mime"], "application/vnd.google-apps.document");
+    assert!(link["url"].as_str().unwrap().starts_with("https://"));
+    assert!(
+        link["exports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ext| ext == "docx")
+    );
+}
+
 fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
 }

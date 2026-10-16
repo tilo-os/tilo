@@ -9,6 +9,7 @@
 //! to the borrowed `&mut ChannelState`; callers that want to
 //! validate-without-applying pass a clone and discard it.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -660,6 +661,103 @@ fn verify_attestation_chain(
 #[must_use]
 pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
     TreePath::room(room).app(app).resource(record)
+}
+
+/// Every record `room › app › resource` one of `grants` names (at the record
+/// or anywhere below it), as `(app, record)`, in grant order and possibly
+/// repeated.
+///
+/// A record's channel id is a hash of its route, so a steward cannot turn a
+/// channel back into the record it carries. A grant that names a record
+/// gives the route itself, so a steward admitting devices per record can
+/// decide a Read Deny on that record from the first admission on, without
+/// having seen the record written and without any mapping of its own to
+/// lose on a restart. A pattern grant (every resource of an app, any depth)
+/// names no record and is not inverted here.
+pub fn named_records<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> impl Iterator<Item = (&'g str, &'g str)> {
+    use tilo_action_policy::{Level, Segment};
+    grants.into_iter().filter_map(move |grant| {
+        let [
+            Segment::Name(Level::Room, named_room),
+            Segment::Name(Level::App, app),
+            Segment::Name(Level::Resource, record),
+            ..,
+        ] = grant.node.segments()
+        else {
+            return None;
+        };
+        (named_room == room).then_some((app.as_str(), record.as_str()))
+    })
+}
+
+/// The record whose channel is `channel` among those `grants` name in
+/// `room` ([`named_records`]); `None` when no grant names it.
+#[must_use]
+pub fn named_record_of_channel<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+    channel: crate::ChannelId,
+) -> Option<(&'g str, &'g str)> {
+    named_records(grants, room)
+        .find(|(app, record)| crate::document_channel_id(app, room, record) == channel)
+}
+
+/// The id [`pattern_read_witnesses`] gives a level a pattern leaves open: no
+/// app or record is named so.
+const UNNAMED: &str = "\u{0}unnamed";
+
+/// One record for each grant of `grants` that can refuse Read on records of
+/// `room` it does not name: a Read grant whose answer is not Allow, over a
+/// pattern of records ("Finance: Deny Read" on `room › app`, every resource
+/// of an app, any depth) rather than one named record. Each is `(app,
+/// record)` of a record the grant covers that nothing names: the grant's own
+/// names where it has them, an id no app or record carries where it leaves a
+/// level open.
+///
+/// A steward that does not know which record a channel carries cannot decide
+/// a pattern for it. It still can decide whether the pattern could matter to
+/// someone: a person whose read of every witness is allowed reads every
+/// record those patterns cover. Only grants naming the open levels decide a
+/// witness and the records it stands for differently, and those name a record
+/// (or its app and record), which a route claim then gives the steward
+/// ([`crate::ChannelRoute`]). So a steward withholds every channel whose
+/// route it does not know from whoever may not read a witness, and nobody
+/// else loses anything. A Deny below a record (an item, a field) covers no
+/// record and has no witness: no record's key can carry it.
+#[must_use]
+pub fn pattern_read_witnesses<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> BTreeSet<(String, String)> {
+    use tilo_action_policy::{ActionKind, Answer, Level, Segment};
+    let mut witnesses = BTreeSet::new();
+    for grant in grants {
+        if !grant.kinds.contains(ActionKind::Read) || grant.answer == Answer::Allow {
+            continue;
+        }
+        if named_records([grant], room).next().is_some() {
+            continue;
+        }
+        let name_at = |level: Level| {
+            grant
+                .node
+                .segments()
+                .iter()
+                .find_map(|segment| match segment {
+                    Segment::Name(at, id) if *at == level => Some(id.as_str()),
+                    _ => None,
+                })
+                .unwrap_or(UNNAMED)
+        };
+        let (app, record) = (name_at(Level::App), name_at(Level::Resource));
+        if grant.node.covers(&document_node(room, app, record)) {
+            witnesses.insert((app.to_owned(), record.to_owned()));
+        }
+    }
+    witnesses
 }
 
 /// The app segment of an artifact no app claims.

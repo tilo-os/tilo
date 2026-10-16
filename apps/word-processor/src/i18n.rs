@@ -54,7 +54,6 @@ mod tests {
             set_locale("en-US");
             assert_eq!(t("toolbar-styles"), "Styles");
             assert_eq!(t("template-report"), "Report");
-            assert_eq!(t("toast-saved"), "Document saved");
         }
 
         // Phase: de_returns_german_string.
@@ -127,15 +126,6 @@ mod tests {
             // Zero takes the plural in English, as CLDR has it.
             assert_eq!(t_args("status-words", &[arg("words", 0)]), "0 words");
 
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 1)]),
-                "Table of contents updated (1 entry)"
-            );
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 4)]),
-                "Table of contents updated (4 entries)"
-            );
-
             // German has the same one/other split, and `Zeichen` is invariant —
             // the catalog must not have grown an English-shaped plural for it.
             set_locale("de");
@@ -143,10 +133,6 @@ mod tests {
             assert_eq!(t_args("status-chars", &[arg("chars", 1)]), "1 Zeichen");
             assert_eq!(t_args("status-words", &[arg("words", 3)]), "3 Wörter");
             assert_eq!(t_args("status-chars", &[arg("chars", 9)]), "9 Zeichen");
-            assert_eq!(
-                t_args("toast-toc-updated", &[arg("n", 1)]),
-                "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
-            );
 
             set_locale("en-US");
         }

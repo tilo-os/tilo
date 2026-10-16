@@ -48,6 +48,7 @@ filesystem = [
     "dep:tilo-nm",
     "document-media",
     "dep:libc",
+    "dep:rustix",
     "dep:serde_bytes",
     "dep:serde_json",
     "dep:toml",
@@ -135,6 +136,7 @@ path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
@@ -152,7 +154,7 @@ iroh-gossip = { workspace = true, optional = true }
 tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
-# Conflict members can come from peers: the qdoc merge decodes them only here.
+# Conflict members can come from peers: the tilo-doc merge decodes them only here.
 tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate", optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
@@ -179,6 +181,7 @@ tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = fal
 tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["process"], optional = true }
 moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }
@@ -216,6 +219,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 # A loopback relay for the idle endpoint test (tests/iroh_idle.rs).
 iroh-relay = { version = "1.0.3", features = ["server"] }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
 
 [lints]
 workspace = true

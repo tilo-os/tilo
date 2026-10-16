@@ -326,8 +326,14 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                 continue
             for key in direct:
                 source, destination = key
-                if source == destination and destination.startswith(ASSEMBLED_COPY[1]) \
-                        and "/image" + destination.rstrip("/") in assembled:
+                if not destination.startswith(ASSEMBLED_COPY[1]) \
+                        or "/image" + destination.rstrip("/") not in assembled:
+                    continue
+                # A tree the build wrote at its final path, or a builder output
+                # (a runtime's publisher key) the stage mounts from the same
+                # builder result as the runtime it signs.
+                if source == destination or (not source.startswith("/")
+                                             and f"from=builder,source=/out/{source}," in assembled):
                     matched_direct.add(key)
             continue
         if source_stage == SEEDED_STAGE and instruction.stage != SEEDED_STAGE:

@@ -23,10 +23,7 @@ impl TestTransferPause {
             released: AtomicBool::new(false),
             finished: AtomicBool::new(false),
         });
-        let mut registered = PAUSES
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registered = PAUSES.get_or_init(Mutex::default).lock_recover();
         registered.retain(|pause| pause.strong_count() != 0);
         registered.push(Arc::downgrade(&pause));
         drop(registered);

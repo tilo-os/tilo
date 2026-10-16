@@ -42,7 +42,7 @@ use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
+pub(crate) const DESKTOP_RECORD: &str = "desktop";
 const DESKTOP_KEY: &str = "desktop";
 
 thread_local! {
@@ -92,8 +92,8 @@ pub(crate) struct Room {
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
-    /// Changes this page made to the room's records and sent: the person
-    /// posted or created something (the desktop's own document aside).
+    /// Changes this page made to the room: to its records, sent, and to its
+    /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
 }
 
@@ -151,7 +151,8 @@ pub(crate) fn open(
     Ok(())
 }
 
-/// How many changes to the room's records peer `id` made and sent.
+/// How many changes to the room peer `id` made: records it sent, and
+/// windows the person opened, closed or moved.
 pub(crate) fn authored(id: u32) -> u64 {
     room(id).map_or(0, |room| room.borrow().authored)
 }
@@ -335,7 +336,7 @@ impl Room {
                     }
                 }
                 PeerEvent::DocumentRejected(reason) => {
-                    warn(&format!("dropped a document: {reason}"))
+                    warn(&format!("dropped a document: {reason}"));
                 }
                 _ => {}
             }
@@ -598,7 +599,7 @@ impl Room {
                     };
                     match outbound(store, &checkout, replica) {
                         Ok(Some((mutation, heads))) => {
-                            outgoing.push((route, mutation, (id, key, heads)))
+                            outgoing.push((route, mutation, (id, key, heads)));
                         }
                         Ok(None) => {}
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),
@@ -645,16 +646,19 @@ impl Room {
         if self.desktop_value.as_ref() == Some(&value) {
             return;
         }
+        // The desktop this page joined with is not something the person did.
+        let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
         // The same change the desktop's own history log would make: its
         // time, and who made it.
-        if !tilo_desktop_surface::history_log::record(
-            doc,
-            &value,
-            &author,
-            ui::time::unix_now_i64(),
-        ) && doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok()
+        if tilo_desktop_surface::history_log::record(doc, &value, &author, ui::time::unix_now_i64())
         {
+            // Windows opened, closed, moved or resized: the person's own
+            // work on the desktop, as the history pane tells it.
+            if joined {
+                self.authored = self.authored.saturating_add(1);
+            }
+        } else if doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok() {
             doc.commit();
         }
         let mutation = if self.desktop_snapshotted {

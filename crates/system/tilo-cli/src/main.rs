@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! tilo app u browser        update one app
-//! tilo system status        inspect the booted system image
+//! tilo os upgrade           move onto the newest OS image made for this machine
+//! tilo os status            inspect the booted system image
 //! tilo update               update every provider available on this machine
 //! ```
 //!
@@ -23,22 +24,15 @@
 //! implementation, reached the same way from the button and the command line, so the two
 //! cannot drift.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+mod cleanup;
 mod health;
+mod os;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -58,7 +52,7 @@ fn helper() -> String {
                   What a rollback does and does not undo is in \
                   /usr/share/doc/tilo/recovery.md, and every command that changes \
                   the next boot prints it before doing so.",
-    after_help = "Examples:\n  tilo app u browser     Update Browser\n  tilo store search pdf  Search the app store (`store` is an alias)\n  tilo system status     Inspect the booted Tilo OS image\n  tilo update            Update apps and every available system provider\n\nOn another Linux distribution, app commands still work when `app` is on PATH;\nTilo OS-only system commands explain that their provider is unavailable."
+    after_help = "Examples:\n  tilo app u browser     Update Browser\n  tilo store search pdf  Search the app store (`store` is an alias)\n  tilo os upgrade        Move onto the newest Tilo OS image for this machine\n  tilo os status         Inspect the booted Tilo OS image\n  tilo update            Update apps and every available system provider\n\nOn another Linux distribution, app commands still work when `app` is on PATH;\nTilo OS-only system commands explain that their provider is unavailable."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -69,7 +63,7 @@ struct Cli {
 #[command(
     name = "system",
     about = "Manage the Tilo OS image",
-    after_help = "Examples:\n  system status\n  system update\n  system update --yes\n  system rollback"
+    after_help = "Examples:\n  system status\n  system upgrade\n  system upgrade --check\n  system rollback"
 )]
 struct SystemCli {
     #[command(subcommand)]
@@ -83,11 +77,12 @@ enum Cmd {
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// System image, boot, rollback, and repair commands.
+    /// The operating system: upgrade it, see what is booted, go back, repair.
     #[command(
-        after_help = "Examples:\n  tilo system status\n  tilo system update\n  tilo system update --yes\n  tilo system rollback"
+        visible_alias = "system",
+        after_help = "Examples:\n  tilo os upgrade            Move onto the newest image made for this machine\n  tilo os upgrade --check    Say which image that is, change nothing\n  tilo os status\n  tilo os clean              Remove caches nothing uses, by policy, now\n  tilo os rollback"
     )]
-    System {
+    Os {
         #[command(subcommand)]
         cmd: SystemCmd,
     },
@@ -143,22 +138,52 @@ enum SystemCmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Fetch and stage the newest signed Tilo OS image.
-    Update {
-        /// Do not ask for confirmation.
+    /// Move onto the newest OS image made for this machine, then restart once.
+    #[command(
+        visible_alias = "update",
+        long_about = "Move onto the newest OS image made for this machine.\n\n\
+                      A signed image fetches the newest signed release. A development image follows the newest \
+                      main build for its board (registry.tilo.so/tilo/tilo-vm:<board>-ci), or the generic \
+                      development image (tilo-vm:main-ci) on a machine without one. Only the parts of the \
+                      image this machine does not hold yet are downloaded. The new image boots at the next \
+                      restart; the one running now stays as the fallback."
+    )]
+    Upgrade {
+        /// A CI build to move onto instead (main-1a2b3c4, pr-4433-c5d51ba) or a full image reference.
+        #[arg(long, value_name = "BUILD")]
+        to: Option<String>,
+        /// Do not ask for anything; without --reboot, restart later yourself.
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Restart into the new image as soon as it is staged.
+        #[arg(long)]
+        reboot: bool,
+        /// Say which image this machine would move onto, and change nothing.
+        #[arg(long)]
+        check: bool,
     },
     /// Boot one deployment once, then return to the normal default.
     Boot {
-        /// Loader entry id shown by `tilo system status`.
+        /// Loader entry id shown by `tilo os status`.
         entry: String,
     },
     /// Explain how to enter the isolated recovery environment.
     Repair,
+    /// Remove caches this machine can fetch or regenerate again, by policy, now.
+    #[command(
+        long_about = "Remove what this machine can download or regenerate again, by the policy in \
+                      /etc/tilo/cache-gc.toml (a person's ~/.config/tilo/cache-gc.toml replaces it \
+                      for their own run). As root: Flatpak runtimes no installed app uses, and the \
+                      copy of the last developer image upgrade in /var/lib/tilo-vm/image. As a \
+                      person: their test fixture caches. Nothing in use is removed. \
+                      tilo-cache-gc.timer runs both daily; `tilo os status` says what the last \
+                      runs freed and what they kept.",
+        after_help = "Examples:\n  tilo os clean          Clean your own test caches now\n  sudo tilo os clean     Clean the system caches now"
+    )]
+    Clean,
     /// Check that this session renders on the machine's GPU.
     #[command(
-        after_help = "Examples:\n  tilo system health --gpu\n  tilo system health --gpu --json\n\nExits 1 when a GPU is present but the session or an app is not using it."
+        after_help = "Examples:\n  tilo os health --gpu\n  tilo os health --gpu --json\n\nExits 1 when a GPU is present but the session or an app is not using it."
     )]
     Health {
         /// Check GPU rendering (the only health area so far).
@@ -174,7 +199,7 @@ fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let result = if invoked_as(&args, "system") {
         let cli = SystemCli::parse_from(args);
-        if matches!(cli.cmd, SystemCmd::Health { .. }) {
+        if matches!(cli.cmd, SystemCmd::Health { .. } | SystemCmd::Clean) {
             run_system(cli.cmd)
         } else {
             require_system_provider().and_then(|()| run_system(cli.cmd))
@@ -212,10 +237,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::System { cmd } => {
+        Cmd::Os { cmd } => {
             // Health reads the running session, not the image, so it answers
             // wherever a Tilo session runs.
-            if !matches!(cmd, SystemCmd::Health { .. }) {
+            // Cleaning works on any distribution: its caches are not the image's.
+            if !matches!(cmd, SystemCmd::Health { .. } | SystemCmd::Clean) {
                 require_system_provider()?;
             }
             run_system(cmd)
@@ -230,7 +256,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             if json {
                 args.push("--json");
             }
-            run_helper_directly(&args)
+            let code = run_helper_directly(&args)?;
+            if !json {
+                print_cleanup_status();
+            }
+            Ok(code)
         }
         Cmd::Rollback { yes } => {
             require_system_provider()?;
@@ -351,12 +381,12 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
         SystemCmd::Rollback { yes } => run(Cli {
             cmd: Cmd::Rollback { yes },
         }),
-        SystemCmd::Update { yes } => privileged(
-            &["update"],
+        SystemCmd::Upgrade {
+            to,
             yes,
-            "tilo-deployment-update.service",
-            "Fetch and stage the current image",
-        ),
+            reboot,
+            check,
+        } => os_upgrade(to.as_deref(), yes, reboot, check),
         SystemCmd::Boot { entry } => run(Cli {
             cmd: Cmd::Boot { entry },
         }),
@@ -365,6 +395,42 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         SystemCmd::Health { gpu: _, json } => health::run_gpu(json),
+        SystemCmd::Clean => clean(),
+    }
+}
+
+/// The root run cleans the system's caches; a person's run cleans their own.
+fn clean() -> Result<ExitCode> {
+    let now = std::time::SystemTime::now();
+    let (title, record) = if is_root() {
+        ("Disk cleanup", cleanup::run_system()?)
+    } else {
+        ("Test caches", cleanup::run_user()?)
+    };
+    print!("{}", cleanup::render(title, Some(&record), now));
+    if !is_root() {
+        println!(
+            "System caches are cleaned daily by tilo-cache-gc.timer; `sudo tilo os clean` cleans them now."
+        );
+    }
+    Ok(if record.failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// What the last cleanup runs freed and kept, after the deployments.
+fn print_cleanup_status() {
+    let now = std::time::SystemTime::now();
+    let system = cleanup::read_record(std::path::Path::new(cleanup::SYSTEM_RECORD));
+    print!(
+        "\n{}",
+        cleanup::render("Disk cleanup", system.as_ref(), now)
+    );
+    // A person's own run, once it has run at least once: on most machines nobody runs tests.
+    if let Some(user) = cleanup::user_record().and_then(|path| cleanup::read_record(&path)) {
+        print!("{}", cleanup::render("Test caches", Some(&user), now));
     }
 }
 
@@ -477,14 +543,7 @@ fn update_everything(yes: bool) -> Result<ExitCode> {
         system_available(),
         app_skip_reason,
         || run_app(&[OsString::from("update")], "tilo app"),
-        || {
-            privileged(
-                &["update"],
-                yes,
-                "tilo-deployment-update.service",
-                "Fetch and stage the current image",
-            )
-        },
+        || os_upgrade(None, yes, false, false),
     )
 }
 
@@ -539,6 +598,94 @@ fn update_available_providers(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `tilo os upgrade`; see [`os`].
+fn os_upgrade(to: Option<&str>, yes: bool, reboot: bool, check: bool) -> Result<ExitCode> {
+    let facts = os::Facts::read_image(std::path::Path::new("/"));
+    if !facts.development {
+        os::plan(&facts, to)?;
+        if check {
+            println!(
+                "This machine runs a signed Tilo OS image: `tilo os upgrade` fetches the newest signed release."
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        return privileged(
+            &["update"],
+            yes,
+            "tilo-deployment-update.service",
+            "Fetch and stage the newest signed image",
+        );
+    }
+    if !is_root() {
+        let exe = std::env::current_exe().context("finding the tilo program to run as root")?;
+        eprintln!("tilo: changing the OS image needs root; asking sudo");
+        let status = Command::new("sudo")
+            .args(os::sudo_args(&exe, to, yes, reboot, check))
+            .status()
+            .context("running sudo")?;
+        return Ok(exit_code(status.code()));
+    }
+    let bootc = os::bootc_program();
+    let facts = facts.with_bootc_status(&os::bootc_status(&bootc));
+    let plan = os::plan(&facts, to)?;
+    println!(
+        "This machine runs {}",
+        facts
+            .booted
+            .as_deref()
+            .unwrap_or("an image bootc did not name")
+    );
+    println!(
+        "Moving onto       {}{}",
+        plan.image().unwrap_or("the newest signed release"),
+        if matches!(plan, os::Plan::Upgrade(_)) {
+            " (its newest build)"
+        } else {
+            ""
+        }
+    );
+    if check {
+        println!("Nothing changed (--check).");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let terminal = std::io::stderr().is_terminal();
+    match os::stage(&bootc, &plan, &mut std::io::stderr().lock(), terminal)? {
+        Ok(()) => {}
+        Err(os::Failure::UpToDate(text)) => {
+            println!("{text}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(failure) => {
+            eprintln!("tilo: {}", failure.sentence());
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    println!("{}", os::restart_note(&plan));
+    let later = "Restart when you are ready; the new image boots then.";
+    let restart =
+        match os::restart_decision(reboot, yes, terminal && std::io::stdin().is_terminal()) {
+            os::Restart::Now => true,
+            os::Restart::Later => false,
+            os::Restart::Ask => {
+                eprint!("Restart now? [y/N] ");
+                let mut line = String::new();
+                std::io::stdin()
+                    .read_line(&mut line)
+                    .context("reading the answer")?;
+                matches!(line.trim(), "y" | "Y" | "yes" | "YES")
+            }
+        };
+    if !restart {
+        println!("{later}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let status = Command::new("systemctl")
+        .arg("reboot")
+        .status()
+        .context("running systemctl reboot")?;
+    Ok(exit_code(status.code()))
 }
 
 fn provider_started(name: &str) -> Instant {
@@ -865,7 +1012,7 @@ mod tests {
             let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
             assert!(matches!(
                 system.cmd,
-                Cmd::System {
+                Cmd::Os {
                     cmd: SystemCmd::Status { json: false }
                 }
             ));
@@ -881,7 +1028,23 @@ mod tests {
             ];
             assert!(invoked_as(&args, "system"));
             let cli = SystemCli::try_parse_from(args).expect("the system alias parses");
-            assert!(matches!(cli.cmd, SystemCmd::Update { yes: true }));
+            assert!(matches!(
+                cli.cmd,
+                SystemCmd::Upgrade {
+                    yes: true,
+                    reboot: false,
+                    ..
+                }
+            ));
+            let os =
+                Cli::try_parse_from(["tilo", "os", "upgrade", "--to", "main-1a2b3c4", "--check"])
+                    .expect("os upgrade parses");
+            assert!(matches!(
+                os.cmd,
+                Cmd::Os {
+                    cmd: SystemCmd::Upgrade { check: true, to: Some(ref to), .. }
+                } if to == "main-1a2b3c4"
+            ));
         }
     }
 

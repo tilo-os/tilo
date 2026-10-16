@@ -15,7 +15,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use automerge::{AutoCommit, SaveOptions};
@@ -24,6 +24,7 @@ use crate::engine::{self, Key};
 use crate::wire::{self, Prepare, Reply, Request};
 use crate::worker;
 use crate::{Applied, Dependencies, Limits, Rejected};
+use tilo_lock::MutexRecover as _;
 
 /// Extra time for a full document sent to rebuild a worker's copy.
 const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
@@ -74,7 +75,7 @@ impl Pool {
     ) -> Result<Applied, Rejected> {
         let key = Key::of(doc);
         let slot = self.route(&key);
-        let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
+        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
         let mut next = if key.complete_heads().is_some() {
             Base::Cached
         } else {
@@ -123,6 +124,8 @@ impl Pool {
                     };
                 }
                 Reply::Invalid(message) => return Err(Rejected::Invalid(message)),
+                // Only a load is answered with this.
+                Reply::Loaded(_) => return Err(Rejected::Crashed),
                 Reply::Applied(Applied::MissingDependencies) => {
                     return Ok(Applied::MissingDependencies);
                 }
@@ -141,26 +144,29 @@ impl Pool {
 
     pub(crate) fn load(&self, bytes: &[u8]) -> Result<AutoCommit, Rejected> {
         let slot = self.any_slot();
-        let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
+        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
         match self.call(
             &mut worker,
             &Request::Load { incoming: bytes },
             0,
             bytes.len(),
         )? {
-            Reply::Applied(_) => {
+            Reply::Loaded(hashes) => {
                 drop(worker);
-                let mut doc = engine::load(bytes)?;
+                // The worker rebuilt and hashed every change, and checked
+                // the result against the heads `bytes` store; this load takes
+                // its hashes rather than doing that a second time.
+                let mut doc = engine::load_validated(bytes, &hashes)?;
                 self.remember(Key::of(&mut doc), slot);
                 Ok(doc)
             }
             Reply::Invalid(message) => Err(Rejected::Invalid(message)),
-            Reply::Uncached(_) => Err(Rejected::Crashed),
+            Reply::Applied(_) | Reply::Uncached(_) => Err(Rejected::Crashed),
         }
     }
 
     fn route(&self, key: &Key) -> usize {
-        let known = lock(&self.routes).get(key);
+        let known = self.routes.lock_recover().get(key);
         known.unwrap_or_else(|| self.any_slot())
     }
 
@@ -174,7 +180,7 @@ impl Pool {
 
     fn remember(&self, key: Key, slot: usize) {
         if key.complete_heads().is_some() {
-            lock(&self.routes).insert(key, slot);
+            self.routes.lock_recover().insert(key, slot);
         }
     }
 
@@ -290,10 +296,6 @@ fn catch_up(doc: &mut AutoCommit, cached: &[Key]) -> Option<(Key, Vec<u8>)> {
             .all(|hash| doc.get_change_meta_by_hash(hash).is_some())
             .then(|| (key.clone(), doc.save_after(&heads)))
     })
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Worker {
@@ -517,7 +519,8 @@ struct Spawner(Mutex<mpsc::Sender<SpawnJob>>);
 impl Spawner {
     fn spawn(&self, command: Command) -> io::Result<Child> {
         let (reply, result) = mpsc::channel();
-        lock(&self.0)
+        self.0
+            .lock_recover()
             .send((command, reply))
             .map_err(|_| io::Error::other("worker spawner stopped"))?;
         result
@@ -576,7 +579,7 @@ mod tests {
         doc.put(automerge::ROOT, "k", "v").unwrap();
         let saved = doc.save();
         let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
-        assert!(matches!(reply, Ok(Reply::Applied(Applied::Changed(true)))));
+        assert!(matches!(reply, Ok(Reply::Loaded(ref hashes)) if *hashes == doc.get_heads()));
     }
 
     #[test]
@@ -604,7 +607,7 @@ mod tests {
             let saved = full_save(&mut doc);
             assert!(matches!(
                 worker.call(Request::Load { incoming: &saved }.encode(), STARTUP),
-                Ok(Reply::Applied(Applied::Changed(true)))
+                Ok(Reply::Loaded(_))
             ));
             queued.push((doc, saved));
         }
@@ -681,7 +684,7 @@ mod tests {
             "open not refused: {message:?}"
         );
         let reply = worker.call(Request::Load { incoming: &[] }.encode(), STARTUP);
-        assert!(matches!(reply, Ok(Reply::Applied(_))));
+        assert!(matches!(reply, Ok(Reply::Loaded(_))));
 
         // Anything else off the list kills it.
         let mut worker = Worker::spawn(&limits()).unwrap();
@@ -741,10 +744,10 @@ mod tests {
         doc.put(automerge::ROOT, "k", 1).unwrap();
         doc.commit();
         let mut first = pool.load(&doc.save()).unwrap();
-        let pid = lock(&pool.slots[0]).as_ref().unwrap().child.id();
+        let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
         std::thread::sleep(Duration::from_millis(1600));
         assert!(
-            lock(&pool.slots[0]).as_mut().unwrap().exited(),
+            (pool.slots[0]).lock_recover().as_mut().unwrap().exited(),
             "worker {pid} did not exit"
         );
         let mut remote = first.fork();
@@ -764,14 +767,14 @@ mod tests {
         doc.put(automerge::ROOT, "k", 1).unwrap();
         doc.commit();
         pool.load(&doc.save()).unwrap();
-        let mut worker = lock(&pool.slots[0]).take().unwrap();
+        let mut worker = (pool.slots[0]).lock_recover().take().unwrap();
         let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
         // SAFETY: signalling our own child.
         unsafe { libc::kill(pid, libc::SIGALRM) };
         while !worker.exited() {
             std::thread::sleep(Duration::from_millis(5));
         }
-        *lock(&pool.slots[0]) = Some(worker);
+        *(pool.slots[0]).lock_recover() = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
     }
 
@@ -820,5 +823,102 @@ mod tests {
             pool.full_rebuilds() > before_cold,
             "a document never seen by a worker must still rebuild once from a full save"
         );
+    }
+
+    /// Two collaborators' history with concurrent heads, merges, a text and
+    /// an author, saved as one document chunk.
+    fn collaborated() -> AutoCommit {
+        let mut ada = AutoCommit::new()
+            .with_actor(automerge::ActorId::from(vec![0xa1; 16]))
+            .with_author(Some(automerge::Author::from(b"ada".to_vec())));
+        let text = ada
+            .put_object(automerge::ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        ada.commit();
+        let mut bo = ada
+            .fork()
+            .with_actor(automerge::ActorId::from(vec![0xb2; 16]));
+        for i in 0..24_usize {
+            let (writer, other) = if i % 3 == 0 {
+                (&mut bo, &mut ada)
+            } else {
+                (&mut ada, &mut bo)
+            };
+            writer.splice_text(&text, 0, 0, &format!("w{i} ")).unwrap();
+            writer
+                .put(automerge::ROOT, "last", i64::try_from(i).unwrap())
+                .unwrap();
+            writer.commit();
+            if i % 5 == 4 {
+                tilo_automerge::ApplyIncoming::merge_incoming(other, writer).unwrap();
+            }
+        }
+        // Leave the two heads concurrent.
+        bo.put(automerge::ROOT, "bo", true).unwrap();
+        bo.commit();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut ada, &mut bo).unwrap();
+        ada
+    }
+
+    #[test]
+    fn a_load_hands_the_caller_the_hashes_its_own_load_takes() {
+        let mut doc = collaborated();
+        assert_eq!(doc.get_heads().len(), 2, "concurrent heads");
+        let saved = doc.save();
+        let worker = Worker::spawn(&limits()).unwrap();
+        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+        let Ok(Reply::Loaded(hashes)) = reply else {
+            panic!("a load is answered with its hashes");
+        };
+        // Every change's hash, in the order the document chunk lists them:
+        // the order the known-hash load requires.
+        let mut reference = engine::load(&saved).unwrap();
+        assert_eq!(hashes, reference.document().change_hashes());
+        assert_eq!(hashes.len(), doc.get_changes(&[]).len());
+
+        // The caller's load with them builds the document a full load does.
+        let mut validated = engine::load_validated(&saved, &hashes).unwrap();
+        assert_eq!(validated.get_heads(), reference.get_heads());
+        assert_eq!(
+            validated.document().change_hashes(),
+            reference.document().change_hashes()
+        );
+        let changes = |doc: &mut AutoCommit| {
+            doc.get_changes(&[])
+                .iter()
+                .map(|change| (change.hash(), change.max_op(), change.raw_bytes().to_vec()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(changes(&mut validated), changes(&mut reference));
+        assert_eq!(validated.save(), reference.save());
+
+        // And so does the pool, end to end.
+        let pool = Pool::new(limits());
+        let mut admitted = pool.load(&saved).unwrap();
+        assert_eq!(changes(&mut admitted), changes(&mut reference));
+        assert_eq!(admitted.save(), reference.save());
+    }
+
+    #[test]
+    fn input_that_is_not_one_document_chunk_loads_without_hashes() {
+        let mut doc = collaborated();
+        let heads = doc.get_heads();
+        let mut saved = doc.save();
+        let mut remote = doc.fork();
+        remote.put(automerge::ROOT, "after", 1).unwrap();
+        remote.commit();
+        // A document chunk followed by a change chunk: the worker's document
+        // holds a change the document chunk does not.
+        saved.extend(remote.save_after(&heads));
+        let worker = Worker::spawn(&limits()).unwrap();
+        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+        assert!(
+            matches!(reply, Ok(Reply::Loaded(ref hashes)) if hashes.is_empty()),
+            "no hashes for a document chunk with more after it"
+        );
+        let pool = Pool::new(limits());
+        let mut admitted = pool.load(&saved).unwrap();
+        assert_eq!(admitted.get_heads(), remote.get_heads());
+        assert_eq!(admitted.save(), engine::load(&saved).unwrap().save());
     }
 }

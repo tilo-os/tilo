@@ -171,6 +171,24 @@ impl FormSection {
         section.has_title = true;
         section
     }
+    /// A titled section whose heading line also carries `action` (a master
+    /// switch, a status badge, an "Add" button) on its trailing edge.
+    pub fn with_action(title: impl Into<String>, action: Element) -> Self {
+        let mut section = Self::untitled();
+        let header = super::Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(
+                Text::new(&title.into())
+                    .with_role(TextRole::Heading)
+                    .with_heading_level(2),
+            ))
+            .push(Box::new(super::Spacer::new()))
+            .push(action);
+        section.parts.children.push(Box::new(header));
+        section.has_title = true;
+        section
+    }
     /// A section without a heading: the first group of a page whose title
     /// already says what it is, or a group that continues the one above.
     /// It emits no heading, visible or accessible.
@@ -270,6 +288,8 @@ enum FieldKind {
     /// Any element (a read-only value, a row of controls): the label is
     /// announced as a label of its own.
     Custom,
+    /// Read-only text: reserve a readable phrase, not only its longest word.
+    Value,
     /// No label: a row that spans both columns.
     Row,
 }
@@ -289,6 +309,10 @@ pub struct Field {
     /// chooser), instead of filling the control column: on the trailing edge
     /// of a grouped row, on the column's leading edge in a plain form.
     trailing_control: bool,
+    /// The control takes the room the label leaves instead of its own
+    /// width, even in a grouped section (a read-only value that wraps only
+    /// when the row is full).
+    filling_control: bool,
     /// The field is a row of a grouped section.
     grouped: bool,
     inherited: Option<SectionLayout>,
@@ -328,6 +352,23 @@ impl Field {
             content,
         )
     }
+    /// A read-only setting that fills the space beside its label. Reserve
+    /// a readable phrase width, bounded by the theme's chooser measure.
+    /// When that pair cannot fit, the section stacks labels above values.
+    pub fn value(label: impl Into<String>, value: impl Into<String>) -> Self {
+        let mut field = Self::custom(
+            label,
+            Box::new(
+                Text::new(&value.into())
+                    .numeric()
+                    .dimmed()
+                    .with_align(crate::ParagraphAlign::End),
+            ),
+        )
+        .with_filling_control();
+        field.kind = FieldKind::Value;
+        field
+    }
     fn row(content: Element) -> Self {
         Self::with_parts(FieldKind::Row, Box::new(super::Absent::new()), content)
     }
@@ -348,6 +389,7 @@ impl Field {
             has_help: false,
             label_placement: None,
             trailing_control: false,
+            filling_control: false,
             grouped: false,
             inherited: None,
             effective: None,
@@ -418,6 +460,14 @@ impl Field {
         self.trailing_control = true;
         self
     }
+    /// The control takes all the room the label leaves, instead of the
+    /// narrow column a chooser gets, even in a grouped (settings) row: for a
+    /// read-only value, which then wraps only when the row is really full.
+    #[must_use]
+    pub fn with_filling_control(mut self) -> Self {
+        self.filling_control = true;
+        self
+    }
     pub fn effective_layout(&self) -> Option<FieldLayout> {
         self.effective
     }
@@ -464,7 +514,15 @@ impl Field {
         let Some(control) = controls.first_mut() else {
             return (label, self.comfortable_control);
         };
-        let measured = measure_owned(*control, AvailableSpace::MinContent, text).width;
+        let mut measured = measure_owned(*control, AvailableSpace::MinContent, text).width;
+        if self.kind == FieldKind::Value {
+            // Min-content is just the longest word. A value needs enough
+            // room for a phrase before it can stand beside its label,
+            // rather than wrap a word per line. Bound its phrase width by
+            // the live theme rather than a guessed localized string.
+            let natural = measure_owned(*control, AvailableSpace::MaxContent, text).width;
+            measured = measured.max(natural.min(self.comfortable_control));
+        }
         let (declared, expandable) = tree.style(control_node).map_or((0.0, true), |style| {
             let fixed = style.size.width.into_option();
             let minimum = style.min_size.width.into_option().unwrap_or(0.0);
@@ -473,7 +531,7 @@ impl Field {
         let minimum = measured.max(declared);
         (
             label,
-            if expandable && self.kind == FieldKind::Control {
+            if expandable && (self.kind == FieldKind::Control || self.trailing_control) {
                 minimum.max(self.comfortable_control)
             } else {
                 minimum
@@ -734,7 +792,7 @@ impl Widget for FormSection {
             field.inherited = Some(effective);
             field.group_needs = None;
             field.grouped = grouped;
-            if grouped {
+            if grouped && !field.filling_control {
                 field.trailing_control = true;
             }
         }
@@ -1061,9 +1119,15 @@ impl Field {
         // step above and below, so a row grown past the list's row height by
         // wrapped help never runs into its separators; stacked, it keeps a
         // tight step under the help.
+        // A row that always stacks (a field, a slider) keeps the same step
+        // above and below, so the rows around it do not run into its label.
+        let always_above = self.grouped
+            && self.kind != FieldKind::Row
+            && self.label_placement == Some(LabelPlacement::Above);
         let (top, bottom) = match (self.grouped && help, beside) {
             (true, true) => (self.stacked_gap, self.stacked_gap),
             (true, false) => (0.0, self.help_gap),
+            (false, _) if always_above => (self.stacked_gap, self.stacked_gap),
             (false, _) => (0.0, 0.0),
         };
         changed |= restyle(tree, node, |style| {

@@ -15,6 +15,8 @@ use ui::widget::toolbar::Orientation;
 pub(super) enum Command {
     Control(&'static str),
     Tray { key: String, menu: bool },
+    Strip(tilo_desktop_model::StripId),
+    AddStrip,
 }
 
 #[derive(PartialEq)]
@@ -26,6 +28,8 @@ pub(super) struct Spec {
     pub enabled: bool,
     pub active: Option<bool>,
     pub dot: bool,
+    /// Painted as the Tilo mark instead of `icon`.
+    pub mark: bool,
 }
 
 pub(super) struct ResponsiveBar {
@@ -36,7 +40,7 @@ pub(super) struct ResponsiveBar {
     pub dirty: bool,
     reading: String,
     commands: Vec<Command>,
-    icons: Vec<Icon>,
+    icons: Vec<(Icon, bool)>,
     specs: Vec<Spec>,
     requests: Rc<RefCell<Vec<Command>>>,
 }
@@ -59,7 +63,7 @@ impl ResponsiveBar {
 
     pub fn configure(&mut self, specs: Vec<Spec>) {
         let commands: Vec<_> = specs.iter().map(|spec| spec.command.clone()).collect();
-        let icons: Vec<_> = specs.iter().map(|spec| spec.icon).collect();
+        let icons: Vec<_> = specs.iter().map(|spec| (spec.icon, spec.mark)).collect();
         let rebuilt = commands != self.commands || icons != self.icons;
         self.dirty |= self.specs != specs;
         if rebuilt {
@@ -71,9 +75,13 @@ impl ResponsiveBar {
                 let id = match &command {
                     Command::Control(target) => (*target).to_owned(),
                     Command::Tray { key, menu } => format!("topbar.tray:{key}:{menu}"),
+                    Command::Strip(strip) => format!("topbar.strip:{}", strip.0),
+                    Command::AddStrip => TopBarChrome::CONTROL_STRIP_ADD.to_owned(),
                 };
                 let callback = move || request.borrow_mut().push(command.clone());
-                toolbar = if let Some(active) = spec.active {
+                toolbar = if spec.mark {
+                    toolbar.push_glyph(super::paint_tilo_mark, &spec.name, callback)
+                } else if let Some(active) = spec.active {
                     toolbar.push_icon_toggle(spec.icon, &spec.name, active, callback)
                 } else {
                     toolbar.push_icon(spec.icon, &spec.name, callback)
@@ -154,12 +162,17 @@ impl TopBarChrome {
     }
 
     pub(super) fn responsive_specs(&self) -> Vec<Spec> {
-        let mut targets = vec![
+        let mut targets = Vec::new();
+        if self.tilo_mark.is_some() {
+            targets.push(Self::CONTROL_TILO_MARK);
+        }
+        targets.extend([
             Self::CONTROL_OVERVIEW,
             Self::CONTROL_WORKSPACE_UP,
             Self::CONTROL_WORKSPACE_DOWN,
             Self::CONTROL_WORKSPACE_SETTINGS,
-        ];
+        ]);
+        let strips = self.strip_responsive_specs();
         targets.extend(
             self.widget_config
                 .widgets
@@ -188,6 +201,12 @@ impl TopBarChrome {
             .into_iter()
             .map(|target| self.responsive_control_spec(target, offline))
             .collect();
+        // After the workspace's own controls: its strips are places in it.
+        let after_workspace = specs
+            .iter()
+            .position(|spec| spec.command == Command::Control(Self::CONTROL_WORKSPACE_SETTINGS))
+            .map_or(specs.len(), |index| index.saturating_add(1));
+        specs.splice(after_workspace..after_workspace, strips);
         for item in self
             .chrome
             .as_ref()
@@ -218,6 +237,7 @@ impl TopBarChrome {
                     enabled: true,
                     active: None,
                     dot: item.status == AppTrayStatus::NeedsAttention,
+                    mark: false,
                 });
                 if item.item_is_menu {
                     break;
@@ -229,6 +249,9 @@ impl TopBarChrome {
 
     fn responsive_control_spec(&self, target: &'static str, offline: bool) -> Spec {
         let (icon, priority) = match target {
+            // What Tilo is stays reachable as long as the overview does.
+            // Painted as the mark; the icon only keys the spec.
+            Self::CONTROL_TILO_MARK => (Icon::Info, 100),
             Self::CONTROL_OVERVIEW => (Self::overview_glyph_icon(), 100),
             Self::CONTROL_WORKSPACE_UP => (Icon::ChevronUp, 10),
             Self::CONTROL_WORKSPACE_DOWN => (Icon::ChevronDown, 10),
@@ -269,6 +292,7 @@ impl TopBarChrome {
             active,
             dot: (target == Self::CONTROL_QUICK_SETTINGS && self.notification_badge > 0)
                 || (target == Self::CONTROL_COLLABORATORS && self.activity_unread > 0),
+            mark: target == Self::CONTROL_TILO_MARK,
         }
     }
 
@@ -380,9 +404,13 @@ impl TopBarChrome {
         presence: &PresenceCtx,
     ) {
         self.prepare_responsive(theme, text);
-        self.responsive
-            .toolbar
-            .draw(scene, Affine::IDENTITY, text, theme, presence);
+        if self.strip_naming() {
+            self.draw_responsive_strip_field(scene, theme, text);
+        } else {
+            self.responsive
+                .toolbar
+                .draw(scene, Affine::IDENTITY, text, theme, presence);
+        }
         let style = theme.tokens.typography.style(TextRole::Caption);
         let (_, height) = text.measure_style(&self.responsive.reading, None, &style);
         let rect = self.responsive.reading_rect;
@@ -402,6 +430,13 @@ impl TopBarChrome {
             match command {
                 Command::Control(target) => {
                     self.activate_control(target);
+                }
+                Command::Strip(strip) => {
+                    self.switch_strip(strip);
+                }
+                Command::AddStrip => {
+                    self.begin_strip_naming();
+                    self.responsive.dirty = true;
                 }
                 Command::Tray { key, menu } => {
                     let point = self

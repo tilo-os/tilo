@@ -40,6 +40,8 @@ use std::path::PathBuf;
 
 #[cfg(feature = "decode")]
 use gstreamer::prelude::*;
+#[cfg(feature = "decode")]
+use tilo_lock::MutexRecover as _;
 
 /// Frames per second of the fixture clip.
 #[cfg(feature = "decode")]
@@ -261,8 +263,7 @@ pub fn fixture_source() -> tilo_media::Source {
 #[cfg(feature = "decode")]
 pub fn registry_policy_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock_recover()
 }
 
 /// A one-line description of every video decoder the registry offers, for a

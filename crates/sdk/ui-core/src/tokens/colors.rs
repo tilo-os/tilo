@@ -73,6 +73,8 @@ pub(crate) fn composite(over: Color, ground: Color) -> Color {
 /// count as visible — deliberately far below any text threshold, since it
 /// only has to catch a wash landing within rounding distance of its surface.
 pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
+/// Weight of the focused window's neutral edge over the desktop ground.
+const FOCUSED_WINDOW_EDGE_ALPHA: u8 = 168;
 
 /// Smallest OKLCH lightness step that separates a window region (sidebar,
 /// inspector) from the content ground by tone alone. A region tier closer
@@ -1238,6 +1240,15 @@ impl Colors {
         } else {
             Self::hairline_on(ground, declared.a())
         }
+    }
+
+    /// The edge of the window that has keyboard input: the same neutral
+    /// hairline as [`Self::window_edge`], heavier and opaque. Neutral because
+    /// which window has input is state, not you: in your colour it put the
+    /// accent around every focused window all day (HIG 9.4).
+    pub fn window_edge_focused(&self) -> Color {
+        let ground = self.surfaces.base;
+        composite(Self::hairline_on(ground, FOCUSED_WINDOW_EDGE_ALPHA), ground)
     }
 
     /// Pick a foreground colour that stays legible on `bg`.

@@ -642,13 +642,24 @@ grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
 for required in \
   '"lockdown=integrity"' \
   '"init_on_alloc=1"' \
-  '"init_on_free=1"' \
   '"slab_nomerge"' \
   '"page_alloc.shuffle=1"' \
   '"randomize_kstack_offset=on"' \
   '"vsyscall=none"'; do
   grep -Fq "$required" "$kargs" || bad "required kernel argument missing: $required"
 done
+# init_on_free=1 zeroes all of RAM on the boot CPU at every cold boot and turns
+# init_on_alloc's zeroing off; 01-hardening.toml records why it is left out.
+# Bringing it back is a decision for that comment, not a drive-by edit.
+grep -rEq '"init_on_free=' "$repo/os/usr/lib/bootc/kargs.d" \
+  && bad 'init_on_free is set: it zeroes all RAM single-threaded at boot and disables init_on_alloc'
+grep -Fq 'init_on_free=1 is deliberately NOT set' "$kargs" \
+  || bad 'the hardening kargs no longer record why init_on_free is left out'
+# The boot audit reads the kernel's own "mem auto-init:" report. With
+# init_on_free left out that report says "heap free:off" on every correct boot,
+# so requiring free:on would warn on all of them.
+grep -Fq "'alloc:on'*'free:on'" "$audit" \
+  && bad 'boot audit still requires heap free:on although the image leaves init_on_free out'
 # Firmware OEM strings, fw_cfg and boot-loader drop-ins must not become
 # systemd credentials of a sealed boot; the unsealed dev image removes the file.
 grep -Fxq 'kargs = ["systemd.import_credentials=no"]' "$repo/os/usr/lib/bootc/kargs.d/05-credentials.toml" \
@@ -760,6 +771,30 @@ done
 if grep -Eq '/usr/lib/user-tmpfiles\.d' "$repo/os/Containerfile" || [ -e "$repo/os/usr/lib/user-tmpfiles.d" ]; then
   bad 'a user-tmpfiles.d snippet is installed under /usr/lib, which systemd-tmpfiles --user never reads'
 fi
+# A ReadWritePaths= entry that does not exist fails the unit at 226/NAMESPACE
+# on every start, and a read-only home leaves the service no way to create it.
+# Every home path a user unit names there is therefore created first: by a
+# user-tmpfiles.d snippet the image installs, so it exists on a fresh or
+# migrated home before any user unit starts, or by the unit's own privileged
+# (`+`, outside the sandbox) ExecStartPre= mkdir.
+for unit in "$repo"/os/usr/lib/systemd/user/*.service; do
+  for dir in $(sed -n 's/^ReadWritePaths=//p' "$unit"); do
+    dir="${dir#-}"
+    case "$dir" in %h/*) ;; *) continue ;; esac
+    created=0
+    if grep -E '^ExecStartPre=\+/usr/bin/mkdir ' "$unit" | tr ' ' '\n' | grep -Fqx -- "$dir"; then
+      created=1
+    fi
+    for conf in "$repo"/os/usr/share/user-tmpfiles.d/*.conf; do
+      grep -Fq "os/usr/share/user-tmpfiles.d/$(basename "$conf")" "$repo/os/Containerfile" || continue
+      if awk -v d="$dir" '$1 == "d" && $2 == d { found = 1 } END { exit !found }' "$conf"; then
+        created=1
+      fi
+    done
+    [ "$created" -eq 1 ] \
+      || bad "$(basename "$unit") needs $dir (ReadWritePaths=) but neither an installed user-tmpfiles.d snippet nor a privileged ExecStartPre= mkdir creates it"
+  done
+done
 [ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
@@ -898,6 +933,58 @@ grep -Fqx 'SELinuxContext=system_u:system_r:tilo_fs_t:s0' "$fs_selinux" \
   || bad 'collaborative filesystem SELinux transition still fails open'
 [ "$fail" -ne 0 ] || ok 'root FUSE daemon has a fail-closed bounded execution context'
 
+# How fs.service stops under that context. systemd checks an Exec line's
+# binary while its child is still init_t, which may not execute
+# fusermount_exec_t, so an ExecStop= naming fusermount3 ends every stop in
+# 203/EXEC. The daemon ends its own mount on SIGTERM; on FUSE fusermount3's
+# auto_unmount helper (which fs keeps requesting) detaches it lazily when the
+# daemon lets go or dies, and ExecStopPost's lazy umount (mount_exec_t, which
+# init_t may execute) covers a SIGKILL. Granting init_t fusermount_exec_t to
+# make the old line run would widen the always-enforcing init domain.
+fs_stop_fail=0
+fs_unit_active="$(cat "$fs_unit" "$repo"/os/usr/lib/systemd/system/fs.service.d/*.conf | sed '/^[[:space:]]*#/d')"
+if grep -Eq '^ExecStop=.*fusermount' <<<"$fs_unit_active"; then
+  bad 'fs.service stops through fusermount3, which init_t may not execute (203/EXEC)'
+  fs_stop_fail=1
+fi
+if [ "$(grep -Fxc 'ExecStopPost=-/usr/bin/umount --lazy /var/workspace' <<<"$fs_unit_active")" -ne 1 ]; then
+  bad 'fs.service lost its lazy-umount backstop for a killed daemon'
+  fs_stop_fail=1
+fi
+grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/system/fs/src/main.rs" \
+  || { bad 'fs no longer mounts with auto_unmount, so a stopped daemon can leave /var/workspace attached'; fs_stop_fail=1; }
+if sed 's/;.*//' "$repo/os/usr/share/tilo/selinux/tilo-base.cil" | grep -Eq '\(allow init_t fusermount_exec_t'; then
+  bad 'tilo-base.cil lets init_t execute fusermount3; stop fs.service without it'
+  fs_stop_fail=1
+fi
+[ "$fs_stop_fail" -ne 0 ] || ok 'fs.service stops through the daemon and a lazy umount, not fusermount3 under init_t'
+
+# The daemon's domain enforces: a permissive tilo_fs_t only logs, leaving a
+# compromised root daemon boxed by its unit sandbox alone. Its allow-set names
+# the types fs uses; a rule on a whole attribute or the `all` permission set
+# would make the domain unconfined in all but name. Comments are stripped
+# first, so prose about the bring-up cannot satisfy or trip the check.
+fs_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
+fs_policy_fail=0
+fs_policy_active="$(sed 's/;.*//' "$fs_policy" | tr -s '[:space:]' ' ')"
+if grep -Eq '\(typepermissive[[:space:]]' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil makes a domain permissive; tilo_fs_t must enforce'
+  fs_policy_fail=1
+fi
+grep -Fq '(type tilo_fs_t)' <<<"$fs_policy_active" \
+  || { bad 'tilo-base.cil no longer defines the tilo_fs_t domain'; fs_policy_fail=1; }
+grep -Eq '\(allow tilo_fs_t fuse_device_t \(chr_file \(' <<<"$fs_policy_active" \
+  || { bad 'tilo-base.cil does not grant tilo_fs_t the FUSE device it mounts with'; fs_policy_fail=1; }
+if grep -Eq '\(allow tilo_fs_t (file_type|non_security_file_type|non_auth_file_type|exec_type|domain|unconfined_t|unconfined_service_t|kernel_t)[ )]' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil grants tilo_fs_t a whole attribute or an unconfined domain'
+  fs_policy_fail=1
+fi
+if grep -Eq '\(allow tilo_fs_t [^()]+ \([a-z_0-9]+ \(all\)\)\)' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil grants tilo_fs_t every permission of a class'
+  fs_policy_fail=1
+fi
+[ "$fs_policy_fail" -ne 0 ] || ok 'root FUSE daemon SELinux domain enforces with named types'
+
 for unit in tilo-secureboot-sign.service tilo-secureboot-sign-shutdown.service; do
   unit_path="$repo/os/usr/lib/systemd/system/$unit"
   grep -Fqx 'RuntimeDirectory=tilo-secureboot' "$unit_path" \
@@ -1022,12 +1109,122 @@ if grep -Eq 'mokutil[[:space:]]+--sb-state' "$audit"; then
   bad 'Secure Boot health still delegates firmware state parsing to removed mokutil'
 fi
 
-for policy_fragment in \
-  '"registry.tilo.so/tilo/tilo"' \
-  '"type": "sigstoreSigned"' \
-  '"keyPath": "/usr/share/tilo/cosign.pub"'; do
-  grep -Fq "$policy_fragment" "$audit" \
-    || bad "boot audit does not bind image trust to $policy_fragment"
+# Image signature policy: the audit must parse policy.json through the checker,
+# and the checker must pass the shipped policy and fail every weakened copy. A
+# grep for fragments is satisfied by a signed sibling scope while the Tilo
+# scope itself accepts anything.
+# The checker is compiled (crates/system/image-policy-check): build the
+# image's own binary, or use the one TILO_IMAGE_POLICY_CHECK_BIN names.
+image_policy_check="${TILO_IMAGE_POLICY_CHECK_BIN:-}"
+if [ -z "$image_policy_check" ]; then
+  cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-image-policy-check \
+    || bad 'could not build the image signature policy checker'
+  image_policy_check="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-image-policy-check"
+fi
+[ -x "$image_policy_check" ] || bad "no image signature policy checker at $image_policy_check"
+image_policy="$repo/os/etc/containers/policy.json"
+grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
+  && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
+  && grep -Fq '[ ! -s /usr/share/tilo/cosign.pub ]' "$audit" \
+  || bad 'boot audit does not parse the image signature policy and check the pinned key'
+if grep -Fq '"type": "sigstoreSigned"' "$audit"; then
+  bad 'boot audit still greps policy.json fragments instead of parsing the policy'
+fi
+grep -Fq -- '--bin tilo-image-policy-check' "$image_recipe" \
+  && grep -Fq 'to = "/usr/libexec/tilo-image-policy-check", mode = "0755"' "$repo/os/components.toml" \
+  || bad 'image signature policy checker is not built into the OS image'
+
+policy_cases="$(mktemp -d)"
+trap 'rm -rf "$policy_cases"' EXIT
+# Each fixture is the shipped policy with one Tilo scope weakened while the
+# signed sibling scopes stay intact, so only a scope-aware parse can fail it.
+if ! python3 - "$image_policy" "$policy_cases" <<'PY'
+import copy, json, pathlib, sys
+
+base = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+out = pathlib.Path(sys.argv[2])
+tilo = "registry.tilo.so/tilo/tilo"
+code = "code.tilo.so/tilo/tilo"
+docker = base["transports"]["docker"]
+
+
+def case(name, mutate):
+    policy = copy.deepcopy(base)
+    mutate(policy["transports"]["docker"])
+    (out / f"{name}.json").write_text(json.dumps(policy, indent=2), encoding="utf-8")
+
+
+def scope(name, requirements):
+    return lambda d: d.__setitem__(name, requirements)
+
+
+def field(name, key, value):
+    return lambda d: d[name][0].__setitem__(key, value)
+
+
+accept = [{"type": "insecureAcceptAnything"}]
+case("tilo-scope-accepts-anything", scope(tilo, accept))
+case("code-scope-accepts-anything", scope(code, accept))
+case("tilo-scope-other-key", field(tilo, "keyPath", "/etc/pki/other.pub"))
+case("tilo-scope-removed", lambda d: d.pop(tilo))
+case("tilo-scope-empty", scope(tilo, []))
+case("tilo-scope-gpg-signed-by", scope(tilo, [{
+    "type": "signedBy", "keyType": "GPGKeys", "keyPath": "/usr/share/tilo/cosign.pub"}]))
+case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
+    "type": "remapIdentity", "prefix": tilo, "signedPrefix": "registry.example/any"}))
+case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
+case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
+case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
+# Removing a guarded repository's scope hands it to the permissive default.
+case("legacy-guest-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/legacy-guest"))
+case("dev-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/tilo-dev"))
+case("code-ci-scope-removed", lambda d: d.pop("code.tilo.so/tilo/tilo-ci"))
+# A namespace scope governs every Tilo repository without one of its own.
+case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
+case("no-docker-scopes", lambda d: d.clear())
+(out / "malformed.json").write_text('{"transports": {"docker": {', encoding="utf-8")
+(out / "duplicate-scope.json").write_text(
+    '{"transports": {"docker": {'
+    f'"{tilo}": {json.dumps(docker[tilo])}, "{code}": {json.dumps(docker[code])}, '
+    f'"{tilo}": {json.dumps(accept)}'
+    '}}}', encoding="utf-8")
+PY
+then
+  bad 'could not build weakened image signature policy fixtures'
+fi
+if "$image_policy_check" "$image_policy" >/dev/null; then
+  ok 'shipped container policy requires the pinned Tilo image signature'
+else
+  bad 'shipped container policy fails the image signature policy check'
+fi
+weakened_policies=0
+for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
+  weakened_policies=$((weakened_policies + 1))
+  if "$image_policy_check" "$weakened" >/dev/null; then
+    bad "image signature policy check accepts weakened policy $(basename "$weakened")"
+  fi
 done
+[ "$weakened_policies" -eq 18 ] \
+  || bad "expected 18 weakened image signature policies, exercised $weakened_policies"
+# The guarded repositories are judged by their effective rule: with no scope of
+# their own under a default reject (the development-trust shape), they pass.
+if ! python3 - "$image_policy" "$policy_cases/guarded-by-default-reject.policy" <<'PY'
+import json, pathlib, sys
+
+policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+policy["default"] = [{"type": "reject"}]
+docker = policy["transports"]["docker"]
+for name in list(docker):
+    if name.rsplit("/", 1)[-1] in ("legacy-guest", "tilo-vm", "tilo-ci", "tilo-dev"):
+        del docker[name]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")
+PY
+then
+  bad 'could not build the default-reject image signature policy fixture'
+elif "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" >/dev/null; then
+  ok 'image signature policy check judges guarded repositories by their effective rule'
+else
+  bad 'image signature policy check refuses guarded repositories a default reject already covers'
+fi
 
 exit "$fail"

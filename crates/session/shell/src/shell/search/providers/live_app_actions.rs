@@ -55,6 +55,13 @@ const MAX_JOB_ROWS_PER_QUERY: usize = 4;
 /// Directory responses are an acceleration cache, not a second unbounded
 /// replica of every connected application's action namespace.
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
+/// How many resources an enumeration opens below the roots, and how deep.
+/// Notes' pages (and their blocks) are the motivating case: a bounded,
+/// breadth-first walk, never an app's whole tree.
+const MAX_NESTED_RESOURCES_PER_ENUMERATION: usize = 64;
+const MAX_NESTED_DEPTH: usize = 3;
+const MAX_NESTED_ACTION_ROWS: usize = 1_024;
+const MAX_RETAINED_NESTED_PAGES: usize = 128;
 /// A stalled LocalSet/capability must not leave a palette-owned oneshot alive
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -83,6 +90,23 @@ pub(crate) fn set_directory_start_timeout_for_test(timeout: Option<Duration>) {
 /// already-rendered page.
 type DirectoryCacheKey = (u64, String, String, Vec<u8>);
 
+/// One resource's first directory page: publisher, actor, the resource it is
+/// the parent of, and the query. Kept apart from [`DirectoryCacheKey`]: the
+/// palette owns one level at a time, an enumeration opens several.
+type NestedCacheKey = (u64, String, String, String);
+
+/// A directory action's address within one publisher's revision:
+/// (publisher, revision, resource, action).
+type SemanticKey = (u64, String, String, String);
+
+/// What every cached descriptor of one address says its resource is.
+enum SemanticAgreement {
+    Agree(tilo_actions::ResourceSemanticIdentity),
+    Disagree,
+}
+
+type SemanticIndex = HashMap<SemanticKey, SemanticAgreement>;
+
 struct PendingDirectoryPage {
     receiver: Pending<Result<CataloguePage, ActionHostError>>,
     deadline: Instant,
@@ -99,6 +123,7 @@ fn invalidates_directory_cache(error: &ActionHostError) -> bool {
         error,
         ActionHostError::UnknownAction
             | ActionHostError::InvalidRequest { .. }
+            | ActionHostError::StaleRevision
             | ActionHostError::Unavailable { .. }
     )
 }
@@ -304,6 +329,18 @@ pub struct LiveAppActionsProvider {
     action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// Pages of resources below a root, fetched only while enumerating.
+    nested_pages: RefCell<HashMap<NestedCacheKey, CataloguePage>>,
+    nested_pending: RefCell<HashMap<NestedCacheKey, PendingDirectoryPage>>,
+    /// Moves on every change to `directory_pages` or `nested_pages`, so
+    /// `semantic_index` knows when it was built from pages that are gone.
+    pages_epoch: Cell<u64>,
+    /// Each directory action's semantic identity, by (publisher, revision,
+    /// resource, action), built from the cached pages at `pages_epoch`.
+    semantic_index: RefCell<Option<(u64, SemanticIndex)>>,
+    #[cfg(test)]
+    semantic_index_builds: Cell<usize>,
+    enumerating: Cell<bool>,
     /// Directory contracts are valid only for the publication they describe.
     directory_source_generation: Cell<(u64, u64)>,
     /// The palette owns at most one needle's directory projection.
@@ -328,6 +365,13 @@ pub struct LiveAppActionsProvider {
     directory_query_probe: RefCell<Option<CatalogueQuery>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many result ids this thread minted, so a test can tell a lookup
+    /// from a scan that mints every entry's id to compare.
+    static IDS_MINTED: Cell<usize> = const { Cell::new(0) };
+}
+
 struct SurfaceSnapshot {
     source_generation: u64,
     scope: String,
@@ -336,6 +380,42 @@ struct SurfaceSnapshot {
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
     machine_index: Option<SearchIndex>,
+    /// Each entry's position by its result id, so resolving an address
+    /// (a listing asks once per row) is one lookup instead of minting every
+    /// entry's id to compare: with thirty windows' actions published, a
+    /// listing of six thousand rows minted thirty-six million ids.
+    by_id: HashMap<String, usize>,
+}
+
+impl SurfaceSnapshot {
+    fn new(
+        source_generation: u64,
+        scope: String,
+        entries: Vec<(PublishedSurface, PublishedAction)>,
+        index: Option<SearchIndex>,
+        machine_index: Option<SearchIndex>,
+    ) -> Self {
+        // The first entry with an id answers for it, as a scan would find.
+        let mut by_id = HashMap::with_capacity(entries.len());
+        for (at, (surface, action)) in entries.iter().enumerate() {
+            by_id
+                .entry(LiveAppActionsProvider::result_id(surface, action))
+                .or_insert(at);
+        }
+        Self {
+            source_generation,
+            scope,
+            entries,
+            index,
+            machine_index,
+            by_id,
+        }
+    }
+
+    /// The entry `id` names, if this snapshot holds it.
+    fn entry(&self, id: &str) -> Option<&(PublishedSurface, PublishedAction)> {
+        self.by_id.get(id).and_then(|&at| self.entries.get(at))
+    }
 }
 
 /// One rebuild the index worker owes: the scope to project, where the
@@ -493,6 +573,27 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
+    fn directory_pages_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, HashMap<DirectoryCacheKey, CataloguePage>> {
+        self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
+        self.directory_pages.borrow_mut()
+    }
+
+    fn nested_pages_mut(&self) -> std::cell::RefMut<'_, HashMap<NestedCacheKey, CataloguePage>> {
+        self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
+        self.nested_pages.borrow_mut()
+    }
+
+    /// The semantic identity every cached descriptor of this directory
+    /// action agrees on, if they all agree on a valid one of the
+    /// descriptors' resource kind.
+    ///
+    /// Looked up in an index of the cached pages, built once per change to
+    /// them. A listing asks this for every directory row, and scanning
+    /// every cached row of the publisher for each one was quadratic: after
+    /// a few dozen windows a listing of ten thousand rows took over a
+    /// minute on the compositor loop.
     fn directory_semantic_identity(
         &self,
         peer: u64,
@@ -500,28 +601,64 @@ impl LiveAppActionsProvider {
         resource: &str,
         operation: &str,
     ) -> Option<tilo_actions::ResourceSemanticIdentity> {
+        let epoch = self.pages_epoch.get();
+        let mut index = self.semantic_index.borrow_mut();
+        if index.as_ref().is_none_or(|(built, _)| *built != epoch) {
+            *index = Some((epoch, self.build_semantic_index()));
+        }
+        let key = (
+            peer,
+            revision.to_string(),
+            resource.to_string(),
+            operation.to_string(),
+        );
+        match index.as_ref().and_then(|(_, index)| index.get(&key))? {
+            SemanticAgreement::Agree(identity) => Some(identity.clone()),
+            SemanticAgreement::Disagree => None,
+        }
+    }
+
+    fn build_semantic_index(&self) -> SemanticIndex {
+        #[cfg(test)]
+        self.semantic_index_builds
+            .set(self.semantic_index_builds.get().saturating_add(1));
         let pages = self.directory_pages.borrow();
-        let publisher = peer.to_string();
-        let mut descriptors = pages
+        let nested = self.nested_pages.borrow();
+        let mut index = SemanticIndex::new();
+        let cached = pages
             .iter()
-            .filter(|((cached_peer, _, _, _), page)| {
-                *cached_peer == peer && page.revision == revision
-            })
-            .flat_map(|(_, page)| &page.rows)
-            .filter(|row| row.provider == publisher)
-            .filter_map(|row| row.action.as_ref())
-            .filter(|descriptor| {
-                descriptor.address.resource == resource && descriptor.address.action == operation
-            });
-        let first = descriptors.next()?;
-        let identity = first.semantic_identity.clone()?;
-        (identity.is_valid()
-            && identity.kind == first.resource_kind
-            && descriptors.all(|descriptor| {
-                descriptor.semantic_identity.as_ref() == Some(&identity)
-                    && descriptor.resource_kind == identity.kind
-            }))
-        .then_some(identity)
+            .map(|((peer, _, _, _), page)| (*peer, page))
+            .chain(nested.iter().map(|((peer, _, _, _), page)| (*peer, page)));
+        for (peer, page) in cached {
+            let publisher = peer.to_string();
+            for descriptor in page
+                .rows
+                .iter()
+                .filter(|row| row.provider == publisher)
+                .filter_map(|row| row.action.as_ref())
+            {
+                let key = (
+                    peer,
+                    page.revision.clone(),
+                    descriptor.address.resource.clone(),
+                    descriptor.address.action.clone(),
+                );
+                let said = descriptor.semantic_identity.as_ref().filter(|identity| {
+                    identity.is_valid() && identity.kind == descriptor.resource_kind
+                });
+                let agreement = match (index.remove(&key), said) {
+                    (None, Some(identity)) => SemanticAgreement::Agree(identity.clone()),
+                    (Some(SemanticAgreement::Agree(agreed)), Some(identity))
+                        if agreed == *identity =>
+                    {
+                        SemanticAgreement::Agree(agreed)
+                    }
+                    _ => SemanticAgreement::Disagree,
+                };
+                index.insert(key, agreement);
+            }
+        }
+        index
     }
 
     fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
@@ -541,6 +678,13 @@ impl LiveAppActionsProvider {
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            nested_pages: RefCell::new(HashMap::new()),
+            nested_pending: RefCell::new(HashMap::new()),
+            pages_epoch: Cell::new(0),
+            semantic_index: RefCell::new(None),
+            #[cfg(test)]
+            semantic_index_builds: Cell::new(0),
+            enumerating: Cell::new(false),
             directory_source_generation,
             directory_query: RefCell::new(None),
             directory_failures: RefCell::new(HashMap::new()),
@@ -760,13 +904,13 @@ impl LiveAppActionsProvider {
             .collect::<Vec<_>>();
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        SurfaceSnapshot {
+        SurfaceSnapshot::new(
             source_generation,
-            scope: scope.key.clone(),
+            scope.key.clone(),
             entries,
             index,
             machine_index,
-        }
+        )
     }
 
     fn refresh_local_snapshot(&self, ctx: &SearchContext<'_>) {
@@ -950,13 +1094,13 @@ impl LiveAppActionsProvider {
         let id = Self::result_id(&surface, &action);
         let scope = Self::surface_scope(ctx);
         let source_generation = self.broker.surfaces_generation();
-        let temporary = SurfaceSnapshot {
+        let temporary = SurfaceSnapshot::new(
             source_generation,
             scope,
-            entries: vec![(surface, action)],
-            index: None,
-            machine_index: None,
-        };
+            vec![(surface, action)],
+            None,
+            None,
+        );
         let previous = self.surface_snapshot.replace(Some(temporary));
         let previous_projection = self.projection.replace(QueryProjection::LocalOnly);
         let results = self.query(*ctx);
@@ -976,7 +1120,7 @@ impl LiveAppActionsProvider {
             // A native edit can change Undo availability without changing the
             // query, publisher or action address. Retire both old pages and
             // outstanding replies before observing their previous contracts.
-            self.directory_pages.borrow_mut().clear();
+            self.directory_pages_mut().clear();
             self.directory_pending.borrow_mut().clear();
             self.directory_failures.borrow_mut().clear();
             self.auxiliary_snapshot.borrow_mut().take();
@@ -1048,8 +1192,12 @@ impl LiveAppActionsProvider {
                 PendingPoll::Waiting => true,
             }
         });
+        if self.poll_nested_pages(now) {
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if !spent.is_empty() {
-            self.directory_pages.borrow_mut().retain(|existing, _| {
+            self.directory_pages_mut().retain(|existing, _| {
                 !spent
                     .iter()
                     .any(|key| existing.0 == key.0 && existing.1 == key.1 && existing.2 == key.2)
@@ -1063,7 +1211,7 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !ready.is_empty() {
-            let mut pages = self.directory_pages.borrow_mut();
+            let mut pages = self.directory_pages_mut();
             for (key, page, initial_page) in ready {
                 self.directory_failures.borrow_mut().remove(&key);
                 // A first page starts a new chain: the pages of an earlier
@@ -1100,6 +1248,161 @@ impl LiveAppActionsProvider {
         }
     }
 
+    /// Land the nested pages that have arrived. `true` when any did, or one
+    /// gave up: the projection built without it must be rebuilt.
+    fn poll_nested_pages(&self, now: Instant) -> bool {
+        let mut landed = Vec::new();
+        let mut changed = false;
+        self.nested_pending.borrow_mut().retain(|key, pending| {
+            match crate::shell::search::invocation_wake::poll(
+                &mut pending.receiver,
+                &crate::shell::search::invocation_wake::waker(),
+            ) {
+                PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    landed.push((key.clone(), page));
+                    false
+                }
+                PendingPoll::Ready(_) | PendingPoll::Abandoned => {
+                    changed = true;
+                    false
+                }
+                PendingPoll::Waiting if pending.deadline <= now => {
+                    changed = true;
+                    false
+                }
+                PendingPoll::Waiting => true,
+            }
+        });
+        if !landed.is_empty() {
+            let mut pages = self.nested_pages_mut();
+            for (key, page) in landed {
+                if !pages.contains_key(&key)
+                    && pages.len() >= MAX_RETAINED_NESTED_PAGES
+                    && let Some(evicted) = pages.keys().next().cloned()
+                {
+                    pages.remove(&evicted);
+                }
+                pages.insert(key, page);
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    fn request_nested_page(
+        &self,
+        peer_id: u64,
+        cluster_id: &str,
+        actor: &str,
+        needle: &str,
+        parent_resource: &str,
+    ) {
+        let key = (
+            peer_id,
+            actor.to_string(),
+            parent_resource.to_string(),
+            needle.to_string(),
+        );
+        if self.nested_pages.borrow().contains_key(&key)
+            || self.nested_pending.borrow().contains_key(&key)
+        {
+            return;
+        }
+        let Ok(session) = self.action_sessions.open(cluster_id, Some(actor)) else {
+            return;
+        };
+        let query = CatalogueQuery {
+            provider: Some(peer_id.to_string()),
+            parent_resource: Some(parent_resource.to_string()),
+            needle: needle.to_string(),
+            max_results: 48,
+            limits: Some(CatalogueLimits {
+                max_bytes: Some(48 * 1024),
+                max_work: Some(4_096),
+                max_depth: Some(1),
+            }),
+            ..CatalogueQuery::default()
+        };
+        self.nested_pending.borrow_mut().insert(
+            key,
+            PendingDirectoryPage {
+                receiver: crate::shell::search::invocation_wake::watch(session.query(query)),
+                deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                initial_page: true,
+            },
+        );
+    }
+
+    /// The actions one level and more inside the resources `root`'s first
+    /// page lists, breadth first and bounded in resources, depth and rows.
+    /// A page still owed is requested and the projection rebuilt when it
+    /// lands; what the gate hides never reaches the page, so nothing here
+    /// widens what the caller may see.
+    fn nested_entries(
+        &self,
+        root: &ActionDirectoryRoot,
+        actor: &str,
+        needle: &str,
+        root_revision: &str,
+        first: Vec<String>,
+        entries: &mut Vec<AuxiliaryEntry>,
+    ) {
+        let mut queue: std::collections::VecDeque<(String, usize)> =
+            first.into_iter().map(|id| (id, 1)).collect();
+        let mut opened = 0usize;
+        let mut rows = 0usize;
+        let mut seen = HashSet::new();
+        while let Some((resource, depth)) = queue.pop_front() {
+            if opened >= MAX_NESTED_RESOURCES_PER_ENUMERATION
+                || rows >= MAX_NESTED_ACTION_ROWS
+                || !seen.insert(resource.clone())
+            {
+                continue;
+            }
+            opened = opened.saturating_add(1);
+            let key = (
+                root.peer_id,
+                actor.to_string(),
+                resource.clone(),
+                needle.to_string(),
+            );
+            // A page of another directory revision describes rows that may
+            // be gone or renamed: ask again rather than list them.
+            if self
+                .nested_pages
+                .borrow()
+                .get(&key)
+                .is_some_and(|page| page.revision != root_revision)
+            {
+                self.nested_pages_mut().remove(&key);
+            }
+            self.request_nested_page(root.peer_id, &root.cluster_id, actor, needle, &resource);
+            let Some(page) = self.nested_pages.borrow().get(&key).cloned() else {
+                continue;
+            };
+            for row in page.rows {
+                if let Some(descriptor) = row.action {
+                    if rows >= MAX_NESTED_ACTION_ROWS {
+                        break;
+                    }
+                    rows = rows.saturating_add(1);
+                    entries.push(AuxiliaryEntry::Directory {
+                        root: root.clone(),
+                        revision: page.revision.clone(),
+                        descriptor,
+                        actor: actor.to_string(),
+                        cursor: Vec::new(),
+                    });
+                } else if row.has_children && depth < MAX_NESTED_DEPTH {
+                    queue.push_back((
+                        row.resource.id.as_str().to_string(),
+                        depth.saturating_add(1),
+                    ));
+                }
+            }
+        }
+    }
+
     fn poll_directory_pages(&self) {
         self.poll_directory_pages_at(Instant::now());
     }
@@ -1115,12 +1418,16 @@ impl LiveAppActionsProvider {
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
         // grow this UI cache or revive an old query's results.
-        self.directory_pages
-            .borrow_mut()
+        self.directory_pages_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
         self.directory_pending
             .borrow_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+        self.nested_pages_mut()
+            .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
+        self.nested_pending
+            .borrow_mut()
+            .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1141,7 +1448,11 @@ impl LiveAppActionsProvider {
         if invalidated.is_empty() {
             return;
         }
-        let mut pages = self.directory_pages.borrow_mut();
+        // A refused row may sit on a nested page: drop them all, they are
+        // cheap to ask for again.
+        self.nested_pages_mut().clear();
+        self.nested_pending.borrow_mut().clear();
+        let mut pages = self.directory_pages_mut();
         let mut pending = self.directory_pending.borrow_mut();
         for key in invalidated {
             pages.remove(&key);
@@ -1162,7 +1473,12 @@ impl LiveAppActionsProvider {
         root_limit: usize,
         resume: &AuxiliaryResume,
     ) {
-        let scope = Self::surface_scope(ctx);
+        let expand = self.enumerating.get() && ctx.chrome.search_resource_scope.is_none();
+        let scope = if expand {
+            format!("{}{ID_SEPARATOR}enumerating", Self::surface_scope(ctx))
+        } else {
+            Self::surface_scope(ctx)
+        };
         if self
             .auxiliary_snapshot
             .borrow()
@@ -1304,6 +1620,7 @@ impl LiveAppActionsProvider {
                     .cloned();
                 let Some(page) = page else { break };
                 let rows = page.rows;
+                let mut nested_first = Vec::new();
                 let mut consumed = row_offset.min(rows.len());
                 for row in rows.into_iter().skip(row_offset) {
                     if entries.len() >= root_limit {
@@ -1328,11 +1645,24 @@ impl LiveAppActionsProvider {
                             cursor: remote_cursor.clone(),
                         });
                     } else if row.has_children {
+                        if expand {
+                            nested_first.push(row.resource.id.as_str().to_string());
+                        }
                         entries.push(AuxiliaryEntry::Resource {
                             root: root.clone(),
                             row,
                         });
                     }
+                }
+                if expand {
+                    self.nested_entries(
+                        &root,
+                        &root_actor,
+                        needle,
+                        &page.revision,
+                        nested_first,
+                        &mut entries,
+                    );
                 }
                 if next_resume.is_some() {
                     break;
@@ -1401,6 +1731,7 @@ impl LiveAppActionsProvider {
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
             return SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),
@@ -1438,6 +1769,7 @@ impl LiveAppActionsProvider {
         let status_broker = self.broker.clone();
         let actor = actor.to_string();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Custom("action-job".into()),
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: PROVIDER_ID.into(),
@@ -1887,6 +2219,8 @@ impl LiveAppActionsProvider {
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
+        #[cfg(test)]
+        IDS_MINTED.with(|minted| minted.set(minted.get().saturating_add(1)));
         format!(
             "{}{}{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
@@ -1966,6 +2300,7 @@ impl LiveAppActionsProvider {
         let resource = address.resource.clone();
         let action = address.action.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
@@ -2057,6 +2392,7 @@ impl LiveAppActionsProvider {
         };
         let title = row.resource.label.clone();
         SearchResult {
+            shortcut: None,
             operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
                 "Resources".into()
@@ -2163,19 +2499,15 @@ impl SearchProvider for LiveAppActionsProvider {
                 .as_ref()
                 .filter(|snapshot| snapshot.source_generation == self.broker.surfaces_generation())
                 .and_then(|snapshot| {
-                    snapshot
-                        .entries
-                        .iter()
-                        .find(|(surface, action)| Self::result_id(surface, action) == id)
-                        .and_then(|(_, action)| {
-                            action
-                                .semantic_identity
-                                .as_ref()
-                                .filter(|identity| {
-                                    identity.is_valid() && identity.kind == action.resource_kind
-                                })
-                                .cloned()
-                        })
+                    snapshot.entry(id).and_then(|(_, action)| {
+                        action
+                            .semantic_identity
+                            .as_ref()
+                            .filter(|identity| {
+                                identity.is_valid() && identity.kind == action.resource_kind
+                            })
+                            .cloned()
+                    })
                 }),
         })
     }
@@ -2331,6 +2663,7 @@ impl SearchProvider for LiveAppActionsProvider {
             for (id, update) in self.broker.statuses(&actor) {
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Custom("action-job".into()),
                     operation_kind: tilo_actions::OperationKind::View,
                     provider_id: PROVIDER_ID.into(),
@@ -2359,6 +2692,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     let invoke_broker = broker.clone();
                     let invoke_actor = actor.clone();
                     results.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
@@ -2438,6 +2772,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let open_start = Rc::clone(&start);
                 let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
                     provider_id: PROVIDER_ID.to_string(),
@@ -2515,6 +2850,10 @@ impl SearchProvider for LiveAppActionsProvider {
         results
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one resolution over every resource shape"
+    )]
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         // A receipt read or cancellation names one actor-owned job. It must
         // not depend on that job still being inside the bounded browse preview.
@@ -2608,8 +2947,11 @@ impl SearchProvider for LiveAppActionsProvider {
             .iter()
             .find(|workspace| workspace.room.to_string() == root.cluster_id)
             .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
-        let cached = self.directory_pages.borrow().iter().find_map(
-            |((cached_peer, cached_actor, needle, cursor), page)| {
+        let cached = self
+            .directory_pages
+            .borrow()
+            .iter()
+            .find_map(|((cached_peer, cached_actor, needle, cursor), page)| {
                 if *cached_peer != peer_id || cached_actor != &actor || page.revision != revision {
                     return None;
                 }
@@ -2618,8 +2960,26 @@ impl SearchProvider for LiveAppActionsProvider {
                     (descriptor.address.resource == resource && descriptor.address.action == action)
                         .then(|| (descriptor.clone(), needle.clone(), cursor.clone()))
                 })
-            },
-        )?;
+            })
+            .or_else(|| {
+                // A row an enumeration listed below a root.
+                self.nested_pages.borrow().iter().find_map(
+                    |((cached_peer, cached_actor, _, needle), page)| {
+                        if *cached_peer != peer_id
+                            || cached_actor != &actor
+                            || page.revision != revision
+                        {
+                            return None;
+                        }
+                        page.rows.iter().find_map(|row| {
+                            let descriptor = row.action.as_ref()?;
+                            (descriptor.address.resource == resource
+                                && descriptor.address.action == action)
+                                .then(|| (descriptor.clone(), needle.clone(), Vec::new()))
+                        })
+                    },
+                )
+            })?;
         Some(self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2))
             .filter(|result| result.id == id)
     }
@@ -2697,7 +3057,8 @@ impl SearchProvider for LiveAppActionsProvider {
             .map(|snapshot| (snapshot.source_generation, snapshot.scope == scope));
         let ready = built == Some((source_generation, true));
         let pending = self.directory_pending.borrow().len();
-        if !ready || pending > 0 {
+        let nested = self.nested_pending.borrow().len();
+        if !ready || pending > 0 || nested > 0 {
             // Why a listing is not complete yet, for whoever has to find
             // out why one never settles.
             tracing::debug!(
@@ -2706,10 +3067,15 @@ impl SearchProvider for LiveAppActionsProvider {
                 ?built,
                 building = self.surface_build.borrow().is_some(),
                 pending_directory_pages = pending,
+                pending_nested_pages = nested,
                 "app actions still settling"
             );
         }
-        !ready || pending > 0
+        !ready || pending > 0 || nested > 0
+    }
+
+    fn set_enumerating(&self, on: bool) {
+        self.enumerating.set(on);
     }
 
     #[allow(
@@ -3053,8 +3419,7 @@ pub(crate) fn fixture_with_directory_page(
 ) -> Rc<dyn SearchProvider> {
     let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
     provider
-        .directory_pages
-        .borrow_mut()
+        .directory_pages_mut()
         .insert((peer, actor, String::new(), Vec::new()), page);
     provider
 }
@@ -3490,7 +3855,7 @@ mod tests {
             has_children: false,
             visibility: None,
         };
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, "actor".into(), String::new(), Vec::new()),
             page(vec![row.clone()], Vec::new()),
         );
@@ -3509,7 +3874,7 @@ mod tests {
         let mut conflicting = row;
         conflicting.action.as_mut().unwrap().semantic_identity =
             tilo_actions::ResourceSemanticIdentity::new("store.app", "other");
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, "actor".into(), "another-query".into(), Vec::new()),
             page(vec![conflicting], Vec::new()),
         );
@@ -3520,13 +3885,101 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        provider.directory_pages.borrow_mut().clear();
+        provider.directory_pages_mut().clear();
         assert!(
             provider
                 .action_hierarchy(&id)
                 .unwrap()
                 .semantic_identity
                 .is_none()
+        );
+    }
+
+    /// A listing resolves every directory row's hierarchy. With thousands
+    /// of rows from one publisher the identity lookup must not rescan its
+    /// cached pages for each row: that made a listing take over a minute.
+    /// The pages are indexed once, and again only after they change.
+    #[test]
+    fn directory_identities_are_indexed_once_per_change_to_the_pages() {
+        const PAGES: usize = 40;
+        const PER_PAGE: usize = 100;
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.store".into(),
+            cluster_id: "room".into(),
+            record_id: "record".into(),
+        }]);
+        let provider = LiveAppActionsProvider::new(broker);
+        let row = |n: usize| {
+            let mut descriptor = exported(&format!("Action {n}"), &format!("act{n}"));
+            descriptor.resource_kind = "store.app".into();
+            descriptor.semantic_identity =
+                tilo_actions::ResourceSemanticIdentity::new("store.app", format!("app:{n}"));
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.store".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: "fixture".into(),
+                    label: format!("Resource {n}"),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            }
+        };
+        for p in 0..PAGES {
+            provider.directory_pages_mut().insert(
+                (9, "actor".into(), String::new(), p.to_be_bytes().to_vec()),
+                page(
+                    (0..PER_PAGE).map(|i| row(p * PER_PAGE + i)).collect(),
+                    Vec::new(),
+                ),
+            );
+        }
+        let ids: Vec<String> = (0..PAGES * PER_PAGE)
+            .map(|n| {
+                let action = format!("act{n}");
+                let descriptor = exported("x", &action);
+                [
+                    "directory",
+                    "9",
+                    "r1",
+                    &descriptor.address.resource,
+                    &action,
+                ]
+                .join(&ID_SEPARATOR.to_string())
+            })
+            .collect();
+        for (n, id) in ids.iter().enumerate() {
+            assert_eq!(
+                provider.action_hierarchy(id).unwrap().semantic_identity,
+                tilo_actions::ResourceSemanticIdentity::new("store.app", format!("app:{n}")),
+                "row {n} keeps its own identity"
+            );
+        }
+        assert_eq!(
+            provider.semantic_index_builds.get(),
+            1,
+            "every row was answered from one index"
+        );
+
+        provider.directory_pages_mut().clear();
+        assert!(
+            provider
+                .action_hierarchy(&ids[0])
+                .unwrap()
+                .semantic_identity
+                .is_none(),
+            "a cleared cache answers no identity"
+        );
+        assert_eq!(
+            provider.semantic_index_builds.get(),
+            2,
+            "a change rebuilds it"
         );
     }
 
@@ -3556,13 +4009,13 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
-            source_generation: broker.surfaces_generation(),
-            scope: String::new(),
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+            broker.surfaces_generation(),
+            String::new(),
             entries,
-            index: None,
-            machine_index: None,
-        });
+            None,
+            None,
+        ));
         assert_eq!(
             provider.action_hierarchy(&id).unwrap().semantic_identity,
             Some(identity)
@@ -3611,6 +4064,117 @@ mod tests {
             view: None,
             input: PublishedInput::None,
         }
+    }
+
+    /// After thirty windows were opened, each publishing its app's actions
+    /// under its own record, every `actions list` over the control socket
+    /// took about seventy seconds: describing a row's hierarchy looked its
+    /// semantic identity up by minting the id of every published action and
+    /// comparing, so six thousand rows minted thirty-six million ids. Each
+    /// row is now one lookup, and the listing still carries every row's
+    /// hierarchy and identity through the same policy gate the socket uses.
+    #[test]
+    fn a_listing_after_thirty_windows_resolves_each_row_by_lookup() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::ActionCatalog;
+        use crate::shell::search::visibility::PolicyVisibility;
+        use crate::shell::state::WorkspaceAuthority as _;
+        const WINDOWS: u64 = 30;
+        const ACTIONS: usize = 200;
+        // Materializing a row mints its id a few times (five here); a scan
+        // per row minted every entry's id again, millions in all.
+        const MINTED_PER_ROW: usize = 8;
+        let chrome = chrome();
+        let room_id = chrome.borrow().tree().desktop.workspaces[0].room;
+        let user = chrome.borrow().local_user_for_room(&room_id);
+        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner(user.clone());
+        let broker = broker_for(&chrome);
+        let room = room_id.to_string();
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("fixture", "fixture:document").unwrap();
+        let surfaces: Vec<PublishedSurface> = (0..WINDOWS)
+            .map(|window| {
+                let app_id = format!("so.tilo.fixture{}", window % 5);
+                let mut route = CrdtRoute::app(&app_id, &room);
+                route.record_id = format!("window-{window}");
+                PublishedSurface {
+                    peer_id: 7 + window,
+                    app_id,
+                    route,
+                    actions: (0..ACTIONS)
+                        .map(|index| {
+                            let mut action = local_action(
+                                &format!("action {index}"),
+                                &format!("action-{index}"),
+                            );
+                            action.semantic_identity = Some(identity.clone());
+                            // Half of them change the document, so the gate
+                            // decides them rather than letting reads through.
+                            if index % 2 == 0 {
+                                action.contract = tilo_actions::ActionContract::default();
+                            }
+                            action
+                        })
+                        .collect(),
+                    live: true,
+                }
+            })
+            .collect();
+        broker.replace_published_surfaces_for_test(surfaces);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            ..context("", &state, &doc)
+        };
+        // The index worker builds this off the main loop.
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let args = crate::shell::search::QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let workspace = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::policy_view)
+            .unwrap();
+        let gate = PolicyVisibility::new(&workspace, workspace.actor_for_person(&user));
+        super::IDS_MINTED.with(|minted| minted.set(0));
+        let catalog = ActionCatalog::build_query(&registry, &args, &gate, true);
+        let minted = super::IDS_MINTED.with(std::cell::Cell::get);
+        let rows = catalog.enumerate();
+        let expected = usize::try_from(WINDOWS).unwrap() * ACTIONS;
+        assert_eq!(
+            rows.len(),
+            expected,
+            "the owner sees every window's actions"
+        );
+        assert!(
+            rows.iter().all(|row| row
+                .hierarchy
+                .as_ref()
+                .is_some_and(|hierarchy| hierarchy.semantic_identity.as_ref() == Some(&identity))),
+            "every row keeps its hierarchy and semantic identity"
+        );
+        assert!(
+            minted <= MINTED_PER_ROW * expected,
+            "{minted} ids minted for {expected} rows: resolving a row must not mint every \
+             entry's id"
+        );
     }
 
     #[test]
@@ -3669,8 +4233,7 @@ mod tests {
         };
         let key = (7, actor, "inspect playback".into(), Vec::new());
         provider
-            .directory_pages
-            .borrow_mut()
+            .directory_pages_mut()
             .insert(key.clone(), page(vec![row], Vec::new()));
         provider
             .directory_epoch
@@ -3692,7 +4255,7 @@ mod tests {
         assert!(cached.results.iter().any(|row| {
             row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
         }));
-        provider.directory_pages.borrow_mut().remove(&key);
+        provider.directory_pages_mut().remove(&key);
         provider
             .directory_epoch
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3748,7 +4311,7 @@ mod tests {
             has_children: false,
             visibility: None,
         };
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (7, actor, String::new(), Vec::new()),
             page(vec![row], Vec::new()),
         );
@@ -3776,8 +4339,7 @@ mod tests {
             let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
             let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
             provider
-                .directory_pages
-                .borrow_mut()
+                .directory_pages_mut()
                 .insert(retained.clone(), page(Vec::new(), Vec::new()));
             let (sender, receiver) = pending();
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -3911,6 +4473,7 @@ mod tests {
                 ActionHostError::InvalidRequest {
                     reason: "stale revision".into(),
                 },
+                ActionHostError::StaleRevision,
                 ActionHostError::Unavailable {
                     reason: "owner left".into(),
                 },
@@ -3945,8 +4508,7 @@ mod tests {
                 }
                 let key: DirectoryCacheKey = (7, "actor-a".into(), needle, Vec::new());
                 provider
-                    .directory_pages
-                    .borrow_mut()
+                    .directory_pages_mut()
                     .insert(key.clone(), page(Vec::new(), Vec::new()));
                 let (sender, receiver) = pending();
                 provider.directory_pending.borrow_mut().insert(
@@ -4014,7 +4576,7 @@ mod tests {
             );
             provider.set_directory_query("open");
             for actor in ["room-a-user", "room-b-user"] {
-                provider.directory_pages.borrow_mut().insert(
+                provider.directory_pages_mut().insert(
                     (7, actor.into(), "open".into(), Vec::new()),
                     page(Vec::new(), Vec::new()),
                 );
@@ -4211,11 +4773,11 @@ mod tests {
                 has_children: false,
                 visibility: None,
             };
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor.clone(), "open".into(), Vec::new()),
                 page(vec![row("Open first", "first")], vec![1]),
             );
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor, "open".into(), vec![1]),
                 page(vec![row("Open second", "second")], Vec::new()),
             );
@@ -4323,7 +4885,7 @@ mod tests {
             visibility: None,
         };
         provider.set_directory_query("read");
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, actor, "read".into(), Vec::new()),
             page(vec![row], Vec::new()),
         );
@@ -5031,13 +5593,13 @@ mod tests {
             .replace_published_surfaces_for_test(vec![published]);
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
-            source_generation: provider.broker.surfaces_generation(),
-            scope: LiveAppActionsProvider::surface_scope(&ctx),
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+            provider.broker.surfaces_generation(),
+            LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
             machine_index,
-        });
+        ));
         let page = provider.query_page(
             ctx,
             None,
@@ -5283,6 +5845,7 @@ mod tests {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room.to_string();
             let result = |cluster: &str| SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),
@@ -5335,7 +5898,7 @@ mod tests {
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor, "book".into(), Vec::new()),
                 page(
                     vec![CatalogueRow {
@@ -5425,6 +5988,139 @@ mod tests {
                 "the child fetch must carry the selected stable resource address"
             );
         }
+    }
+
+    /// Notes' pages and blocks sit behind their notebook: an enumeration must
+    /// list their actions, the palette must not, and a nested row must resolve
+    /// by its own address afterwards.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+    fn enumeration_lists_the_actions_of_resources_below_a_root() {
+        fn resource_row(id: &str, label: &str, has_children: bool) -> CatalogueRow {
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.notes".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: id.into(),
+                    kind: "notes.page".into(),
+                    label: label.into(),
+                    presentation: None,
+                },
+                action: None,
+                has_children,
+                visibility: None,
+            }
+        }
+        fn action_row(resource: &str, action: &str) -> CatalogueRow {
+            let mut descriptor = exported("Rename note", action);
+            descriptor.address = tilo_actions::ActionAddress::new(resource, action);
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.notes".into(),
+                parent_resource: resource.into(),
+                resource: CatalogueResource {
+                    id: resource.into(),
+                    kind: "notes.page".into(),
+                    label: "Page".into(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            }
+        }
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let (cluster_id, actor) = {
+            let chrome = chrome.borrow();
+            let room = chrome.tree().desktop.workspaces[0].room;
+            (room.to_string(), chrome.local_user_for_room(&room))
+        };
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.notes".into(),
+            cluster_id,
+            record_id: "notebook".into(),
+        }]);
+        // Made after the root is published: a provider retires every cached
+        // page when the directory's generation moves, as publishing a root
+        // does, so pages seeded before that would be dropped unread.
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
+        provider.directory_pages_mut().insert(
+            (9, actor.clone(), String::new(), Vec::new()),
+            page(
+                vec![
+                    action_row("notes.notebook", "new"),
+                    resource_row("notes.page:a", "Page A", true),
+                ],
+                Vec::new(),
+            ),
+        );
+        provider.nested_pages_mut().insert(
+            (9, actor.clone(), "notes.page:a".into(), String::new()),
+            page(
+                vec![
+                    action_row("notes.page:a", "rename"),
+                    action_row("notes.page:a", "new-child"),
+                    resource_row("notes.block:a1", "Block", true),
+                ],
+                Vec::new(),
+            ),
+        );
+        provider.nested_pages_mut().insert(
+            (9, actor, "notes.block:a1".into(), String::new()),
+            page(vec![action_row("notes.block:a1", "set-style")], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let ids = |provider: &LiveAppActionsProvider| {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "",
+                wanted: &[ResourceKind::Action],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        let named = |ids: &[String], resource: &str, action: &str| {
+            let tail = [resource, action].join(&ID_SEPARATOR.to_string());
+            ids.iter().any(|id| id.ends_with(&tail))
+        };
+
+        let palette = ids(&provider);
+        assert!(named(&palette, "notes.notebook", "new"));
+        assert!(
+            !named(&palette, "notes.page:a", "rename"),
+            "the palette drills down; it does not open every resource"
+        );
+
+        provider.set_enumerating(true);
+        let listed = ids(&provider);
+        provider.set_enumerating(false);
+        assert!(named(&listed, "notes.notebook", "new"), "{listed:?}");
+        assert!(named(&listed, "notes.page:a", "rename"), "{listed:?}");
+        assert!(named(&listed, "notes.page:a", "new-child"), "{listed:?}");
+        assert!(named(&listed, "notes.block:a1", "set-style"), "{listed:?}");
+
+        let nested = listed
+            .iter()
+            .find(|id| id.ends_with(&["notes.page:a", "rename"].join(&ID_SEPARATOR.to_string())))
+            .expect("the page's rename row");
+        let chrome_ref = chrome.borrow();
+        let resolved = provider.resolve(nested, context("", &chrome_ref, &doc));
+        assert!(
+            resolved.is_some_and(|row| row.id == *nested),
+            "a listed nested address resolves"
+        );
     }
 }
 

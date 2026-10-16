@@ -6,7 +6,6 @@ crates/sdk/ui-core/src/native/warmup.rs literal_color 1
 crates/sdk/ui-core/src/profiling.rs literal_color 4
 crates/sdk/ui-core/src/widget/block_editor_table.rs white_or_black 1
 crates/sdk/ui-core/src/widget/color_picker.rs white_or_black 2
-crates/sdk/ui-core/src/widget/identity_flow/sheet.rs literal_color 2
 crates/sdk/ui-core/src/widget/permission_prompt.rs white_or_black 1
 crates/sdk/ui-core/src/widget/qr.rs literal_color 2
 crates/sdk/ui-core/src/widget/tabs.rs literal_color 1

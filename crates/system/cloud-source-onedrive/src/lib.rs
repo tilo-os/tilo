@@ -40,7 +40,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use cloud_source::{
     Capabilities, Change, ChangeFeed, ChangePage, CloudSource, CredentialSource, Cursor, Download,
@@ -62,6 +62,7 @@ mod upload;
 
 use graph::{Drive, DriveItem, DriveType, Page, Permission, Version};
 use http::{Auth, Http};
+use tilo_lock::MutexRecover as _;
 
 /// Microsoft Graph v1.0.
 pub const GRAPH_API: &str = "https://graph.microsoft.com/v1.0/";
@@ -314,7 +315,7 @@ impl OneDriveSource {
     }
 
     fn lock_scope(&self) -> std::sync::MutexGuard<'_, HashMap<String, bool>> {
-        self.scope.lock().unwrap_or_else(PoisonError::into_inner)
+        self.scope.lock_recover()
     }
 
     /// Whether `folder` is the mount root or lies below it.

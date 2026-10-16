@@ -8,12 +8,13 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tilo_app_package::PackageId;
+use tilo_app_package::trust::TrustFile as _;
 
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
 /// Non-terminal managed launches one launcher holds. A started agent stays
 /// non-terminal while its process lives (idle agents wait for messages), so
 /// this must be at least the Store's live-agent limit
-/// (`tilo_peer_state::owner_commit::MAX_LIVE_PRIVATE_AGENTS`, 16).
+/// (`tilo_owner_commit::MAX_LIVE_PRIVATE_AGENTS`, 16).
 pub const MAX_LIVE_MANAGED_LAUNCHES: usize = 16;
 
 /// Independently configured release trust. Embedded publisher keys are never

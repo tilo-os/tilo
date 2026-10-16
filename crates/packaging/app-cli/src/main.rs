@@ -2,6 +2,7 @@
 
 use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use app_cli::{
@@ -52,6 +53,17 @@ enum Cmd {
         /// Install this version instead of the newest.
         #[arg(long)]
         version: Option<String>,
+        /// Report the download on standard error as `progress downloading
+        /// <received> <total>` lines (`-` for an unknown total), then
+        /// `progress installing`, for a program showing its own progress.
+        #[arg(long)]
+        progress_lines: bool,
+    },
+    /// Install an exact signed runtime (an app's engine), without installing or
+    /// replacing the app that uses it.
+    Runtime {
+        #[command(subcommand)]
+        cmd: RuntimeCmd,
     },
     /// Update one app, or every installed app when no name is given.
     #[command(visible_aliases = ["u", "upgrade"])]
@@ -73,6 +85,20 @@ enum Cmd {
     Repo {
         #[command(subcommand)]
         cmd: RepoCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCmd {
+    /// Fetch an exact signed runtime through the same verified install an app's
+    /// own runtime takes.
+    Install {
+        /// Runtime reference, for example tilo-runtime/2026.10.4-chromium.
+        runtime: String,
+        /// Existing enabled repository name; its pinned authority is unchanged.
+        /// Without it, the first enabled repository that offers the build.
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -131,15 +157,24 @@ fn main() -> ExitCode {
             installed: false,
         } => list(json),
         Cmd::Search { query } => search(&query),
-        Cmd::Install { app, version: None } => change_one(&app, false),
         Cmd::Install {
             app,
-            version: Some(version),
-        } => install_version(&app, &version),
+            version,
+            progress_lines,
+        } => {
+            PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
+            match version {
+                None => change_one(&app, false),
+                Some(version) => install_version(&app, &version),
+            }
+        }
         Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
         Cmd::Update { app } => update(app.as_deref()),
         Cmd::Remove { app } => remove(&app),
         Cmd::Repo { cmd } => repo(cmd),
+        Cmd::Runtime {
+            cmd: RuntimeCmd::Install { runtime, repo },
+        } => install_runtime(&runtime, repo.as_deref()),
     }
 }
 
@@ -279,7 +314,49 @@ fn announce(message: &str) {
     eprintln!("{message}");
 }
 
+/// Set by `install --progress-lines`.
+static PROGRESS_LINES: AtomicBool = AtomicBool::new(false);
+
+/// How much of a download of unknown size arrives between two lines.
+const PROGRESS_LINE_STEP_BYTES: u64 = 256 * 1024;
+
+/// What `--progress-lines` prints for `progress`, if anything: a line per
+/// percent of a known size (or per [`PROGRESS_LINE_STEP_BYTES`] of an
+/// unknown one), the last byte, and the switch to installing once.
+/// `last` is the received count of the previous line (`u64::MAX` after
+/// `installing`), `None` before any.
+fn progress_line(progress: DownloadProgress, last: &mut Option<u64>) -> Option<String> {
+    if let InstallPhase::Installing { .. } = progress.phase {
+        return (last.replace(u64::MAX) != Some(u64::MAX)).then(|| "progress installing".into());
+    }
+    let step = progress
+        .total
+        .map_or(PROGRESS_LINE_STEP_BYTES, |total| (total / 100).max(1));
+    // A second download (a runtime, then the app) starts again from zero.
+    let due = match *last {
+        None | Some(u64::MAX) => true,
+        Some(before) => {
+            progress.received < before
+                || progress.received >= before.saturating_add(step)
+                || progress.total == Some(progress.received) && before != progress.received
+        }
+    };
+    if !due {
+        return None;
+    }
+    *last = Some(progress.received);
+    let total = progress
+        .total
+        .map_or_else(|| "-".to_owned(), |total| total.to_string());
+    Some(format!(
+        "progress downloading {} {total}",
+        progress.received
+    ))
+}
+
 fn progress_reporter() -> impl FnMut(DownloadProgress) {
+    let lines = PROGRESS_LINES.load(Ordering::Relaxed);
+    let mut last_line: Option<u64> = None;
     let terminal = std::io::stdout().is_terminal();
     let started = Instant::now();
     let mut last_report: Option<Instant> = None;
@@ -289,6 +366,12 @@ fn progress_reporter() -> impl FnMut(DownloadProgress) {
         .into_iter()
         .cycle();
     move |progress| {
+        if lines {
+            if let Some(line) = progress_line(progress, &mut last_line) {
+                eprintln!("{line}");
+            }
+            return;
+        }
         if let InstallPhase::Installing { elapsed } = progress.phase {
             let should_report = terminal
                 || last_report.is_none()
@@ -392,6 +475,34 @@ fn human_duration(duration: Duration) -> String {
     }
 }
 
+fn install_runtime(runtime: &str, registry: Option<&str>) -> ExitCode {
+    let mut progress = progress_reporter();
+    let installed = match registry {
+        Some(registry) => {
+            app_cli::install::install_runtime_reporting(runtime, registry, &mut progress).map(
+                |offer| {
+                    format!(
+                        "installed runtime {runtime} {} {}",
+                        offer.package_id, offer.version
+                    )
+                },
+            )
+        }
+        None => app_cli::install::install_runtime_from_enabled(runtime, &mut progress)
+            .map(|()| format!("runtime {runtime} is installed")),
+    };
+    match installed {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("app: {}", error.user_message());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn change_one(query: &str, update: bool) -> ExitCode {
     announce(if update {
         "Checking the Tilo Store for an update…"
@@ -464,6 +575,15 @@ fn change_app(app: &CatalogueApp, update: bool, installed: Option<&str>) -> Exit
     } else {
         app_cli::install::install_app_reporting(app, &mut progress)
     };
+    report_change(app, update, result)
+}
+
+/// Say how installing or updating `app` ended.
+fn report_change(
+    app: &CatalogueApp,
+    update: bool,
+    result: Result<(), app_cli::install::InstallError>,
+) -> ExitCode {
     if std::io::stdout().is_terminal() {
         print!("\r\x1b[2K");
         let _ = std::io::stdout().flush();
@@ -745,20 +865,29 @@ fn update_from_listing(
     );
     let total = outdated.len();
     let mut updated = 0usize;
-    for (index, (app, version)) in outdated.into_iter().enumerate() {
+    let mut done = 0usize;
+    // Every update downloads at once; each installs as soon as it is ready.
+    let apps: Vec<&CatalogueApp> = outdated.iter().map(|(app, _)| *app).collect();
+    app_cli::install::stage_each(&apps, |index, staged| {
+        let Some((app, version)) = outdated.get(index) else {
+            return;
+        };
+        done = done.saturating_add(1);
         println!(
-            "Updating {} {version} -> {} ({}/{total})…",
-            app.display_name,
-            app.version,
-            index.saturating_add(1)
+            "Updating {} {version} -> {} ({done}/{total})…",
+            app.display_name, app.version,
         );
         let _ = std::io::stdout().flush();
-        if change_app(app, true, Some(version)) == ExitCode::SUCCESS {
+        let mut progress = progress_reporter();
+        let result = staged.and_then(|staged| {
+            app_cli::install::update_staged_reporting(app, staged, &mut progress)
+        });
+        if report_change(app, true, result) == ExitCode::SUCCESS {
             updated = updated.saturating_add(1);
         } else {
             failed = true;
         }
-    }
+    });
     println!("{}", bulk_update_summary(installed.len(), checked, updated));
     if failed {
         ExitCode::FAILURE
@@ -921,6 +1050,77 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn runtime_install_takes_an_optional_configured_repository() {
+        let cli = Cli::try_parse_from([
+            "app",
+            "runtime",
+            "install",
+            "tilo-runtime/2026.10.4-chromium",
+            "--repo",
+            "Tilo main",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.cmd, Cmd::Runtime { cmd: RuntimeCmd::Install { runtime, repo } }
+            if runtime == "tilo-runtime/2026.10.4-chromium"
+                && repo.as_deref() == Some("Tilo main"))
+        );
+        let cli = Cli::try_parse_from([
+            "app",
+            "runtime",
+            "install",
+            "tilo-runtime/2026.10.4-chromium",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Runtime {
+                cmd: RuntimeCmd::Install { repo: None, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn progress_lines_follow_the_bytes_without_flooding() {
+        let downloading = |received, total| DownloadProgress {
+            received,
+            total,
+            phase: InstallPhase::Downloading,
+        };
+        let mut last = None;
+        let mut lines = Vec::new();
+        for received in (0..=1_000_000).step_by(1000) {
+            lines.extend(progress_line(
+                downloading(received, Some(1_000_000)),
+                &mut last,
+            ));
+        }
+        assert_eq!(lines.first().unwrap(), "progress downloading 0 1000000");
+        assert_eq!(
+            lines.last().unwrap(),
+            "progress downloading 1000000 1000000"
+        );
+        assert_eq!(lines.len(), 101, "a line per percent: {lines:?}");
+        let installing = DownloadProgress {
+            received: 1_000_000,
+            total: Some(1_000_000),
+            phase: InstallPhase::Installing {
+                elapsed: Duration::from_secs(1),
+            },
+        };
+        assert_eq!(
+            progress_line(installing, &mut last).as_deref(),
+            Some("progress installing")
+        );
+        assert_eq!(progress_line(installing, &mut last), None, "said once");
+        assert_eq!(
+            progress_line(downloading(0, None), &mut last).as_deref(),
+            Some("progress downloading 0 -"),
+            "a later download starts again"
+        );
+    }
+
+    #[test]
     fn the_cli_surface_parses_and_names_both_public_commands() {
         // Phase `command_tree_is_valid`.
         {
@@ -946,6 +1146,21 @@ mod tests {
             assert!(script.contains("default app"), "{script}");
             assert!(script.contains("_store()"), "{script}");
             assert!(script.contains("default store"), "{script}");
+        }
+        // Phase `runtime_install_names_the_exact_runtime`.
+        {
+            let cli = Cli::try_parse_from([
+                "app",
+                "runtime",
+                "install",
+                "tilo-runtime/2026.10.9-chromium",
+            ])
+            .expect("runtime install parses");
+            assert!(matches!(
+                cli.cmd,
+                Cmd::Runtime { cmd: RuntimeCmd::Install { ref runtime, repo: None } }
+                    if runtime == "tilo-runtime/2026.10.9-chromium"
+            ));
         }
         // Phase `concise_update_parses`.
         {

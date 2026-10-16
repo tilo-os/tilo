@@ -28,6 +28,7 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd as StdOwnedFd;
@@ -37,8 +38,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
@@ -409,54 +408,52 @@ impl RemoteDesktopBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.CreateSession: app={app_id}");
-        if !self.ctx.remote_input_injector.available() {
-            return (2, HashMap::new());
-        }
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let key = session_handle.to_string();
-        {
-            let Ok(mut sessions) = self.sessions.lock() else {
-                return (2, HashMap::new());
-            };
-            if sessions.contains_key(&key) || sessions.len() >= MAX_LIVE_SESSIONS {
-                return (2, HashMap::new());
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.CreateSession: app={app_id}");
+            ensure(self.ctx.remote_input_injector.available())?;
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
+                .await
+                .or_fail()?;
+            let key = session_handle.to_string();
+            {
+                let mut sessions = self.sessions.lock().or_fail()?;
+                if sessions.contains_key(&key) || sessions.len() >= MAX_LIVE_SESSIONS {
+                    return Err(Ended::Failed);
+                }
+                sessions.insert(
+                    key.clone(),
+                    RemoteDesktopSession {
+                        owner: auth.owner.to_string(),
+                        app_id: app_id.clone(),
+                        caller: Some(auth.caller.clone()),
+                        ..Default::default()
+                    },
+                );
             }
-            sessions.insert(
-                key.clone(),
-                RemoteDesktopSession {
-                    owner: auth.owner.to_string(),
-                    app_id: app_id.clone(),
-                    caller: Some(auth.caller.clone()),
-                    ..Default::default()
-                },
-            );
-        }
-        let cleanup = self.session_handle();
-        let cleanup_path = key.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id,
-            resource: LifecycleResource::RemoteDesktop,
-        };
-        let registered = self
-            .lifecycle
-            .register_session(connection, &key, entry, move |_| {
-                cleanup.close(&cleanup_path);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            let _ = self.session_handle().close(&key);
-            return (2, HashMap::new());
-        }
-        // The frontend-created session handle is the sole CreateSession
-        // result; the current implementation interface defines no result
-        // fields for this method.
-        (0, HashMap::new())
+            let cleanup = self.session_handle();
+            let cleanup_path = key.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id,
+                resource: LifecycleResource::RemoteDesktop,
+            };
+            let registered = self
+                .lifecycle
+                .register_session(connection, &key, entry, move |_| {
+                    cleanup.close(&cleanup_path);
+                })
+                .await;
+            if !matches!(registered, Ok(true)) {
+                let _ = self.session_handle().close(&key);
+                return Err(Ended::Failed);
+            }
+            // The frontend-created session handle is the sole CreateSession
+            // result; the current implementation interface defines no result
+            // fields for this method.
+            Ok(Results::new())
+        })
+        .await
     }
 
     /// `SelectDevices` — request pointer/keyboard access; surfaces the consent prompt and records the granted devices on the session.
@@ -469,135 +466,118 @@ impl RemoteDesktopBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.SelectDevices: app={app_id}");
-        let key = session_handle.to_string();
-        let requested_persist = opt_u32(&options, "persist_mode").unwrap_or(0);
-        if requested_persist > 2 {
-            return (2, HashMap::new());
-        }
-        let restored = restore_key(&options).and_then(|key| {
-            self.restore
-                .lock()
-                .ok()
-                .and_then(|store| store.get(&key))
-                .filter(|record| record.app_id == app_id)
-        });
-        let mut types = restored.as_ref().map_or_else(
-            || opt_u32(&options, "types").unwrap_or(device_type::ALL),
-            |record| record.devices,
-        ) & device_type::ALL;
-        if types == 0 {
-            types = device_type::ALL;
-        }
-
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancellation = cancelled.clone();
-        let request_path = handle.to_string();
-        let request_entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        let registered = self
-            .lifecycle
-            .register_request(connection, &request_path, request_entry, move |_| {
-                cancellation.store(true, Ordering::Release);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            return (2, HashMap::new());
-        }
-        let Some(session) = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| sessions.get(&key).cloned())
-        else {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        };
-        if session.owner != auth.owner.as_str()
-            || session.app_id != app_id
-            || session.caller.as_ref() != Some(&auth.caller)
-            || session.consented
-            || session.started
-        {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(&key).is_some_and(|entry| {
-                if entry.selecting || entry.consented || entry.started {
-                    false
-                } else {
-                    entry.selecting = true;
-                    true
-                }
-            })
-        });
-        if !marked_selecting {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        let cap_template = Capability::RemoteDesktop {
-            scope: Expiry::AfterUse,
-        };
-        let allowed = restored.is_some()
-            || flow::resolve(
-                &self.ctx,
-                auth.caller,
-                CapabilityKind::RemoteDesktop,
-                cap_template,
-            )
-            .await
-            .is_allowed();
-
-        if cancelled.load(Ordering::Acquire) || !allowed {
-            if let Ok(mut sessions) = self.sessions.lock()
-                && let Some(entry) = sessions.get_mut(&key)
-            {
-                entry.selecting = false;
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.SelectDevices: app={app_id}");
+            let key = session_handle.to_string();
+            let requested_persist =
+                crate::portal::option::<u32>(&options, "persist_mode").unwrap_or(0);
+            if requested_persist > 2 {
+                return Err(Ended::Failed);
             }
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (1, HashMap::new());
-        }
+            let restored = restore_key(&options).and_then(|key| {
+                self.restore
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.get(&key))
+                    .filter(|record| record.app_id == app_id)
+            });
+            let mut types = restored.as_ref().map_or_else(
+                || crate::portal::option::<u32>(&options, "types").unwrap_or(device_type::ALL),
+                |record| record.devices,
+            ) & device_type::ALL;
+            if types == 0 {
+                types = device_type::ALL;
+            }
 
-        let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            let Some(entry) = sessions.get_mut(&key) else {
-                return false;
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
+                .await
+                .or_fail()?;
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancellation = cancelled.clone();
+            let request_path = handle.to_string();
+            let request_entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
             };
-            entry.devices = types;
-            entry.consented = true;
-            entry.selecting = false;
-            entry.persist_mode = restored
-                .as_ref()
-                .map_or(requested_persist, |record| record.persist_mode);
-            entry.restored = restored.is_some();
-            true
-        });
-        if !updated {
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+            };
             self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        self.lifecycle
-            .complete_request_object(connection, &request_path)
-            .await;
-        (0, HashMap::new())
+                .with_request(connection, &request_path, request_entry, cancel, async {
+                    let Some(session) = self
+                        .sessions
+                        .lock()
+                        .ok()
+                        .and_then(|sessions| sessions.get(&key).cloned())
+                    else {
+                        return Err(Ended::Failed);
+                    };
+                    if session.owner != auth.owner.as_str()
+                        || session.app_id != app_id
+                        || session.caller.as_ref() != Some(&auth.caller)
+                        || session.consented
+                        || session.started
+                    {
+                        return Err(Ended::Failed);
+                    }
+                    let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        sessions.get_mut(&key).is_some_and(|entry| {
+                            if entry.selecting || entry.consented || entry.started {
+                                false
+                            } else {
+                                entry.selecting = true;
+                                true
+                            }
+                        })
+                    });
+                    if !marked_selecting {
+                        return Err(Ended::Failed);
+                    }
+                    let cap_template = Capability::RemoteDesktop {
+                        scope: Expiry::AfterUse,
+                    };
+                    let allowed = restored.is_some()
+                        || flow::resolve(
+                            &self.ctx,
+                            auth.caller,
+                            CapabilityKind::RemoteDesktop,
+                            cap_template,
+                        )
+                        .await
+                        .is_allowed();
+
+                    if cancelled.load(Ordering::Acquire) || !allowed {
+                        if let Ok(mut sessions) = self.sessions.lock()
+                            && let Some(entry) = sessions.get_mut(&key)
+                        {
+                            entry.selecting = false;
+                        }
+                        return Err(Ended::Cancelled);
+                    }
+
+                    let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        let Some(entry) = sessions.get_mut(&key) else {
+                            return false;
+                        };
+                        entry.devices = types;
+                        entry.consented = true;
+                        entry.selecting = false;
+                        entry.persist_mode = restored
+                            .as_ref()
+                            .map_or(requested_persist, |record| record.persist_mode);
+                        entry.restored = restored.is_some();
+                        true
+                    });
+                    if !updated {
+                        return Err(Ended::Failed);
+                    }
+                    Ok(Results::new())
+                })
+                .await
+        })
+        .await
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
@@ -610,103 +590,98 @@ impl RemoteDesktopBackend {
         app_id: String,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.Start: app={app_id}");
-        if !self.ctx.remote_input_injector.available() {
-            return (2, HashMap::new());
-        }
-        let key = session_handle.to_string();
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let Some(session) = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned()) else {
-            return (2, HashMap::new());
-        };
-        if session.owner != auth.owner.as_str()
-            || session.app_id != app_id
-            || session.caller.as_ref() != Some(&auth.caller)
-            || !session.consented
-            || session.selecting
-            || session.starting
-            || session.started
-        {
-            return (2, HashMap::new());
-        }
-        let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(&key).is_some_and(|entry| {
-                if entry.starting || entry.started {
-                    false
-                } else {
-                    entry.starting = true;
-                    true
-                }
-            })
-        });
-        if !marked_starting {
-            return (2, HashMap::new());
-        }
-
-        let devices = if session.devices == 0 {
-            device_type::ALL
-        } else {
-            session.devices
-        };
-        let persist_mode = session.persist_mode;
-        let session_key = key.clone();
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return (2, HashMap::new());
-        };
-        let Some(entry) = sessions.get_mut(&key) else {
-            return (2, HashMap::new());
-        };
-        entry.starting = false;
-        entry.started = true;
-        entry.devices = devices;
-        drop(sessions);
-
-        let restore_key = (persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
-        if let Some(key) = &restore_key {
-            let record = RemoteRestoreData {
-                app_id: app_id.clone(),
-                devices,
-                persist_mode,
-                issued_unix_seconds: tilo_clock::unix_now(),
-            };
-            let stored = self
-                .restore
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.Start: app={app_id}");
+            ensure(self.ctx.remote_input_injector.available())?;
+            let key = session_handle.to_string();
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            let session = self
+                .sessions
                 .lock()
-                .map_err(|_| "remote-desktop restore store is unavailable".to_string())
-                .and_then(|mut store| store.insert(key.clone(), record));
-            if stored.is_err() {
-                if let Ok(mut sessions) = self.sessions.lock()
-                    && let Some(entry) = sessions.get_mut(&session_key)
-                {
-                    entry.starting = false;
-                    entry.started = false;
-                }
-                return (2, HashMap::new());
+                .ok()
+                .and_then(|s| s.get(&key).cloned())
+                .or_fail()?;
+            if session.owner != auth.owner.as_str()
+                || session.app_id != app_id
+                || session.caller.as_ref() != Some(&auth.caller)
+                || !session.consented
+                || session.selecting
+                || session.starting
+                || session.started
+            {
+                return Err(Ended::Failed);
             }
-        }
+            let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                sessions.get_mut(&key).is_some_and(|entry| {
+                    if entry.starting || entry.started {
+                        false
+                    } else {
+                        entry.starting = true;
+                        true
+                    }
+                })
+            });
+            ensure(marked_starting)?;
 
-        let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        if let Ok(v) = OwnedValue::try_from(Value::U32(devices)) {
-            results.insert("devices".to_string(), v);
-        }
-        if let Ok(v) = OwnedValue::try_from(Value::Bool(false)) {
-            results.insert("clipboard_enabled".to_string(), v);
-        }
-        if let Some(key) = restore_key
-            && let Some(data) = restore_data(key)
-        {
-            results.insert("restore_data".to_string(), data);
-            if let Ok(mode) = OwnedValue::try_from(Value::U32(persist_mode)) {
-                results.insert("persist_mode".to_string(), mode);
+            let devices = if session.devices == 0 {
+                device_type::ALL
+            } else {
+                session.devices
+            };
+            let persist_mode = session.persist_mode;
+            let session_key = key.clone();
+            let mut sessions = self.sessions.lock().or_fail()?;
+            let entry = sessions.get_mut(&key).or_fail()?;
+            entry.starting = false;
+            entry.started = true;
+            entry.devices = devices;
+            drop(sessions);
+
+            let restore_key = (persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
+            if let Some(key) = &restore_key {
+                let record = RemoteRestoreData {
+                    app_id: app_id.clone(),
+                    devices,
+                    persist_mode,
+                    issued_unix_seconds: tilo_clock::unix_now(),
+                };
+                let stored = self
+                    .restore
+                    .lock()
+                    .map_err(|_| "remote-desktop restore store is unavailable".to_string())
+                    .and_then(|mut store| store.insert(key.clone(), record));
+                if stored.is_err() {
+                    if let Ok(mut sessions) = self.sessions.lock()
+                        && let Some(entry) = sessions.get_mut(&session_key)
+                    {
+                        entry.starting = false;
+                        entry.started = false;
+                    }
+                    return Err(Ended::Failed);
+                }
             }
-        }
-        (0, results)
+
+            let mut results: HashMap<String, OwnedValue> = HashMap::new();
+            if let Ok(v) = OwnedValue::try_from(Value::U32(devices)) {
+                results.insert("devices".to_string(), v);
+            }
+            if let Ok(v) = OwnedValue::try_from(Value::Bool(false)) {
+                results.insert("clipboard_enabled".to_string(), v);
+            }
+            if let Some(key) = restore_key
+                && let Some(data) = restore_data(key)
+            {
+                results.insert("restore_data".to_string(), data);
+                if let Ok(mode) = OwnedValue::try_from(Value::U32(persist_mode)) {
+                    results.insert("persist_mode".to_string(), mode);
+                }
+            }
+            Ok(results)
+        })
+        .await
     }
 
     /// v2 EIS transport.  Unlike InputCapture this is a sender-context EIS
@@ -719,8 +694,7 @@ impl RemoteDesktopBackend {
         app_id: String,
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<OwnedFd> {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted RemoteDesktop caller".into()))?;
         let key = session_handle.to_string();
@@ -1011,12 +985,6 @@ fn remote_action_from_eis(request: reis::request::EisRequest) -> Option<RemoteAc
         }),
         _ => None,
     }
-}
-
-#[cfg(target_os = "linux")]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
 }
 
 #[cfg(test)]

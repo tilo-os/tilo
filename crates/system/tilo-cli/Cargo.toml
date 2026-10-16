@@ -20,9 +20,17 @@ clap.workspace = true
 clap_complete.workspace = true
 # Reads the session's GPU health record for `tilo system health --gpu`.
 serde_json.workspace = true
+# The cleanup policy (/etc/tilo/cache-gc.toml), its record, the locks tilo-vm and the test
+# fixture generators hold, and free space for the policy's floor.
+serde.workspace = true
+toml.workspace = true
+tilo-advisory-lock = { path = "../advisory-lock" }
+rustix = { workspace = true, features = ["fs", "std"] }
 workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [lints]

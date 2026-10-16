@@ -157,12 +157,38 @@ pub fn prepare_host_app_dir(
     let dir = host_app_dir(data_home, &room, package_id);
     std::fs::create_dir_all(&dir)?;
     // The XDG tree the environment will point at, created up front so a
-    // first-run write doesn't have to create its own parent.
-    for sub in [".local/share", ".local/state", ".config", ".cache"] {
-        std::fs::create_dir_all(dir.join(sub))?;
+    // first-run write doesn't have to create its own parent. The app owns
+    // this directory read-write, so a component it replaced with a symlink
+    // would send the unconfined launcher's `mkdir` wherever the link points;
+    // every component is checked to be a real directory first.
+    for sub in [
+        ".local",
+        ".local/share",
+        ".local/state",
+        ".config",
+        ".cache",
+    ] {
+        let path = dir.join(sub);
+        refuse_symlink(&path)?;
+        std::fs::create_dir_all(&path)?;
     }
     remove_startup_traces_from_home(&dir);
     Ok(dir)
+}
+
+/// Fails when `path` is a symbolic link, which only the sandboxed app could
+/// have put there.
+fn refuse_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is a symbolic link; the app directory's XDG tree must be real directories",
+                path.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Host location of one package's person directory: the same for every
@@ -272,6 +298,27 @@ pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symlinked_xdg_component_refuses_the_launch() {
+        let data = tempfile::tempdir().expect("data home");
+        let dir = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+            .expect("a fresh app directory");
+        let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
+        // The app replaced `.local` with a link to somewhere on the host.
+        std::fs::remove_dir_all(dir.join(".local")).expect("remove");
+        std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
+        let error = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+            .expect_err("a symlinked component must refuse the launch");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .expect("read")
+                .next()
+                .is_none(),
+            "nothing may be created through the link"
+        );
+    }
 
     #[test]
     fn app_directory_paths_are_confined_per_room_and_package() {

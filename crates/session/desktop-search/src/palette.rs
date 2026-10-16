@@ -38,7 +38,7 @@ struct Sources {
 impl Sources {
     fn new(data: SearchData) -> Self {
         Self {
-            applications: Applications(data.applications),
+            applications: Applications::new(data.applications),
             windows: Windows(data.windows),
             commands: Commands(data.commands),
             content: Content::new(data.providers, data.resources.clone()),
@@ -54,6 +54,9 @@ pub struct DesktopSearch {
     /// The hits the palette shows; entry `hit:{i}` is `rows[i]`.
     rows: Vec<Hit>,
     shown_query: Option<String>,
+    /// [`ui::search::engine_generation`] when the rows were built: the
+    /// content rows come again once the index's code arrived.
+    shown_generation: u64,
     /// The palette is closing because it was dismissed, not because a row
     /// was chosen.
     dismissed: bool,
@@ -80,6 +83,7 @@ impl DesktopSearch {
             recents: Recents::default(),
             rows: Vec::new(),
             shown_query: None,
+            shown_generation: 0,
             dismissed: false,
             choice: None,
         }
@@ -134,13 +138,17 @@ impl DesktopSearch {
     }
 
     /// Run the query again when the palette's text changed since the rows
-    /// were built. Returns whether the rows changed.
+    /// were built, or the index's code arrived since. Returns whether the
+    /// rows changed.
     pub fn refresh(&mut self) -> bool {
         let Some(sources) = &self.sources else {
             return false;
         };
         let query = self.palette.query().to_owned();
-        if self.shown_query.as_deref() == Some(query.as_str()) {
+        let generation = ui::search::engine_generation();
+        if self.shown_query.as_deref() == Some(query.as_str())
+            && self.shown_generation == generation
+        {
             return false;
         }
         let groups = search(
@@ -191,8 +199,13 @@ impl DesktopSearch {
             }
         }
         self.palette.set_entries(entries);
+        // A large index answers typed text only once the engine's code is
+        // in: while it is on its way, an empty list says it is still
+        // searching.
+        self.palette.set_searching(!ui::search::engine_ready());
         self.rows = rows;
         self.shown_query = Some(query);
+        self.shown_generation = generation;
         true
     }
 

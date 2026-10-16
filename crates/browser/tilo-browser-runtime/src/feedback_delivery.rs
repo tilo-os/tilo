@@ -6,13 +6,14 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
-use tilo_actions::remote::{Caller, RemoteActionFrame, RemoteActionMessage};
+use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
 use tilo_app::feedback::{Error, Submission};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_desktop::feedback::Destination;
-use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SignedReceipt, Startup, Transport};
+use tilo_desktop::feedback::transport::{
+    Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
+};
 use tilo_user_identity::DeviceCert;
-use ui::permissions::{Actor, PermissionContext, Standing};
 
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 struct Connection {
@@ -128,43 +129,13 @@ impl Connection {
         Ok(())
     }
     fn admit(&self, answer: &FeedbackAnswer) -> Result<Enrollment, String> {
-        let admission = &answer.admission;
-        if admission.destination != self.destination
-            || admission.owner_user != hex::encode(self.owner.user_public_key)
-            || admission.owner_device != hex::encode(self.owner.device_public_key)
-            || admission.reporter_user != hex::encode(self.reporter.user_public_key)
-            || admission.reporter_device != hex::encode(self.reporter.device_public_key)
-        {
-            return Err("feedback admission identity mismatch".into());
-        }
-        let standing: Standing = serde_json::from_value(admission.standing.clone())
-            .map_err(|_| "feedback standing unavailable")?;
-        if standing.person != admission.reporter_user {
-            return Err("feedback admission identity mismatch".into());
-        }
-        let sandbox = serde_json::from_value(admission.sandbox.clone())
-            .map_err(|_| "feedback capabilities unavailable")?;
-        let room = self.destination.room.clone();
-        Ok(Enrollment {
-            destination: Destination {
-                room: room.clone(),
-                provider: self.destination.provider.clone(),
-                channel: self.destination.channel.clone(),
-            },
-            owner: Caller::authenticated(self.owner.user_public_key, self.owner.device_public_key)
-                .in_room(room.clone()),
-            reporter: Caller::authenticated(
-                self.reporter.user_public_key,
-                self.reporter.device_public_key,
-            )
-            .in_room(room.clone()),
-            permissions: PermissionContext::new(
-                Actor::person(standing.person.clone()).in_room(room),
-                sandbox,
-                standing,
-            )
-            .at_unix_time(admission.unix_time),
-        })
+        Enrollment::admitted(
+            answer,
+            &self.destination,
+            &identity(&self.owner),
+            &identity(&self.reporter),
+        )
+        .map_err(|error| format!("feedback admission refused: {error}"))
     }
     fn current(&self) -> Result<Enrollment, Error> {
         let status = self.peer.status();
@@ -215,9 +186,8 @@ pub(crate) fn pump(id: u32) {
                     Ok((answer, admission)) => {
                         state.admission = Some((admission.clone(), web_time::Instant::now()));
                         state.error = None;
-                        if let (Some(submission), Some(receipt)) = (submission, answer.receipt)
-                            && let Ok(bytes) = serde_json::to_vec(&receipt)
-                            && let Ok(receipt) = SignedReceipt::decode(&bytes)
+                        if let Some(submission) = submission
+                            && let Some(receipt) = admission.receipt_in(&answer, &submission)
                         {
                             if state.receipts.len() >= 8 {
                                 state.receipts.clear();
@@ -263,6 +233,12 @@ pub(crate) fn pump(id: u32) {
         }
     }
 }
+fn identity(cert: &DeviceCert) -> Identity {
+    Identity {
+        user: cert.user_public_key,
+        device: cert.device_public_key,
+    }
+}
 struct Session {
     id: u32,
     connection: Rc<RefCell<Connection>>,
@@ -290,6 +266,9 @@ impl Transport for Session {
         let connection = self.connection.clone();
         // Run after the composer's effect, through the registered local door.
         wasm_bindgen_futures::spawn_local(async move {
+            // The report goes in through Chat's own action, whose code a
+            // bundle that splits its apps fetches only when first needed.
+            ui::application::registry::load("so.tilo.chat").await;
             match crate::replication::submit_feedback(id, &admission, &submission) {
                 Ok(()) => {
                     let _ = connection.borrow_mut().request(Some(submission));

@@ -361,8 +361,7 @@ fn directory(root: &Path) -> Result<PathBuf, String> {
         Err(e) => return Err(e.to_string()),
     }
     let m = fs::symlink_metadata(&directory).map_err(|e| e.to_string())?;
-    // SAFETY: reads current effective identity.
-    if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+    if !m.is_dir() || !tilo_files::native::private::private_to_me(&m) {
         return Err("run observation directory is not private and owned".into());
     }
     Ok(directory)
@@ -446,8 +445,7 @@ fn read_retained(root: &Path) -> Result<Vec<RunCheckpoint>, String> {
         if total_bytes > 262_144 {
             return Err("retained observation bytes exceed bound".into());
         }
-        // SAFETY: reads current effective identity.
-        if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+        if !tilo_files::native::private::private_to_me(&m) {
             return Err("observation file is not private and owned".into());
         }
         let record: RunCheckpoint =

@@ -68,8 +68,7 @@ fn model_file(
     capability: InProcessCapability,
 ) -> Result<SealedSpeechModel, SpeechError> {
     let metadata = fs::symlink_metadata(root).map_err(|_| SpeechError::ModelUnavailable)?;
-    // SAFETY: geteuid is argument-free and cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o022 != 0 {
         return Err(SpeechError::ModelUnavailable);
     }

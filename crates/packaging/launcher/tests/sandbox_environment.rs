@@ -55,6 +55,7 @@ fn manifest() -> ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),
+        keywords: Vec::new(),
         category: None,
         icon: None,
         version: "0.0.0".to_string(),

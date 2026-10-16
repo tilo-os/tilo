@@ -107,7 +107,10 @@ async fn streamed_ingest_stores_whole_content_and_caches_none_of_it() {
 #[tokio::test]
 async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_spill() {
     let directory = tempfile::tempdir().unwrap();
-    let content = vec![5_u8; 3 * 64 * 1024];
+    // iroh-blobs forwards up to 32 chunks before its store consumes them.
+    // Cross that bound before abandoning: a three-chunk fixture can report
+    // its producer error before the store has created any spill to clean up.
+    let content = vec![5_u8; 64 * 64 * 1024];
     {
         let store = ContentStore::open(directory.path()).await.unwrap();
         let pieces = pieces_of(&content, 64 * 1024).chain(futures_util::stream::iter([Err(

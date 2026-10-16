@@ -230,7 +230,7 @@ impl super::super::InProcessApps {
             else {
                 continue;
             };
-            let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
+            let Some(runtime) = tilo_paths::xdg::runtime_dir() else {
                 continue;
             };
             // No raw account/device labels become filesystem components.

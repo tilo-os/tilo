@@ -31,6 +31,8 @@ mod client_owns_its_endpoint;
 mod coedit_through_host;
 #[path = "commit_dedup.rs"]
 mod commit_dedup;
+#[path = "compute_content.rs"]
+mod compute_content;
 #[path = "compute_session.rs"]
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]
@@ -73,6 +75,8 @@ mod legacy_on_kvm;
 mod live_plane;
 #[path = "multi_host.rs"]
 mod multi_host;
+#[path = "offloadable_action.rs"]
+mod offloadable_action;
 #[cfg(unix)]
 #[path = "out_of_band_join_modes.rs"]
 mod out_of_band_join_modes;
@@ -93,6 +97,8 @@ mod remote_action_routing;
 mod room_admission;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "tenant_isolation.rs"]
+mod tenant_isolation;
 
 #[path = "additional_protocol.rs"]
 mod additional_protocol;

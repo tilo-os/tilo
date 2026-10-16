@@ -1942,12 +1942,12 @@ message.
 | What | Surface |
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
-| A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
+| A change worth noticing once: "Synced", a page turn, a zoom step | `StatusBubble` |
 | A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
 | A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
-| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
+| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Autosave's saving and saved never show (expose them in the app's accessibility status via `state()`); a failure is an error card with Try again that stays until the save succeeds, and that success is a one-time "Saved" bubble. Delete any save pill, pinned bubble or hand-drawn failure text |
 
 StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
 rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):

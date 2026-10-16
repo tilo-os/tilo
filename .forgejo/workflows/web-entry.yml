@@ -5,6 +5,11 @@ name: Release / web entry image
 # workspace a bare visit opens is deployment configuration (TILO_WEB_HOME_*). Deployed by digest like
 # the room service: pull requests build and smoke-test the image; pushes to
 # main and manual runs publish it with a digest receipt.
+#
+# The image published is the one to deploy: the new bundle plus the version
+# of the image it replaces (container/carry.sh), so a tab opened before the
+# deploy can still open apps it has not loaded yet. The image it replaces is
+# the one production serves while this runs (or the dispatch's `outgoing`).
 on:
   push:
     branches: ["main"]
@@ -20,7 +25,14 @@ on:
     paths:
       - "crates/browser/tilo-browser-runtime/container/**"
       - ".forgejo/workflows/web-entry.yml"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      outgoing:
+        description: >-
+          Digest (sha256:...) of the web entry image this one will replace;
+          its version is carried. Empty: the image tilo.coffee serves now.
+        required: false
+        default: ""
 
 concurrency:
   group: web-entry-${{ github.event_name }}-${{ github.sha }}
@@ -82,6 +94,9 @@ jobs:
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       # The production cluster is amd64 today.
       IMAGE_PLATFORM: linux/amd64
+      # The bundle version production serves, which names its revision.
+      LIVE_VERSION_URL: https://tilo.coffee/version.json
+      OUTGOING_DIGEST: ${{ github.event.inputs.outgoing || '' }}
       PUBLISH: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -105,11 +120,52 @@ jobs:
           provenance: false
           build-args: |
             SOURCE_REVISION=${{ env.SOURCE_REVISION }}
-          tags: ${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SOURCE_REVISION }}
+          # Local only: what is published is the image derived from it below.
+          tags: web-entry-incoming:${{ env.SOURCE_REVISION }}
       - name: Smoke test the image
         run: >-
           bash crates/browser/tilo-browser-runtime/container/test-image.sh
-          "$IMAGE_REPOSITORY:sha-$SOURCE_REVISION"
+          "web-entry-incoming:$SOURCE_REVISION"
+      # An outgoing image that cannot be observed fails the run: publishing
+      # without its version would strand every open tab at the next deploy.
+      - name: Find the image this one replaces
+        id: outgoing
+        run: |
+          set -euo pipefail
+          if [[ -n $OUTGOING_DIGEST ]]; then
+            [[ $OUTGOING_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] \
+              || { echo "::error::outgoing must be an image digest, sha256:<64 hex>: $OUTGOING_DIGEST"; exit 1; }
+            outgoing=$IMAGE_REPOSITORY@$OUTGOING_DIGEST
+          else
+            # Production pins the sha-<revision> images; version.json names the revision.
+            revision=$(curl -fsS --retry 3 --max-time 30 -H 'Cache-Control: no-store' "$LIVE_VERSION_URL" | jq -r .revision)
+            [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$LIVE_VERSION_URL names no revision: $revision"; exit 1; }
+            outgoing=$IMAGE_REPOSITORY:sha-$revision
+          fi
+          docker pull --quiet --platform "$IMAGE_PLATFORM" "$outgoing"
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$outgoing" \
+            | sed -n "s|^$IMAGE_REPOSITORY@\(sha256:[0-9a-f]\{64\}\)$|\1|p" | head -1)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$outgoing has no digest in $IMAGE_REPOSITORY"; exit 1; }
+          printf 'image=%s\ndigest=%s\n' "$outgoing" "$digest" >> "$GITHUB_OUTPUT"
+          echo "::notice::replaces $IMAGE_REPOSITORY@$digest"
+      - name: Carry the outgoing image's version
+        id: carry
+        env:
+          # The daemon's own builder sees the images loaded and pulled above;
+          # the buildx container builder set up for the bundle image does not.
+          BUILDX_BUILDER: default
+          OUTGOING: ${{ steps.outgoing.outputs.image }}
+        run: |
+          set -euo pipefail
+          carried=$(bash crates/browser/tilo-browser-runtime/container/carry.sh \
+            "web-entry-incoming:$SOURCE_REVISION" "$OUTGOING" "$IMAGE_REPOSITORY:sha-$SOURCE_REVISION")
+          printf 'version=%s\n' "$carried" >> "$GITHUB_OUTPUT"
+      - name: Smoke test the image to deploy against the one it replaces
+        env:
+          OUTGOING: ${{ steps.outgoing.outputs.image }}
+        run: >-
+          bash crates/browser/tilo-browser-runtime/container/test-image.sh
+          "$IMAGE_REPOSITORY:sha-$SOURCE_REVISION" "$OUTGOING"
       - name: Log in for publication
         if: ${{ env.PUBLISH == 'true' }}
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -131,6 +187,8 @@ jobs:
         if: ${{ env.PUBLISH == 'true' }}
         env:
           IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+          REPLACES_DIGEST: ${{ steps.outgoing.outputs.digest }}
+          CARRIED_VERSION: ${{ steps.carry.outputs.version }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -142,9 +200,19 @@ jobs:
             --arg image "$IMAGE_REPOSITORY@$IMAGE_DIGEST" \
             --arg sourceRevision "$SOURCE_REVISION" \
             --arg platform "$IMAGE_PLATFORM" \
-            '{schemaVersion:1,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceRevision:$sourceRevision,platform:$platform}' \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runNumber "$GITHUB_RUN_NUMBER" \
+            --arg runUrl "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_NUMBER" \
+            --arg replaces "$IMAGE_REPOSITORY@$REPLACES_DIGEST" \
+            --arg carriedVersion "$CARRIED_VERSION" \
+            '{schemaVersion:2,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceRevision:$sourceRevision,platform:$platform,
+              build:{workflow:$workflow,runId:($runId|tonumber),runNumber:($runNumber|tonumber),url:$runUrl},
+              replaces:$replaces,carriedVersion:(if $carriedVersion == "" then null else $carriedVersion end)}' \
             > web-entry-image-receipt/web-entry-image.json
-          printf '### Web entry image\n\n`%s@%s`\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Web entry image\n\n`%s@%s`\n\nReplaces `%s@%s`, carrying its version %s.\n' \
+            "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" "$IMAGE_REPOSITORY" "$REPLACES_DIGEST" \
+            "${CARRIED_VERSION:-(none: it serves the same version)}" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable digest receipt
         if: ${{ env.PUBLISH == 'true' }}
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4

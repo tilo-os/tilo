@@ -172,11 +172,9 @@ fn read_private(path: &Path) -> Result<Vec<u8>, String> {
         .open(path)
         .map_err(|e| e.to_string())?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
-    // SAFETY: geteuid has no pointer inputs and cannot fail.
     if !meta.is_file()
         || meta.nlink() != 1
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
+        || !tilo_files::native::private::private_to_me(&meta)
         || meta.len() > 64 * 1024
     {
         return Err("approved check private input is not an owned bounded regular file".into());

@@ -197,6 +197,13 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push((*key).to_string());
         argv.push(value.to_string_lossy().into_owned());
     }
+    // Every launch: no transparent huge pages in its heap. A hardened one
+    // overrides this with [`push_runtime_hardening`].
+    argv.extend([
+        "--setenv".into(),
+        "GLIBC_TUNABLES".into(),
+        crate::hardening::tunables(false),
+    ]);
     push_accessibility_environment(argv);
     // Fixed content-free presentation/GPU timing booleans, never an input
     // injector or output path. Keep arbitrary profiling/scenario environment stripped.
@@ -247,7 +254,7 @@ pub fn push_runtime_hardening(
         // a shadow stack request.
         argv.push("--setenv".to_string());
         argv.push("GLIBC_TUNABLES".to_string());
-        argv.push("glibc.cpu.hwcaps=SHSTK".to_string());
+        argv.push(crate::hardening::tunables(true));
     }
 }
 
@@ -866,16 +873,52 @@ pub fn svc_env_var(name: &str) -> String {
 /// would be the model lying); write grants under `/dev` get
 /// `--dev-bind-try`.
 pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
-    for path in &capabilities.ro_paths {
+    push_grant_binds(argv, capabilities, |_| true);
+    push_private_store_masks(argv, capabilities);
+}
+
+/// The grant binds `keep` selects, read-only ones first.
+fn push_grant_binds(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+    keep: impl Fn(&Path) -> bool,
+) {
+    for path in capabilities.ro_paths.iter().filter(|p| keep(p)) {
         push_bind(argv, "--ro-bind-try", path, path);
     }
-    for path in &capabilities.rw_paths {
+    for path in capabilities.rw_paths.iter().filter(|p| keep(p)) {
         let flag = if path.starts_with("/dev") {
             "--dev-bind-try"
         } else {
             "--bind-try"
         };
         push_bind(argv, flag, path, path);
+    }
+}
+
+/// Hide the private stores a grant contains — after every grant, or a later
+/// bind would show them again (bwrap applies its operations in order).
+///
+/// Pins first: each directory on the way to a store inside a writable grant
+/// is bound onto itself, a mount point the app cannot rename or remove. A pin
+/// re-binds the host directory, which would hide any grant bound beneath it,
+/// so those are bound again. Then each store: an empty tmpfs, remounted
+/// read-only, so the directory reads as empty and refuses every write.
+fn push_private_store_masks(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
+    for dir in &capabilities.pinned_dirs {
+        push_bind(argv, "--bind", dir, dir);
+    }
+    push_grant_binds(argv, capabilities, |path| {
+        capabilities
+            .pinned_dirs
+            .iter()
+            .any(|dir| path != dir && path.starts_with(dir))
+    });
+    for dir in &capabilities.masked_dirs {
+        argv.push("--tmpfs".to_string());
+        argv.push(dir.display().to_string());
+        argv.push("--remount-ro".to_string());
+        argv.push(dir.display().to_string());
     }
 }
 
@@ -965,25 +1008,6 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(kind.to_string());
     argv.push(src.display().to_string());
     argv.push(dst.display().to_string());
-}
-
-/// Extract the `unix:path=<path>` from a D-Bus bus address, or `None`
-/// otherwise. Abstract sockets can't be bind-mounted, so callers
-/// surface that as "portal unavailable".
-pub fn parse_unix_path_bus_address(addr: &str) -> Option<String> {
-    for entry in addr.split(';') {
-        let Some(rest) = entry.strip_prefix("unix:") else {
-            continue;
-        };
-        for kv in rest.split(',') {
-            if let Some(path) = kv.strip_prefix("path=")
-                && !path.is_empty()
-            {
-                return Some(path.to_string());
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1084,6 +1108,7 @@ mod tests {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: Some("Office".to_string()),
             icon: None,
             version: "0.1.0".to_string(),
@@ -1265,7 +1290,7 @@ mod tests {
             assert!(
                 argv.windows(3).any(|w| w[0] == "--setenv"
                     && w[1] == "GLIBC_TUNABLES"
-                    && w[2] == "glibc.cpu.hwcaps=SHSTK"),
+                    && w[2] == crate::hardening::tunables(true)),
                 "shadow stacks were not requested for a listed package: {argv:?}"
             );
         }
@@ -1279,8 +1304,14 @@ mod tests {
                 "an ordinary app must not carry the hardened allocator: {argv:?}"
             );
             assert!(
-                !argv.iter().any(|a| a == "GLIBC_TUNABLES"),
+                !argv.iter().any(|a| a.contains("SHSTK")),
                 "an ordinary app must not carry the shadow-stack tunable: {argv:?}"
+            );
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--setenv"
+                    && w[1] == "GLIBC_TUNABLES"
+                    && w[2] == crate::hardening::NO_HUGE_PAGES_TUNABLES),
+                "an app's heap must stay out of transparent huge pages: {argv:?}"
             );
         }
     }
@@ -1310,9 +1341,9 @@ mod tests {
             assert!(argv.windows(2).any(|w| w[0] == "--proc" && w[1] == "/proc"));
             assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
         }
-        // Phase `argv_shares_net_when_mode_not_off`.
+        // Phase `argv_shares_net_when_mode_is_host`.
         {
-            let m = mk_manifest("on");
+            let m = mk_manifest("host");
             let argv = build_bwrap_argv(
                 &m,
                 Path::new("/host/pkg"),
@@ -1874,24 +1905,6 @@ mod tests {
 
     #[test]
     fn session_bus_reaches_the_sandbox_only_through_a_proxy_plan() {
-        // Phase `parse_unix_path_bus_address_extracts_path`.
-        {
-            assert_eq!(
-                parse_unix_path_bus_address("unix:path=/run/user/1000/bus"),
-                Some("/run/user/1000/bus".to_string())
-            );
-            assert_eq!(
-                parse_unix_path_bus_address("unix:path=/run/user/1000/bus,guid=deadbeef"),
-                Some("/run/user/1000/bus".to_string())
-            );
-            // Abstract socket → None (can't be bind-mounted).
-            assert_eq!(
-                parse_unix_path_bus_address("unix:abstract=/tmp/dbus-xyz"),
-                None
-            );
-            // No unix transport.
-            assert_eq!(parse_unix_path_bus_address("tcp:host=127.0.0.1"), None);
-        }
         // Phase `argv_binds_dbus_proxy_socket_when_plan_is_supplied`.
         {
             let mut m = mk_manifest("off");
@@ -2455,6 +2468,67 @@ mod tests {
             ));
         }
         expected
+    }
+
+    /// The argv masks the private store after every grant: a later bind
+    /// would show it again. A nested grant re-bound after a pin keeps its own
+    /// read-only mount.
+    #[test]
+    fn private_stores_are_masked_after_every_grant_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let store = home.join(".config/tilo");
+        let notes = home.join(".config/notes");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&notes).unwrap();
+        // The home is writable; `notes` inside it is capped at Read, so it
+        // has its own read-only mount the pin must not shadow.
+        let caps = vec![
+            fs_grant("so.tilo.files", &home.display().to_string(), Access::Write),
+            fs_grant("so.tilo.files", &notes.display().to_string(), Access::Read),
+            CapOverride::new(
+                Subject::app("so.tilo.files"),
+                Scope::FsPath(notes.display().to_string()),
+                collab_types::caps::Effect::Restrict,
+                Access::Read,
+            ),
+        ];
+        let plan = CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+            .confine_private_stores(std::slice::from_ref(&store));
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &plan,
+        );
+        let s = |p: &Path| p.display().to_string();
+        let position = |pattern: &[&str]| {
+            argv.windows(pattern.len())
+                .position(|w| w.iter().zip(pattern).all(|(a, b)| a == b))
+                .unwrap_or_else(|| panic!("{pattern:?} missing from {argv:?}"))
+        };
+        let config = home.join(".config");
+        let home_bind = position(&["--bind-try", &s(&home), &s(&home)]);
+        let pin = position(&["--bind", &s(&config), &s(&config)]);
+        let tmpfs = position(&["--tmpfs", &s(&store), "--remount-ro", &s(&store)]);
+        assert!(home_bind < pin && pin < tmpfs, "{argv:?}");
+        let last_notes_bind = argv
+            .windows(3)
+            .rposition(|w| w[0] == "--ro-bind-try" && w[1] == s(&notes) && w[2] == s(&notes))
+            .unwrap();
+        assert!(
+            pin < last_notes_bind && last_notes_bind < tmpfs,
+            "the read-only grant under the pin must be bound again after it: {argv:?}"
+        );
+        assert!(
+            !argv[tmpfs + 4..]
+                .windows(3)
+                .any(|w| w[0].contains("bind") && Path::new(&w[2]).starts_with(&home)),
+            "nothing may be bound over the home after the store is masked: {argv:?}"
+        );
     }
 
     #[test]

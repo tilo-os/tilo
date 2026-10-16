@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
+use tilo_lock::MutexRecover as _;
 
 /// The variable naming the path of the app's `surface.toml`.
 pub const SURFACE_FILE_ENV: &str = "TILO_SURFACE";
@@ -90,10 +91,7 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
 /// name it.
 fn held_bytes(hash: [u8; 32], bytes: &[u8]) -> &'static [u8] {
     static HELD: OnceLock<Mutex<BTreeMap<[u8; 32], &'static [u8]>>> = OnceLock::new();
-    let mut held = HELD
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut held = HELD.get_or_init(Mutex::default).lock_recover();
     held.entry(hash)
         .or_insert_with(|| Box::leak(bytes.to_vec().into_boxed_slice()))
 }

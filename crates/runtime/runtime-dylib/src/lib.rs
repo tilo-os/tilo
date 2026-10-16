@@ -31,15 +31,6 @@
 // `pub use`, not a bare `extern crate`: that's what keeps the symbols and
 // records these crates as provided-by-this-dylib in the metadata, which
 // the downstream `-C prefer-dynamic` link step consumes.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub use account_custody;
 pub use accounts;
 pub use agent_provider_config;
@@ -56,7 +47,6 @@ pub use registry_types;
 pub use roxmltree;
 pub use runtime_fs;
 pub use runtime_identity;
-pub use rustypipe;
 pub use settings_store;
 pub use thumbnail;
 pub use tilo_actions;
@@ -72,9 +62,7 @@ pub use tilo_oauth;
 pub use tilo_pdf;
 pub use tilo_relay_protocol;
 pub use tilo_rich_text;
-pub use tilo_subject;
 pub use tilo_user_identity;
-pub use tilo_wet_media;
 pub use ui;
 pub use vte;
 pub use xattr;

@@ -10,11 +10,18 @@ topbar-sharing-session-controls = SESSION CONTROLS · { $name }
 topbar-sharing-session-viewing = SESSION VIEWING · { $name }
 topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
 topbar-sharing-count = { $viewers } VIEWING
+topbar-watching-count = +{ $count } watching
+topbar-watching-description = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 topbar-sharing-surface = surface { $surface }
 topbar-open-overview = Open overview
+topbar-tilo-menu = Tilo menu
 topbar-previous-workspace = Previous workspace
 topbar-next-workspace = Next workspace
 topbar-workspace-settings = Workspace settings for { $workspace }
+topbar-workspace-host = Hosted at { $host }
 topbar-show-clock = Show clock
 topbar-show-system-monitor = Show system monitor
 topbar-show-calendar = Show calendar
@@ -69,6 +76,20 @@ topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
+topbar-strips = Strips in this workspace
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Go to { $name }, { $count ->
+    [0] nobody there
+    [one] one person there
+   *[other] { $count } people there
+}
+topbar-strip-add = Add a strip
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] One more strip
+   *[other] { $count } more strips
+}, go to { $name }
+topbar-strip-name-placeholder = Name the strip
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -515,27 +536,27 @@ a11y-notifications-clear-description = Delete this session's retained notificati
 a11y-notifications-cleared = Notifications cleared
 a11y-notifications-undo = Undo clear notifications
 a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
+a11y-notifications-newer = Newer notifications
+a11y-notifications-older = Older notifications
 a11y-notifications = Notifications
-notification-action-open = Open
 notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = Newest { $first }–{ $last } of { $total }
-notification-center-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
+notification-center-position = { $first }–{ $last } of { $total }
+notification-center-close = Close notifications
+notification-center-back-to-list = Back to notifications
 notification-center-newer = ↑ Newer
-notification-center-at-newest = At newest
 notification-center-older = ↓ Older
-notification-center-at-oldest = At oldest
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. From { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
+host-action-source-identity = Identity
+host-action-source-devices = Devices
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -556,6 +577,7 @@ notification-dnd-held = { $status } · { $count } held
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
+notification-not-now = Not now
 notification-app-failed-title = Couldn't open an app
 notification-service-unavailable = This isn't available on this desktop yet
 
@@ -862,22 +884,33 @@ a11y-shell-people-present = Present now
 a11y-shell-people-now = Now: { $activity }
 a11y-shell-people-intent = Intent: { $status }
 a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-people-recent = Recently: { $summary }
+a11y-shell-people-recent-inferred = Recently, summarized: { $summary }
+a11y-shell-people-recent-toggle = What { $name } did recently
+a11y-shell-people-recent-toggle-description = Show or hide a short summary of the last few minutes
+a11y-shell-people-watching = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 a11y-shell-status-name = Your collaboration status
 a11y-shell-status-inferred = Inferred on this device from recent semantic actions
 a11y-shell-status-set = Set what you are trying to accomplish
-a11y-shell-status-automatic = Automatic status
-a11y-shell-status-manual = Manual status only
-a11y-shell-status-off = Hide status
+people-panel-sharing-line-auto = Sharing what you're doing
+people-panel-sharing-line-manual = Sharing only what you write
+people-panel-sharing-line-off = Not sharing what you're doing
+people-panel-sharing-change = Change
+people-panel-sharing-choice-auto = Share automatically
+people-panel-sharing-choice-manual = Write my own
+people-panel-sharing-choice-off = Don't share
+a11y-shell-rename = Change your name, { $name }
+a11y-shell-rename-description = Choose the name others here see
+a11y-shell-sharing-change = Change what you share
 a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
 a11y-shell-status-manual-description = Share only text you enter yourself
 a11y-shell-status-off-description = Publish no status to this workspace
 a11y-shell-follow-collaborator = Follow collaborator
 a11y-shell-follow = Follow { $name }
 a11y-shell-follow-description = Mirror this participant's live workspace view
-a11y-shell-people-previous = Previous people
-a11y-shell-people-previous-description = Show the previous people in this workspace
-a11y-shell-people-next = Next people
-a11y-shell-people-next-description = Show the next people in this workspace
 a11y-shell-invite = Invite people
 a11y-shell-invite-description = Create an authenticated workspace invitation
 a11y-shell-join = Join workspace
@@ -908,16 +941,12 @@ launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows ev
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } here now
+people-panel-watching = +{ $count } watching
 people-panel-screen-visible = Screen visible now
 people-panel-only-you = Only you are here
 people-panel-status-typing = Type a status, then press Enter
 people-panel-status-empty = Set what you're working toward…
 people-panel-own-status = You · { $status }
-people-panel-sharing-auto = Auto
-people-panel-previous-page = Previous people
-people-panel-next-page = Next people
-people-panel-sharing-manual = Manual
-people-panel-sharing-hidden = Hidden
 people-panel-agent-tag = agent
 people-panel-invited-tag = invited
 people-panel-following = Following
@@ -1006,8 +1035,16 @@ overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
 
-notification-center-read = Read
-notification-center-read-description = Read complete notification
+# The menu behind the top bar's Tilo mark, and the About sheet it opens
+tilo-menu-about = About this computer
+tilo-about-title = About this computer
+tilo-about-lead = This is Tilo, an operating system.
+tilo-about-body-browser = What you're using right now runs in your browser. Tilo is coming natively to computers.
+tilo-about-body-native = It runs right here, on this computer.
+tilo-about-link-notify = Get notified
+tilo-about-link-source = Source code
+tilo-about-link-community = Community
+
 notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
@@ -1064,7 +1101,8 @@ activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
-activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-unavailable = This source isn't available here
+activity-morning-source-unnamed = Chosen source
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 
 activity-morning-open = Open morning source

@@ -5,12 +5,12 @@ use super::{
     PublishedAction, PublishedSurface, Result, Session, Stdio, WRITER, emit, json, wait_action,
 };
 use std::path::Path;
-use std::sync::PoisonError;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_lock::MutexRecover as _;
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
 const CALLER: &str = "dev.tilo.edited-handoff-proof";
@@ -221,8 +221,7 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
                 && let CollabEvent::Document { envelope, .. } = event
             {
                 received
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .lock_recover()
                     .push((route.clone(), envelope.clone()));
             }
         }),

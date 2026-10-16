@@ -652,7 +652,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
             .app
             .document_sync_status()
             .expect("a refused change is reported")
-            .to_owned();
+            .into_owned();
         assert!(status.contains("no longer shared"), "{status}");
         fixture.app.publish_owned_documents();
         assert!(
@@ -2881,13 +2881,19 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                     .unwrap()
                     .contains("could not be applied")
             );
-            let failure = fixture.app.document_sync_status().map(str::to_owned);
+            let failure = fixture
+                .app
+                .document_sync_status()
+                .map(std::borrow::Cow::into_owned);
             let invalid_recovery =
                 routed_document(&route, round1_malformed_mutation(false, before.clone()));
             fixture
                 .app
                 .apply_signed_document_envelope(&invalid_recovery, None);
-            assert_eq!(fixture.app.document_sync_status(), failure.as_deref());
+            assert_eq!(
+                fixture.app.document_sync_status().as_deref(),
+                failure.as_deref()
+            );
             fixture.app.publish_owned_documents();
             assert!(
                 !fixture
@@ -2919,7 +2925,7 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                 .unwrap();
             fixture.app.apply_signed_document_envelope(&recovery, None);
             assert_eq!(
-                fixture.app.document_sync_status(),
+                fixture.app.document_sync_status().as_deref(),
                 failure.as_deref(),
                 "recovery remains visible until the snapshot actually merges"
             );
@@ -3004,7 +3010,10 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                     .unwrap()
                     .contains("could not be applied")
             );
-            let failure = fixture.app.document_sync_status().map(str::to_owned);
+            let failure = fixture
+                .app
+                .document_sync_status()
+                .map(std::borrow::Cow::into_owned);
             let invalid_recovery = routed_document(
                 &route,
                 round1_malformed_mutation(false, fixture.app.state.doc.clone()),
@@ -3012,7 +3021,10 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
             fixture
                 .app
                 .apply_signed_document_envelope(&invalid_recovery, None);
-            assert_eq!(fixture.app.document_sync_status(), failure.as_deref());
+            assert_eq!(
+                fixture.app.document_sync_status().as_deref(),
+                failure.as_deref()
+            );
             assert_eq!(fixture.app.state.doc.base_heads(), before);
             let mut peer = fixture.app.state.doc.clone();
             peer.set_actor(automerge::ActorId::from(b"recovery-peer".as_slice()));
@@ -3035,7 +3047,7 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
             );
             fixture.app.apply_signed_document_envelope(&recovery, None);
             assert_eq!(
-                fixture.app.document_sync_status(),
+                fixture.app.document_sync_status().as_deref(),
                 failure.as_deref(),
                 "recovery remains visible until the snapshot actually merges"
             );

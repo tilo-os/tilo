@@ -581,6 +581,54 @@ plans in those: half-pixel steps at 200 % rasterise 527,850 of 4,450,688 px
 per frame (11.9 %), and whole steps 693,328 down and 552,832 up (were about
 725,000 and 584,832).
 
+### Notes input latency on a 27-note notebook
+
+`cargo run --release -p notes --example notes-latency` opens the real Notes
+window over a notebook it writes with Notes' own actions (27 notes, 838
+blocks: headings, paragraphs, list items; the note under test holds 136) and
+sends each input through `App::surface_input`, then draws the host's frame
+(`surface_frame_with_damage` until at rest, then the accessibility walk) and
+rasterises that frame's damage on an offscreen GPU target, waiting for
+completion. Each sample is checked through the Notes editor observer: the
+canonical body and the drawn body agree and changed by exactly the input, or
+the run fails. It stops at the GPU; the compositor, KMS and the panel are the
+installed-desktop measurement's (`scripts/perf/device_notes_latency.py`,
+[native typing measurement](native-typing-measurement.md)). The nightly render
+job records it as `render.notes_latency.*` (reported against the 60 Hz frame).
+
+M5 Max, macOS 27, release, 1280×900 at scale 1, three runs of 200 keys back
+to back on a shared machine (load 11–16), ms:
+
+| Input | To frame p50 | To frame p99 | To raster p50 | To raster p99 |
+|---|---:|---:|---:|---:|
+| A character | 4.2–5.4 | 7.2–8.8 | 7.2–8.5 | 13.6–17.3 |
+| Enter (splits a block) | 4.8–5.3 | 8.3–12.4 | 8.2–8.8 | 12.6–19.1 |
+| Backspace (joins it back) | 5.3–5.8 | 8.4–11.8 | 8.9–9.3 | 12.7–18.2 |
+| A 40 px wheel step | 2.7–2.9 | 4.6–4.9 | 5.1–5.4 | 7.6–8.4 |
+| Opening a note (`open` action) | 4.7–5.2 | 6.4–7.9 | 8.3–8.6 | 10.2–13.8 |
+
+Keys 100 ms apart (`interval=100`, the host drawing frames between them)
+measure the same: 4.2 ms to frame p50 typing. Every workload fits a 60 Hz
+frame at p99 to frame; to raster p99 reaches the frame on a loaded machine.
+
+What a keystroke costs, from `sample` during 1,500 keys typed back to back
+(shares of the time from key press to rasterised frame):
+
+* Input handling, 36 %: the rich-text splice (10 %) and the author mark over
+  the typed character (21 %, `tilo_document::action::Written::attribute`):
+  three Automerge `query_insert_at` seeks per key, two of them the mark's
+  begin and end. The mark expands after, so a key typed right after the same
+  author's text is already covered by it.
+* The frame, 40 %: the hosted model pump (14 %), in which `Following::apply`
+  clones the whole `Notebook` (every note's body) and `NotesApp::adopt` drops
+  the previous projection, a cost that grows with the notebook rather than the
+  edit; the accessibility walk (11 %); layout and draw for the rest.
+* Rasterising the damage, 24 %, mostly waiting for the GPU.
+
+Typing 1,500 keys into one block raised to frame p50 from about 4.3 to
+8.4 ms: the block reshapes as it grows, and each key leaves three operations
+in the document.
+
 ## Verified shared-list CPU workload
 
 The `ui-perf perf_scenario --count 1200 --json` list case now checks the real

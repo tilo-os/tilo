@@ -7,6 +7,7 @@ use std::{
 use tilo_actions::remote::Caller;
 use tilo_desktop_model::RoomId;
 use tilo_joined_room::{NativeFenceSubscription, NativeWorkspaceOwner};
+use tilo_lock::MutexRecover as _;
 
 const MAX_EXECUTIONS: usize = 512;
 
@@ -41,10 +42,7 @@ impl ExecutionPins {
     fn fence(&self, room: RoomId) {
         // The native owner calls synchronously under its continuity lock. Only
         // atomic lease closure happens here: no owner reread, SDK or user code.
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         for entry in entries.values() {
             if entry.room == room {
                 entry.lease.close();
@@ -172,10 +170,7 @@ impl Drop for ExecutionRegistration {
         if let Some(pins) = self.pins.upgrade()
             && let Some(id) = self.caller.execution_id()
         {
-            pins.entries
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
+            pins.entries.lock_recover().remove(&id);
         }
     }
 }

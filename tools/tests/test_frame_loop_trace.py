@@ -21,7 +21,7 @@ HEADER = (
     "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,"
     "testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,"
     "input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,"
-    "input_step,input_step_us,paint_reasons,paint_clients"
+    "input_step,input_step_us,paint_reasons,paint_clients,testctl_cpu_us,paint_animations"
 ).split(",")
 
 
@@ -29,7 +29,7 @@ def sample() -> dict:
     return dict(zip(HEADER, (
         0, 1_000_000, 16_667, 100, 200, 300, 400, 500, 10, 20, 15_000,
         1, 0, None, None, 0, 0, "io", 1_500, "portal", 200, "apps+revision",
-        "so.tilo.file-explorer",
+        "so.tilo.file-explorer", 300, "notification",
     )))
 
 
@@ -69,7 +69,8 @@ class FrameLoopTraceTests(unittest.TestCase):
         self.assertEqual(bench.read_trace(self.path)[1], [row])
 
     def test_empty_text_labels_stay_text(self) -> None:
-        row = sample() | {"wake": "", "input_step": "", "paint_reasons": "", "paint_clients": ""}
+        row = sample() | {"wake": "", "input_step": "", "paint_reasons": "", "paint_clients": "",
+                        "paint_animations": ""}
         self.write(HEADER, [row])
         self.assertEqual(bench.read_trace(self.path)[1], [row])
 
@@ -77,6 +78,7 @@ class FrameLoopTraceTests(unittest.TestCase):
         optional = {
             "wake", "cpu_us", "input_step", "input_step_us", "input_retirement_latency_us",
             "backpressured", "deadline_late_us", "paint_reasons", "paint_clients",
+            "testctl_cpu_us", "paint_animations",
         }
         header = [key for key in reversed(HEADER) if key not in optional] + ["future_counter"]
         row = {key: value for key, value in sample().items() if key not in optional}

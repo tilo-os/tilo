@@ -168,6 +168,75 @@ Every peer checks every incoming change before merging it.
 - In an MLS-sealed room the relay sees the envelope (author, action key,
   units) but not the change; replay happens on devices, which hold the keys.
 
+### 5.3 Reading
+
+Read is a kind like any other, so a member can be denied Read on one app or
+one record of a room they read: "Finance: Deny Read; Finance › summary: Allow
+Read" hides every finance record but the summary. Every per-record read
+decision asks the same function: the room peer's record read check
+(`StatePeer::check_document_read`) and the joined room's document reads
+through it, and so does channel admission, below. A device whose person is
+denied any record is refused the room's whole legacy delivery rather than given
+a filtered one, because an automerge change graph cannot be served in part
+([rooms.md](rooms.md)).
+
+What carries a read decision to the bytes is the record's channel key, and
+channel stewards admit devices per channel, that is per record
+(`ChannelDirectory::allowed_devices(room, channel, route, now)`). A device is
+admitted to a record's channel only while its person reads the room and the
+same read decision allows the record (`Workspace::answer_at` on a desktop
+steward, `PeerGovernance::withheld_record_readers` over `check_document_read` on a
+relay steward). So a Read Deny on a record, on its app, or on any pattern of
+records covering it withholds that record's key: the steward never admits the
+denied person's devices, and a device that already held the key is removed in
+a new epoch of that channel alone, while every other channel of the room keeps
+its epoch and its readers. As with any removal, the device keeps what it could
+read before. Lifting the Deny admits it again when it asks.
+
+A channel id is a hash of its record's route, so the steward has to be told
+which record a channel carries. It learns it two ways, and neither asks it to
+trust anyone:
+
+- A grant naming the record (`room › app › resource`, or below it) gives the
+  route itself (`collab_types::named_record_of_channel`).
+- A device asking for a channel's key sends the record's route beside its
+  request (`NeighbourMsg::MlsRoutedAccessRequest`, `collab_types::ChannelRoute`),
+  as does the steward's own endpoint. The route proves itself: the steward
+  keeps it only if it hashes, with the room, to the channel's id, and refuses
+  a request whose route does not. It keeps the route beside the channel's
+  group and decides every later change of the channel with it, after a restart
+  too. A kept route is checked again when it is read back, so a damaged file
+  names no record rather than a wrong one.
+
+A channel whose record the steward cannot name may be any record that nothing
+names. It is withheld from every device whose person may not read one of the
+records a Deny over a pattern stands for (`collab_types::pattern_read_witnesses`:
+for each such grant, a record it covers that no grant names), and admitted to
+every other reader of the room. So "Finance: Deny Read" keeps its person out
+of every channel of the room until a device names the channel's record, while
+everyone else reads as before. This also makes the order of arrival harmless:
+a plain request that reaches the steward before its routed copy admits no one
+the Deny could keep out. A device sends both forms while a steward may predate
+routes, and a steward that predates them decides with the room alone. The
+record of a channel nobody has written yet is named by its first request, so a
+new record admits its author and every other reader the decision allows from
+its first key. Nothing a steward keeps can let a denied device back in: a lost
+or unreadable route makes the channel one whose record is unknown, which
+withholds more, never less.
+
+A Deny below a record, on an item or a field, binds every honest device and
+door, but not a member's own modified client: a record has one channel and one
+key, which opens all of it, and splitting a record's channel per field would
+be key management that narrows nothing a separate record does not. Against a
+modified client the record is the boundary. To keep a part of a record from
+someone, keep it in a record of its own and deny that record, by name or by a
+pattern, or keep it in a room they are not in
+([rooms.md](rooms.md), "Rooms hold references, not copies").
+
+The sandbox's capabilities ([security.md](security.md)) keep the opposite
+rule: there `Read` is the floor, and a restriction makes a path, device, host
+or record read-only without hiding it.
+
 ## 6. What an app does
 
 Nothing. An app does not declare permissions, roles or verbs. It publishes its

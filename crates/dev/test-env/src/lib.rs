@@ -53,6 +53,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
+use tilo_lock::MutexRecover as _;
 
 struct LockState {
     owner: Option<ThreadId>,
@@ -81,7 +82,7 @@ pub struct EnvLock {
 /// that holds it.
 pub fn lock() -> EnvLock {
     let me = thread::current().id();
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = STATE.lock_recover();
     loop {
         match state.owner {
             None => {
@@ -106,7 +107,7 @@ pub fn lock() -> EnvLock {
 
 impl Drop for EnvLock {
     fn drop(&mut self) {
-        let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = STATE.lock_recover();
         state.depth = state.depth.saturating_sub(1);
         let released = state.depth == 0;
         if released {

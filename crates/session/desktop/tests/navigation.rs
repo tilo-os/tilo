@@ -40,6 +40,7 @@ fn tree() -> DesktopTree {
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     }];
     DesktopTree {
@@ -211,7 +212,10 @@ fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
         1472,
         SurfaceChrome {
             navigation: NavigationChrome::External,
-            work_area: WorkArea::Flush { top: 40.0 },
+            work_area: WorkArea::Flush {
+                top: 40.0,
+                bottom: 40.0,
+            },
             ..SurfaceChrome::default()
         },
     );
@@ -279,7 +283,10 @@ fn external_navigation_edge_resize_survives_unrelated_snapshot_revision() {
         1472,
         SurfaceChrome {
             navigation: NavigationChrome::External,
-            work_area: WorkArea::Flush { top: 40.0 },
+            work_area: WorkArea::Flush {
+                top: 40.0,
+                bottom: 40.0,
+            },
             ..SurfaceChrome::default()
         },
     );
@@ -348,7 +355,10 @@ fn external_navigation_edge_drag_interrupts_an_inflight_width_animation() {
         1472,
         SurfaceChrome {
             navigation: NavigationChrome::External,
-            work_area: WorkArea::Flush { top: 40.0 },
+            work_area: WorkArea::Flush {
+                top: 40.0,
+                bottom: 40.0,
+            },
             ..SurfaceChrome::default()
         },
     );
@@ -774,7 +784,10 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
         &mut Unavailable,
         SurfaceChrome {
             navigation: NavigationChrome::External,
-            work_area: WorkArea::Flush { top: 40.0 },
+            work_area: WorkArea::Flush {
+                top: 40.0,
+                bottom: 40.0,
+            },
             ..SurfaceChrome::default()
         },
     ));
@@ -820,5 +833,112 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     assert_eq!(
         unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].width() },
         tilo_desktop::composition::ui_width(width)
+    );
+}
+
+#[test]
+fn flush_work_area_leaves_exactly_the_top_margin_under_the_bar() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut test = NavigationFrame::with_chrome(
+        navigation_tree(),
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush {
+                top: 12.0,
+                bottom: 12.0,
+            },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let bar = test.surface().topbar().unwrap().bar_rect();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!(
+        (row.y0 - bar.y1 - 12.0).abs() < 0.5,
+        "exactly the top margin between bar {bar:?} and strip {row:?}"
+    );
+}
+
+#[test]
+fn flush_work_area_leaves_a_bottom_margin_under_the_windows() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut test = NavigationFrame::with_chrome(
+        navigation_tree(),
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush {
+                top: 12.0,
+                bottom: 12.0,
+            },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!(
+        (720.0 - row.y1 - 12.0).abs() < 0.5,
+        "windows keep the bottom margin: {row:?}"
+    );
+}
+
+#[test]
+fn flush_work_area_maximized_abuts_bar_and_bottom() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut tree = navigation_tree();
+    tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    let mut test = NavigationFrame::with_chrome(
+        tree,
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush {
+                top: 12.0,
+                bottom: 12.0,
+            },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let bar = test.surface().topbar().unwrap().bar_rect();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!((row.y0 - bar.y1).abs() < 0.5, "{bar:?} {row:?}");
+    assert!((720.0 - row.y1).abs() < 0.5, "{row:?}");
+}
+
+#[test]
+fn flush_work_area_follows_a_maximize_reconciled_into_the_live_surface() {
+    use tilo_desktop::composition::WorkArea;
+    use ui::widget::Widget;
+    let mut test = NavigationFrame::with_chrome(
+        navigation_tree(),
+        1472,
+        SurfaceChrome {
+            work_area: WorkArea::Flush {
+                top: 0.0,
+                bottom: 12.0,
+            },
+            ..SurfaceChrome::default()
+        },
+    );
+    test.frame.poll_frame().unwrap();
+    let bar = test.surface().topbar().unwrap().bar_rect();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!((row.y0 - bar.y1).abs() < 0.5, "{bar:?} {row:?}");
+    assert!((720.0 - row.y1 - 12.0).abs() < 0.5, "{row:?}");
+    test.tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    test.reconcile();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!(
+        (720.0 - row.y1).abs() < 0.5,
+        "a live maximize drops the bottom margin: {row:?}"
+    );
+    test.tree.workspaces[0].strips[0].window_groups[0].maximized = false;
+    test.reconcile();
+    let row = test.surface().row(StripId(2)).unwrap().get_rect();
+    assert!(
+        (720.0 - row.y1 - 12.0).abs() < 0.5,
+        "restoring brings it back: {row:?}"
     );
 }

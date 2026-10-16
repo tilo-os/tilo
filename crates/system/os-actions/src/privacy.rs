@@ -217,7 +217,7 @@ fn run_media_monitor(
     on_change: &mut impl FnMut(Vec<ActiveMediaUse>),
 ) -> Result<(), String> {
     let Some(stdout) = child.stdout.take() else {
-        terminate_monitor(&mut child);
+        bounded_command::terminate_tree(&mut child, Duration::ZERO);
         return Err("PipeWire monitor has no output".into());
     };
     // Four fixed-size chunks bound the reader independently of graph size.
@@ -242,12 +242,12 @@ fn run_media_monitor(
             }
         })
         .map_err(|error| {
-            terminate_monitor(&mut child);
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             format!("PipeWire monitor reader could not start: {error}")
         })?;
     let result = drive_media_monitor(&rx, on_change);
     drop(rx);
-    terminate_monitor(&mut child);
+    bounded_command::terminate_tree(&mut child, Duration::ZERO);
     let _ = reader.join();
     result
 }
@@ -418,17 +418,6 @@ impl MonitorJson {
         }
         Ok(None)
     }
-}
-
-fn terminate_monitor(child: &mut std::process::Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: the monitor is spawned into its own pid-named process group.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Immediately disconnect an offending `PipeWire` client. This is deliberately

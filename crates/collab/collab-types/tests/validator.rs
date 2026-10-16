@@ -628,3 +628,112 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
         }
     );
 }
+
+/// A grant naming a record (at it or below it) names that record's channel;
+/// a pattern over an app's records, another room's record or a record of
+/// another app names none.
+#[test]
+fn a_grant_naming_a_record_names_its_channel_and_a_pattern_does_not() {
+    use collab_types::{document_channel_id, document_node, named_record_of_channel};
+    use tilo_action_policy::{Answer, KindSet, Level, TreePath};
+    let grant = |node: TreePath| {
+        Grant::new(
+            "g",
+            Subject::person("carol"),
+            node,
+            KindSet::READ,
+            Answer::Deny,
+            Subject::person("owner"),
+        )
+    };
+    let channel = document_channel_id("so.tilo.sheets", "room", "payroll");
+    let exact = [grant(document_node("room", "so.tilo.sheets", "payroll"))];
+    assert_eq!(
+        named_record_of_channel(&exact, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let below = [grant(
+        document_node("room", "so.tilo.sheets", "payroll").field("salary"),
+    )];
+    assert_eq!(
+        named_record_of_channel(&below, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let others = [
+        grant(
+            TreePath::room("room")
+                .app("so.tilo.sheets")
+                .any(Level::Resource),
+        ),
+        grant(TreePath::room("room").app("so.tilo.sheets")),
+        grant(document_node("other", "so.tilo.sheets", "payroll")),
+        grant(document_node("room", "so.tilo.notes", "payroll")),
+        grant(document_node("room", "so.tilo.sheets", "budget")),
+    ];
+    assert_eq!(named_record_of_channel(&others, "room", channel), None);
+}
+
+/// A Read Deny over a pattern of records stands for them by one record it
+/// covers and nothing names; a grant naming a record, one below records, one
+/// that allows, one of another kind or one in another room has no witness.
+#[test]
+fn a_pattern_read_deny_has_a_witness_and_a_named_or_field_grant_does_not() {
+    use collab_types::{document_node, pattern_read_witnesses};
+    use tilo_action_policy::{Answer, KindSet, Level, TreePath};
+    let grant = |node: TreePath, kinds: KindSet, answer: Answer| {
+        Grant::new(
+            "g",
+            Subject::person("carol"),
+            node,
+            kinds,
+            answer,
+            Subject::person("owner"),
+        )
+    };
+    let deny = |node: TreePath| grant(node, KindSet::READ, Answer::Deny);
+    let finance = TreePath::room("room").app("finance");
+    let grants = [
+        deny(finance.clone()),
+        deny(TreePath::room("room").app("sheets").any(Level::Resource)),
+        grant(
+            TreePath::room("room").rest().resource("secret"),
+            KindSet::READ,
+            Answer::Ask,
+        ),
+        // Named records, below records, allowing, other kinds, other rooms.
+        deny(document_node("room", "finance", "payroll")),
+        deny(
+            TreePath::room("room")
+                .app("finance")
+                .any(Level::Resource)
+                .field("salary"),
+        ),
+        grant(
+            document_node("room", "finance", "summary"),
+            KindSet::READ,
+            Answer::Allow,
+        ),
+        grant(finance.clone(), KindSet::READ, Answer::Allow),
+        grant(finance, KindSet::UNDOABLE, Answer::Deny),
+        deny(TreePath::room("other").app("finance")),
+    ];
+    let witnesses = pattern_read_witnesses(&grants, "room");
+    let unnamed = "\u{0}unnamed";
+    let expected: std::collections::BTreeSet<(String, String)> = [
+        ("finance", unnamed),
+        ("sheets", unnamed),
+        (unnamed, "secret"),
+    ]
+    .into_iter()
+    .map(|(app, record)| (app.to_owned(), record.to_owned()))
+    .collect();
+    assert_eq!(witnesses, expected);
+    for (app, record) in &witnesses {
+        assert!(
+            grants
+                .iter()
+                .any(|grant| grant.node.covers(&document_node("room", app, record))),
+            "{app}/{record}"
+        );
+    }
+}

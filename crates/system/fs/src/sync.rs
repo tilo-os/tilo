@@ -72,6 +72,7 @@ use crate::workspace_authority::{
     read_frame as read_authority_frame, write_frame as write_authority_frame,
 };
 use session::{SessionPool, SessionProtocol};
+use tilo_lock::MutexRecover as _;
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const TILO_FS_SYNC_ALPN: &[u8] = b"tilo-fs-sync/1";
@@ -588,9 +589,7 @@ async fn sync_with_peer_at_boundaries(
         )
         .await?;
         let (before, mut state) = {
-            let mut namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut namespace = namespace.lock_recover();
             (
                 namespace.heads(),
                 namespace.begin_sync_with(&remote.device_public_key),
@@ -600,10 +599,7 @@ async fn sync_with_peer_at_boundaries(
         for _ in 0..200 {
             let msg = {
                 let _gate = changeset_boundary(repository).await;
-                namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_generate(&mut state)
+                namespace.lock_recover().sync_generate(&mut state)
             };
             let sent_nothing = msg.is_none();
             let frame = match msg {
@@ -635,16 +631,12 @@ async fn sync_with_peer_at_boundaries(
                 }
             };
             if !peer_msg.is_empty() {
-                let _ = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_receive(&mut state, &peer_msg);
+                let _ = namespace.lock_recover().sync_receive(&mut state, &peer_msg);
             }
             if sent_nothing && peer_msg.is_empty() {
                 // Complete: the next exchange with this device resumes here.
                 namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .finish_sync_with(remote.device_public_key, &state);
                 break;
             }
@@ -652,10 +644,7 @@ async fn sync_with_peer_at_boundaries(
         let _ = send.finish();
         // An idle exchange's replies carry heads; only changes that moved
         // this document's heads count as received.
-        let heads = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
+        let heads = namespace.lock_recover().heads();
         Ok::<bool, anyhow::Error>(heads != before)
     })
     .await
@@ -674,8 +663,7 @@ async fn prefetch_namespace_thumbnails(
 ) -> Result<()> {
     if refresh_roots {
         let thumbnails = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?
             .into_iter()
             .filter_map(|roots| roots.thumbnail)
@@ -833,8 +821,7 @@ impl SyncProtocol {
         // Responder: read-then-write each round (mirrors the initiator).
         let mut state = self
             .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .begin_sync_with(&peer.device_public_key);
         for _ in 0..200 {
             // The authority handle is live. A newer signed
@@ -871,16 +858,12 @@ impl SyncProtocol {
             if !peer_msg.is_empty() {
                 let _ = self
                     .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .sync_receive(&mut state, &peer_msg);
             }
             let msg = {
                 let _gate = self.gate().await;
-                self.namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_generate(&mut state)
+                self.namespace.lock_recover().sync_generate(&mut state)
             };
             let sent_nothing = msg.is_none();
             let frame = match msg {
@@ -897,8 +880,7 @@ impl SyncProtocol {
             if peer_msg.is_empty() && sent_nothing {
                 // Complete: the next exchange with this device resumes here.
                 self.namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .finish_sync_with(peer.device_public_key, &state);
                 break;
             }
@@ -956,11 +938,7 @@ impl SyncProtocol {
         match request.mode {
             NamespaceModeV1::Document => {
                 let gate = self.gate().await;
-                let doc = self
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .save();
+                let doc = self.namespace.lock_recover().save();
                 drop(gate);
                 write_namespace_frame(send, &bind(NamespacePayloadKind::Document, doc)?)
                     .await
@@ -1235,8 +1213,7 @@ impl BlobGuard {
         match verdict {
             Ok(peer) => {
                 self.callers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .insert(connection, (peer, person));
                 Ok(())
             }
@@ -1259,12 +1236,7 @@ impl BlobGuard {
     {
         use iroh_blobs::provider::events::AbortReason;
 
-        let caller = self
-            .callers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&connection)
-            .copied();
+        let caller = self.callers.lock_recover().get(&connection).copied();
         let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
             return;
         };
@@ -1399,11 +1371,7 @@ fn blob_guard(
                         let Some(old) = closed.pop_front() else { break };
                         if open.get(&old).is_none_or(|n| *n == 0) {
                             open.remove(&old);
-                            guard
-                                .callers
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .remove(&old);
+                            guard.callers.lock_recover().remove(&old);
                         }
                     }
                 }
@@ -2340,10 +2308,7 @@ fn register_bootstrap_peers(
 }
 
 fn prime_namespace_baseline(namespace: &Arc<Mutex<Namespace>>) {
-    namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .prime_baseline();
+    namespace.lock_recover().prime_baseline();
 }
 
 /// The bidirectional pump: broadcast local deltas, apply remote deltas,
@@ -2379,8 +2344,7 @@ async fn pump_loop(
                         // reconcile_loop so a slow hydration never blocks local delta propagation.
                         let resolve_delta = {
                             let mut ns = namespace
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                .lock_recover();
                             ns.apply_remote_and_resolve(msg.content.as_ref())
                                 .unwrap_or_default()
                         };
@@ -2735,9 +2699,7 @@ fn revisions_awaiting_receipt(
         .repository
         .current_content_revisions(records.workspace_id);
     let renew_after = unix_now_ms().saturating_add(RECEIPT_RENEW_BEFORE_MS);
-    let registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let registry = registry.lock_recover();
     revisions
         .into_iter()
         .filter(|revision| {
@@ -2795,9 +2757,7 @@ fn persist_workspace_replica_observation(
     observation: crate::availability::ReplicaObservation,
     observed_at: u64,
 ) -> Result<(), crate::availability::AvailabilityError> {
-    let mut registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = registry.lock_recover();
     record_replica_observation(
         &mut registry,
         revision,
@@ -2899,16 +2859,10 @@ impl PeerPass<'_> {
         }
         let recent = self
             .namespace_exchanged
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(peer)
             .is_some_and(|at| at.elapsed() < NAMESPACE_BACKSTOP);
-        !recent
-            || !self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .in_sync_with(peer)
+        !recent || !self.namespace.lock_recover().in_sync_with(peer)
     }
 
     async fn broadcast(&self, delta: Vec<u8>) {
@@ -2949,15 +2903,10 @@ impl PeerPass<'_> {
             {
                 Ok(received) => {
                     self.namespace_exchanged
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lock_recover()
                         .insert(peer.peer.device_public_key, Instant::now());
                     changed |= received;
-                    let resolution = self
-                        .namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .post_sync_resolve();
+                    let resolution = self.namespace.lock_recover().post_sync_resolve();
                     self.broadcast(resolution).await;
                 }
                 Err(error) => report("namespace sync", &error),
@@ -3047,11 +2996,7 @@ impl PeerPass<'_> {
             {
                 Ok(received_change) => {
                     changed |= received_change;
-                    let resolution = self
-                        .namespace
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .post_sync_resolve();
+                    let resolution = self.namespace.lock_recover().post_sync_resolve();
                     self.broadcast(resolution).await;
                 }
                 Err(error) => {
@@ -3305,10 +3250,7 @@ struct BusyPeer {
 
 impl Drop for BusyPeer {
     fn drop(&mut self) {
-        self.busy
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.peer);
+        self.busy.lock_recover().remove(&self.peer);
     }
 }
 
@@ -3331,11 +3273,7 @@ impl PeerExchanges {
         let started: Vec<_> = peers
             .into_iter()
             .filter_map(|peer| {
-                let claimed = self
-                    .busy
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(peer.id);
+                let claimed = self.busy.lock_recover().insert(peer.id);
                 claimed.then(|| {
                     let busy = BusyPeer {
                         busy: Arc::clone(&self.busy),
@@ -3617,9 +3555,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 continue;
             };
             let delta = {
-                let mut ns = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut ns = namespace.lock_recover();
                 crate::conflict::materialize(&mut ns, &c, len, unix_now_ms())
             };
             if !delta.is_empty()

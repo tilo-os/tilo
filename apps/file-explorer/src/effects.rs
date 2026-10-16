@@ -188,6 +188,17 @@ pub enum FilesEffect {
         #[param("Always open files of this type with it")]
         always: Option<bool>,
     },
+    /// Import once from cloud…
+    ///
+    /// Copies the mounted entry's bytes into a local folder. Native Drive
+    /// documents retain their link representation, not a fabricated file.
+    #[effect(row)]
+    ImportOnce {
+        #[param("The cloud entry's published row id")]
+        entry: String,
+        #[param("Absolute path of an existing local destination folder")]
+        folder: String,
+    },
     /// Copy to folder…
     #[effect(row)]
     CopyTo {

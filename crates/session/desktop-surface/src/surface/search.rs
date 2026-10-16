@@ -51,21 +51,82 @@ pub struct HostAction {
     pub title: String,
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// What the action is about, named as the source of the notices that
+    /// offer it.
+    #[serde(default)]
+    pub source: Option<HostActionSource>,
+}
+
+/// The part of the system a host action belongs to, in the desktop's
+/// language: the source line of a notice that offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostActionSource {
+    /// Who the person is: keeping, recovering or naming their identity.
+    Identity,
+    /// The person's other devices: pairing one.
+    Devices,
+}
+
+impl HostActionSource {
+    fn label(self) -> String {
+        crate::i18n::t(match self {
+            Self::Identity => "host-action-source-identity",
+            Self::Devices => "host-action-source-devices",
+        })
+    }
 }
 
 impl HostAction {
     /// A banner that offers this action: choosing it performs the action.
     #[must_use]
+    ///
+    /// An offer is an ask: it stays until the person answers it or puts it
+    /// off ("Not now", which keeps it in the notification centre), so
+    /// nothing is decided by waiting.
     pub fn notice(
         &self,
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> crate::notifications::Notification {
         let mut notice = crate::notifications::Notification::new(title, body);
-        notice.actions = vec![(format!("{HOST_PREFIX}{}", self.id), self.title.clone())];
+        // The action first: it is what choosing the ask itself does, from
+        // the banner or later from the centre.
+        notice.actions = vec![
+            (self.key(), self.title.clone()),
+            (
+                crate::notifications::NOT_NOW_ACTION.to_owned(),
+                crate::i18n::t("notification-not-now"),
+            ),
+        ];
+        notice.app_name = self.source.map(HostActionSource::label);
         notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
+        // What a host asks is on the person's behalf: who they are and
+        // which devices are theirs.
+        notice.icon_kind = crate::notifications::NotificationIconKind::Permission;
         notice
     }
+
+    /// The banner action key this action is offered under.
+    fn key(&self) -> String {
+        format!("{HOST_PREFIX}{}", self.id)
+    }
+}
+
+/// Whether `notification` offers one of the host's actions.
+pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool {
+    notification
+        .actions
+        .iter()
+        .any(|(key, _)| host_choice(key).is_some())
+}
+
+/// Whether `notification` offers host action `id`.
+pub(crate) fn offers(notification: &crate::notifications::Notification, id: &str) -> bool {
+    notification
+        .actions
+        .iter()
+        .any(|(key, _)| host_choice(key) == Some(id))
 }
 
 /// The host action a banner action key or search command id names.
@@ -75,8 +136,28 @@ pub(super) fn host_choice(key: &str) -> Option<&str> {
 
 impl DesktopHandle {
     /// Offer these host actions from now on, in place of earlier ones.
-    pub fn set_host_actions(&self, actions: Vec<HostAction>) {
-        self.shared.borrow_mut().host_actions = actions;
+    /// Returns the ids no longer offered: a banner still asking for one of
+    /// them asks for something already done, so the host withdraws it
+    /// ([`crate::DesktopNotifications::withdraw_host_action`]).
+    pub fn set_host_actions(&self, actions: Vec<HostAction>) -> Vec<String> {
+        let mut shared = self.shared.borrow_mut();
+        let withdrawn = shared
+            .host_actions
+            .iter()
+            .filter(|old| actions.iter().all(|new| new.id != old.id))
+            .map(|old| old.id.clone())
+            .collect();
+        shared.host_actions = actions;
+        withdrawn
+    }
+
+    /// Whether the host offers the action `id` (see [`Self::set_host_actions`]).
+    pub fn offers_host_action(&self, id: &str) -> bool {
+        self.shared
+            .borrow()
+            .host_actions
+            .iter()
+            .any(|action| action.id == id)
     }
 
     /// The host actions the person chose since the last call, by id.
@@ -458,6 +539,24 @@ mod tests {
 
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)
+    }
+
+    #[test]
+    fn a_host_actions_notice_names_what_it_is_about() {
+        let pair: HostAction = serde_json::from_str(
+            r#"{"id":"pair-device","title":"Pair a new device","source":"devices"}"#,
+        )
+        .unwrap();
+        let notice = pair.notice("Pair “Phone”?", "");
+        assert_eq!(
+            crate::notifications::source_label(&notice),
+            Some(crate::i18n::t("host-action-source-devices"))
+        );
+        let plain: HostAction = serde_json::from_str(r#"{"id":"x","title":"X"}"#).unwrap();
+        assert_eq!(
+            crate::notifications::source_label(&plain.notice("X", "")),
+            None
+        );
     }
 
     #[test]

@@ -128,27 +128,9 @@ pub enum AuthenticationDecision {
     Cancelled,
 }
 
-/// How a network-secret field checks its value before the sheet may close.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SecretFieldRule {
-    /// Anything, including nothing when the field is optional.
-    Any,
-    /// A WPA passphrase: 8–63 characters, or 64 hexadecimal digits.
-    WpaPassphrase,
-}
-
-impl SecretFieldRule {
-    fn accepts(self, value: &str) -> bool {
-        match self {
-            Self::Any => true,
-            Self::WpaPassphrase => {
-                let chars = value.chars().count();
-                (8..=63).contains(&chars)
-                    || (chars == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
-            }
-        }
-    }
-}
+/// How a network-secret field checks its value before the sheet may close;
+/// the secret agent chooses it per field.
+pub use tilo_network_secret_agent::SecretFieldRule;
 
 /// One field of a network-secrets sheet, e.g. a Wi-Fi password or an
 /// 802.1X user name. A masked field never carries a starting value.

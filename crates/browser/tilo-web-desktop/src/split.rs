@@ -1,4 +1,5 @@
-//! Apps loaded when they first open.
+//! Apps loaded when they first open, the Activity pane (`crate::activity`),
+//! and framework code loaded when first used (`crate::lazy`).
 //!
 //! `build.sh` splits the linked module with tools/web/wasm-split: what only
 //! one app's `definition()` reaches moves into that app's own module, which
@@ -17,9 +18,10 @@
 use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
+use tilo_lock::MutexRecover as _;
 use ui::application::ApplicationDefinition;
 
 /// How the page reports a module's load: `(data, loaded)`.
@@ -47,7 +49,7 @@ struct SlotState {
 
 impl Slot {
     fn state(&self) -> MutexGuard<'_, SlotState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 
@@ -91,6 +93,7 @@ impl Future for Load {
                 return Poll::Ready(loaded);
             }
             state.waker = Some(context.waker().clone());
+            drop(state);
             return Poll::Pending;
         }
         let slot = Arc::new(Slot::default());
@@ -103,12 +106,17 @@ impl Future for Load {
     }
 }
 
+/// Load a split point's module; `false` when the page could not.
+pub(crate) async fn load(module: LoadModule) -> bool {
+    Load { module, slot: None }.await
+}
+
 /// Load an app's module, then ask it for the app's definition.
 pub(crate) async fn definition(
     module: LoadModule,
     definition: Definition,
 ) -> Option<&'static ApplicationDefinition> {
-    if !(Load { module, slot: None }).await {
+    if !load(module).await {
         return None;
     }
     // SAFETY: the module that defines `definition` is loaded; it returns a

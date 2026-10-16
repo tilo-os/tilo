@@ -133,6 +133,8 @@ pub enum ErrorCode {
     InvalidArgument,
     /// Value too large (`E2BIG`).
     TooBig,
+    /// The request started work that is still running (`EINPROGRESS`).
+    InProgress,
 }
 
 impl ErrorCode {
@@ -153,6 +155,7 @@ impl ErrorCode {
                 libc::ENOTSUP => Self::NotSupported,
                 libc::EINVAL => Self::InvalidArgument,
                 libc::E2BIG => Self::TooBig,
+                libc::EINPROGRESS => Self::InProgress,
                 _ => return None,
             })
         }
@@ -180,6 +183,7 @@ impl ErrorCode {
                 Self::NotSupported => libc::ENOTSUP,
                 Self::InvalidArgument => libc::EINVAL,
                 Self::TooBig => libc::E2BIG,
+                Self::InProgress => libc::EINPROGRESS,
             })
         }
         #[cfg(not(unix))]

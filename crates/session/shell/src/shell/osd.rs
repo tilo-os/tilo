@@ -20,10 +20,9 @@ use ui::TextRole;
 /// ux-bench cannot open on macOS, photographed straight from their paint
 /// paths instead. The same harness `overlay_host` uses for its fixtures.
 #[cfg(test)]
-#[path = "../../tests/support/offscreen.rs"]
-pub(crate) mod review_offscreen;
+pub(crate) use ui::offscreen as review_offscreen;
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextKind, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 #[cfg(test)]
@@ -31,13 +30,19 @@ use vello::kurbo::Point;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-/// How long the slab stays up after the last press. Long enough to read
-/// after a single tap, short enough that a burst of presses does not
-/// leave it hanging around afterwards.
-pub const OSD_HOLD: Duration = Duration::from_millis(1_400);
+/// How long the readout stays up after the last press, fade included. Long
+/// enough to read after a single tap, short enough that a burst of presses
+/// does not leave it hanging around afterwards.
+pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge.
-pub const OSD_FADE: Duration = Duration::from_millis(280);
+/// The fade-in, from the moment the readout first appears. Equal to the
+/// motion token `durations.fast`; the lifecycle clock runs without a theme
+/// in hand, so a test pins the two together.
+pub const OSD_FADE_IN: Duration = Duration::from_millis(130);
+
+/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge. Equal to the
+/// motion token `durations.base`.
+pub const OSD_FADE: Duration = Duration::from_millis(210);
 
 /// What the slab is reporting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,125 +165,86 @@ pub struct Osd {
     /// `0.0..=1.0`. Ignored by the kinds that have no level.
     pub level: f32,
     /// When the value last changed; re-raising refreshes this rather than
-    /// stacking a second slab.
+    /// stacking a second readout.
     pub raised_at: Instant,
+    /// When the readout first appeared. A press that lands while it is up
+    /// updates it in place and keeps this, so the fade-in is not replayed on
+    /// every step of a volume burst.
+    pub shown_since: Instant,
 }
 
 impl Osd {
-    pub fn volume(level: f32, muted: bool) -> Self {
+    fn at(kind: OsdKind, level: f32) -> Self {
+        let now = Instant::now();
         Self {
-            kind: OsdKind::Volume { muted },
-            level: level.clamp(0.0, 1.0),
-            raised_at: Instant::now(),
+            kind,
+            level,
+            raised_at: now,
+            shown_since: now,
         }
+    }
+
+    pub fn volume(level: f32, muted: bool) -> Self {
+        Self::at(OsdKind::Volume { muted }, level.clamp(0.0, 1.0))
     }
 
     pub fn brightness(level: f32) -> Self {
-        Self {
-            kind: OsdKind::Brightness,
-            level: level.clamp(0.0, 1.0),
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::Brightness, level.clamp(0.0, 1.0))
     }
 
     pub fn mic_mute(muted: bool) -> Self {
-        Self {
-            kind: OsdKind::MicMute { muted },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::MicMute { muted }, 0.0)
     }
 
     pub fn pointer_held(held: bool) -> Self {
-        Self {
-            kind: OsdKind::PointerHeld { held },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::PointerHeld { held }, 0.0)
     }
 
     pub fn keys_captured(captured: bool) -> Self {
-        Self {
-            kind: OsdKind::KeysCaptured { captured },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::KeysCaptured { captured }, 0.0)
     }
 
     pub fn transport(t: Transport) -> Self {
-        Self {
-            kind: OsdKind::Transport(t),
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::Transport(t), 0.0)
     }
 
     pub fn keyboard_backlight(level: f32) -> Self {
-        Self {
-            kind: OsdKind::KeyboardBacklight,
-            level: level.clamp(0.0, 1.0),
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::KeyboardBacklight, level.clamp(0.0, 1.0))
     }
 
     pub fn no_backlight() -> Self {
-        Self {
-            kind: OsdKind::NoBacklight,
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::NoBacklight, 0.0)
     }
 
     pub fn airplane_mode(on: bool) -> Self {
-        Self {
-            kind: OsdKind::AirplaneMode { on },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::AirplaneMode { on }, 0.0)
     }
 
     pub fn touchpad(enabled: bool) -> Self {
-        Self {
-            kind: OsdKind::Touchpad { enabled },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::Touchpad { enabled }, 0.0)
     }
 
     pub fn mouse_keys(enabled: bool) -> Self {
-        Self {
-            kind: OsdKind::MouseKeys { enabled },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::MouseKeys { enabled }, 0.0)
     }
 
     /// The magnifier at `zoom`; the bar fills from off to the strongest zoom.
     pub fn magnifier(zoom: u8) -> Self {
         use settings_store::magnifier::{MAX_ZOOM, OFF};
         let zoom = zoom.clamp(OFF, MAX_ZOOM);
-        Self {
-            kind: OsdKind::Magnifier { zoom },
-            level: f32::from(zoom.saturating_sub(OFF)) / f32::from(MAX_ZOOM.saturating_sub(OFF)),
-            raised_at: Instant::now(),
-        }
+        Self::at(
+            OsdKind::Magnifier { zoom },
+            f32::from(zoom.saturating_sub(OFF)) / f32::from(MAX_ZOOM.saturating_sub(OFF)),
+        )
     }
 
     /// A tablet pad now in `mode` (from zero) of `modes`.
     pub fn pad_mode(mode: u32, modes: u32) -> Self {
-        Self {
-            kind: OsdKind::PadMode { mode, modes },
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::PadMode { mode, modes }, 0.0)
     }
 
     pub fn input_source(name: &str) -> Self {
-        Self {
-            kind: OsdKind::InputSource(OsdLabel::new(name)),
-            level: 0.0,
-            raised_at: Instant::now(),
-        }
+        Self::at(OsdKind::InputSource(OsdLabel::new(name)), 0.0)
     }
 
     /// Whether this kind draws a level bar — a bar pinned at zero next to
@@ -348,39 +314,55 @@ impl Osd {
         }
     }
 
-    /// Opacity at `now`: opaque, then easing over [`OSD_FADE`], then `0.0`.
+    /// Opacity at `now`: easing in over [`OSD_FADE_IN`], opaque, then easing
+    /// out over [`OSD_FADE`], then `0.0`.
     pub fn alpha_at(&self, now: Instant) -> f32 {
         let elapsed = now.saturating_duration_since(self.raised_at);
-        if elapsed >= OSD_HOLD {
-            return 0.0;
-        }
-        // `elapsed < OSD_HOLD` is checked above, so this never actually
-        // underflows; `unwrap_or` treats the (unreachable) alternative
-        // as "already faded" rather than asserting the invariant.
         let Some(remaining) = OSD_HOLD.checked_sub(elapsed) else {
             return 0.0;
         };
+        let shown = now.saturating_duration_since(self.shown_since);
+        let rise = if shown >= OSD_FADE_IN {
+            1.0
+        } else {
+            // Ease-out: the readout arrives quickly and settles.
+            let t = shown.as_secs_f32() / OSD_FADE_IN.as_secs_f32();
+            1.0 - (1.0 - t) * (1.0 - t)
+        };
         if remaining >= OSD_FADE {
-            return 1.0;
+            return rise;
         }
         let t = remaining.as_secs_f32() / OSD_FADE.as_secs_f32();
         // Ease-out so the last frames are the ones that thin out, rather
         // than a linear ramp that reads as a flicker at the end.
-        t * t
+        rise * t * t
     }
 
-    /// Whether the slab should still be painted at `now`.
+    /// [`Self::alpha_at`] as `theme` shows it: under reduced motion the
+    /// readout cuts in and out instead of fading and sliding.
+    pub fn alpha_in(&self, theme: &Theme, now: Instant) -> f32 {
+        if theme.reduce_motion {
+            return if self.is_live(now) { 1.0 } else { 0.0 };
+        }
+        self.alpha_at(now)
+    }
+
+    /// Whether the readout should still be painted at `now`.
     pub fn is_live(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.raised_at) < OSD_HOLD
     }
 
-    /// Whether the readout is in the short fade tail and therefore needs a
-    /// frame on every presentation tick. The opaque part of the hold is
+    /// Whether the readout is fading in or out and therefore needs a frame
+    /// on every presentation tick. The opaque part of the hold is
     /// deliberately excluded: a static OSD should not keep the compositor
     /// repainting for more than a second.
     pub fn needs_animation_frame_at(&self, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.raised_at);
-        elapsed >= OSD_HOLD.saturating_sub(OSD_FADE) && elapsed < OSD_HOLD
+        if elapsed >= OSD_HOLD {
+            return false;
+        }
+        now.saturating_duration_since(self.shown_since) < OSD_FADE_IN
+            || elapsed >= OSD_HOLD.saturating_sub(OSD_FADE)
     }
 
     /// The next lifecycle boundary while the readout is static.
@@ -404,19 +386,25 @@ impl Osd {
         }
     }
 
-    /// Place the slab at the visual centre of `viewport`. Hardware feedback
-    /// belongs to the whole display rather than the app under the pointer;
-    /// centring it also gives the same location at normal and compact sizes.
-    pub fn rect_in(viewport: Rect) -> Rect {
-        let w = 288.0_f64.min((viewport.width() - 32.0).max(0.0));
-        let h = 104.0_f64.min((viewport.height() - 32.0).max(0.0));
-        let center = viewport.center();
-        Rect::new(
-            center.x - w / 2.0,
-            center.y - h / 2.0,
-            center.x + w / 2.0,
-            center.y + h / 2.0,
-        )
+    /// The short value shown beside the level bar (or, for a state with no
+    /// level, the whole message): `62%`, `Muted`, `Off`, `3×`.
+    pub fn value_text(&self) -> String {
+        let percent = || {
+            t_args(
+                "osd-percent",
+                &[("percent", level_to_percent(self.level).into())],
+            )
+        };
+        match self.kind {
+            OsdKind::Volume { muted: true } => t("osd-muted"),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
+            OsdKind::Volume { muted: false } | OsdKind::Brightness | OsdKind::KeyboardBacklight => {
+                percent()
+            }
+            OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => t("osd-off"),
+            OsdKind::Magnifier { zoom } => settings_store::magnifier::zoom_label(zoom).into(),
+            _ => self.caption(),
+        }
     }
 
     /// Paint this readout inside `viewport` at the supplied lifecycle alpha.
@@ -434,39 +422,71 @@ impl Osd {
             return;
         }
         // Theme type tokens already carry the user's text scale, and the
-        // slab paints with those resolved sizes; the renderer must not scale
+        // pill paints with those resolved sizes; the renderer must not scale
         // them again (HIG §7a) — reset for this pass, as the shell's
         // immediate-mode chrome passes do, and restored at the end.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let rect = Self::rect_in(viewport);
         let faded = alpha < 0.999;
+        // The pill rises into place as it fades in and sinks as it fades
+        // out; the slide follows the opacity, so it needs no clock of its
+        // own and a reduced-motion theme (alpha pinned at 1) never moves.
+        let slide = if theme.reduce_motion {
+            0.0
+        } else {
+            f64::from(theme.tokens.spacing.s2) * f64::from(1.0 - alpha.clamp(0.0, 1.0))
+        };
+        let transform = transform.then_translate((0.0, slide).into());
         if faded {
             scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
                 alpha,
                 transform,
-                &viewport,
+                &viewport.inflate(
+                    f64::from(theme.tokens.spacing.s8),
+                    f64::from(theme.tokens.spacing.s8),
+                ),
             );
         }
 
-        let caption = self.caption();
-        let (_, caption_h) =
-            text_renderer.measure_style(&caption, None, &theme.text(TextRole::Label));
-        let stack = OsdStack::layout(rect, self.has_level(), f64::from(caption_h), theme);
-        ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
-        draw_glyph(scene, transform, stack.glyph, theme, self.kind);
-        if let Some(bar) = stack.bar {
+        let text_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Medium)
+            .with_kind(TextKind::Numeric);
+        let pill = OsdPill::layout(viewport, theme, text_renderer, &self, &text_style);
+        ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
+        draw_glyph(scene, transform, pill.glyph, theme, self.kind);
+        if let Some(bar) = pill.bar {
             draw_level_bar(scene, transform, bar, theme, self);
         }
-        draw_caption(
+        let muted = matches!(self.kind, OsdKind::Volume { muted: true });
+        let colors = &theme.tokens.colors;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a pill width in logical pixels is far inside f32 range"
+        )]
+        let pill_text_width = pill.text.width() as f32;
+        let text =
+            text_renderer.elide_to_width_style(&pill.text_value, pill_text_width, &text_style);
+        let (tw, th) = text_renderer.measure_style(&text, None, &text_style);
+        // The value hugs the bar's end; a bare message starts at the glyph.
+        let x = if pill.bar.is_some() {
+            pill.text.x1 - f64::from(tw)
+        } else {
+            pill.text.x0
+        };
+        text_renderer.draw_style(
             scene,
-            transform,
-            stack.caption,
-            theme,
-            text_renderer,
-            &caption,
+            &text,
+            if muted {
+                colors.text_dim
+            } else {
+                colors.text_primary
+            },
+            transform.pre_translate((x, pill.text.center().y - f64::from(th) / 2.0).into()),
+            None,
+            &text_style,
         );
 
         if faded {
@@ -476,46 +496,89 @@ impl Osd {
     }
 }
 
-/// The slab's vertical rhythm: glyph, optional level bar and caption as
-/// one stack centred in the card with `spacing.s3` between rows. Keeping
-/// layout separate from paint makes the rhythm testable and means a
-/// slab without a level bar (mic, transport) is centred rather than
-/// top-heavy.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct OsdStack {
+/// The pill's geometry: glyph, optional level bar and value on one row,
+/// bottom-centred in the viewport. Keeping layout separate from paint makes
+/// the rhythm testable and lets every kind (level or state) share one shape.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OsdPill {
+    pub rect: Rect,
     pub glyph: Rect,
     pub bar: Option<Rect>,
-    pub caption: Rect,
+    /// Where the value text goes: right-aligned after the bar for a level,
+    /// or the whole message after the glyph.
+    pub text: Rect,
+    pub text_value: String,
 }
 
-impl OsdStack {
-    pub(crate) const GLYPH_PX: f64 = 28.0;
-    const BAR_H: f64 = 6.0;
-
-    pub(crate) fn layout(rect: Rect, has_level: bool, caption_h: f64, theme: &Theme) -> Self {
-        let gap = f64::from(theme.tokens.spacing.s3);
-        let inset = f64::from(theme.tokens.spacing.s6);
-        let bar_block = if has_level { Self::BAR_H + gap } else { 0.0 };
-        let stack_h = Self::GLYPH_PX + gap + bar_block + caption_h;
-        let top = rect.y0 + ((rect.height() - stack_h) / 2.0).max(0.0);
-        let cx = rect.center().x;
+impl OsdPill {
+    pub(crate) fn layout(
+        viewport: Rect,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        osd: &Osd,
+        style: &ui::text_render::TextStyle,
+    ) -> Self {
+        let sp = &theme.tokens.spacing;
+        let icon = f64::from(theme.tokens.metrics.icon_lg);
+        let (pad, gap) = (f64::from(sp.s4), f64::from(sp.s3));
+        let text_value = osd.value_text();
+        let (value_w, text_h) = text_renderer.measure_style(&text_value, None, style);
+        let has_bar = osd.has_level();
+        // A level's value slot is as wide as its widest reading, so the bar
+        // does not shift as the number gains digits or the sink mutes.
+        let mut slot = f64::from(value_w);
+        if has_bar {
+            let widest = [
+                t_args("osd-percent", &[("percent", 100.into())]),
+                t("osd-muted"),
+            ];
+            for reading in widest {
+                let (w, _) = text_renderer.measure_style(&reading, None, style);
+                slot = slot.max(f64::from(w));
+            }
+        }
+        let bar_len = icon * 6.0;
+        let wanted = pad * 2.0 + icon + gap + slot + if has_bar { gap + bar_len } else { 0.0 };
+        let avail = (viewport.width() - 2.0 * f64::from(sp.s4)).max(0.0);
+        let width = wanted.min(avail);
+        let height = icon.max(f64::from(text_h)) + 2.0 * gap;
+        let height = height.min(viewport.height());
+        let x0 = viewport.center().x - width / 2.0;
+        let y1 = (viewport.y1 - f64::from(sp.s16)).max(viewport.y0 + height);
+        let rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let cy = rect.center().y;
         let glyph = Rect::new(
-            cx - Self::GLYPH_PX / 2.0,
-            top,
-            cx + Self::GLYPH_PX / 2.0,
-            top + Self::GLYPH_PX,
+            rect.x0 + pad,
+            cy - icon / 2.0,
+            rect.x0 + pad + icon,
+            cy + icon / 2.0,
         );
-        let mut y = glyph.y1 + gap;
-        let bar = has_level.then(|| {
-            let bar = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + Self::BAR_H);
-            y = bar.y1 + gap;
-            bar
+        let text_x0 = if has_bar {
+            rect.x1 - pad - slot
+        } else {
+            glyph.x1 + gap
+        };
+        let text = Rect::new(
+            text_x0,
+            cy - f64::from(text_h) / 2.0,
+            rect.x1 - pad,
+            cy + f64::from(text_h) / 2.0,
+        );
+        let bar = has_bar.then(|| {
+            let bar_h = f64::from(sp.s1) * 1.5;
+            Rect::new(
+                glyph.x1 + gap,
+                cy - bar_h / 2.0,
+                text_x0 - gap,
+                cy + bar_h / 2.0,
+            )
         });
-        let caption = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + caption_h);
         Self {
+            rect,
             glyph,
             bar,
-            caption,
+            text,
+            text_value,
         }
     }
 }
@@ -588,14 +651,17 @@ fn draw_glyph(
 fn draw_level_bar(scene: &mut Scene, transform: Affine, bar: Rect, theme: &Theme, osd: Osd) {
     let colors = &theme.tokens.colors;
     let bar_h = bar.height();
+    // The empty track is a hairline-polarity wash over the pill's own
+    // ground, so it reads on every palette — a lift of the desktop base
+    // can land below the Panel ground and vanish.
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.lift(0.72),
+        track_color(theme),
         None,
         &RoundedRect::from_rect(bar, bar_h / 2.0),
     );
-    // Muting keeps the track but empties its fill, so the slab does not
+    // Muting keeps the track but empties its fill, so the pill does not
     // change shape while still agreeing with the crossed-out volume glyph.
     let filled = if matches!(osd.kind, OsdKind::Volume { muted: true }) {
         0.0
@@ -608,49 +674,26 @@ fn draw_level_bar(scene: &mut Scene, transform: Affine, bar: Rect, theme: &Theme
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.intent.inverted,
+            colors.text_primary,
             None,
             &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
         );
     }
 }
 
-fn draw_caption(
-    scene: &mut Scene,
-    transform: Affine,
-    caption_rect: Rect,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    caption: &str,
-) {
-    let colors = &theme.tokens.colors;
-    // Control label role (HIG §9.6); the pass has reset the renderer, so
-    // the theme-resolved size is painted exactly once.
-    let style = theme.text(TextRole::Caption);
-    let (cw, _) = text_renderer.measure_style(
-        caption,
-        None,
-        &style.clone().with_weight(TextWeight::Medium),
-    );
-    text_renderer.draw_style(
-        scene,
-        caption,
-        colors.text_dim,
-        transform.pre_translate(
-            (
-                caption_rect.center().x - f64::from(cw) / 2.0,
-                caption_rect.y0,
-            )
-                .into(),
-        ),
-        None,
-        &style.with_weight(TextWeight::Medium),
-    );
+/// The empty part of the level bar.
+pub(crate) fn track_color(theme: &Theme) -> vello::peniko::Color {
+    ui::tokens::colors::Colors::hairline_on(ui::chrome::shell::panel_ground(theme), 80)
 }
 
 /// Same key restarts the timer, different key replaces outright — either
 /// way "never stack" lives in one place, not each caller.
-pub fn raise(current: &mut Option<Osd>, next: Osd) {
+pub fn raise(current: &mut Option<Osd>, mut next: Osd) {
+    // A readout that is still up is updated in place: the timer restarts but
+    // the fade-in is not replayed.
+    if let Some(live) = current.filter(|o| o.is_live(next.raised_at)) {
+        next.shown_since = live.shown_since;
+    }
     *current = Some(next);
 }
 
@@ -742,11 +785,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn osd_slab_fades_over_its_tail_and_is_replaced_not_stacked() {
         fn a_fresh_slab_is_opaque_and_an_old_one_is_gone() {
             let o = Osd::volume(0.5, false);
             let t0 = o.raised_at;
-            assert_eq!(o.alpha_at(t0), 1.0);
+            assert_eq!(o.alpha_at(t0), 0.0, "it fades in rather than popping");
+            assert_eq!(o.alpha_at(t0 + OSD_FADE_IN), 1.0);
             assert!(o.is_live(t0));
             let past = t0 + OSD_HOLD;
             assert_eq!(o.alpha_at(past), 0.0);
@@ -775,8 +820,10 @@ mod tests {
             let expiry = t0.checked_add(OSD_HOLD).unwrap();
             let fade_start = expiry.checked_sub(OSD_FADE).unwrap();
 
-            assert!(!o.needs_animation_frame_at(t0));
-            assert_eq!(o.next_wake_deadline_at(t0), Some(fade_start));
+            assert!(o.needs_animation_frame_at(t0), "the fade-in animates");
+            let opaque = t0 + OSD_FADE_IN;
+            assert!(!o.needs_animation_frame_at(opaque));
+            assert_eq!(o.next_wake_deadline_at(opaque), Some(fade_start));
             assert!(o.needs_animation_frame_at(fade_start));
             assert_eq!(o.next_wake_deadline_at(fade_start), Some(expiry));
             assert!(
@@ -804,6 +851,28 @@ mod tests {
             assert_eq!(second.level, 0.4, "and it shows the newest value");
         }
 
+        fn an_update_while_up_keeps_the_fade_in_it_already_finished() {
+            let mut cur = Some(Osd::volume(0.3, false));
+            let first = cur.unwrap();
+            let later = first.raised_at + Duration::from_millis(600);
+            let mut next = Osd::volume(0.4, false);
+            next.raised_at = later;
+            raise(&mut cur, next);
+            let shown = cur.unwrap();
+            assert_eq!(shown.shown_since, first.shown_since);
+            assert_eq!(shown.alpha_at(later), 1.0, "a burst does not blink");
+        }
+
+        fn motion_tokens_back_the_lifecycle_constants() {
+            let d = ui::tokens::motion::Durations::default();
+            assert_eq!(OSD_FADE_IN, d.fast());
+            assert_eq!(OSD_FADE, d.base());
+            let theme = Theme::dark().with_reduce_motion(true);
+            let o = Osd::volume(0.5, false);
+            assert_eq!(o.alpha_in(&theme, o.raised_at), 1.0, "cuts in");
+            assert_eq!(o.alpha_in(&theme, o.raised_at + OSD_HOLD), 0.0, "and out");
+        }
+
         fn a_different_key_replaces_rather_than_queues() {
             let mut cur = None;
             raise(&mut cur, Osd::volume(0.3, false));
@@ -827,6 +896,8 @@ mod tests {
         the_slab_thins_out_over_the_tail_rather_than_vanishing();
         opaque_hold_sleeps_until_fade_then_only_fade_animates();
         a_second_press_restarts_the_slab_instead_of_stacking_one();
+        an_update_while_up_keeps_the_fade_in_it_already_finished();
+        motion_tokens_back_the_lifecycle_constants();
         a_different_key_replaces_rather_than_queues();
         expiry_reports_whether_it_changed_anything();
     }
@@ -849,59 +920,73 @@ mod tests {
         assert!(!osd.has_level());
     }
 
+    fn pill(osd: &Osd, theme: &Theme, viewport: Rect) -> OsdPill {
+        let mut text = TextRenderer::new();
+        text.set_text_scale(1.0);
+        let style = theme.text(TextRole::Label);
+        OsdPill::layout(viewport, theme, &mut text, osd, &style)
+    }
+
     #[test]
-    fn osd_slab_geometry_is_centred_bounded_and_scaled_once() {
-        fn slab_stack_is_centred_with_token_gaps_with_and_without_a_level_bar() {
+    fn osd_pill_geometry_is_bottom_centred_bounded_and_scaled_once() {
+        fn every_kind_is_one_row_in_the_bottom_third_on_theme_tokens() {
             let theme = Theme::dark();
-            let rect = Osd::rect_in(Rect::new(0.0, 0.0, 1280.0, 800.0));
-            let gap = f64::from(theme.tokens.spacing.s3);
-            let caption_h = 15.0;
-
-            let with = OsdStack::layout(rect, true, caption_h, &theme);
-            let bar = with.bar.expect("a level slab has a bar");
-            assert_eq!(bar.y0 - with.glyph.y1, gap);
-            assert_eq!(with.caption.y0 - bar.y1, gap);
-            assert_eq!(with.glyph.center().x, rect.center().x);
-            assert!(
-                ((with.glyph.y0 - rect.y0) - (rect.y1 - with.caption.y1)).abs() < 1e-9,
-                "the stack is vertically centred in the slab"
-            );
-            assert!(with.glyph.y0 >= rect.y0 && with.caption.y1 <= rect.y1);
-
-            let without = OsdStack::layout(rect, false, caption_h, &theme);
-            assert!(without.bar.is_none());
-            assert_eq!(without.caption.y0 - without.glyph.y1, gap);
-            assert!(
-                ((without.glyph.y0 - rect.y0) - (rect.y1 - without.caption.y1)).abs() < 1e-9,
-                "a slab without a bar is centred too, not top-heavy"
-            );
-            assert!(without.glyph.y0 > with.glyph.y0);
-        }
-
-        fn slab_geometry_is_low_centered_and_width_bounded() {
             let viewport = Rect::new(20.0, 40.0, 1220.0, 840.0);
-            let rect = Osd::rect_in(viewport);
-            assert_eq!(rect.width(), 288.0);
-            assert_eq!(rect.height(), 104.0);
-            assert_eq!(rect.center(), viewport.center());
-
-            let narrow = Osd::rect_in(Rect::new(0.0, 0.0, 300.0, 500.0));
-            assert_eq!(narrow.width(), 268.0);
-            assert_eq!(narrow.height(), 104.0);
-            assert_eq!(narrow.center(), vello::kurbo::Point::new(150.0, 250.0));
-            assert_eq!(narrow.x0, 16.0);
-
-            let tiny = Osd::rect_in(Rect::new(5.0, 7.0, 125.0, 87.0));
-            assert_eq!(tiny.width(), 88.0);
-            assert_eq!(tiny.height(), 48.0);
-            assert_eq!(tiny.center(), vello::kurbo::Point::new(65.0, 47.0));
+            let icon = f64::from(theme.tokens.metrics.icon_lg);
+            let s3 = f64::from(theme.tokens.spacing.s3);
+            for osd in [
+                Osd::volume(0.5, false),
+                Osd::volume(0.5, true),
+                Osd::brightness(0.4),
+                Osd::keyboard_backlight(0.0),
+                Osd::mic_mute(true),
+                Osd::transport(Transport::Next),
+                Osd::no_backlight(),
+            ] {
+                let p = pill(&osd, &theme, viewport);
+                assert!(
+                    (p.rect.center().x - viewport.center().x).abs() < 1e-6,
+                    "{:?}",
+                    osd.kind
+                );
+                assert!(p.rect.center().y > viewport.y0 + viewport.height() * 2.0 / 3.0);
+                assert_eq!(viewport.y1 - p.rect.y1, f64::from(theme.tokens.spacing.s16));
+                assert!(p.rect.height() >= icon + 2.0 * s3 - 1e-6);
+                assert!(p.rect.x0 >= viewport.x0 && p.rect.x1 <= viewport.x1);
+                assert!(p.glyph.x1 <= p.text.x0 && p.glyph.width() == icon);
+                if let Some(bar) = p.bar {
+                    assert!(bar.x0 >= p.glyph.x1 && bar.x1 <= p.text.x0);
+                    assert!(
+                        bar.width() > icon * 4.0,
+                        "a level bar is long enough to read"
+                    );
+                }
+            }
         }
 
-        /// HIG §7a: the caption is scaled exactly once. The pass paints the
-        /// theme-resolved `sm` with the renderer reset to 1×, so at 200 % the
+        fn the_bar_does_not_move_when_the_reading_changes() {
+            let theme = Theme::dark();
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let a = pill(&Osd::volume(0.05, false), &theme, viewport);
+            let b = pill(&Osd::volume(1.0, false), &theme, viewport);
+            let c = pill(&Osd::volume(1.0, true), &theme, viewport);
+            assert_eq!(a.rect, b.rect);
+            assert_eq!(a.bar, b.bar);
+            assert_eq!(a.rect, c.rect, "muting keeps the pill's shape");
+        }
+
+        fn a_narrow_viewport_bounds_the_pill() {
+            let theme = Theme::dark();
+            let tiny = Rect::new(5.0, 7.0, 205.0, 87.0);
+            let p = pill(&Osd::transport(Transport::Previous), &theme, tiny);
+            assert!(p.rect.x0 >= tiny.x0 && p.rect.x1 <= tiny.x1 && p.rect.y0 >= tiny.y0);
+        }
+
+        /// HIG §7a: the value is scaled exactly once. The pass paints the
+        /// theme-resolved label with the renderer reset to 1×, so at 200 % the
         /// line is twice the 1× line — not four times — and the renderer's own
         /// scale is handed back to the widgets that follow.
-        fn caption_type_is_scaled_once_at_large_text() {
+        fn type_is_scaled_once_at_large_text() {
             let base = Theme::dark();
             let large = Theme::dark().with_text_scale(2.0);
             let mut tr = TextRenderer::new();
@@ -914,20 +999,36 @@ mod tests {
                 2.0,
                 "the pass restores the renderer's scale"
             );
-            // What the pass painted with: the theme's `sm` on a 1× renderer.
-            let caption = Osd::brightness(0.5).caption();
             let mut at_pass = TextRenderer::new();
-            let (_, h1) = at_pass.measure_style(&caption, None, &base.text(TextRole::Label));
-            let (_, h2) = at_pass.measure_style(&caption, None, &large.text(TextRole::Label));
+            let (_, h1) = at_pass.measure_style("50%", None, &base.text(TextRole::Label));
+            let (_, h2) = at_pass.measure_style("50%", None, &large.text(TextRole::Label));
             assert!(
                 (h2 - 2.0 * h1).abs() < 1.0,
-                "200 % caption line {h2} should be twice the 1× line {h1}"
+                "200 % line {h2} should be twice {h1}"
+            );
+            let (small, big) = (
+                pill(&Osd::brightness(0.5), &base, viewport),
+                pill(&Osd::brightness(0.5), &large, viewport),
+            );
+            assert!(
+                big.rect.height() > small.rect.height(),
+                "the pill follows the text scale"
             );
         }
 
-        slab_stack_is_centred_with_token_gaps_with_and_without_a_level_bar();
-        slab_geometry_is_low_centered_and_width_bounded();
-        caption_type_is_scaled_once_at_large_text();
+        fn the_value_reads_short_beside_the_bar() {
+            assert_eq!(Osd::volume(0.375, false).value_text(), "38%");
+            assert_eq!(Osd::volume(0.375, true).value_text(), "Muted");
+            assert_eq!(Osd::keyboard_backlight(0.0).value_text(), "Off");
+            assert_eq!(Osd::brightness(1.0).value_text(), "100%");
+            assert_eq!(Osd::transport(Transport::Stop).value_text(), "Stop");
+        }
+
+        every_kind_is_one_row_in_the_bottom_third_on_theme_tokens();
+        the_bar_does_not_move_when_the_reading_changes();
+        a_narrow_viewport_bounds_the_pill();
+        type_is_scaled_once_at_large_text();
+        the_value_reads_short_beside_the_bar();
     }
 
     /// Review fixtures: the ux-bench cannot raise an OSD on macOS, so the
@@ -951,6 +1052,8 @@ mod tests {
         for (name, theme, scale) in variants {
             for (kind, osd) in [
                 ("volume", Osd::volume(0.62, false)),
+                ("volume-muted", Osd::volume(0.62, true)),
+                ("brightness", Osd::brightness(0.4)),
                 ("mic-muted", Osd::mic_mute(true)),
                 ("transport", Osd::transport(Transport::Next)),
                 ("keyboard-backlight", Osd::keyboard_backlight(0.5)),
@@ -973,14 +1076,14 @@ mod tests {
                 renderer.render_png(&scene, ground, &path);
                 assert!(path.is_file(), "OSD fixture missing: {}", path.display());
                 let rgba = renderer.render_resilient(&scene, ground);
-                let slab = Osd::rect_in(viewport);
-                let probe = Point::new(slab.x0 + 12.0, slab.center().y);
+                let slab = pill(&osd, &theme, viewport).rect;
+                let probe = Point::new(slab.center().x, slab.y0 + 3.0);
                 assert_pixel_is(
                     &rgba,
                     w,
                     probe,
                     ui::chrome::shell::panel_ground(&theme),
-                    &format!("{name}-{kind}: slab interior is the Panel ground"),
+                    &format!("{name}-{kind}: pill interior is the Panel ground"),
                 );
             }
         }

@@ -34,6 +34,7 @@ use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckV1};
 use crate::share_authority::ShareAuthority;
 use crate::share_link::{FileShareLinkError, FileShareLinkV2};
 use crate::share_session::{LiveActorCertification, ShareSession};
+use tilo_lock::MutexRecover as _;
 
 pub const TILO_FS_RECORD_ALPN: &[u8] = b"tilo-fs-record/6";
 pub const RECORD_PROTOCOL_VERSION: u16 = 6;
@@ -646,9 +647,7 @@ impl RecordProtocol {
                 ) else {
                     return RecordProtocolResponseV1::Denied;
                 };
-                let mut availability = availability
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut availability = availability.lock_recover();
                 let parent = availability
                     .get(receipt.revision.record_id)
                     .and_then(|record| record.parent);

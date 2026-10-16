@@ -109,4 +109,27 @@ fn slash_menu_owns_arrow_and_enter_keys() {
             "Enter inserted/converted the block to the chosen kind (Heading 1)"
         );
     }
+
+    eprintln!("phase slash_inside_a_word_is_text_and_after_whitespace_opens_the_menu");
+    {
+        let mut app = notes();
+        let page = add_note(&mut app, "Words", "");
+        open(&mut app, page);
+        for c in ["a", "n", "d"] {
+            dispatch(&mut app, &char_key(c));
+        }
+        dispatch(&mut app, &char_key("/"));
+        assert!(
+            !surface(&mut app, |notes| notes.editor_slash_menu_visible_for_test()),
+            "a `/` directly after a word is text, not a command"
+        );
+        for c in ["o", "r", " "] {
+            dispatch(&mut app, &char_key(c));
+        }
+        dispatch(&mut app, &char_key("/"));
+        assert!(
+            surface(&mut app, |notes| notes.editor_slash_menu_visible_for_test()),
+            "a `/` after whitespace opens the menu"
+        );
+    }
 }

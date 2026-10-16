@@ -12,7 +12,8 @@
 //! `DeviceSigner`, never through the toolkit. Without either there is no
 //! local identity, and callers fall back to their account-name ladders.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
+use tilo_lock::RwLockRecover as _;
 
 /// The public half of the local person's identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,17 +44,14 @@ pub fn generation() -> u64 {
 /// (the native runtime identity with `local-daemons`, else none) with `None`.
 /// Readers see the change on their next [`load`].
 pub fn install_source(source: Option<Arc<dyn LocalIdentitySource>>) {
-    *SOURCE.write().unwrap_or_else(PoisonError::into_inner) = source;
+    *SOURCE.write_recover() = source;
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The local identity from the installed source, else the native runtime
 /// identity (feature `local-daemons`), else none.
 pub fn load() -> Option<LocalIdentity> {
-    let installed = SOURCE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let installed = SOURCE.read_recover().clone();
     match installed {
         Some(source) => source.load(),
         None => default_load(),
@@ -65,10 +63,7 @@ pub fn load() -> Option<LocalIdentity> {
 /// Unlike [`load`], never the shell's own `primary.json`: for callers that
 /// fall back to an identity of their own when the launcher bound none.
 pub fn bound() -> Option<LocalIdentity> {
-    let installed = SOURCE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let installed = SOURCE.read_recover().clone();
     match installed {
         Some(source) => source.load(),
         None => default_bound(),

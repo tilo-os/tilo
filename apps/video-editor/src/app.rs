@@ -17,7 +17,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -3626,7 +3626,7 @@ impl VideoEditorApp {
         let Some(mid) = self.project.clip(id).map(|c| c.media) else {
             return;
         };
-        if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+        if let Some(m) = self.project.media.find_mut(&key(mid)) {
             edit(m);
         }
     }
@@ -3654,7 +3654,7 @@ impl VideoEditorApp {
         if self.project.track_locked(tid) {
             return;
         }
-        if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+        if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
             edit(t);
         }
     }
@@ -3673,7 +3673,7 @@ impl VideoEditorApp {
             .tracks
             .upsert(self.stored.track(track.id), track);
         let stored = std::rc::Rc::make_mut(&mut self.stored);
-        match stored.tracks.iter_mut().find(|t| t.id == track.id) {
+        match stored.tracks.find_mut(&key(track.id)) {
             Some(slot) => *slot = track.clone(),
             None => stored.tracks.push(track.clone()),
         }
@@ -3687,7 +3687,7 @@ impl VideoEditorApp {
             .markers
             .upsert(self.stored.marker(marker.id), marker);
         let stored = std::rc::Rc::make_mut(&mut self.stored);
-        match stored.markers.iter_mut().find(|m| m.id == marker.id) {
+        match stored.markers.find_mut(&key(marker.id)) {
             Some(slot) => *slot = marker.clone(),
             None => stored.markers.push(marker.clone()),
         }
@@ -3701,7 +3701,7 @@ impl VideoEditorApp {
             .media
             .upsert(self.stored.media(item.id), item);
         let stored = std::rc::Rc::make_mut(&mut self.stored);
-        match stored.media.iter_mut().find(|m| m.id == item.id) {
+        match stored.media.find_mut(&key(item.id)) {
             Some(slot) => *slot = item.clone(),
             None => stored.media.push(item.clone()),
         }
@@ -4358,7 +4358,7 @@ impl VideoEditorApp {
                 let changed = self
                     .project
                     .clip_mut(cid)
-                    .and_then(|c| c.markers.iter_mut().find(|mk| mk.id == m.id).map(write))
+                    .and_then(|c| c.markers.find_mut(&key(m.id)).map(write))
                     .unwrap_or(false);
                 if changed {
                     self.dispatch_existing_clips(&[cid]);
@@ -4485,7 +4485,7 @@ impl VideoEditorApp {
             next.name = "Title".into();
         }
         next.text = Some(t);
-        if let Some(slot) = self.project.media.iter_mut().find(|m| m.id == mid) {
+        if let Some(slot) = self.project.media.find_mut(&key(mid)) {
             *slot = next.clone();
         }
         self.submit_media(&next);
@@ -5006,7 +5006,7 @@ impl VideoEditorApp {
             self.submit(vec![
                 Project::paths().tracks.item(&key(tid)).muted.set(muted),
             ]);
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.muted = muted;
             }
         }
@@ -5021,7 +5021,7 @@ impl VideoEditorApp {
             next.solo = !next.solo;
             let solo = next.solo;
             self.submit(vec![Project::paths().tracks.item(&key(tid)).solo.set(solo)]);
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.solo = solo;
             }
         }
@@ -5041,7 +5041,7 @@ impl VideoEditorApp {
             self.submit(vec![
                 Project::paths().tracks.item(&key(tid)).locked.set(locked),
             ]);
-            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                 t.locked = locked;
             }
         }
@@ -6462,14 +6462,7 @@ impl Widget for VideoEditorApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
-        taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        )
+        taffy.fill_leaf(node_map, self)
     }
 
     #[allow(

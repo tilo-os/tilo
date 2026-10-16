@@ -319,7 +319,7 @@ pub trait AppWidget: Widget {
 
 // The sole internal owner adapter; raw descendants inherit its layout boundary.
 mod component_adapter {
-    use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
+    use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
@@ -373,6 +373,12 @@ mod component_adapter {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             self.component.root.as_deref().map(f)
+        }
+
+        /// Whether the record's last sampled save is still unconfirmed.
+        fn saving(&self) -> bool {
+            let binding = self.component.callback_binding();
+            binding.enter().is_ok() && self.component.save_status_wake_deadline().is_some()
         }
 
         /// [`Self::in_root`] with the root lent mutably.
@@ -867,11 +873,11 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
-                    let before = crate::widget::settle_mark(document);
+                    let before = crate::doc::settle_mark(document);
                     root.settle(&mut crate::widget::Edits::lend(document), record_root);
                     let _ = binding.drain_owned_tree(root, document);
                     // What it wrote shows in this same frame.
-                    if crate::widget::settle_mark(document) != before {
+                    if crate::doc::settle_mark(document) != before {
                         root.update(document, record_root);
                         root.sync(document, record_root);
                     }
@@ -1016,9 +1022,6 @@ mod component_adapter {
         fn name(&self) -> &'static str {
             "BoundComponent"
         }
-        fn test_id(&self) -> Option<&str> {
-            None
-        }
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
             Some(self)
         }
@@ -1034,14 +1037,8 @@ mod component_adapter {
         fn tooltip(&self) -> Option<&str> {
             self.in_root(|root| root.tooltip()).flatten()
         }
-        fn is_focusable(&self) -> bool {
-            false
-        }
         fn set_focus(&mut self, focused: bool) {
             self.in_root_mut(|root| root.set_focus(focused));
-        }
-        fn is_focused(&self) -> bool {
-            false
         }
         fn wants_tab_input(&self) -> bool {
             self.in_root(|root| root.wants_tab_input())
@@ -1052,9 +1049,6 @@ mod component_adapter {
         }
         fn traps_focus(&self) -> bool {
             self.in_root(|root| root.traps_focus()).unwrap_or_default()
-        }
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            None
         }
         fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
             self.in_root(|root| root.synthetic_accessibility_rect(path))
@@ -1256,9 +1250,12 @@ mod component_adapter {
             self.in_root(|root| root.needs_animation_frame())
                 .unwrap_or_default()
         }
+        /// A save the store has not confirmed yet is pending too: "Saving…"
+        /// is a placeholder for "Saved", so a still capture waits for it.
         fn has_pending_visual_work(&self) -> bool {
             self.in_root(Widget::has_pending_visual_work)
                 .unwrap_or_default()
+                || self.saving()
         }
         fn has_transient_feedback(&self) -> bool {
             let binding = self.component.callback_binding();
@@ -1433,6 +1430,11 @@ mod component_adapter {
     impl crate::search::capability::SearchSource for BoundAppWidget {
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
+        }
+        fn search_provider_descriptors(
+            &self,
+        ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+            self.component.search_provider_descriptors()
         }
         fn activate_search_result(
             &mut self,
@@ -1680,15 +1682,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::undo::UndoControl for BoundAppWidget {
-        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            // Individual bound nodes receive their own record/instance status.
-        }
-        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-            // The host captures the origin from its admitted node map.
-            None
-        }
-    }
+    impl crate::undo::UndoControl for BoundAppWidget {}
 
     impl crate::undo::CommittedActions for BoundAppWidget {
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -1775,11 +1769,6 @@ mod component_adapter {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             self.component.root.as_deref()?.permission_hint()
-        }
-        // Canonical components discover commands through resource operations.
-        // Legacy direct callbacks are deliberately not exported by this adapter.
-        fn commands(&self) -> Vec<AppCommand> {
-            vec![]
         }
         fn device_shell_operation(
             &mut self,

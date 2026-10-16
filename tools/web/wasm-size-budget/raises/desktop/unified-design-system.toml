@@ -1,4 +1,0 @@
-bytes = 1572864
-measured = 91266034
-run = 71179
-reason = "Unified design system: shared semantic controls, navigation, typography and accessibility behavior across the desktop's web applications, replacing application-local chrome. SDK run 71179 measured the optimized release desktop module at 91266034 bytes; this receipt adds the standard 1% headroom rounded to 64 KiB. Font assets ship separately and are not counted in this module measurement."

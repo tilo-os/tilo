@@ -116,10 +116,11 @@ impl Daemon {
                 "userspace cohort cannot change boot or VM-wide components".into(),
             ));
         }
+        // Admission rechecks stored content even when the generation already
+        // names it. A no-op is not permission to trust an old import receipt.
+        let verified_layer = self.layers.verify(&member.layer)?;
         let path = self.layers.require(&member.layer)?;
-        let historical = self.layers.provenance(&member.layer).ok_or_else(|| {
-            DaemonError::InvalidParams("userspace cohort: layer has no import provenance".into())
-        })?;
+        let historical = verified_layer.provenance;
         if historical.component != member.component
             || member.build.target.as_deref()
                 != Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH).as_str())
@@ -138,11 +139,14 @@ impl Daemon {
                     "userspace cohort requires the complete thin graph".into(),
                 ));
             }
-            Some(crate::cohort::verify(
-                &path,
-                base_registry,
-                std::env::consts::ARCH,
-            )?)
+            let cohort = crate::cohort::verify(&path, base_registry, std::env::consts::ARCH)?;
+            if cohort.source_inventory.as_deref() != Some(member.source_inventory.as_str()) {
+                return Err(DaemonError::InvalidParams(
+                    "userspace cohort: signed system membership differs from the source inventory"
+                        .into(),
+                ));
+            }
+            Some(cohort)
         } else {
             None
         };
@@ -243,7 +247,85 @@ impl Daemon {
         Ok((session, selected, from, to))
     }
 
+    pub(super) fn cohort_is_active(
+        &mut self,
+        session: &Session,
+        layers: &[std::path::PathBuf],
+        cohort: &crate::cohort::VerifiedCohort,
+    ) -> Result<bool, DaemonError> {
+        self.apply.prepare_cohort_selection(session, layers)?;
+        let selected = self.apply.cohort_selected_apps(session, layers)?;
+        if !cohort.selections_identical(&selected) {
+            return Ok(false);
+        }
+        let view = self.apply.cohort_runtime_view(session, layers, true)?;
+        super::runtime_retention::validate_current(&view, &selected)?;
+        self.verify_parity(Some(session.clone()))?;
+        Ok(true)
+    }
+
+    fn userspace_identical(
+        &mut self,
+        request: &UserspaceApply,
+        admitted: &Admitted,
+    ) -> Result<bool, DaemonError> {
+        let current = self
+            .slots
+            .generation(&request.slot, admitted.record.current)?;
+        if admitted
+            .entries
+            .iter()
+            .any(|(name, entry)| current.components.get(name) != Some(entry))
+        {
+            return Ok(false);
+        }
+        let session = admitted
+            .record
+            .session()
+            .ok_or_else(|| DaemonError::NoSession(request.slot.clone()))?;
+        let layers = self.system_layers(&admitted.record, self.layer_paths(&current)?)?;
+        if !self.cohort_is_active(&session, &layers, &admitted.cohort)? {
+            return Ok(false);
+        }
+        let record = self.load_slot(&request.slot)?;
+        if record.current != request.expected_generation
+            || record.session().as_ref() != Some(&session)
+            || self.slots.pending(&request.slot).is_some()
+        {
+            return Err(DaemonError::InvalidParams(
+                "userspace cohort: session changed during no-op verification".into(),
+            ));
+        }
+        Ok(true)
+    }
+
     fn activate_userspace(
+        &mut self,
+        request: UserspaceApply,
+        admitted: Admitted,
+        mut phases: Vec<UserspacePhase>,
+    ) -> Result<UserspaceResult, DaemonError> {
+        let preparation = Instant::now();
+        if self.userspace_identical(&request, &admitted)? {
+            phases.push(UserspacePhase {
+                name: "verify-active-no-op".into(),
+                seconds: preparation.elapsed().as_secs_f64(),
+            });
+            let mut apply = super::unchanged(admitted.record);
+            apply.warnings = admitted.warnings;
+            return Ok(UserspaceResult {
+                apply,
+                source: *request.source,
+                source_inventory: request.source_inventory,
+                members: request.members,
+                phases,
+                failure: None,
+            });
+        }
+        self.activate_changed_userspace(request, admitted, phases)
+    }
+
+    fn activate_changed_userspace(
         &mut self,
         request: UserspaceApply,
         mut admitted: Admitted,
@@ -415,9 +497,170 @@ mod tests {
         }
     }
 
+    fn alter_request(request: &mut UserspaceApply, case: &str) {
+        match case {
+            "stale" => request.expected_generation = 9,
+            "owner" => request.expected_session.login_wrapper = Some(999),
+            "drift" => request.members.last_mut().unwrap().source_inventory = "cd".repeat(32),
+            "missing" => request.members.last_mut().unwrap().layer = "ef".repeat(32),
+            "signed-drift" => {
+                request.source_inventory = "cd".repeat(32);
+                for member in &mut request.members {
+                    member.source_inventory = request.source_inventory.clone();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn configure_repeat(
+        apply: &mut RecordingApply,
+        packages: &[package_store::registry::InstalledPackage],
+        root: &Path,
+        case: &str,
+    ) {
+        apply.cohort_runtime_root = Some(root.join("layer"));
+        let mut selected = packages.to_vec();
+        if case == "noop-root-drift" {
+            selected.first_mut().unwrap().package_id_hex = "ff".repeat(32);
+        } else if case == "noop-duplicate" {
+            selected.push(selected.first().unwrap().clone());
+        }
+        apply.cohort_selections.extend([
+            crate::SelectedApps::default(),
+            crate::SelectedApps::default(),
+            crate::SelectedApps {
+                apps: if case == "noop-missing" {
+                    Vec::new()
+                } else {
+                    selected
+                },
+                runtime_paths: std::collections::BTreeMap::default(),
+            },
+        ]);
+        for package in packages {
+            apply.cohort_replies.push_back(format!(
+                "cohort-selection: {}\n",
+                serde_json::json!({
+                    "id": package.id, "version": package.version, "root": package.package_id_hex,
+                    "runtime": package.runtime, "preserved": false, "held": false, "pinned": true,
+                })
+            ));
+        }
+    }
+
+    fn verify_repeat(
+        daemon: &mut Daemon,
+        mut request: UserspaceApply,
+        root: &Path,
+        case: &str,
+        mirror: &Arc<Mutex<Vec<String>>>,
+    ) {
+        request.expected_generation = 1;
+        mirror.lock().unwrap().clear();
+        if case == "noop-damaged" {
+            let layer = &request.members.first().unwrap().layer;
+            fs::write(
+                daemon.layers.path(layer).join("usr/bin/launcher"),
+                "damaged",
+            )
+            .unwrap();
+            assert!(
+                daemon
+                    .admit_userspace_against(&request, &root.join("base"))
+                    .is_err()
+            );
+            assert!(mirror.lock().unwrap().is_empty());
+            assert_eq!(daemon.load_slot(&request.slot).unwrap().current, 1);
+            return;
+        }
+        let admitted = daemon
+            .admit_userspace_against(&request, &root.join("base"))
+            .unwrap();
+        let repeated = daemon
+            .activate_userspace(request, admitted, Vec::new())
+            .unwrap();
+        if case == "noop" {
+            assert!(!repeated.apply.changed);
+            assert_eq!(repeated.apply.generation, 1);
+            assert!(repeated.apply.actions.is_empty());
+            assert_eq!(daemon.slots.generations(&repeated.apply.slot), vec![1]);
+            let calls = mirror.lock().unwrap().clone();
+            assert!(
+                calls
+                    .iter()
+                    .any(|call| call.starts_with("cohort_selected_apps "))
+            );
+            assert!(
+                calls
+                    .iter()
+                    .any(|call| call.starts_with("wait_session_ready "))
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| call.starts_with("install_cohort_app ")
+                        || call.starts_with("restart")
+                        || call.starts_with("stop ")
+                        || call.starts_with("start ")
+                        || call.starts_with("write_dropin "))
+            );
+        } else {
+            assert!(repeated.apply.changed);
+            assert_eq!(repeated.apply.generation, 2);
+            assert_eq!(repeated.apply.cohort_selection.len(), 2);
+        }
+    }
+
+    fn verify_first_refresh(
+        result: &tilo_vm_protocol::UserspaceResult,
+        mirror: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let calls = mirror.lock().unwrap();
+        let selection = calls
+            .iter()
+            .position(|line| line.starts_with("install_cohort_app "))
+            .unwrap();
+        let transitions = result
+            .apply
+            .actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    Action::RestartDesktop { .. } | Action::StartUnit { .. }
+                )
+            })
+            .count();
+        assert_eq!(transitions, 1, "{calls:?}");
+        let refresh = calls
+            .iter()
+            .position(|line| line.starts_with("restart_desktop ") || line.starts_with("stop "))
+            .unwrap();
+        assert!(
+            selection < refresh,
+            "selection must finish before the sole transition: {calls:?}"
+        );
+        assert!(calls.iter().any(|line| line.starts_with("cohort_view ")));
+        drop(calls);
+    }
+
     fn subject(root: &Path) {
         for case in [
-            "valid", "partial", "stale", "owner", "drift", "missing", "reused", "ordinary",
+            "valid",
+            "partial",
+            "stale",
+            "owner",
+            "drift",
+            "missing",
+            "reused",
+            "ordinary",
+            "signed-drift",
+            "noop",
+            "noop-missing",
+            "noop-root-drift",
+            "noop-duplicate",
+            "noop-damaged",
         ] {
             let state = root.join(format!("state-{case}"));
             let mirror = Arc::new(Mutex::new(Vec::new()));
@@ -433,6 +676,9 @@ mod tests {
                     "id": package.id, "version": package.version, "root": package.package_id_hex,
                     "runtime": package.runtime, "preserved": false, "held": false, "pinned": true,
                 })));
+            }
+            if case.starts_with("noop") {
+                configure_repeat(&mut apply, row.entries(), root, case);
             }
             let manifest = Manifest::load(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/components.toml"),
@@ -454,24 +700,21 @@ mod tests {
                 request.slot = record.name.clone();
                 request.expected_session = record.session().unwrap().identity();
             }
-            match case {
-                "stale" => request.expected_generation = 9,
-                "owner" => request.expected_session.login_wrapper = Some(999),
-                "drift" => request.members.last_mut().unwrap().source_inventory = "cd".repeat(32),
-                "missing" => request.members.last_mut().unwrap().layer = "ef".repeat(32),
-                _ => {}
-            }
+            alter_request(&mut request, case);
             mirror.lock().unwrap().clear();
             let before = daemon.load_slot(&request.slot).unwrap();
             let result = daemon.admit_userspace_against(&request, &root.join("base"));
-            if matches!(case, "stale" | "owner" | "drift" | "missing") {
+            if matches!(
+                case,
+                "stale" | "owner" | "drift" | "missing" | "signed-drift"
+            ) {
                 assert!(result.is_err(), "{case} must fail before activation");
                 assert!(mirror.lock().unwrap().is_empty());
                 assert!(daemon.slots.generations(&request.slot).is_empty());
                 continue;
             }
             let result = daemon
-                .activate_userspace(request, result.unwrap(), Vec::new())
+                .activate_userspace(request.clone(), result.unwrap(), Vec::new())
                 .unwrap();
             assert_eq!(result.apply.generation, 1);
             assert_eq!(result.failure.is_some(), case == "partial");
@@ -483,33 +726,10 @@ mod tests {
             assert_eq!(before.owner, after.owner);
             assert_eq!(before.device, after.device);
             assert_eq!(after.current, 1);
-            let calls = mirror.lock().unwrap();
-            let selection = calls
-                .iter()
-                .position(|line| line.starts_with("install_cohort_app "))
-                .unwrap();
-            let transitions = result
-                .apply
-                .actions
-                .iter()
-                .filter(|action| {
-                    matches!(
-                        action,
-                        Action::RestartDesktop { .. } | Action::StartUnit { .. }
-                    )
-                })
-                .count();
-            assert_eq!(transitions, 1, "{calls:?}");
-            let refresh = calls
-                .iter()
-                .position(|line| line.starts_with("restart_desktop ") || line.starts_with("stop "))
-                .unwrap();
-            assert!(
-                selection < refresh,
-                "selection must finish before the sole transition: {calls:?}"
-            );
-            assert!(calls.iter().any(|line| line.starts_with("cohort_view ")));
-            drop(calls);
+            verify_first_refresh(&result, &mirror);
+            if case.starts_with("noop") {
+                verify_repeat(&mut daemon, request, root, case, &mirror);
+            }
         }
     }
 

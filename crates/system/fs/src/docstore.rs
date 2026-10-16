@@ -1,6 +1,6 @@
 //! Content-addressed CRDT change-history storage + versioning for office documents.
 //!
-//! Office files use a canonical `qdoc` automerge document rather than an
+//! Office files use a canonical `tilo-doc` automerge document rather than an
 //! opaque blob on each write; the document is persisted here as change history —
 //! each change stored once as a content-addressed blob in [`ContentStore`],
 //! and a *version* a small [`VersionManifest`] of change hashes chained to
@@ -107,7 +107,7 @@ impl<'a> DocStore<'a> {
             .collect();
         let parent = self.latest().map(|v| *v.manifest_hash.as_bytes());
         let version = self.history.len() as u64;
-        let time_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
+        let time_ms = tilo_clock::unix_now_ms_i64();
         let manifest = VersionManifest {
             version,
             change_hashes,

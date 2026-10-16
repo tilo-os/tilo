@@ -95,7 +95,8 @@ impl<R: BufRead, W: Write> Client<R, W> {
         if matches!(
             &envelope.request,
             crate::Request::DeviceActions(_) | crate::Request::DeviceUnlockEnrol(_)
-        ) {
+        ) || matches!(&envelope.request, crate::Request::Control(p) if p.private_args.is_some())
+        {
             // Private frames never enter the retained public upload buffer.
             let mut line = zeroize::Zeroizing::new(
                 serde_json::to_vec(&envelope).map_err(|e| ClientError::Protocol(e.to_string()))?,

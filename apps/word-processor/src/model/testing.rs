@@ -3,7 +3,7 @@
 use automerge::AutoCommit;
 
 /// A Writer document whose body holds the schema and nothing else, as a
-/// qdoc [`tilo_doc::Document`] to build block by block: for tests.
+/// tilo-doc [`tilo_doc::Document`] to build block by block: for tests.
 ///
 /// # Errors
 /// Returns the document's write error.

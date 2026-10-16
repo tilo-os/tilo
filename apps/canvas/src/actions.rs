@@ -1845,7 +1845,7 @@ fn check_file(file: &crate::document::ArtworkFile) -> Result<(), Refusal> {
         medium.validate().map_err(refuse)?;
     }
     let with_media = Artwork {
-        media: file.media.clone(),
+        media: file.media.clone().into(),
         ..Artwork::default()
     };
     for layer in &file.layers {

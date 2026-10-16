@@ -4138,6 +4138,30 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         .to_string();
         collect_cargo_message(&dependency, &manifest, &mut artifacts);
         assert!(!artifacts.contains_key("other"));
+
+        // Cargo spells the manifest as it was reached, here through a symlinked directory
+        // (macOS's /tmp); the caller's canonical path names the same file.
+        #[cfg(unix)]
+        {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let real = temp.path().join("real");
+            std::fs::create_dir(&real).expect("real directory");
+            std::fs::write(real.join("Cargo.toml"), "").expect("manifest");
+            std::os::unix::fs::symlink(&real, temp.path().join("link")).expect("symlink");
+            let canonical = real
+                .join("Cargo.toml")
+                .canonicalize()
+                .expect("canonical manifest");
+            let line = serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": temp.path().join("link/Cargo.toml"),
+                "target": {"name": "linked", "kind": ["bin"]},
+                "executable": "/workspace/target/release/linked",
+            })
+            .to_string();
+            collect_cargo_message(&line, &canonical, &mut artifacts);
+            assert!(artifacts.contains_key("linked"));
+        }
     }
 
     // Phase: package_refuses_to_replace_output_before_building.
@@ -4492,13 +4516,16 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         let mut child = spawn_dev_binary(
             temp.path(),
             &executable,
-            &[OsString::from("--document"), OsString::from("A file.qdoc")],
+            &[
+                OsString::from("--document"),
+                OsString::from("A file.tilo-doc"),
+            ],
         )
         .unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(
             std::fs::read_to_string(output).unwrap(),
-            format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+            format!("{}\n--document\nA file.tilo-doc\n", temp.path().display())
         );
     }
 }
@@ -4785,8 +4812,15 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
     let forks = ["wayland-backend", "rustls-native-certs"];
     // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
-    let git_forks = ["accesskit", "atspi", "rustypipe"];
+    let git_forks = ["accesskit", "atspi"];
+    // A fork only an engine library's graph uses (rustypipe, which Music and
+    // Tube load from the YouTube engine) is not the SDK's and stays out.
+    let engine_forks = ["rustypipe"];
     let pinned_as_workspace = |patches: &toml::Table| {
+        for name in engine_forks {
+            assert!(workspace_patches.contains_key(name), "{name}");
+            assert!(!patches.contains_key(name), "{name}");
+        }
         for name in git_forks {
             assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
             assert!(
@@ -5091,14 +5125,17 @@ fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
     let mut child = spawn_dev_binary(
         temp.path(),
         &executable,
-        &[OsString::from("--document"), OsString::from("A file.qdoc")],
+        &[
+            OsString::from("--document"),
+            OsString::from("A file.tilo-doc"),
+        ],
     )
     .unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(output).unwrap(),
         format!(
-            "{}\n--document\nA file.qdoc\n",
+            "{}\n--document\nA file.tilo-doc\n",
             temp.path().canonicalize().unwrap().display()
         )
     );

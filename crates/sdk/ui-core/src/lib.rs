@@ -228,6 +228,8 @@ pub mod storage;
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+#[cfg(any(test, feature = "lazy-hyphenation", feature = "lazy-image-decode"))]
+mod deferred;
 pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
@@ -320,6 +322,8 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 pub use accesskit;
 pub use automerge;
 pub use taffy;
+/// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
+pub use tilo_lock as lock;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
@@ -378,6 +382,9 @@ pub use state::{
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
+pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
+#[cfg(feature = "lazy-hyphenation")]
+pub use text_break::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 pub use theme::{
     AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
 };
@@ -450,12 +457,11 @@ pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
-    compare_entries, deterministic_narrative, heads_for_entry, participant_display_label,
-    validate_narrative, version_index_for_entry,
+    compare_entries, deterministic_narrative, heads_for_entry, human_label,
+    participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
-    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
-    SemanticActivity, StatusOrigin, StatusSharing,
+    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
@@ -470,7 +476,10 @@ pub use history_source::runs::{
     AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
+pub use status_bubble::{
+    SAVE_GIVE_UP, SAVE_NOTICEABLE, SAVE_STALL, SaveAction, SaveNotice, SaveState,
+    SaveStatusSurface, StatusBubble,
+};
 pub use text_edit::{
     CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
     delete_last_grapheme, word_at_caret,

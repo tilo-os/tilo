@@ -1,6 +1,7 @@
 //! Which keyed address hash each guest joined from (7 days) and which
 //! hashes are cooling down after a removal (24 hours), kept on the
-//! persistent volume so a restart does not lift a cooldown.
+//! persistent volume so a restart lifts neither a cooldown nor an address's
+//! guest join windows.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -46,13 +47,11 @@ impl GuestLedger {
         self.stored.cooldowns.retain(|_, until| *until > now_ms);
     }
 
-    /// Writes beside the ledger and renames, so a crash mid-write never
-    /// leaves a torn file that would refuse the next start.
+    /// Replaces the ledger atomically, so a crash mid-write never leaves a
+    /// torn file that would refuse the next start.
     fn save(&self) -> Result<()> {
-        let temporary = self.path.with_extension("json.new");
-        std::fs::write(&temporary, serde_json::to_vec(&self.stored)?)
-            .with_context(|| format!("write {}", temporary.display()))?;
-        std::fs::rename(&temporary, &self.path).context("save the guest ledger")
+        tilo_files::native::atomic::write(&self.path, &serde_json::to_vec(&self.stored)?)
+            .context("save the guest ledger")
     }
 
     pub fn record_join(&mut self, user_public_key: &str, ip_hash: &str, now_ms: u64) -> Result<()> {
@@ -79,6 +78,17 @@ impl GuestLedger {
             .insert(joined.ip_hash, now_ms.saturating_add(COOLDOWN_MS));
         self.save()?;
         Ok(true)
+    }
+
+    /// Every join since `since_ms`, as `(address hash, when)`: what the
+    /// per-address join windows held before a restart. A guest who joined
+    /// again counts once, at their latest join.
+    pub fn joins_since(&self, since_ms: u64) -> impl Iterator<Item = (&str, u64)> {
+        self.stored
+            .joins
+            .values()
+            .filter(move |joined| joined.at_ms >= since_ms)
+            .map(|joined| (joined.ip_hash.as_str(), joined.at_ms))
     }
 
     pub fn cooling_down(&self, ip_hash: &str, now_ms: u64) -> bool {

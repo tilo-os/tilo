@@ -59,8 +59,8 @@ pub fn kill_tree(child: &mut Child) {
 
 /// Stop a child started with [`own_process_tree`] and reap it. With a
 /// non-zero `grace`, the tree is first asked to exit (`SIGTERM` on Unix) and
-/// the child gets that long to do so; whatever remains is then killed with
-/// [`kill_tree`].
+/// gets that long to do so: until the child and, on Unix, every process left
+/// in its group are gone. Whatever remains is then killed with [`kill_tree`].
 pub fn terminate_tree(child: &mut Child, grace: Duration) {
     #[cfg(unix)]
     if !grace.is_zero()
@@ -74,7 +74,13 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
             .checked_add(grace)
             .unwrap_or_else(Instant::now);
         while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
+            // The leader exiting is not enough: a worker it started may still
+            // be winding down in the group. Signal 0 only probes for one.
+            // SAFETY: as above; signal 0 delivers nothing.
+            if child.try_wait().ok().flatten().is_some()
+                && unsafe { libc::kill(group, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -86,83 +92,45 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
     let _ = child.wait();
 }
 
-/// Signal an owned process tree and reap its leader with a bounded grace period.
-///
-/// On Linux the leader remains unreaped until its descendants are signalled, so
-/// its process-group number cannot be reused by another session during cleanup.
-/// Returns the leader's status only when it exited within `grace`; forced or
-/// unobservable exits return `None`. This reports only the leader's status;
-/// it is not evidence that all descendant writers completed their work.
+/// Wait up to `timeout` for `child` to exit, and reap it. `None` when it is
+/// still running at the deadline; it is left running. On Unix this sleeps in
+/// [`wait_child_or`] rather than polling.
 ///
 /// # Errors
-/// Refuses a child without its own process group, or an invalid child identity.
-/// This refusal does not signal the caller's or another session's process group.
-pub fn terminate_tree_checked(
-    child: &mut Child,
-    grace: Duration,
-) -> std::io::Result<Option<ExitStatus>> {
-    #[cfg(target_os = "linux")]
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now().checked_add(timeout);
+    #[cfg(unix)]
     {
-        if child.try_wait()?.is_some() {
-            // A reaped child's former group number is no longer ours to signal.
+        Ok(match wait_child_or(child, None, deadline)? {
+            Wakeup::Exited(status) => Some(status),
+            Wakeup::Woken | Wakeup::Deadline => None,
+        })
+    }
+    #[cfg(not(unix))]
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(None);
         }
-        let pid = i32::try_from(child.id()).map_err(std::io::Error::other)?;
-        // SAFETY: getpgid only inspects this unreaped child's process group.
-        if unsafe { libc::getpgid(pid) } != pid {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "child has no privately owned process group",
-            ));
-        }
-        let group = pid.checked_neg().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child group")
-        })?;
-        // SAFETY: the group was checked above and its unreaped leader retains
-        // the pid, preventing a newly allocated unrelated group from matching.
-        unsafe { libc::kill(group, libc::SIGTERM) };
-        let deadline = Instant::now()
-            .checked_add(grace)
-            .unwrap_or_else(Instant::now);
-        while Instant::now() < deadline {
-            if exited_unreaped(pid) {
-                // SAFETY: the leader is still unreaped, so this is still our
-                // exact group. Signal descendants before releasing its pid.
-                unsafe { libc::kill(group, libc::SIGKILL) };
-                return child.wait().map(Some);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        kill_tree(child);
-        child.wait()?;
-        Ok(None)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        terminate_tree(child, grace);
-        Ok(None)
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-#[cfg(target_os = "linux")]
-fn exited_unreaped(pid: i32) -> bool {
-    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-    // SAFETY: waitid receives writable siginfo storage and observes only our
-    // child. WNOWAIT deliberately retains the leader until group cleanup.
-    let observed = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            pid.cast_unsigned(),
-            info.as_mut_ptr(),
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
-    if observed != 0 {
-        return false;
+/// [`wait_timeout`], then kill and reap a child still running at the
+/// deadline. `None` when it had to be killed.
+///
+/// # Errors
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let status = wait_timeout(child, timeout)?;
+    if status.is_none() {
+        let _ = child.kill();
+        child.wait()?;
     }
-    // SAFETY: waitid succeeded, and the zeroed storage also covers the
-    // WNOHANG case in which no child's status was available.
-    unsafe { info.assume_init().si_pid() == pid }
+    Ok(status)
 }
 
 /// Mark a script or program file executable for everyone and writable only
@@ -808,70 +776,27 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn checked_tree_stop_distinguishes_graceful_forced_and_unowned_children() {
-        struct Owned(Child);
-        impl Drop for Owned {
-            fn drop(&mut self) {
-                if matches!(self.0.try_wait(), Ok(None)) {
-                    terminate_tree(&mut self.0, Duration::ZERO);
-                }
-            }
-        }
-        // Start the descendant before announcing readiness and wait in the
-        // shell builtin. A foreground sleep started after `ready` can miss
-        // the group signal and defer the shell's TERM trap past the grace.
-        for (script, expected_clean) in [
-            ("trap 'exit 0' TERM; sleep 30 & printf ready; wait", true),
-            ("trap '' TERM; sleep 30 & printf ready; wait", false),
-        ] {
-            let mut command = Command::new("sh");
-            command.args(["-c", script]).stdout(Stdio::piped());
-            let mut child = Owned(own_process_tree(&mut command).spawn().unwrap());
-            let mut output = child.0.stdout.take().unwrap();
-            let (ready, received) = std::sync::mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                let mut bytes = [0; 5];
-                ready
-                    .send(output.read_exact(&mut bytes).map(|()| bytes))
-                    .unwrap();
-                let mut remaining = Vec::new();
-                output.read_to_end(&mut remaining).unwrap();
-            });
-            assert_eq!(
-                received
-                    .recv_timeout(Duration::from_secs(2))
-                    .unwrap()
-                    .unwrap(),
-                *b"ready",
-                "the signal handler is installed before shutdown is requested"
-            );
-            let started = Instant::now();
-            let status = terminate_tree_checked(&mut child.0, Duration::from_millis(100)).unwrap();
-            assert_eq!(status.is_some_and(|exit| exit.success()), expected_clean);
-            assert!(started.elapsed() < Duration::from_secs(2));
-            assert!(child.0.try_wait().unwrap().is_some());
-            reader.join().unwrap();
-            assert!(
-                terminate_tree_checked(&mut child.0, Duration::from_millis(100))
-                    .unwrap()
-                    .is_none(),
-                "a reaped handle never authorizes another group signal"
-            );
-        }
-        let mut unowned = Command::new("sleep").arg("30").spawn().unwrap();
-        let refusal = terminate_tree_checked(&mut unowned, Duration::from_millis(100));
-        // Cleanup targets the child handle only, because it has no private group.
-        let still_running = unowned.try_wait().unwrap().is_none();
-        unowned.kill().unwrap();
-        unowned.wait().unwrap();
+    fn a_bounded_wait_reaps_an_exited_child_and_kills_only_on_request() {
+        let mut quick = Command::new("true").spawn().unwrap();
+        assert!(
+            wait_or_kill(&mut quick, UNTESTED_TIMEOUT)
+                .unwrap()
+                .is_some_and(|status| status.success())
+        );
+        let mut slow = Command::new("sleep").arg("60").spawn().unwrap();
         assert_eq!(
-            refusal.unwrap_err().kind(),
-            std::io::ErrorKind::InvalidInput
+            wait_timeout(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
         );
         assert!(
-            still_running,
-            "refused group ownership must not signal the child"
+            slow.try_wait().unwrap().is_none(),
+            "a plain wait leaves it running"
         );
+        assert_eq!(
+            wait_or_kill(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(slow.try_wait().unwrap().is_some(), "killed and reaped");
     }
 
     #[test]

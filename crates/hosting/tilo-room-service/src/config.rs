@@ -55,6 +55,9 @@ pub struct PersistentConfig {
     /// The channels its Chat opens with while it has none
     /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, none.
     pub chat_channels: Vec<String>,
+    /// The strips, by name, the room's shared desktop has
+    /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
+    pub strips: Vec<String>,
     /// Proxies whose `X-Forwarded-For` names the visitor.
     pub trusted_proxies: TrustedProxies,
     /// User public keys (hex) made Owners of the room at start.
@@ -67,6 +70,10 @@ pub struct PersistentConfig {
     pub seed_apps: Vec<String>,
     /// Seconds between resets of the seeded non-chat content; 0 never.
     pub reset_secs: u64,
+    /// Minutes a guest may be away (no session) before the relay removes
+    /// them from the room (`TILO_ROOMS_PRUNE_AFTER_MINS`); a guest who
+    /// comes back later joins through the door again as the same person.
+    pub prune_after_mins: u64,
     /// The room's owner root, mounted from the operator's encrypted secrets.
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
@@ -78,6 +85,14 @@ pub struct PersistentConfig {
     pub moderation_model: Option<String>,
     /// Spectator sessions (the homepage embed) at once.
     pub max_spectators: usize,
+    /// Guest joins one address may make (`TILO_ROOMS_GUEST_JOINS_PER_10_MIN`,
+    /// `TILO_ROOMS_GUEST_JOINS_PER_DAY`). An office or a mobile carrier puts
+    /// many visitors behind one address, and each one past the limit only
+    /// watches until it frees up.
+    pub guest_joins: crate::limits::JoinRates,
+    /// Spectator certificates one address may take
+    /// (`TILO_ROOMS_SPECTATES_PER_10_MIN`; no daily cap).
+    pub spectator_joins: crate::limits::JoinRates,
     /// The relay's published origin when it is reached through the ingress
     /// (TLS ends there and forwards to `relay_plain`), so no public port or
     /// load balancer of its own is needed.
@@ -404,6 +419,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         (1..=100_000).contains(&max_spectators),
         "TILO_ROOMS_MAX_SPECTATORS must be 1-100000"
     );
+    let (guest_joins, spectator_joins) = join_rates(var)?;
     let token = PathBuf::from("/run/secrets/discord-bot-token");
     let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = moderation_model(var)?;
@@ -411,6 +427,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         name,
         shown_name: shown_name(var)?,
         chat_channels: chat_channels(var)?,
+        strips: strips(var)?,
         trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
             .unwrap_or_default()
             .parse()
@@ -429,6 +446,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
                 .collect()
         },
         reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
+        prune_after_mins: prune_after_mins(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
         discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
@@ -439,6 +457,8 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
             .or_else(|| moderation_key.is_file().then_some(moderation_key)),
         moderation_model,
         max_spectators,
+        guest_joins,
+        spectator_joins,
         relay_origin,
         web_entry,
         relay_plain: parsed(
@@ -448,6 +468,53 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         )?,
         live,
     }))
+}
+
+/// The longest `TILO_ROOMS_PRUNE_AFTER_MINS` takes: a year.
+const MAX_PRUNE_AFTER_MINS: u64 = 365 * 24 * 60;
+
+/// `TILO_ROOMS_PRUNE_AFTER_MINS`: minutes without a session after which
+/// the relay removes a guest, 60 unless set.
+fn prune_after_mins(var: &impl Fn(&str) -> Option<String>) -> Result<u64> {
+    let minutes = parsed(var, "TILO_ROOMS_PRUNE_AFTER_MINS", 60_u64)?;
+    ensure!(
+        (1..=MAX_PRUNE_AFTER_MINS).contains(&minutes),
+        "TILO_ROOMS_PRUNE_AFTER_MINS must be 1-{MAX_PRUNE_AFTER_MINS}"
+    );
+    Ok(minutes)
+}
+
+/// The per-address join limits: guests' and spectators'.
+fn join_rates(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<(crate::limits::JoinRates, crate::limits::JoinRates)> {
+    let defaults = crate::limits::JoinRates::GUESTS;
+    let guest_joins = crate::limits::JoinRates {
+        per_ten_minutes: parsed(
+            var,
+            "TILO_ROOMS_GUEST_JOINS_PER_10_MIN",
+            defaults.per_ten_minutes,
+        )?,
+        per_day: parsed(var, "TILO_ROOMS_GUEST_JOINS_PER_DAY", defaults.per_day)?,
+    };
+    ensure!(
+        (1..=100_000).contains(&guest_joins.per_ten_minutes)
+            && (guest_joins.per_ten_minutes..=1_000_000).contains(&guest_joins.per_day),
+        "TILO_ROOMS_GUEST_JOINS_PER_10_MIN must be 1-100000 and TILO_ROOMS_GUEST_JOINS_PER_DAY at least that, up to 1000000"
+    );
+    let spectator_joins = crate::limits::JoinRates {
+        per_ten_minutes: parsed(
+            var,
+            "TILO_ROOMS_SPECTATES_PER_10_MIN",
+            crate::limits::JoinRates::SPECTATORS.per_ten_minutes,
+        )?,
+        ..crate::limits::JoinRates::SPECTATORS
+    };
+    ensure!(
+        (1..=100_000).contains(&spectator_joins.per_ten_minutes),
+        "TILO_ROOMS_SPECTATES_PER_10_MIN must be 1-100000"
+    );
+    Ok((guest_joins, spectator_joins))
 }
 
 /// The name people see for the persistent room, `TILO_ROOMS_NAME`, when set.
@@ -491,6 +558,32 @@ fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
         "TILO_ROOMS_CHAT_CHANNELS names a channel twice"
     );
     Ok(channels)
+}
+
+/// `TILO_ROOMS_STRIPS`: comma-separated strip names, each 1-48
+/// characters, none twice.
+fn strips(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let strips: Vec<String> = var("TILO_ROOMS_STRIPS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for name in &strips {
+        ensure!(
+            name.chars().count() <= 48 && !name.chars().any(char::is_control),
+            "TILO_ROOMS_STRIPS names strips of up to 48 characters, not {name:?}"
+        );
+    }
+    let mut unique = strips.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    ensure!(
+        unique.len() == strips.len(),
+        "TILO_ROOMS_STRIPS names a strip twice"
+    );
+    Ok(strips)
 }
 
 /// `TILO_ROOMS_MODERATION_MODEL`, a model id.
@@ -560,6 +653,11 @@ mod tests {
             Some("https://app.example/")
         );
         assert_eq!(persistent.max_spectators, 1000);
+        assert_eq!(persistent.guest_joins, crate::limits::JoinRates::GUESTS);
+        assert_eq!(
+            persistent.spectator_joins,
+            crate::limits::JoinRates::SPECTATORS
+        );
         assert_eq!(
             persistent.relay_plain,
             SocketAddr::from(([0, 0, 0, 0], 9780))
@@ -661,8 +759,53 @@ mod tests {
                 "{bad}"
             );
         }
+        assert!(defaults.strips.is_empty());
+        let strips = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_STRIPS", " Main, Games night,,Quiet "),
+        ])
+        .unwrap();
+        assert_eq!(
+            strips.persistent.unwrap().strips,
+            ["Main", "Games night", "Quiet"]
+        );
+        let long = "x".repeat(49);
+        for bad in ["Main,Main", long.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_STRIPS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
         let off = config(&[base[0], base[1], ("TILO_ROOMS_RESET_SECS", "0")]).unwrap();
         assert_eq!(off.persistent.unwrap().reset_secs, 0);
+    }
+
+    #[test]
+    fn guests_are_pruned_after_an_hour_away_unless_the_operator_says_otherwise() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        assert_eq!(
+            config(&base).unwrap().persistent.unwrap().prune_after_mins,
+            60
+        );
+        let soon = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]).unwrap();
+        assert_eq!(soon.persistent.unwrap().prune_after_mins, 1);
+        let year = MAX_PRUNE_AFTER_MINS.to_string();
+        let late = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", &year)]).unwrap();
+        assert_eq!(
+            late.persistent.unwrap().prune_after_mins,
+            MAX_PRUNE_AFTER_MINS
+        );
+        let past = (MAX_PRUNE_AFTER_MINS + 1).to_string();
+        for bad in ["0", "-1", "soon", past.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -721,6 +864,36 @@ mod tests {
             .is_err()
         );
         assert!(config(&[plaza, ingress, ("TILO_ROOMS_MAX_SPECTATORS", "0")]).is_err());
+        let office = config(&[
+            plaza,
+            ingress,
+            ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "200"),
+            ("TILO_ROOMS_GUEST_JOINS_PER_DAY", "2000"),
+            ("TILO_ROOMS_SPECTATES_PER_10_MIN", "500"),
+        ])
+        .unwrap();
+        let office = office.persistent.unwrap();
+        assert_eq!(
+            office.guest_joins,
+            crate::limits::JoinRates {
+                per_ten_minutes: 200,
+                per_day: 2000
+            }
+        );
+        assert_eq!(office.spectator_joins.per_ten_minutes, 500);
+        assert_eq!(office.spectator_joins.per_day, usize::MAX);
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "0")]).is_err());
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_GUEST_JOINS_PER_10_MIN", "50"),
+                ("TILO_ROOMS_GUEST_JOINS_PER_DAY", "10")
+            ])
+            .is_err(),
+            "a day allows at least what ten minutes do"
+        );
+        assert!(config(&[plaza, ingress, ("TILO_ROOMS_SPECTATES_PER_10_MIN", "0")]).is_err());
         assert!(config(&[plaza, ("TILO_ROOMS_RELAY_ORIGIN", "https://a/b")]).is_err());
         assert!(
             config(&[

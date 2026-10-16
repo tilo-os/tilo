@@ -13,6 +13,7 @@ pub mod display;
 pub mod error;
 pub mod exec;
 mod fsutil;
+pub mod image;
 pub mod input;
 pub mod jobs;
 pub mod layers;

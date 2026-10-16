@@ -17,6 +17,7 @@ use crate::clock::unix_now_ms;
 use crate::share_link::{
     FILE_SHARE_LINK_V2_PREFIX, FileShareLinkV2, MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES,
 };
+use tilo_lock::MutexRecover as _;
 
 pub const RECORD_SUBSCRIPTION_STORE_VERSION: u16 = 1;
 pub const MAX_RECORD_SUBSCRIPTIONS: usize = 4_096;
@@ -142,11 +143,15 @@ impl RecordSubscriptionStore {
         let state = match std::fs::metadata(&path) {
             Ok(metadata) => {
                 validate_owner_only_permissions(&metadata)?;
-                if metadata.len() > MAX_RECORD_SUBSCRIPTION_FILE_BYTES {
-                    return Err(RecordSubscriptionStoreError::StateTooLarge);
+                let too_large = RecordSubscriptionStoreError::StateTooLarge;
+                match tilo_files::native::bounded::read_or(
+                    &path,
+                    MAX_RECORD_SUBSCRIPTION_FILE_BYTES,
+                    too_large,
+                )? {
+                    Some(bytes) => decode_document(&bytes, now_ms)?,
+                    None => BTreeMap::new(),
                 }
-                let bytes = std::fs::read(&path)?;
-                decode_document(&bytes, now_ms)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.into()),
@@ -162,10 +167,7 @@ impl RecordSubscriptionStore {
     }
 
     pub fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.state.lock_recover().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -174,16 +176,14 @@ impl RecordSubscriptionStore {
 
     pub fn get(&self, key: RecordSubscriptionKey) -> Option<RecordSubscription> {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&key)
             .map(|stored| stored.subscription.clone())
     }
 
     pub fn subscriptions(&self) -> Vec<RecordSubscription> {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .values()
             .map(|stored| stored.subscription.clone())
             .collect()
@@ -226,10 +226,7 @@ impl RecordSubscriptionStore {
             workspace_id: link.invite.workspace_id,
             record_id: link.invite.record_id,
         };
-        let mut current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.state.lock_recover();
         if let Some(existing) = current.get(&key) {
             return if existing.uri == uri {
                 Ok(false)
@@ -300,10 +297,7 @@ impl RecordSubscriptionStore {
         key: RecordSubscriptionKey,
         update: impl FnOnce(&mut RecordSubscription),
     ) -> Result<(), RecordSubscriptionStoreError> {
-        let mut current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.state.lock_recover();
         if !current.contains_key(&key) {
             return Err(RecordSubscriptionStoreError::UnknownSubscription(key));
         }

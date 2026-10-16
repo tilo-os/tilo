@@ -1,13 +1,12 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId, enrollment, record};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
+use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::SystemTime};
-use tilo_peer_state::{NeighbourMsg, Reseal, StatePeer};
-use tilo_peer_state::{
-    owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest},
-    transport::Retention,
-};
+use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{Reseal, StatePeer};
 
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
@@ -106,10 +105,6 @@ impl<'a> NativeOutgoingEntry<'a> {
     pub fn channel(&self) -> [u8; 32] {
         self.0.channel
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "a per-entry accessor; every native outgoing entry is currently a delta"
-    )]
     #[must_use]
     pub fn retention(&self) -> Retention {
         Retention::Delta
@@ -284,6 +279,7 @@ fn allowed(
         let projection = decode_entries(&publication.projection)?;
         if view
             .peer
+            .outbox()
             .authorize_local_recovery_projection(
                 &originals,
                 None,
@@ -387,7 +383,7 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
     // The one host classifier (`neighbour_wire::retention`), shared with
     // browser peers and the relay. A single-use MLS application message has
     // no retention class and is refused here like any live frame.
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false)
+    let (channel, kind) = neighbour_wire::retention(message, false)
         .ok_or("unsupported native outgoing document payload")?;
     Ok((
         enrollment::ns(envelope.timestamp)?,
@@ -500,7 +496,7 @@ pub(crate) fn replace_governance_checkpoint(
     {
         return Err("native governance checkpoint exceeds outgoing capacity".into());
     }
-    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+    let (channel, retention) = neighbour_wire::retention(&message, true)
         .ok_or("unsupported native governance checkpoint")?;
     if retention != Retention::Checkpoint {
         return Err("native governance publication is not a checkpoint".into());
@@ -538,11 +534,12 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
-        tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
+        tilo_owner_commit::CommitTarget::NativeCheckpointRoot { .. }
     ) {
         crate::checkpoint::binding(
             view.record.room,
             view.peer
+                .workspace()
                 .workspace_checkpoint_root()?
                 .ok_or("native checkpoint root disappeared")?,
         )
@@ -650,13 +647,15 @@ fn validate_exact(
     message: &NeighbourMsg,
     device: [u8; 32],
 ) -> Result<(), String> {
-    peer.lookup_retained_local_document(message, device)
+    peer.outbox()
+        .lookup_retained_local_document(message, device)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "native outgoing entry lacks exact committed admission".to_owned())
         .map(|_| ())
 }
 fn retired(peer: &StatePeer, message: &NeighbourMsg, device: [u8; 32]) -> Result<bool, String> {
-    peer.retained_local_document_retired(message, device)
+    peer.outbox()
+        .retained_local_document_retired(message, device)
 }
 pub(crate) fn decode_entries(entries: &[StoredOutgoing]) -> Result<Vec<NeighbourMsg>, String> {
     entries
@@ -712,7 +711,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
     }
     let originals = decode_entries(&publication.entries)?;
     if !publication.projection.is_empty() {
-        view.peer.validate_local_recovery_projection(
+        view.peer.outbox().validate_local_recovery_projection(
             &originals,
             None,
             &decode_entries(&publication.projection)?,
@@ -732,15 +731,13 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     {
         return Err("native governance checkpoint differs from canonical room policy".into());
     }
-    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+    let (channel, retention) = neighbour_wire::retention(&message, true)
         .ok_or("unsupported native governance checkpoint")?;
     if retention != Retention::Checkpoint || channel != entry.channel {
         return Err("native governance checkpoint transport mismatch".into());
     }
-    if let tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { root } =
-        entry.binding.target
-    {
-        if view.peer.workspace_checkpoint_root()? != Some(root)
+    if let tilo_owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
+        if view.peer.workspace().workspace_checkpoint_root()? != Some(root)
             || entry.binding != crate::checkpoint::binding(view.record.room, root)
         {
             return Err("native checkpoint publication differs from signed root".into());
@@ -809,8 +806,11 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
         .collect::<Vec<_>>();
     let owes_recovery = decode_entries(&remaining)
         .and_then(|originals| {
-            view.peer
-                .reserve_local_recovery(&originals, None, view.device().device_public_key)
+            view.peer.outbox().reserve_local_recovery(
+                &originals,
+                None,
+                view.device().device_public_key,
+            )
         })
         .is_ok_and(|reservation| reservation.entries() > 0);
     // A projection has no user receipt/exact index. Empty obligations prove its
@@ -820,7 +820,7 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
         && !owes_recovery
         && decode_entries(&publication.projection)
             .and_then(|projection| {
-                view.peer.validate_local_recovery_projection(
+                view.peer.outbox().validate_local_recovery_projection(
                     &[],
                     None,
                     &projection,
@@ -911,6 +911,7 @@ impl NativeWorkspaceOwner {
         let old = decode_entries(&state(&candidate)?.projection)?;
         let replacement = candidate
             .peer
+            .outbox_mut()
             .reconcile_local_recovery_projection(&originals, None, &old, key, now)?;
         if replacement != old {
             let publication = candidate
@@ -945,7 +946,7 @@ impl NativeWorkspaceOwner {
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder
-    /// (see [`StatePeer::renew_local_sealed`]). Each renewal replaces its
+    /// (see [`PeerOutboxMut::renew_local_sealed`](tilo_peer_state::PeerOutboxMut::renew_local_sealed)). Each renewal replaces its
     /// original in one durable commit and moves behind every other entry,
     /// so an author's writes still send in sequence order. A write `reseal`
     /// refuses stays exactly as it was.
@@ -974,6 +975,7 @@ impl NativeWorkspaceOwner {
                 postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
             let renewal = match candidate
                 .peer
+                .outbox_mut()
                 .renew_local_sealed(&original, reseal, key, now)
             {
                 Ok(Some(renewal)) => renewal,
@@ -1016,7 +1018,7 @@ mod encoding_tests {
             bytes,
             binding: CommitBinding {
                 room: "room".into(),
-                target: tilo_peer_state::owner_commit::CommitTarget::Document {
+                target: tilo_owner_commit::CommitTarget::Document {
                     app: "so.tilo.code".into(),
                     record: "a".into(),
                 },

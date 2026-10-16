@@ -426,10 +426,9 @@ fn verify_selected(path: &Path, selected: &SdkSelection, arch: &str) -> Result<(
 
 #[cfg(unix)]
 fn private_directory(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::symlink_metadata(path)?;
-    // SAFETY: observing this process's effective UID has no side effects.
-    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+    if !metadata.is_dir() || !tilo_files::native::private::owned_by_me(&metadata) {
         bail!("SDK compiler cache must be an owned directory, never a link");
     }
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;

@@ -17,6 +17,7 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
+use tilo_lock::MutexRecover as _;
 
 const ENABLE_ENV: &str = "TILO_FS_PERF_GATE";
 
@@ -484,8 +485,7 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
                     break;
                 }
                 namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .apply_remote_and_resolve(delta)
                     .expect("apply remote namespace delta");
                 applied += 1;

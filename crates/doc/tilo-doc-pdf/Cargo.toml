@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Paginated PDF export for qdoc DocSnapshot documents (Tilo)"
+description = "Paginated PDF export for tilo-doc DocSnapshot documents (Tilo)"
 
 [dependencies]
 tilo-doc = { path = "../tilo-doc" }

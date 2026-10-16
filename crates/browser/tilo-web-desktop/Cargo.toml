@@ -16,9 +16,19 @@ crate-type = ["cdylib", "rlib"]
 # Browser-only, like the runtime it links. Native workspace builds compile an
 # empty library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tilo-browser-runtime = { path = "../tilo-browser-runtime" }
+# The Activity pane loads as its own module (src/activity.rs).
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity"] }
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+# Search loads as its own module the first time something searches
+# (src/lazy.rs).
+tilo-search = { path = "../../sdk/search", features = ["lazy-engine"] }
+# The spelling dictionaries load the first time a field checks spelling.
+tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionaries"] }
+# Hyphenation patterns load the first time text hyphenates.
+tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode"] }
 wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
 # generated apps: begin (tools/web/generate_web_desktop.py)
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
@@ -60,7 +70,7 @@ word-processor = { path = "../../../apps/word-processor" }
 workspace = true
 
 [dependencies]
-
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

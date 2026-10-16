@@ -147,24 +147,10 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
 }
 
-fn record_dirs(root: &Path) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                names.push(entry.file_name().to_string_lossy().into_owned());
-                pending.push(entry.path());
-            }
-        }
-    }
-    names
-}
-
-/// A launch opens the room's default record, the one every other device's
-/// first Notes window (native or browser) opens, so they edit one notebook.
+/// A launch opens the room's notebook, the one record every Notes window in
+/// the room opens (not one per window), so they edit one notebook.
 #[test]
-fn a_launch_opens_the_rooms_default_record() {
+fn a_launch_opens_the_rooms_notebook() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("notebook");
     run(
@@ -173,9 +159,12 @@ fn a_launch_opens_the_rooms_default_record() {
         None,
         &temp.path().join("dump.json"),
     );
-    let dirs = record_dirs(&data);
-    let room_default = ui::record::RecordId::room_default().storage_key();
-    assert!(dirs.contains(&room_default), "{dirs:?}");
+    let room = data.join("so.tilo.notes").join("rooms").join("personal");
+    assert!(room.join("state.automerge").is_file(), "{room:?}");
+    assert!(
+        !room.join("records").exists(),
+        "no per-window record beside the room's notebook"
+    );
 }
 
 /// The empty state's "New note" is found where it is drawn: its button

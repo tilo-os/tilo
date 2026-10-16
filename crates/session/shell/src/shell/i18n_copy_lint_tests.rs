@@ -33,6 +33,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the peer did not answer in time",
     ),
     (
+        "shell/remote_action_link.rs",
+        "the peer did not finish the action in time",
+    ),
+    (
         "shell/launcher.rs",
         "the command does not fit a terminal launch",
     ),
@@ -55,7 +59,6 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
             // The test control sockets speak to test drivers, not people.
             "test_control.rs",
             "test_control_socket.rs",
-            "hosted_test_control.rs",
             "dev_test_identity.rs",
         ])
         .min_files(100)

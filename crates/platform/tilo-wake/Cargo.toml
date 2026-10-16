@@ -1,0 +1,27 @@
+[package]
+name = "tilo-wake"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Instance-scoped background wake routing: wake handles, wake scopes and their capture, shared by native and headless hosts."
+
+[lib]
+name = "tilo_wake"
+path = "src/lib.rs"
+
+# A leaf: models that route wakes (tilo-resource) also build as sandboxed
+# wasm format providers, which must not link an async runtime.
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

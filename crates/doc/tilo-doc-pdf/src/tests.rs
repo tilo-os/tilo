@@ -1,7 +1,7 @@
 //! Tests for the PDF export engine.
 //!
 //! Snapshots are built directly (the structs are public) so the tests exercise
-//! `render_pdf` without coupling to qdoc's mutation API. We assert on the real
+//! `render_pdf` without coupling to tilo-doc's mutation API. We assert on the real
 //! output bytes — a valid PDF header, non-trivial length, the expected page
 //! count via `/Type /Page`, and (for the content-object test) the number of
 //! content streams emitted.
@@ -254,6 +254,97 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         // No image XObject, but a rectangle (placeholder) was drawn.
         assert_eq!(count(&bytes, b"/Subtype /Image"), 0);
     }
+}
+
+/// Inline `strong` and `em` marks set their runs in Helvetica-Bold and
+/// Helvetica-Oblique, within one line and across a wrap, and the plain
+/// text around them stays regular.
+#[test]
+fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
+    use std::io::Read as _;
+    let mark = |name: &str, start: usize, end: usize| tilo_doc::MarkSpan {
+        start,
+        end,
+        name: name.into(),
+        value: tilo_doc::document::MarkValue::Bool(true),
+    };
+    let mut paragraph = block("paragraph", "Prepared for the steering group by the team.");
+    paragraph.marks = vec![mark("strong", 17, 31), mark("em", 35, 44)];
+    let lines = wrap(&styled(&paragraph, Style::default()), TEXT_W, BODY_SIZE);
+    let regular = Style::default();
+    let italic = Style {
+        bold: false,
+        italic: true,
+    };
+    assert_eq!(
+        lines,
+        [vec![
+            ("Prepared for the ".to_owned(), regular),
+            ("steering group".to_owned(), Style::BOLD),
+            (" by ".to_owned(), regular),
+            ("the team.".to_owned(), italic),
+        ]]
+    );
+
+    // Wrapped to a narrow column, every word is kept in its own face.
+    let narrow = wrap(&styled(&paragraph, Style::default()), 60.0, BODY_SIZE);
+    assert!(narrow.len() > 2, "{narrow:?}");
+    let rejoined: Vec<String> = narrow
+        .iter()
+        .map(|line| line.iter().map(|(text, _)| text.as_str()).collect())
+        .collect();
+    assert_eq!(rejoined.join(" "), paragraph.text);
+    assert!(
+        narrow
+            .iter()
+            .flatten()
+            .any(|(text, style)| text.contains("steering") && *style == Style::BOLD),
+        "{narrow:?}"
+    );
+
+    // A heading is bold throughout, and its em run is bold italic.
+    let mut heading = block_attr("heading", "Field notes", &[("level", AttrVal::Int(1))]);
+    heading.marks = vec![mark("em", 6, 11)];
+    assert_eq!(
+        wrap(&styled(&heading, Style::BOLD), TEXT_W, 24.0),
+        [vec![
+            ("Field ".to_owned(), Style::BOLD),
+            (
+                "notes".to_owned(),
+                Style {
+                    bold: true,
+                    italic: true
+                }
+            ),
+        ]]
+    );
+
+    // The page declares every face and shows each run in its own.
+    let snap = DocSnapshot {
+        blocks: vec![paragraph],
+        ..empty_snapshot()
+    };
+    let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render");
+    for face in FACES {
+        let declared = format!("/BaseFont /{face} ");
+        assert_eq!(count(&bytes, declared.as_bytes()), 1, "{face}");
+    }
+    let find = |from: usize, needle: &[u8]| {
+        bytes[from..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|at| from + at)
+    };
+    let start = find(0, b"stream\n").expect("a content stream") + b"stream\n".len();
+    let end = find(start, b"\nendstream").expect("its end");
+    let mut stream = String::new();
+    flate2::read::ZlibDecoder::new(&bytes[start..end])
+        .read_to_string(&mut stream)
+        .expect("a deflated content stream");
+    assert!(stream.contains("/F2 11 Tf"), "{stream}");
+    assert!(stream.contains("(steering group) Tj"), "{stream}");
+    assert!(stream.contains("/F3 11 Tf"), "{stream}");
+    assert!(stream.contains("(the team.) Tj"), "{stream}");
 }
 
 fn block(kind: &str, text: &str) -> BlockView {

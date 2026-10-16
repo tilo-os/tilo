@@ -371,6 +371,11 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             core.set_draft(DraftField::Notes, "recovery details");
         }
         request(&mut app, Request::Save);
+        assert_eq!(
+            app.acknowledgement().as_deref(),
+            Some("Saved Example account"),
+            "closing the editor looks like Cancel, so the save says so"
+        );
         {
             let core = app.core();
             assert_eq!(core.screen, Screen::Vault);
@@ -434,6 +439,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         app.core_mut()
             .set_draft(DraftField::Notes, "unsaved private note");
         request(&mut app, Request::CancelEdit);
+        assert_eq!(app.acknowledgement(), None, "nothing was saved");
         let core = app.core();
         assert_eq!(core.screen, Screen::Vault);
         assert!(core.draft_password.is_empty());
@@ -557,14 +563,9 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         let root = temp_root("export-store");
         let out = temp_root("export");
         let mut model = crate::PasswordsModel::open_in(&root);
-        model
-            .save_login(
-                "Example",
-                "ada",
-                "export-secret",
-                Some("https://example.com"),
-            )
-            .unwrap();
+        let mut login = accounts::SecretItem::login("Example", "ada", "export-secret");
+        login.add_origin("https://example.com").unwrap();
+        model.save_item(&mut login).unwrap();
         let mut app = PasswordsSurface::new(model);
         request(&mut app, Request::Export);
         request(&mut app, Request::ConfirmExport);

@@ -1,4 +1,4 @@
-//! Render a representative qdoc snapshot to `--out PATH` (default
+//! Render a representative tilo-doc snapshot to `--out PATH` (default
 //! `target/docpdf-sample.pdf`) so the output can be opened in a real viewer or
 //! validated with `qpdf --check`. Run:
 //!
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         block(
             "paragraph",
-            "This document was produced by the docpdf engine from a qdoc DocSnapshot. \
+            "This document was produced by the docpdf engine from a tilo-doc DocSnapshot. \
              The paragraph wraps within a US-Letter text column with one-inch margins, \
              demonstrating the word-wrapping and pagination passes.",
             &[],

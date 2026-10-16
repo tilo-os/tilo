@@ -94,18 +94,6 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
-/// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
-/// regardless of operand magnitude — centralised here rather than repeating
-/// the exemption at every text transform composed in this module.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
-    transform * Affine::translate(offset)
-}
-
 /// Top edge that centres one line of `size`-px text on `center_y`. The line
 /// box the renderer paints is `line_height × size` — a quarter taller than
 /// the font size at the default 1.25 — and it carries the accessibility text
@@ -1725,12 +1713,12 @@ fn draw_chip(
         scene,
         &shown,
         ink,
-        translated(
-            transform,
+        transform.pre_translate(
             (
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
                 rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            ),
+            )
+                .into(),
         ),
         None,
         &size,
@@ -2116,7 +2104,7 @@ impl ActivityTimeline {
             scene,
             &name,
             colour,
-            translated(transform, (x, name_top)),
+            transform.pre_translate((x, name_top).into()),
             None,
             text_style,
         );
@@ -2152,7 +2140,7 @@ impl ActivityTimeline {
             scene,
             glyph,
             theme.tokens.colors.text_dim,
-            translated(transform, (glyph_x, line_top)),
+            transform.pre_translate((glyph_x, line_top).into()),
             None,
             text_style,
         );
@@ -2193,7 +2181,7 @@ impl ActivityTimeline {
             scene,
             &drawn_summary,
             summary_color,
-            translated(transform, (summary_x, line_top)),
+            transform.pre_translate((summary_x, line_top).into()),
             None,
             text_style,
         );
@@ -2249,7 +2237,7 @@ impl ActivityTimeline {
             scene,
             &rel,
             theme.tokens.colors.text_dim,
-            translated(transform, (time_x, cy - f64::from(th) / 2.0)),
+            transform.pre_translate((time_x, cy - f64::from(th) / 2.0).into()),
             None,
             text_style,
         );
@@ -2514,7 +2502,7 @@ impl ActivityTimeline {
                 scene,
                 &title,
                 colors.text_primary,
-                translated(transform, (title_x, title_y)),
+                transform.pre_translate((title_x, title_y).into()),
                 None,
                 title_style,
             );
@@ -2579,7 +2567,7 @@ impl ActivityTimeline {
             scene,
             &sub,
             colors.text_dim,
-            translated(transform, (title_x, meta_y)),
+            transform.pre_translate((title_x, meta_y).into()),
             None,
             &meta_style,
         );
@@ -2589,10 +2577,7 @@ impl ActivityTimeline {
             scene,
             &rel,
             colors.text_dim,
-            translated(
-                transform,
-                (row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y),
-            ),
+            transform.pre_translate((row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y).into()),
             None,
             &meta_style,
         );
@@ -2873,7 +2858,7 @@ impl ActivityTimeline {
             scene,
             &shown,
             colors.text_primary,
-            translated(transform, (bar.x0 + 10.0, label_top)),
+            transform.pre_translate((bar.x0 + 10.0, label_top).into()),
             None,
             &style,
         );
@@ -3295,7 +3280,7 @@ impl ActivityTimeline {
             scene,
             &title,
             theme.tokens.colors.text_dim,
-            translated(transform, (cx - f64::from(w) / 2.0, title_y)),
+            transform.pre_translate((cx - f64::from(w) / 2.0, title_y).into()),
             None,
             &style,
         );
@@ -3309,7 +3294,7 @@ impl ActivityTimeline {
                 scene,
                 &detail,
                 theme.tokens.colors.text_dim,
-                translated(transform, (cx - f64::from(dw) / 2.0, detail_y)),
+                transform.pre_translate((cx - f64::from(dw) / 2.0, detail_y).into()),
                 None,
                 &small,
             );

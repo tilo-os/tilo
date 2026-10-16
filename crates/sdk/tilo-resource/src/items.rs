@@ -312,7 +312,35 @@ fn build_item(
     if let Some(spec) = crate::resource::item_field_edit_spec_of(vocabulary, field, id) {
         child = child.with_action(spec);
     }
+    // The fields holding resources of their own (`#[model(resource)]`).
+    if let Some((key, item)) = item_shape(vocabulary, field) {
+        let parent = item_resource_id_in(vocabulary.kind, field, id);
+        let path = [
+            crate::Segment::Field(key.to_owned()),
+            crate::Segment::Item(id.clone()),
+        ];
+        child = child.with_children(crate::child::nested_children(
+            vocabulary, item, &parent, &path,
+        ));
+    }
     child
+}
+
+/// The key the collection field `field` is stored under and the shape of its
+/// items, when it is a collection of records.
+fn item_shape(
+    vocabulary: &'static Vocabulary,
+    field: &str,
+) -> Option<(&'static str, crate::shape::Shape)> {
+    use crate::shape::Shape;
+    let collection = (vocabulary.shape)()?
+        .fields()
+        .iter()
+        .find(|candidate| candidate.name == field)?;
+    match collection.shape {
+        Shape::Collection(item) | Shape::Keyed(item) => Some((collection.key, *item)),
+        _ => None,
+    }
 }
 
 /// The id of the prompt that renames an item.
@@ -401,18 +429,38 @@ pub fn fingerprint(resource: &tilo_actions::Resource) -> String {
 
 /// The item resources of the collections `fields` of `R` that `actions`
 /// act on: what a publication would carry for item `resource_id`, built on
-/// its own. `label_of(field, id)` names an item, or says it is not there.
+/// its own, or for a resource nested in an item
+/// (`<kind>/pages/<page>/body`, [`crate::child::NestedResource`]).
+/// `label_of(field, id)` names an item, or says it is not there.
 pub fn item_child<R: Resource>(
     resource_id: &str,
     fields: &[&str],
     actions: &[ItemAction],
-    label_of: impl FnOnce(&str, &Id) -> Option<String>,
+    label_of: impl Fn(&str, &Id) -> Option<String>,
 ) -> Option<tilo_actions::Resource> {
     let vocabulary = vocabulary::<R>();
     let (field, id) = item_of_resource_in(vocabulary.kind, resource_id)?;
     let field = *fields.iter().find(|candidate| **candidate == field)?;
-    let label = label_of(field, &id)?;
-    Some(scoped_item(vocabulary, fields, actions, field, &id, &label))
+    if let Some(label) = label_of(field, &id) {
+        return Some(scoped_item(vocabulary, fields, actions, field, &id, &label));
+    }
+    // Not an item: a resource nested in one, found in the item's resource.
+    let (item, _) = id.as_str().split_once('/')?;
+    let item = Id::from_raw(item);
+    let label = label_of(field, &item)?;
+    let resource = scoped_item(vocabulary, fields, actions, field, &item, &label);
+    descendant(resource, resource_id)
+}
+
+/// The resource `id` among `resource`'s children, at any depth.
+fn descendant(resource: tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+    resource.children.into_iter().find_map(|child| {
+        if child.id.as_str() == id {
+            Some(child)
+        } else {
+            descendant(child, id)
+        }
+    })
 }
 
 /// The item resource of the item `id` of `field`, labelled `label`.

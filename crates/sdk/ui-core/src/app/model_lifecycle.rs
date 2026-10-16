@@ -45,6 +45,8 @@ struct HostedPublicationStamp {
 
 #[derive(Default)]
 pub(super) struct HostedPumpState {
+    #[cfg(test)]
+    pub(super) calls: usize,
     authority: Option<HostedAuthorityWitness>,
     publication: Option<HostedPublicationStamp>,
 }
@@ -52,6 +54,7 @@ pub(super) struct HostedPumpState {
 /// What one hosted pump did; used by focused tests and the timing trace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct HostedPumpReport {
+    pub(super) presentation_changed: bool,
     pub(super) updated: bool,
     pub(super) synced: bool,
     pub(super) published: bool,
@@ -62,6 +65,13 @@ impl super::App {
     /// same phases as the window runner, without adding caller attribution.
     pub fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
+    }
+
+    /// Presence and connection changes can change pixels without dirtying a widget.
+    #[cfg(feature = "native")]
+    pub(super) fn pump_embedded_model(&mut self) -> bool {
+        self.pump_hosted_model_as(host_perf_baseline())
+            .presentation_changed
     }
 
     /// [`Self::pump_hosted_model`], answering whether the app's record
@@ -126,6 +136,10 @@ impl super::App {
 
     /// [`Self::pump_hosted_model_as`], and whether the record changed.
     fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
+        #[cfg(test)]
+        {
+            self.actions.hosted.calls += 1;
+        }
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
@@ -142,17 +156,18 @@ impl super::App {
             || !self.actions.bound_invocations.is_empty()
             || !self.actions.local_invocations.is_empty()
             || !self.actions.pending_application_launches.is_empty();
-        let deadline_due = self
-            .root_widget
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= crate::time::now());
+        let next_deadline = self.root_widget.next_wake_deadline();
+        let deadline_due = next_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         let mut force_sync = always_refresh
             || inbound
             || authority_changed
             || in_flight
             || deadline_due
             || wakes.is_none_or(|(_, sync)| sync);
-        let mut report = HostedPumpReport::default();
+        let mut report = HostedPumpReport {
+            presentation_changed: inbound,
+            ..HostedPumpReport::default()
+        };
         if force_sync
             || invocations
             || record
@@ -193,7 +208,11 @@ impl super::App {
         }
         if let Some(started) = started {
             crate::diag!(
-                "[hosted-pump] us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
+                "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
+                self.publication_app_id(),
+                next_deadline.map(|deadline| crate::time::now()
+                    .saturating_duration_since(deadline)
+                    .as_micros()),
                 started.elapsed().as_micros(),
                 report.updated,
                 report.synced,
@@ -291,12 +310,12 @@ impl super::App {
         self.root_widget.sync(&self.state.doc, &self.state.root);
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.
-        let before = crate::widget::settle_mark(&self.state.doc);
+        let before = crate::doc::settle_mark(&self.state.doc);
         self.root_widget.settle(
             &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
-        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let settled = crate::doc::settle_mark(&self.state.doc) != before;
         // The record's durability changed and the root synced with it: a
         // frame presents it. Nothing about the tree changed, so it is not a
         // rebuild (which would repaint the whole window for a save bubble).

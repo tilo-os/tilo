@@ -14,15 +14,6 @@
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::sync::{Arc, OnceLock};
 
 use greeter::GreeterApp;

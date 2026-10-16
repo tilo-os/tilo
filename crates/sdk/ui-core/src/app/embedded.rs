@@ -63,7 +63,7 @@ pub struct EmbeddedApp {
     painted: RefCell<Scene>,
     /// The damage parts ([`crate::scene_parts`]) recorded with `painted`.
     painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
-    /// The app's background work woke it since its last frame.
+    /// Background work not yet serviced by a model pump or frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
@@ -207,6 +207,8 @@ impl EmbeddedApp {
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        // Whatever the caller does to it is no change the tracking sees.
+        self.app.mark_semantic_tree_stale();
         let root = self
             .app
             .root_widget
@@ -248,6 +250,7 @@ impl EmbeddedApp {
     }
 
     fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.app.mark_semantic_tree_stale();
         self.app
             .root_widget
             .as_any_mut()?
@@ -451,15 +454,26 @@ impl Widget for EmbeddedApp {
             .root_widget
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
-        if !due {
+        // A wake the app raised from another thread (a question put to its
+        // action directory, an invocation, a collaborator's edit) is serviced
+        // here too, not only by the next frame: the host may park without
+        // painting it, and an answer owed to a waiting caller would then wait
+        // for something unrelated. Consume it before pumping: a nonvisual
+        // answer needs no draw to retire, and a wake raised during the pump
+        // must remain pending. Visible changes are retained by wants_frame.
+        let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if !due && !woken {
             return false;
         }
-        self.app.pump_hosted_model();
+        let presentation_changed = self.app.pump_embedded_model();
         // A durability that changed in this pass left the layout dirty
         // (`App::sync_model`), so the next frame shows it; a structure change
         // the pass made is rebuilt by that frame.
         self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
-        let visible = self.app.unsettled() || self.app.root_widget.needs_animation_frame();
+        let visible = presentation_changed
+            || self.app.unsettled()
+            || (woken && self.app.root_widget.needs_redraw())
+            || self.app.root_widget.needs_animation_frame();
         if visible {
             self.wants_frame.set(true);
         }
@@ -1238,3 +1252,7 @@ mod saving_record_wake_tests {
 #[cfg(test)]
 #[path = "embedded_copy_tests.rs"]
 mod copy_tests;
+
+#[cfg(test)]
+#[path = "embedded_wake_tests.rs"]
+mod wake_tests;

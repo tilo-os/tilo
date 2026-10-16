@@ -4,5 +4,8 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// The painting engines come from their engine library, not this executable.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_paint_engine;
 
 ui::main!(canvas::App);

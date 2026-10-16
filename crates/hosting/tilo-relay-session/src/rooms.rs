@@ -1,10 +1,30 @@
-//! Room administration from a device: the wire vocabulary of
-//! [`ROOM_ADMIN_ALPN`] and the [`RoomAdminClient`] that speaks it.
+//! Room administration from a device: the names of the actions a relay
+//! serves for it, and the wire vocabulary of [`ROOM_ADMIN_ALPN`] with the
+//! [`RoomAdminClient`] that speaks it.
 //!
-//! One bounded postcard request and reply per bidirectional stream, as in the
-//! workspace-join protocol. The request names the caller's certificate; the
-//! relay accepts it only for the authenticated Iroh endpoint it arrived on.
-//! The relay's side, `RoomAdminProtocol`, stays in `tilo-relay`.
+//! A relay serves what it governs as actions over `Envelope::RemoteAction`,
+//! addressed to its own device, on a workspace the caller holds there:
+//!
+//! - a room's own governance (provider `tilo.workspace`, named in
+//!   `tilo-actions`), on the room's workspace;
+//! - the host's own business, which no room decides (creating, listing and
+//!   entering rooms, letting an app author a room), as provider
+//!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
+//!   only, on any workspace they hold there: the person's continuity
+//!   workspace before they hold any room;
+//! - what a member does for themselves (claiming their topology namespace,
+//!   recording their own effect receipt, and having the host create the
+//!   empty record of an app they open there first) as provider
+//!   [`MEMBER_ACTIONS_PROVIDER`], on the room's workspace.
+//!
+//! [`ROOM_ADMIN_ALPN`] is kept only for [`RoomCommand::Remove`], which the
+//! actions do not run until the person's own confirmation can be asked for.
+//! A relay refuses every other command there and names the action that
+//! replaced it. One bounded postcard request and reply per bidirectional
+//! stream, as in the workspace-join protocol. The request names the caller's
+//! certificate; the relay accepts it only for the authenticated Iroh endpoint
+//! it arrived on. The relay's side, `RoomAdminProtocol`, stays in
+//! `tilo-relay`.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
@@ -12,11 +32,131 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::GovernedMember;
-use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::{GovernedMember, MemberRole};
 
-/// ALPN of room administration.
+/// The provider a relay answers its host operations under: creating,
+/// listing and entering the rooms it governs. Only the devices of the
+/// relay's own person are offered them, and invoking one is decided as
+/// every door decides a host operation.
+pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
+/// The one resource the host operations are published on.
+pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
+/// Create a governed room. Arguments: `name`, and the terms of its first
+/// invitation when one is wanted (`invite_role`, `invite_recipient`,
+/// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedRoom`].
+pub const CREATE_ROOM: &str = "room.create";
+/// Every room the host governs, each as a [`RoomListing`].
+pub const LIST_ROOMS: &str = "room.list";
+/// Admit the calling device to `room` as one of its owner's. Answers an
+/// [`EnteredRoom`]: the invitation the device redeems to hold the room,
+/// restricted to its person and redeemable `expires_in_seconds` (600 when
+/// omitted).
+pub const ENTER_ROOM: &str = "room.enter";
+/// Let the application `app` author the records of `room`: what opening an
+/// app in a room the host governs for the first time asks. Answers the
+/// room's `generation` that carries it.
+pub const GRANT_APP_AUTHORSHIP: &str = "room.grant-app-authorship";
+
+/// The provider a relay answers a room member's own business under, on the
+/// room's workspace: what they do for themselves, never governance.
+pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
+/// The resource kind of a member's own business in a room.
+pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
+/// Claim the caller's own topology namespace `salt` (1–65535). Answers the
+/// room's `generation` that carries it.
+pub const CLAIM_TOPOLOGY_NAMESPACE: &str = "topology-namespace.claim";
+/// Record the caller's own terminal effect receipt: `invocation` (a UUID)
+/// and `redacted`, its canonical redacted public receipt as JSON text.
+/// Answers the room's `generation` that carries it.
+pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
+/// Have the host governing the room create the record `record` (`""` for
+/// the app's primary) of `app`, empty and signed by the host: what opening
+/// an app there for the first time asks when the room does not hold its
+/// record. Only for an app the room lets author and a record the caller may
+/// change; no member-supplied bytes cross it, and the app's first state is
+/// then the member's own change. Answers `created` (false when the record
+/// was already there) and the room's `generation`.
+pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
+
+/// The resource a member's own business in `room` is published on.
+#[must_use]
+pub fn member_resource(room: &str) -> String {
+    format!("{MEMBER_RESOURCE_KIND}:{room}")
+}
+
+/// One room a relay governs, as its host actions answer it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomListing {
+    /// The room's UUID.
+    pub room: String,
+    /// The relay workspace carrying the room.
+    pub workspace_id: u64,
+    /// The workspace's name.
+    pub name: String,
+    /// The room's committed governance generation.
+    pub generation: u64,
+}
+
+/// An invitation a relay's room action issued, as it answers it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionInvitation {
+    /// Digest of the signed invitation, 64 hex characters.
+    pub invite: String,
+    /// The signed invitation a device redeems, in hex.
+    pub invitation: String,
+}
+
+impl ActionInvitation {
+    /// `issued`, as an action answers it.
+    #[must_use]
+    pub fn of(issued: &IssuedInvitation) -> Self {
+        Self {
+            invite: hex::encode(issued.invite_id),
+            invitation: hex::encode(&issued.signed_invitation),
+        }
+    }
+
+    /// The invitation's id and its signed bytes.
+    ///
+    /// # Errors
+    ///
+    /// When either is not the hex it should be.
+    pub fn decode(&self) -> Result<IssuedInvitation, String> {
+        let mut invite_id = [0; 32];
+        hex::decode_to_slice(&self.invite, &mut invite_id)
+            .map_err(|_| "the relay named an invalid invitation id".to_owned())?;
+        let signed_invitation = hex::decode(&self.invitation)
+            .map_err(|_| "the relay sent an invalid invitation".to_owned())?;
+        Ok(IssuedInvitation {
+            invite_id,
+            signed_invitation,
+        })
+    }
+}
+
+/// What [`CREATE_ROOM`] answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedRoom {
+    /// The room.
+    #[serde(flatten)]
+    pub room: RoomListing,
+    /// Its first invitation, when one was asked for.
+    #[serde(default)]
+    pub invitation: Option<ActionInvitation>,
+}
+
+/// What [`ENTER_ROOM`] answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnteredRoom {
+    /// Whether governance changed to admit the caller.
+    pub changed: bool,
+    /// The invitation the caller redeems to hold the room.
+    pub invitation: ActionInvitation,
+}
+
+/// ALPN of room administration: only [`RoomCommand::Remove`] is still
+/// answered here (see the module documentation).
 pub const ROOM_ADMIN_ALPN: &[u8] = b"tilo-room-admin/1";
 
 /// The largest encoded [`RoomAdminRequest`] either side accepts.
@@ -96,6 +236,16 @@ pub struct RemoveMemberRequest {
     pub request_id: [u8; 32],
     /// The member's person.
     pub user_public_key: [u8; 32],
+}
+
+/// Delegate one application's workspace authorship. A repeated `request_id`
+/// returns the change it committed, and fails if it named another app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantAppAuthorshipRequest {
+    /// Caller-chosen idempotency key; never zero.
+    pub request_id: [u8; 32],
+    /// The exact registered application identifier.
+    pub app: String,
 }
 
 /// A governed room as its administrators see it.
@@ -179,6 +329,43 @@ pub enum RoomCommand {
         /// Nonzero namespace; existing ownership can never be rebound.
         salt: u16,
     },
+    /// Let an application author `room`'s records: what opening an app there
+    /// for the first time asks of the room's governor. The host's person only.
+    GrantAppAuthorship {
+        /// The governed room.
+        room: String,
+        /// The application.
+        request: GrantAppAuthorshipRequest,
+    },
+}
+
+impl RoomCommand {
+    /// The provider and action a relay serves this command as, for every
+    /// command but [`Self::Remove`]: what a relay that no longer answers it
+    /// at [`ROOM_ADMIN_ALPN`] names in its refusal. `None` for the removal,
+    /// still answered there.
+    #[must_use]
+    pub const fn replaced_by(&self) -> Option<(&'static str, &'static str)> {
+        /// A room's own governance provider, as `tilo-actions` names it.
+        const GOVERNANCE: &str = "tilo.workspace";
+        match self {
+            Self::Create { .. } => Some((HOST_ACTIONS_PROVIDER, CREATE_ROOM)),
+            Self::List => Some((HOST_ACTIONS_PROVIDER, LIST_ROOMS)),
+            Self::Enter { .. } => Some((HOST_ACTIONS_PROVIDER, ENTER_ROOM)),
+            Self::Invite { .. } => Some((GOVERNANCE, "invite")),
+            Self::Cancel { .. } => Some((GOVERNANCE, "invitation.cancel")),
+            Self::Pending { .. } => Some((GOVERNANCE, "invitation.list")),
+            Self::SetRole { .. } => Some((GOVERNANCE, "set-role")),
+            Self::RecordEffectReceipt { .. } => {
+                Some((MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT))
+            }
+            Self::ClaimTopologyNamespace { .. } => {
+                Some((MEMBER_ACTIONS_PROVIDER, CLAIM_TOPOLOGY_NAMESPACE))
+            }
+            Self::GrantAppAuthorship { .. } => Some((HOST_ACTIONS_PROVIDER, GRANT_APP_AUTHORSHIP)),
+            Self::Remove { .. } => None,
+        }
+    }
 }
 
 /// One room administration request on the wire: the caller's certificate and
@@ -236,8 +423,8 @@ pub enum RoomAdminError {
     Refused(String),
 }
 
-/// A certified device using governed commands.
-/// Administration is owner-only; terminal audit is restricted to its own admitted person.
+/// A certified device at a relay's [`ROOM_ADMIN_ALPN`]: it removes a member, the
+/// one command still answered there, as far as the room lets its person.
 #[derive(Clone, Debug)]
 pub struct RoomAdminClient {
     endpoint: iroh::Endpoint,
@@ -306,62 +493,30 @@ impl RoomAdminClient {
         postcard::from_bytes(&reply).map_err(|error| RoomAdminError::Codec(error.to_string()))
     }
 
-    /// Create a governed workspace named `name`.
+    /// Remove the member `request` names from `room`, and every device of
+    /// theirs: the one command this door still answers. Answers the room
+    /// generation that carries the removal.
     ///
     /// # Errors
     ///
     /// As [`Self::send`].
-    pub async fn create(
-        &self,
-        relay: iroh::EndpointAddr,
-        name: &str,
-    ) -> Result<RoomSummary, RoomAdminError> {
-        match self
-            .send(relay, RoomCommand::Create { name: name.into() })
-            .await?
-        {
-            RoomReply::Room(summary) => Ok(summary),
-            reply => Err(unexpected(&reply)),
-        }
-    }
-
-    /// Issue an invitation to `room` with `role`, redeemable for
-    /// `lifetime`, optionally only by `recipient`'s user root.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::send`].
-    pub async fn invite(
+    pub async fn remove(
         &self,
         relay: iroh::EndpointAddr,
         room: &str,
-        role: MemberRole,
-        recipient: Option<[u8; 32]>,
-        lifetime: Duration,
-    ) -> Result<IssuedInvitation, RoomAdminError> {
-        let mut request_id = [0; 32];
-        getrandom::fill(&mut request_id)
-            .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
-        let expires_at_ns = tilo_clock::unix_now_ns()
-            .saturating_add(u64::try_from(lifetime.as_nanos()).unwrap_or(u64::MAX));
+        request: RemoveMemberRequest,
+    ) -> Result<u64, RoomAdminError> {
         match self
             .send(
                 relay,
-                RoomCommand::Invite {
+                RoomCommand::Remove {
                     room: room.into(),
-                    request: IssueInvitationRequest {
-                        request_id,
-                        role,
-                        recipient_user_public_key: recipient,
-                        invitee_name: None,
-                        expires_at_ns,
-                        inviter_name: None,
-                    },
+                    request,
                 },
             )
             .await?
         {
-            RoomReply::Invitation(issued) => Ok(issued),
+            RoomReply::Governance { generation } => Ok(generation),
             reply => Err(unexpected(&reply)),
         }
     }

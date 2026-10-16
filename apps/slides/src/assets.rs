@@ -44,7 +44,7 @@ pub fn app_content() -> ContentStore {
 /// A deck carries this content identity, never a machine-local file path.
 pub fn is_asset_id(id: &str) -> bool {
     id.strip_prefix(ASSET_PREFIX)
-        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .is_some_and(tilo_content::valid_hash)
 }
 
 /// Store supplied bytes in `content` by their BLAKE3 content hash and return
@@ -85,16 +85,7 @@ pub fn import_asset_file(content: &ContentStore, path: &Path) -> Option<String> 
 /// The file a chooser named, or `None` when it is larger than `limit`.
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
     let (dir, name) = tilo_files::file_at(path).map_err(std::io::Error::other)?;
-    let too_big = |len: u64| usize::try_from(len).map_or(true, |len| len > limit);
-    if too_big(
-        tilo_files::blocking::metadata(&dir, &name)
-            .map_err(std::io::Error::other)?
-            .len,
-    ) {
-        return Ok(None);
-    }
-    let bytes = tilo_files::blocking::read(&dir, &name).map_err(std::io::Error::other)?;
-    Ok((!too_big(bytes.len() as u64)).then_some(bytes))
+    tilo_files::blocking::read_bounded(&dir, &name, limit).map_err(std::io::Error::other)
 }
 
 /// Current decode state of one image path.

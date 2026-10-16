@@ -4,6 +4,7 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
+use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
 pub trait AppSurface {
@@ -79,11 +80,41 @@ impl App {
         handled
     }
 
+    /// [`Self::route_surface_input`], marking the semantic tree stale for
+    /// any input but a pointer move that nothing took up: one no widget
+    /// handled, wants to repaint or relayout for, over no floating surface,
+    /// and that marked nothing itself, changed nothing a widget declares
+    /// (the pointer's own position is no part of the tree). The tree is
+    /// stale while the input is routed, for anything that reads it then.
+    fn dispatch_surface_input(
+        &mut self,
+        window: &dyn AppSurface,
+        event: WindowEvent,
+        synthesized_touch: bool,
+    ) -> bool {
+        let stale = self.accessibility.semantic_tree_stale;
+        self.mark_semantic_tree_stale();
+        let marks = self.accessibility.semantic_tree_marks;
+        let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
+        let handled = self.route_surface_input(window, event, synthesized_touch);
+        let inert = pointer_move
+            && !handled
+            && self.accessibility.semantic_tree_marks == marks
+            && !self.unsettled()
+            && !self.root_widget.needs_redraw()
+            && !self.history_needs_redraw()
+            && self.root_widget.floating_surface_presentations().is_empty();
+        if inert {
+            self.accessibility.semantic_tree_stale = stale;
+        }
+        handled
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    fn dispatch_surface_input(
+    fn route_surface_input(
         &mut self,
         window: &dyn AppSurface,
         event: WindowEvent,
@@ -175,6 +206,9 @@ impl App {
             return true;
         }
         let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
+        // Splits this event's cost into the phases a slow input stream has
+        // to be attributed to; reads no clock unless profiling is on.
+        let mut phases = crate::profiling::InputPhaseClock::new(__prof_input.is_some());
         // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
         // want to see whether moves arrive at all.
@@ -197,6 +231,7 @@ impl App {
         // `CursorMoved` is measured in this window's own content,
         // never the desktop — see the `pointer_space` field.
         if app.presence.broadcast_scope.is_some() {
+            let publication = phases.start();
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = crate::time::now();
@@ -227,6 +262,7 @@ impl App {
                 }
                 _ => {}
             }
+            phases.finish(InputPhase::Publication, publication);
         }
 
         let mut handled = false;
@@ -460,7 +496,9 @@ impl App {
         }
 
         if !handled && app.layout.root_node.is_some() {
+            let resources = phases.start();
             app.refresh_controls_before_input(&event);
+            phases.finish(InputPhase::Resources, resources);
             let scale_factor = window.scale_factor();
             let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
@@ -474,13 +512,17 @@ impl App {
                     ..
                 }
             );
+            let resources = phases.start();
             let resources_before = app.resource_input_mark(&event);
+            phases.finish(InputPhase::Resources, resources);
+            let dispatch = phases.start();
             history_handled |= app.presentation_handle_event(
                 event_for_root,
                 scale_factor,
                 &mut handled,
                 &mut focus_target,
             );
+            phases.finish(InputPhase::Dispatch, dispatch);
             // The event may have replaced widgets (a dialog closing on its
             // own button): forget their nodes before the fallbacks below look
             // the focused node up. A focus target named by the old map is
@@ -497,6 +539,7 @@ impl App {
             // later consumer in this event/frame shares the rebuilt one. Bare
             // hover that changed nothing keeps it: rebuilding the whole tree
             // per pointer move cost a full publication at the report rate.
+            let resources = phases.start();
             view_only_scroll = app.invalidate_resources_after_input(
                 &event,
                 handled
@@ -508,6 +551,7 @@ impl App {
                     && focus_target.is_none()
                     && presentation_was_floating == presentation_is_floating,
             );
+            phases.finish(InputPhase::Resources, resources);
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
                     || presentation_was_floating != presentation_is_floating);
@@ -641,28 +685,34 @@ impl App {
             window.request_redraw();
         }
 
+        let publication = phases.start();
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
         app.publish_action_surface();
         app.publish_continuation_metadata();
         app.publish_playback_handoff();
+        phases.finish(InputPhase::Publication, publication);
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
             handled = true;
         }
 
+        let publication = phases.start();
         app.announce_state_change(state_pre);
         app.announce_text_review(review_pre);
+        phases.finish(InputPhase::Publication, publication);
 
         if handled {
+            let commit = phases.start();
             if view_only_scroll && !history_handled && focus_target.is_none() {
                 app.commit_action_with_invalidation(false);
             } else {
                 app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
                 app.needs_sync = true;
             }
+            phases.finish(InputPhase::Commit, commit);
             // Gating every handled event on `needs_redraw()` is
             // wrong: container widgets can mutate their own
             // active-index state without setting a descendant leaf's
@@ -688,14 +738,16 @@ impl App {
         if let WindowEvent::CursorMoved { position, .. } = &event {
             let scale = window.scale_factor();
             let logical = Point::new(position.x / scale, position.y / scale);
+            let hit_test = phases.start();
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
+            let target = app.tooltip_target_at(logical);
+            phases.finish(InputPhase::HitTest, hit_test);
             if app.input.current_cursor != desired {
                 app.input.current_cursor = desired;
                 window.set_cursor(desired);
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
-            let target = app.tooltip_target_at(logical);
             if app
                 .input
                 .tooltip_host
@@ -720,7 +772,7 @@ impl App {
         }
 
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
-            p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
+            p.record_input(start, start.elapsed(), phases.phases());
         }
         handled
     }
@@ -1389,6 +1441,13 @@ mod tests {
     }
 
     include!("native_publication_scroll_tests.rs");
+    include!("semantic_publication_tests.rs");
+
+    #[cfg(feature = "native")]
+    mod input_phase_profile {
+        use super::*;
+        include!("input_phase_profile_tests.rs");
+    }
 
     #[test]
     fn a_relayout_repaints_where_moved_widgets_were_and_are() {
@@ -1466,11 +1525,7 @@ mod tests {
             _theme: &Theme,
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let style = taffy::Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..taffy::Style::default()
-            };
-            taffy.widget_leaf(style, nodes, self)
+            taffy.fill_leaf(nodes, self)
         }
         crate::rect_geometry!();
         fn draw(

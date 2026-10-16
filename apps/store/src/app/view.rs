@@ -646,17 +646,39 @@ impl StoreApp {
             "Details",
             vec![Box::new(PropertyList::new(detail_properties(item)))],
         )));
-        let locally_retained = matches!(
-            &item.source,
-            StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
-        );
         children.push(Box::new(Section::titled(
             "Trust",
-            vec![Self::prose(&trust_explanation(item, locally_retained))],
+            vec![Self::prose(
+                &self
+                    .local_only_notice(item)
+                    .unwrap_or_else(|| trust_explanation(item)),
+            )],
         )));
         children.push(self.technical_details(item));
         children.push(Self::report_section(item));
         Some(self.page(theme, Measure::Reading, false, children))
+    }
+
+    /// For an installed app no repository describes: whether one may yet
+    /// (it has not answered) or none lists it, said once on its details page.
+    pub(super) fn local_only_notice(&self, item: &StoreItem) -> Option<String> {
+        let StoreSource::Tilo { registry_name } = &item.source else {
+            return None;
+        };
+        if registry_name != crate::sources::INSTALLED_ON_DEVICE {
+            return None;
+        }
+        Some(if self.unanswered_repositories.is_empty() {
+            ui::i18n!("store-installed-unlisted")
+        } else {
+            ui::i18n::I18nManager::format(
+                "store-installed-unanswered",
+                &[(
+                    "repositories",
+                    ui::i18n::ArgValue::Text(self.unanswered_repositories.join(", ")),
+                )],
+            )
+        })
     }
 
     fn technical_details(&self, item: &StoreItem) -> Element {
@@ -964,10 +986,7 @@ impl ui::widget::FormControl for NoteField {
 }
 
 /// What a trust claim does and does not promise.
-fn trust_explanation(item: &StoreItem, locally_retained: bool) -> String {
-    if locally_retained {
-        return "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.".into();
-    }
+fn trust_explanation(item: &StoreItem) -> String {
     match item.trust {
         StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         StoreTrust::PublisherSigned => {
@@ -1077,6 +1096,9 @@ fn package_properties(item: &StoreItem) -> Vec<Property> {
         rows.push(
             Property::new("Latest version", visible_version(item)).with_kind(TextKind::Numeric),
         );
+        if let Some(runtime) = &version.runtime {
+            rows.push(Property::new(ui::i18n!("store-runtime-reference"), runtime));
+        }
         if version.size_bytes > 0 {
             rows.push(
                 Property::new("Download size", format_size(version.size_bytes))

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {AdmissionError, NO_ACCESS, admit} from './admission.mjs';
+import {CustodyError} from './device-custody.mjs';
 
 const room = {kind: 'room', host: 'https://quinten.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
 
@@ -33,7 +34,9 @@ const commons = {name: 'Commons', host: {origin: room.host}, admission: `${room.
 test('a host whose listed workspace has an admission door lets the person in when the browser has no account there', async () => {
   const {calls, deps} = doors({workspaceAt: origin => (origin === room.host ? commons : null)});
   assert.deepEqual(await admit({scope: room, deps}), {peer: {admission: true, room: room.room}});
-  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons}]]);
+  // The door is told which room the link names: a host set up again is not
+  // offered to be joined again from a link to a room it no longer has.
+  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons, room: room.room}]]);
 });
 
 test('a member of a host with an admission door connects as the member', async () => {
@@ -47,7 +50,7 @@ test('the home workspace, whose room is not known yet, is entered through its ho
   const home = {kind: 'room', host: room.host, room: null};
   const {calls, deps} = doors({workspaceAt: () => commons});
   assert.deepEqual(await admit({scope: home, deps}), {peer: {admission: true, room: room.room}});
-  assert.deepEqual(calls.map(([name]) => name), ['enterViaHost']);
+  assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]], 'the bare entry names no room');
   await assert.rejects(admit({scope: home, deps: doors().deps}), {code: 'no-access'});
 });
 
@@ -112,6 +115,21 @@ test('no access says the same thing for a missing and a private room', async () 
   }
 });
 
+test('a member whose device key another tab holds is told so, not that the host refused them', async () => {
+  // The page decides what a refusal means for the remembered room: another
+  // tab of this browser says nothing about the host.
+  const {deps} = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); },
+  });
+  await assert.rejects(admit({scope: room, deps}), {name: 'CustodyError', code: 'custody-busy'});
+  const missing = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => { throw new CustodyError('custody-missing', 'This account has no existing browser device'); },
+  });
+  await assert.rejects(admit({scope: room, deps: missing.deps}), {name: 'AdmissionError', code: 'no-access', message: NO_ACCESS});
+});
+
 test('a guest ticket is redeemed where the web host says, and refused where it says nothing', async () => {
   const {calls, deps} = doors();
   const tickets = 'https://rooms.example/rooms/';
@@ -129,4 +147,13 @@ test('a pairing link makes this browser a new device of the person it names, bef
   assert.deepEqual(calls, [['pairDevice', {origin: room.host, room: room.room, userPublicKey: person, workspace: null}]]);
   const bare = doors({pairDevice: undefined});
   await assert.rejects(admit({scope: room, secrets: {pair: person}, deps: bare.deps}), {code: 'unsupported'});
+});
+
+test('a host this browser set up or joined as its person is reconnected to, and anything else stays no access', async () => {
+  const {calls, deps} = doors({reconnect: async ({origin, room: wanted}) => (origin === room.host ? {owner: true, room: wanted} : null)});
+  assert.deepEqual(await admit({scope: room, deps}), {peer: {owner: true, room: room.room}});
+  assert.deepEqual(calls.map(([name]) => name), ['readAccounts']);
+  await assert.rejects(admit({scope: {...room, host: 'https://elsewhere.example'}, deps}), {code: 'no-access', message: NO_ACCESS});
+  const refused = doors({reconnect: async () => { throw new Error('not a member of this room'); }});
+  await assert.rejects(admit({scope: room, deps: refused.deps}), {code: 'no-access', message: NO_ACCESS});
 });

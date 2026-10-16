@@ -678,6 +678,9 @@ pub struct LiveEntry {
     /// The configured mode it was brought up under, if any; a rescan keeps
     /// `mode` while this is unchanged (see [`hotplug::retained_mode`]).
     pub mode_intent: Option<settings_store::hardware::OutputMode>,
+    /// The scale and rotation it keeps while the layout it answers to does
+    /// not name it (see [`hotplug::retained_presentation`]).
+    pub kept: Option<hotplug::Presentation>,
     pub physical_mm: Option<(u32, u32)>,
     /// EDID identity, advertised to clients through `wl_output`.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
@@ -1439,7 +1442,8 @@ impl DrmDispatchState {
         let display_set_changed = self.display_set != display_set;
         self.display_set = display_set;
         // A surviving output now answers to the configuration of this set
-        // of monitors, whether it kept its mode or is re-modeset below.
+        // of monitors, whether it kept its mode or is re-modeset below, and
+        // keeps its scale and rotation unless that configuration names them.
         for entry in &mut self.live {
             if let Some(snapshot) = snapshots.get(&entry.key.device).and_then(|snapshots| {
                 snapshots
@@ -1447,6 +1451,15 @@ impl DrmDispatchState {
                     .find(|snapshot| snapshot.connector_id == entry.key.connector)
             }) {
                 entry.mode_intent = snapshot.mode_intent;
+                entry.kept = hotplug::retained_presentation(
+                    hotplug::Presentation {
+                        scale: entry.scale,
+                        transform: entry.transform,
+                    },
+                    entry.kept,
+                    snapshot.arranged,
+                    display_set_changed,
+                );
             }
         }
         let config_keys: BTreeMap<_, _> = snapshots
@@ -1548,6 +1561,14 @@ impl DrmDispatchState {
         // is baked into the framebuffers, nothing to adjust in place. It keeps its `OutputId` (interned by `(device, connector)`), so clients see a mode change, not a vanished + new display.
         let mut remove: Vec<OutputId> = plan.removed.clone();
         remove.extend(plan.remoded.iter().map(|(id, _)| *id));
+        // A re-modeset output is still the same display: what it keeps
+        // survives its rebuild.
+        let kept: BTreeMap<OutputId, hotplug::Presentation> = self
+            .live
+            .iter()
+            .filter(|l| plan.remoded.iter().any(|(id, _)| *id == l.id))
+            .filter_map(|l| Some((l.id, l.kept?)))
+            .collect();
         self.live.retain(|l| !remove.contains(&l.id));
         let surviving: Vec<OutputId> = self.live.iter().map(|l| l.id).collect();
         self.hw_cursor.retain_outputs(&surviving);
@@ -1585,6 +1606,11 @@ impl DrmDispatchState {
         }
 
         let added_entries = self.adopt_builds(builds);
+        for entry in &mut self.live {
+            if let Some(presentation) = kept.get(&entry.id) {
+                entry.kept = Some(*presentation);
+            }
+        }
         self.relayout_outputs();
         let outputs = self.output_table();
         let send_failure_ack = removal_ack
@@ -1640,6 +1666,7 @@ impl DrmDispatchState {
                 size: build.scanout.size(),
                 mode: build.scanout.output_mode(),
                 mode_intent: build.mode_intent,
+                kept: None,
                 physical_mm: build.physical_mm,
                 monitor: build.monitor,
                 crtc: build.crtc,
@@ -1702,12 +1729,16 @@ impl DrmDispatchState {
             )
         });
         for entry in &mut self.live {
-            entry.transform = config
-                .outputs
-                .get(&entry.config_key)
-                .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
-                    c.transform
-                });
+            entry.transform = config.outputs.get(&entry.config_key).map_or_else(
+                || {
+                    entry
+                        .kept
+                        .map_or(settings_store::hardware::OutputTransform::Normal, |kept| {
+                            kept.transform
+                        })
+                },
+                |c| c.transform,
+            );
             // The accelerometer is in the built-in panel's lid: its reading
             // turns that panel and never an external monitor.
             if let Some(rotation) = self.device_rotation
@@ -1720,7 +1751,12 @@ impl DrmDispatchState {
         // is made of — is its mode over its scale.
         for entry in &mut self.live {
             entry.scale = config.outputs.get(&entry.config_key).map_or_else(
-                || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
+                || {
+                    entry.kept.map_or_else(
+                        || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
+                        |kept| kept.scale,
+                    )
+                },
                 |c| c.scale,
             );
         }
@@ -2235,10 +2271,6 @@ impl DrmDispatchState {
     }
 
     /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "gesture events are consumed as protocol state-machine inputs"
-    )]
     fn handle_gesture(&mut self, ev: GestureEvent) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
@@ -4170,7 +4202,7 @@ impl DrmRuntime {
         let handle: LoopHandle<'static, DrmDispatchState> = event_loop.handle();
         register_event_sources(&handle, session_notifier, udev, libinput_backend)?;
 
-        // Compile the xkb keymap once at startup from the session's `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported); a failure is non-fatal, running pointer-only rather than refusing to boot.
+        // Compile the xkb keymap once at startup from the person's input sources, or the machine's layout when they chose none (`XKB_DEFAULT_*`, localed; see `keyboard_sources::system_sources`); a failure is non-fatal, running pointer-only rather than refusing to boot.
         let keyboard = KeyboardXkb::new();
         if keyboard.is_some() {
             tracing::info!("DRM backend: xkb keyboard initialised");
@@ -4458,6 +4490,13 @@ impl DrmDispatchState {
         let scale_override = settings_store::display_scale::load_user_scale();
         if scale_override != self.scale_override {
             self.scale_override = scale_override;
+            // A session-wide scale just chosen outranks one kept from an
+            // earlier set of monitors.
+            for entry in &mut self.live {
+                if let Some(kept) = &mut entry.kept {
+                    kept.scale = resolve_scale(entry.size, entry.physical_mm, scale_override);
+                }
+            }
             self.relayout_outputs();
             self.outputs_changed = true;
             self.push(BackendEvent::OutputsChanged);
@@ -5539,23 +5578,8 @@ where
             Ok(info) => {
                 let connected =
                     matches!(info.state(), drm_re::control::connector::State::Connected);
-                let modes: Vec<ModeInfo> = info
-                    .modes()
-                    .iter()
-                    .map(|m| {
-                        let (w, h) = m.size();
-                        let preferred = m
-                            .mode_type()
-                            .contains(drm_re::control::ModeTypeFlags::PREFERRED);
-                        ModeInfo {
-                            width: w,
-                            height: h,
-                            // `vrefresh()` returns plain Hz; multiply by 1000 to get milli-Hz (mode_info's canonical unit so 59.94 vs 60.00 stay distinguishable when fractional rates arrive upstream).
-                            refresh_mhz: m.vrefresh().saturating_mul(1000),
-                            preferred,
-                        }
-                    })
-                    .collect();
+                let modes: Vec<ModeInfo> =
+                    info.modes().iter().map(super::scanout::mode_info).collect();
                 connectors.push(ConnectorInfo {
                     device_id: dev_id_raw,
                     connector_id: u32::from(handle),
@@ -5846,10 +5870,6 @@ mod tests {
     // Keyboard: xkb keycode → winit key translation
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn keysyms_map_to_named_keys_and_modifier_aware_text() {
         // Phase `keysym_mapping_named_and_character`.
         // Pure mapping: named special keys and printable characters resolve to the winit `Key` the chrome matches on — no real keymap needed, mirroring the `preferred_mode`/pointer-helper tests.
@@ -6543,6 +6563,7 @@ mod tests {
                 refresh_mhz: 60_000,
             },
             mode_intent: None,
+            kept: None,
             physical_mm: mm,
             monitor: None,
             // Test ids are always small literals; `saturating_add` just
@@ -6720,7 +6741,7 @@ mod tests {
         use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
         for scale in [1.0, 1.5, 2.0] {
             let client =
-                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2, scale)
+                CursorBitmap::from_client(&vec![255; 32 * 32 * 4], 32, 32, (4, 6), 2.0, scale)
                     .expect("a valid client cursor buffer");
             let expected = (
                 i32::try_from(client.hotspot.0).unwrap(),
@@ -7205,6 +7226,22 @@ mod tests {
                 state.live[0].scale, 1.25,
                 "a user who set a scale is not asking for a second opinion"
             );
+        }
+        // Phase `a_survivor_keeps_the_scale_it_was_arranged_at`.
+        {
+            // The 1.25x monitor of an arranged pair, its neighbour unplugged:
+            // the one-monitor set names nothing and a virtual connector
+            // reports no size, so only what it kept says 1.25.
+            let (mut state, _rx) = dispatch_with_channel();
+            let mut survivor = entry(1, 11, (1280, 800), None);
+            survivor.kept = Some(hotplug::Presentation {
+                scale: 1.25,
+                transform: settings_store::hardware::OutputTransform::Normal,
+            });
+            state.live = vec![survivor];
+            state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+            assert_eq!(state.live[0].scale, 1.25);
+            assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
         }
         // Phase `synthesize_for_tests_publishes_its_outputs`.
         {

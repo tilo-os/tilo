@@ -12,16 +12,17 @@ license.workspace = true
 # Explicit native RAM custody qualification: requires a qualified tmpfs backing
 # or permission to create a noswap fixture in a private mount namespace.
 signal-profile-native-test = []
+# Wall-clock idle qualification belongs to the scheduled performance lane.
+scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
 test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support", "tilo-identity-ceremony/test-support"]
-# When set, the hosted-mode compositor (`shell --backend winit`) binds
-# the TILO_TEST_CONTROL Unix socket the same way the headless backend
-# does. A background thread reads JSON commands and injects equivalent
-# `ui::UserEvent`s into the App via winit's `EventLoopProxy`. Disable
-# in production builds to drop the test surface (`--no-default-features
-# --features ...`).
+# Deterministic test seams for the `shots` renderer and the integration
+# tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
+# The name outlived the removed `--mode hosted` loop whose input socket it
+# first gated. Disable in production builds to drop the test surface
+# (`--no-default-features --features ...`).
 default = ["hosted-test-control"]
 hosted-test-control = []
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
@@ -56,6 +57,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Read the app SDK snapshot only in the owned native boundary fixture.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 
@@ -67,6 +69,8 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The owner commit service the native workspace owner implements.
+tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -190,9 +194,6 @@ os-actions = { path = "../../system/os-actions" }
 # the GStreamer encoder/decoder, which picks hardware first, then
 # royalty-free software, then Cisco's openh264 binary loaded by the system.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime", "voice", "pipewire"] }
-# Recording muxes the encoder's access units through `appsrc`; the same pin
-# as `media`, so one copy resolves.
-gstreamer-app = { workspace = true, features = ["v1_24"] }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
@@ -248,11 +249,13 @@ fs-protocol = { path = "../../system/fs-protocol" }
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 channel-crypto = { path = "../../collab/channel-crypto" }
-# The reusable video-streaming stack (H.264 encode/decode, per-share frame
-# transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
-# re-export from here so the compositor's surface streaming and the chat call
-# app share a single copy of the codec + wire format.
-tilo-callstream = { path = "../../collab/tilo-callstream" }
+# The reusable video-streaming stack (encode/decode, per-share frame transport
+# substrate, throttle). `network::{encoder,
+# surface_stream,streaming}` re-export from here so the compositor's surface
+# streaming and the chat call app share a single copy of the codec + wire
+# format. `surface-decoder` is the peer-view receive path; `recording` the
+# MP4/MOV muxer behind screen recordings and `shots --mode recording`.
+tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder", "recording"] }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -323,8 +326,15 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
-# The polkit agent cancels an authentication conversation.
-tokio-util.workspace = true
+# The session's polkit authentication agent; the shell supplies the sheet it
+# asks in (`polkit_agent`).
+tilo-polkit-agent = { path = "../polkit-agent" }
+# The session's status-notifier tray host; the shell supplies the icon
+# rasteriser for named icons (`tray`).
+tilo-tray-host = { path = "../tray-host" }
+# The session's NetworkManager secret agent; the shell supplies the sheet it
+# asks in, in its own words, and the roaming Wi-Fi store (`network_secrets`).
+tilo-network-secret-agent = { path = "../network-secret-agent" }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto
@@ -340,9 +350,15 @@ tar.workspace = true
 # Tilo's search layer: the providers' retained indexes, and the files
 # provider's on-disk content index.
 tilo-search = { path = "../../sdk/search", features = ["disk"] }
+# The `app list --json` wire types the catalogue reads.
+registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The clipboard bridge tests speak futures-io over tokio sockets (`compat`).
+tokio-util.workspace = true
+# Drives the secret agent from a stand-in NetworkManager into the sheet.
+tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
@@ -355,7 +371,6 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
 # Exercise owner-selected bytes against the actual Store signed-package review.
 app-cli = { path = "../../packaging/app-cli" }
-registry-types = { path = "../../packaging/registry-types" }
 flate2.workspace = true
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
@@ -373,6 +388,8 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
+# The hosted-terminal tests tee its PTY writes in any profile.
+terminal = { path = "../../../apps/terminal", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
@@ -408,6 +425,12 @@ path = "tests/it.rs"
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
 [[example]]
+name = "idle-wakeups"
+test = false
+bench = false
+required-features = ["scheduled-idle-benchmark"]
+
+[[example]]
 name = "runtime-mcp-inspect"
 test = true
 
@@ -419,6 +442,7 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+tilo-secret-service = { path = "../../system/secret-service" }
 signal-hook-registry = "1.4.8"
 # Raw Vulkan for returning the device memory lavapipe freed
 # (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
@@ -470,3 +494,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }

@@ -264,23 +264,6 @@ impl HistoryGroup {
         Some(crate::i18n!("history-span-days", "count" => hours / 24))
     }
 
-    /// Index ranges of this group's own rows — everything in `start..end` that
-    /// no child covers. In ascending order.
-    pub fn direct_spans(&self) -> Vec<std::ops::Range<usize>> {
-        let mut out = Vec::new();
-        let mut cursor = self.start;
-        for c in &self.children {
-            if c.start > cursor {
-                out.push(cursor..c.start);
-            }
-            cursor = c.end.max(cursor);
-        }
-        if cursor < self.end {
-            out.push(cursor..self.end);
-        }
-        out
-    }
-
     /// Every group in this subtree, self first, then children. Used by the
     /// surfaces to flatten a forest into a row list.
     pub fn walk<'a>(&'a self, out: &mut Vec<&'a HistoryGroup>) {
@@ -891,8 +874,6 @@ mod tests {
             assert_eq!(outer.children.len(), 1);
             assert_eq!(outer.children[0].name.as_deref(), Some("Intro rewrite"));
             assert_eq!(outer.children[0].depth, 1);
-            // The parent's own rows are what the child does not cover.
-            assert_eq!(outer.direct_spans(), vec![0..2, 5..8]);
         }
 
         fn a_third_level_of_naming_is_not_rendered_as_a_group() {

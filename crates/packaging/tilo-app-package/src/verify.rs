@@ -75,7 +75,7 @@ impl Verification {
 /// Verify with no attestor registry and no revocation list; see
 /// [`verify_with_trust`] for the full API.
 pub fn verify(meta: &PackageMeta, trusted_keys: &[[u8; 32]]) -> Verification {
-    verify_with_trust(meta, trusted_keys, &[], &RevocationList::empty())
+    verify_with_trust(meta, trusted_keys, &[], &RevocationList::default())
 }
 
 /// Verify a package with a trusted-attestor registry AND a revocation list.

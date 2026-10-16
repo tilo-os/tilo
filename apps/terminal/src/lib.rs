@@ -18,18 +18,8 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod actions;
 mod graphics;
 pub mod history;
@@ -194,196 +184,12 @@ const USH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_milli
 /// endpoint stall shell construction indefinitely.
 #[cfg(unix)]
 fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
-
-    if !runtime.is_absolute() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "XDG_RUNTIME_DIR is not absolute",
-        ));
-    }
-    let tilo = runtime.join("tilo");
-    let services = tilo.join("services");
-    let socket = services.join("ush.sock");
-    // SAFETY: `geteuid` reads the current process credential and has no memory
-    // or descriptor ownership effects.
-    let owner = unsafe { libc::geteuid() };
-    for directory in [runtime, tilo.as_path(), services.as_path()] {
-        let metadata = std::fs::symlink_metadata(directory)?;
-        if !metadata.file_type().is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "ush service directory is not private to this user",
-            ));
-        }
-    }
-    let metadata = std::fs::symlink_metadata(&socket)?;
-    if !metadata.file_type().is_socket() || metadata.uid() != owner || metadata.mode() & 0o077 != 0
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "ush service socket is not owner-only",
-        ));
-    }
-
-    let stream = connect_unix_socket_bounded(&socket, USH_CONNECT_TIMEOUT)?;
+    let socket = runtime.join("tilo/services/ush.sock");
+    let stream =
+        tilo_process::local_socket::connect_owner_only(runtime, &socket, USH_CONNECT_TIMEOUT)?;
     stream.set_read_timeout(Some(USH_CONNECT_TIMEOUT))?;
     stream.set_write_timeout(Some(USH_CONNECT_TIMEOUT))?;
     Ok(stream)
-}
-
-/// Non-blocking Unix-domain connect with a finite deadline.
-#[cfg(unix)]
-fn connect_unix_socket_bounded(
-    path: &std::path::Path,
-    timeout: std::time::Duration,
-) -> std::io::Result<std::os::unix::net::UnixStream> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.is_empty()
-        || bytes.len()
-            >= std::mem::size_of::<libc::sockaddr_un>()
-                - std::mem::offset_of!(libc::sockaddr_un, sun_path)
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "ush service socket path is too long",
-        ));
-    }
-    if bytes.contains(&0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "ush service socket path contains NUL",
-        ));
-    }
-
-    // SAFETY: `socket` has no pointer arguments and returns an owned descriptor.
-    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if raw < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `raw` was just returned by `socket` and has no other owner.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    // SAFETY: `fcntl` only changes descriptor flags on the owned descriptor.
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: the descriptor is owned and remains live for this call.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `fcntl` only changes descriptor status flags on the owned descriptor.
-    let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-    if status < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: the descriptor is owned and remains live for this call.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, status | libc::O_NONBLOCK) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    // SAFETY: zeroed `sockaddr_un` is valid before its family and pathname are
-    // initialized; `bytes` fits with room for a terminating NUL as checked above.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    // SAFETY: both ranges are valid and non-overlapping, with the destination
-    // bounded by the path-length check above.
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            bytes.as_ptr().cast::<libc::c_char>(),
-            address.sun_path.as_mut_ptr(),
-            bytes.len(),
-        );
-    }
-    let address_len = libc::socklen_t::try_from(
-        std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1,
-    )
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid ush path"))?;
-    // SAFETY: `address` is initialized for the stated length and `fd` is live.
-    let connected = unsafe {
-        libc::connect(
-            fd.as_raw_fd(),
-            (&raw const address).cast::<libc::sockaddr>(),
-            address_len,
-        )
-    };
-    if connected < 0 {
-        let error = std::io::Error::last_os_error();
-        if !unix_connect_is_pending(error.raw_os_error()) {
-            return Err(error);
-        }
-        wait_for_unix_connect(fd.as_raw_fd(), timeout)?;
-    }
-
-    // SAFETY: `fcntl` only changes the status flags of the owned descriptor.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, status) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(std::os::unix::net::UnixStream::from(fd))
-}
-
-#[cfg(unix)]
-fn unix_connect_is_pending(error: Option<i32>) -> bool {
-    matches!(
-        error,
-        Some(libc::EINPROGRESS | libc::EALREADY | libc::EAGAIN)
-    )
-}
-
-#[cfg(unix)]
-fn wait_for_unix_connect(
-    fd: std::os::fd::RawFd,
-    timeout: std::time::Duration,
-) -> std::io::Result<()> {
-    let deadline = ui::time::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(ui::time::now());
-        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
-        let mut event = libc::pollfd {
-            fd,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        // SAFETY: `event` is initialized and live for the duration of this call.
-        let result = unsafe { libc::poll(&raw mut event, 1, timeout_ms) };
-        if result == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "ush service connection timed out",
-            ));
-        }
-        if result < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(error);
-        }
-        let mut socket_error = 0;
-        let mut length = libc::socklen_t::try_from(std::mem::size_of_val(&socket_error))
-            .map_err(|_| std::io::Error::other("invalid ush socket error length"))?;
-        // SAFETY: both output pointers are valid for their stated lengths.
-        if unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                (&raw mut socket_error).cast(),
-                &raw mut length,
-            )
-        } < 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        if socket_error != 0 {
-            return Err(std::io::Error::from_raw_os_error(socket_error));
-        }
-        return Ok(());
-    }
 }
 
 /// A required provider is missing or refused the session. Hosts may retry with a fresh grant.

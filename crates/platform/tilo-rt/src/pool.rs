@@ -1,7 +1,8 @@
 //! Thread-pool bounds, and the small job pool behind [`crate::io`].
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 
 /// Blocking-pool bound for the app runtime. An app's blocking calls are a
 /// handful of D-Bus or file calls at a time; queueing beyond that is fine.
@@ -47,17 +48,13 @@ impl JobPool {
 
     /// Queue `job`. Returns `false` when every pool thread has exited.
     pub(crate) fn submit(&self, job: impl FnOnce() + Send + 'static) -> bool {
-        self.queue
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(Box::new(job))
-            .is_ok()
+        self.queue.lock_recover().send(Box::new(job)).is_ok()
     }
 }
 
 fn drain(jobs: &Mutex<Receiver<Job>>) {
     loop {
-        let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        let job = jobs.lock_recover().recv();
         let Ok(job) = job else { return };
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
             tracing::warn!("pool job panicked");

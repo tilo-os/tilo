@@ -12,7 +12,12 @@ guarantee is not delivered. **P2** = correctness/hygiene.
 
 Findings that have since been fixed carry a **Resolved** note naming the test that holds the fix
 in place. The description of the defect is left as it was written, so the record still says what
-was wrong.
+was wrong: file:line citations in a description are as found, and the current source is named in
+the status note below it.
+
+Statuses, current paths and regression-test names were last reconciled against source on
+2026-10-14. That reconciliation read code and tests; it ran no installed, booted or deployed
+qualification, and a status note never claims one unless it names the receipt.
 
 ---
 
@@ -48,6 +53,8 @@ the format. Held by
 and
 `crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
+The `identity_flow` widget cited above no longer exists; the record encoder is
+`crates/collab/tilo-identity-ceremony/src/lib.rs` (`IdentityRecord::into_threshold_identity`).
 
 ---
 
@@ -114,7 +121,8 @@ Ed25519 public key and is unchanged across a remount; a device key that will not
 mount rather than falling back to a random one. `bind_endpoint` is split into
 `bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
 every call site. Held by `crates/system/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
-and `::identity_survives_a_restart`.
+and `::the_device_identity_is_the_iroh_key_and_survives_restart` (phase
+`identity_survives_a_restart`).
 
 ---
 
@@ -206,6 +214,16 @@ broken seal is the expected outcome of sealing across that boundary rather than 
 real machine. `P1-2a` supplies a second, simpler explanation that has to be excluded first: on that
 run **no TPM key slot was ever enrolled**, because enrolment exited before reaching the TPM branch.
 Falling back to the recovery key is the correct behaviour for a volume with no TPM slot.
+
+**Superseded.** The fix direction above (keep GRUB on the ostree backend) is not what shipped.
+Tilo moved to bootc's composefs backend, which is the one that can plant systemd-boot
+([composefs-decision.md](composefs-decision.md)): `os/usr/lib/bootc/install/40-tilo.toml` sets
+`bootloader = "systemd"` again, `os/Containerfile` still removes shim and the GRUB stack, the
+image builds a UKI with `bootc container ukify`, and `os/dev/disk-image.sh` installs with
+`systemd-repart` plus `bootc install to-filesystem` instead of bootc-image-builder. The
+"Confirmed against a real install" evidence above was taken on the earlier GRUB/ostree image and
+is not evidence about the current one; current boot evidence is in
+[boot-chain.md](boot-chain.md).
 
 ---
 
@@ -393,6 +411,18 @@ Knock-on effects:
   kernel (Fedora-signed)"* — that the image explicitly deletes. The document is stale and
   actively misleading.
 
+**Superseded by owner-enrolled Secure Boot; hardware proof open.** The image still removes shim and
+GRUB and installs `systemd-boot-unsigned` (`os/Containerfile`), so nothing is signed by Microsoft
+or Fedora. Instead the owner's keys sign the boot chain: `os/usr/libexec/tilo-secureboot`
+generates keys, signs, enrolls the keys and seals the db key, and the `tilo-secureboot-sign`
+path, timer and shutdown units re-sign after an update. The UKI is built with
+`bootc container ukify`, and `tpm2-pcr-signing.public.pem` is installed by the `91tilo-rollback`
+dracut module. Secure Boot, and with it the firmware-driven protections above, is therefore
+active only after the owner runs `tilo-secureboot enroll`; a machine that never enrolls boots
+unsigned. "No `sbsign`/`pesign` anywhere in the tree" is no longer true.
+[boot-chain.md](boot-chain.md) now describes this chain. Per-device firmware enrollment needs a
+hardware matrix.
+
 ---
 
 ## P1-2 — Disk encryption is opt-in, TPM-mandatory, and conflicts with the initrd-less kernel
@@ -420,11 +450,22 @@ asserted the commands exited, not that the resulting volume opened by the secret
 given — which is exactly how `P1-2a` survived it, and why its replacement
 (`os/tests/luks_enrolment.sh`) asserts the opening rather than the exiting.
 
+**Resolved in source.** Every native install is encrypted: `os/usr/libexec/tilo-install` sets
+`ENCRYPT=1` unconditionally and refuses to run without `--pin`, the startup secret. A TPM is no
+longer required: the short-PIN TPM2 policy is used only when a TPM is present and
+`tilo-verified-boot-install-preflight` passes, and otherwise the same input is enrolled as an
+ordinary strong passphrase, checked by `tilo-startup-secret-policy`. `os/etc/kernel/install.conf`
+no longer exists; the image builds its initramfs with an explicit dracut call in
+`os/Containerfile`, carrying the `91tilo-rollback` and `92tilo-sibling-unlock` modules. The
+enrolment itself is held by `os/tests/luks_enrolment.sh`, which runs during the image build and
+asserts that each factor opens the volume. A boot of the current image to an opened root on real
+hardware is not recorded here.
+
 ---
 
 ## P1-3 — MLS does not rekey on member removal
 
-`crates/collab/channel-crypto/src/group.rs:399-404` — `remove_member` is a `todo!()`. The design
+`crates/collab/channel-crypto/src/group.rs:399-404` (as found) — `remove_member` is a `todo!()`. The design
 guarantee is that the group key rotates on *every* membership change; removal is the case that
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
@@ -450,13 +491,31 @@ targeted Welcome/commit/removal journal, partial-failure rollback, and a
 snapshot-acknowledged plaintext gate. The shell now has a broker-internal,
 handle-only workspace authority transaction with idempotency and crash recovery
 tying those primitives to role admission/revocation. Production broker startup
-installs the Secret Service provider without a file-key fallback. Its document
+installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
+file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
+`crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
+`crates/session/shell/src/shell/mls_vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
-The remaining work is user-facing device/member provisioning and recovery UX,
-plus an authenticated peer-control adapter that drains and acknowledges the
-already durable targeted governance outbox. The ciphertext document relay is
-intentionally not that adapter; it must never broadcast Welcome bytes.
+The remaining work at the time was user-facing device/member provisioning and
+recovery UX, plus an authenticated peer-control adapter that drains and
+acknowledges the already durable targeted governance outbox. The ciphertext
+document relay is intentionally not that adapter; it must never broadcast
+Welcome bytes.
+
+**Production adapter now present.** `crates/collab/tilo-action-broker/src/channel_encryption.rs`
+runs the steward for every channel a device governs: it reconciles each MLS group with the room's
+access policy, so an invite, a removal, a role change that ends access or a revoked device becomes
+a commit (`Steward::reconcile`, which stages removals through `ChannelGroup::stage_remove`), and it
+redelivers the steward's outbox over the room transport (`NeighbourMsg::MlsGovernance`) with
+backoff until each device acknowledges. Held by that module's
+`an_announced_revocation_is_enforced_at_once_and_idle_stewards_park`,
+`a_new_channel_is_encrypted_from_creation_and_follows_the_policy`,
+`delivery_survives_a_network_outage` and
+`observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
+`channel-crypto/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
+The steward admits per record, a Deny over an app or a pattern of records included; see `P1-11`.
+Provisioning and recovery UX were not assessed by this reconciliation.
 
 ---
 
@@ -478,13 +537,19 @@ tests. A channel-browser widget with no shell call site has since been removed.
 `validate_admitted_inbound_op` before recording or fanning out an operation.
 The network broker validates the certified route and current workspace role;
 the Cap'n Proto broker uses the independently admitted join identity and the
-same artifact state. Invalid signatures, stale/replayed operations, route
-mismatches, role violations and already-redacted targets are rejected before
-publication. The old `register_channel_state` observation described a previous
+same artifact state. Invalid signatures, live operations dated outside the
+five-minute clock window, per-author sequence replays, route mismatches, role
+violations and already-redacted targets are rejected before publication.
+History a workspace host replays from its retained, host-ordered log is
+admitted at any age (`validate_replayed_inbound_op`; only a future date is
+refused), because history is old by nature; the per-author sequence still
+refuses a replayed duplicate. The old `register_channel_state` observation described a previous
 bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
-Held by the broker ingress tests in `collab_broker.rs` and
-`collab_broker_capnp.rs` plus `collab-types/tests/validator.rs`.
+Held by the broker ingress tests in
+`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_broker_capnp.rs,collab_inbound.rs}`
+and `crates/session/shell/src/shell/collab_broker.rs`, plus
+`crates/collab/collab-types/tests/validator.rs`.
 
 ---
 
@@ -498,12 +563,16 @@ can lock before the machine sleeps"* — which is not implemented.
 `crates/session/shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `TILO_IDLE_LOCK_SECS`.
 
-**Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
-`PowerSignal::Lock` before sleep, while the resume edge resets idle state.
-The compositor defaults both blanking and locking to five minutes; an explicit
-`TILO_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
-sleep-edge mapping and secure default, and `crates/session/shell/tests/session_lock_e2e.rs`
-drives idle lock plus failed and successful unlock through the live loop.
+**Resolved.** The power service maps `PrepareForSleep(true)` to
+`PowerSignal::PreparingForSleep` (`crates/system/power/src/service.rs`), and the compositor
+answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
+`crates/session/shell/src/compositor/idle.rs`); the resume edge resets idle state. The compositor
+defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
+documented opt-out for idle locking only. Unit coverage pins the sleep-edge mapping and secure
+default. `crates/session/shell/tests/session_lock_e2e.rs`, a module of the shell's `it` test
+target, drives idle lock plus failed and successful unlock through the live loop, but it is
+`#[ignore]`d because it needs a display, so default CI does not run it
+(`cargo test -p shell --test it session_lock_e2e:: -- --ignored`).
 
 ---
 
@@ -522,7 +591,13 @@ same explicitly documented fallback rather than silently losing the vault.
 The identity defect is closed: schema-1 plaintext records migrate to public
 metadata plus Secret Service storage (or a truthful host-only 0600 fallback),
 and apps receive an app-scoped signing socket rather than a mounted key file.
-The TOTP defect above remains separate work.
+
+**Resolved by redesign.** The authenticator no longer has a vault file. Each account's seed is
+its own item in the app's secret store (`apps/totp/src/secrets.rs`, through
+`crates/platform/tilo-secrets`), and the collaborative document names accounts without holding a
+seed. The only file-backed store is the explicit `TILO_SECRETS_DIR` opt-in for headless machines.
+Held by `apps/totp/src/secrets.rs::tests` (`seeds_live_under_the_account_id_and_leave_with_the_account`,
+`a_refused_write_is_kept_for_the_session_until_a_retry_lands`).
 
 Identity storage uses the standard libsecret `secret-tool` client when an
 unlocked freedesktop Secret Service is available.
@@ -561,12 +636,13 @@ pressure, and the frozen RPM set would then be resolved against an unrecorded ba
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
-as a `--build-arg`.
+as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-mirror.sh`;
+`BASE_REF` in `os/base-snapshot.env` still pins `registry.tilo.so/tilo/fedora-bootc` by digest.
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/tilo-relay/Containerfile:74` builds its runtime stage `FROM
-  quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
+- `os/containers/tilo-relay/Containerfile:74` (now around `:149`; **still floating** on current
+  source) builds its runtime stage `FROM quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
   so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
   `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
   whole point is to be small is not the fix. A digest against quay.io expires the same way the
@@ -577,7 +653,8 @@ Two adjacent holes in the same guarantee were found alongside it:
   `.forgejo/workflows/release-relay.yml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
-  still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
+  still open. (**Closed by removal:** the browser moved from WPE to a Chromium engine and the
+  `wpe-builder` stage no longer exists; the history below is kept as written.) The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
   the strongest sense: nobody noticed, because the base `FROM` above failed first and the layer
   cache served the stage before that. Once the base pin was fixed and the stage actually ran, it
   had five independent defects stacked behind one another, each only visible after the previous
@@ -651,10 +728,20 @@ ignores `panic` on the test profile, so the strategy has to be emulated — and 
 dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
+**Current source.** The fallible constructor is taken in
+`crates/sdk/ui-core/src/native/warmup.rs`, `crates/session/shell/src/compositor/native.rs` and
+`crates/session/shell/src/compositor/backend/headless.rs`, and the compositor reaches
+`ui::warmup::spawn_warmup` from `crates/session/shell/src/linux_main.rs`. `[profile.release]` has
+since changed to `panic = "unwind"` so the compositor can restart its collaboration broker, but
+`tilo-rt` installs a hook that aborts every panic outside
+`tilo_rt::panic_boundary::isolate` (`crates/platform/tilo-rt/src/panic_boundary.rs`), so a bare
+`catch_unwind` is still not a recovery path and `try_new` remains the fix.
+
 **Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
-build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked
+build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` (now `:523`,
+`:710`) was checked
 and is *not* the same defect: it absorbs an openmls `debug_assert!(false, …)` that only fires in
 debug builds, which is where `catch_unwind` works.
 
@@ -701,7 +788,8 @@ a snapshot whose session is not the invite's workspace and record. Held by
 `crates/system/fs/src/namespace_binding.rs::tests`, the
 `crates/system/fs/src/sync/tests.rs` tests from
 `a_document_of_another_workspace_is_refused_although_validly_signed` to
-`a_read_only_pull_merges_only_a_members_document_of_this_workspace`,
+`read_only_member_never_downloads_full_snapshot` (which replaced
+`a_read_only_pull_merges_only_a_members_document_of_this_workspace`),
 `crates/system/fs/src/sync/session/tests.rs` and
 `crates/system/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
 
@@ -719,8 +807,11 @@ the fold is the older path.
 actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
 across Rust releases, so two peers on different toolchains would have stopped recognising each
 other's publishes. Held by
-`crates/session/shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
-`crates/session/shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
+`crates/session/shell/src/network/identity.rs::tests::identity_store_keys_entries_per_peer_and_rejects_invalid_ones`
+(phase `distinct_peers_never_share_an_entry`),
+`crates/session/shell/src/network/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+(phase `liveness_and_salt_are_stable`) and
+`crates/collab/neighbour-wire/src/lib.rs::tests::peer_handle_is_fnv1a_of_the_device_key`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
@@ -732,9 +823,11 @@ from first run. The same function documents a known TOCTOU window between write 
 **Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
 compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
 machine's one device key, so the compositor no longer keeps a network identity of its own.
-The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
-`crates/session/shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
-and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
+The write goes through an atomic write-with-mode, closing the TOCTOU window. The key now lives at
+`/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
+`crates/session/shell/src/network/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+(phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
+`crates/collab/tilo-user-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
@@ -748,9 +841,10 @@ key, certificate, every revocation signature, expiry, and revocation status befo
 production collaboration message; a later revocation removes the peer immediately. Revocation
 also withdraws this machine's exported filesystem authority and stops the app identity broker
 from signing locally. Held by
-`shell::network::tests::identity_hello_redeems_invite_as_editor_and_revocation_removes_trust`,
+`shell::network::tests::redeemed_invites_grant_exactly_their_signed_role_and_name`
+(phase `exact_invite_redeems_as_editor_and_revocation_removes_trust`),
 `shell::state::identity_fs_tests::filesystem_export_maps_verified_people_and_per_workspace_membership`,
-and `identity_broker::tests::identity_service_wire_is_pinned_and_signing_requires_the_exact_capability`.
+and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned_and_signing_requires_the_exact_capability`.
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
@@ -763,6 +857,11 @@ The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
 The code is correct; the document is stale. Recorded because a stale doc describing a weaker
 mechanism is how a strong one gets "simplified" later.
 
+**Resolved.** `docs/app-model/sandbox.md` now says an address literal never satisfies a hostname
+grant and describes no DNS filtering. The test is now the phase
+`an_address_literal_never_matches_a_hostname_grant` of
+`grants_narrow_but_never_widen_the_manifest_allowlist` in `netgate.rs`.
+
 ## P2-5 — `tilo-security-audit` cannot fail
 
 `os/usr/libexec/tilo-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
@@ -773,14 +872,192 @@ mechanism is how a strong one gets "simplified" later.
 health result. The unit is wanted rather than required, so this remains
 diagnostic and cannot strand the user during boot, but system health, logs and
 agents can no longer mistake a failed audit for success. The image-policy check
-binds the Tilo registry scope, `sigstoreSigned` rule, pinned key path and the
-installed non-empty verification key instead of accepting an unrelated string.
-Held by `os/tests/kernel_hardening_invariants.sh`.
+requires the Tilo registry scope, a `sigstoreSigned` rule, the pinned key path
+and the installed non-empty verification key instead of accepting one unrelated
+string. Held by `os/tests/kernel_hardening_invariants.sh`.
+
+**Residual, resolved.** The image-policy check was three independent `grep -F` matches over
+`policy.json`, not a parse, so a signed `code.tilo.so/tilo/tilo` or
+`registry.tilo.so/tilo/legacy-guest` entry would have satisfied it while the
+`registry.tilo.so/tilo/tilo` scope itself accepted anything. The audit now runs
+`os/usr/libexec/tilo-image-policy-check`, which parses the policy and passes only when
+`registry.tilo.so/tilo/tilo` and `code.tilo.so/tilo/tilo` each hold nothing but `sigstoreSigned`
+requirements on `/usr/share/tilo/cosign.pub` with a repository-bound `signedIdentity`, and every
+more specific scope under either Tilo namespace is that or `reject`. An unreadable, malformed or
+duplicate-keyed policy fails. `os/tests/kernel_hardening_invariants.sh` runs it against the
+shipped policy and eighteen weakened copies (each Tilo scope accepting anything, another key,
+`signedBy`, a remapped identity, extra key material, a tag override, a removed scope, a removed
+legacy-guest or development scope that leaves it to the permissive default, a permissive
+namespace scope, malformed JSON, a duplicate scope, a missing file), every one of which must
+fail. Separately, the audit's mem-init check required the kernel to report
+`heap free:on` and so warned on every correct boot once `init_on_free` left the kernel
+arguments; it now requires `alloc:on`, and `os/tests/kernel_hardening_invariants.sh` refuses the
+old pattern.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `registry.tilo.so/tilo/tilo`
-only; every other image reference is unverified.
+`os/etc/containers/policy.json:2-4`. Signature enforcement covers the official Tilo
+repositories only; every other image reference is unverified by the policy.
+
+**Still open: awaiting the owner's decision to accept or tighten.** The default is still
+`insecureAcceptAnything`. Current source requires a `sigstoreSigned` signature for
+`code.tilo.so/tilo/tilo`, `registry.tilo.so/tilo/tilo` and `registry.tilo.so/tilo/legacy-guest`,
+and rejects the `tilo-vm`, `tilo-ci` and `tilo-dev` repositories on both registries.
+`tilo-image-policy-check` now also judges the legacy guest and those development repositories by
+their *effective* rule, so removing one's scope (handing it to the permissive default) or adding
+a permissive `registry.tilo.so/tilo` namespace scope fails the boot audit.
+
+What the permissive default reaches, as of this entry:
+
+- **No Tilo OS image path depends on it.** The installer installs the booted medium's image from
+  local container storage, and the offline target verifies the cosign signature, docker reference
+  and provenance itself before importing with `skopeo --insecure-policy`. The recorded update
+  origin is restricted to `registry.tilo.so/tilo/tilo` or `code.tilo.so/tilo/tilo`
+  (`os/dev/hardware_profile.py`), production `tilo os upgrade` refuses `--to`, and the legacy guest
+  is fetched only by a compiled-in digest of `registry.tilo.so/tilo/legacy-guest`
+  (`crates/runtime/legacy-vm/src/image.rs`). `tilo-install` does not pass bootc's
+  `--enforce-container-sigpolicy`.
+- **Only root can point bootc at another reference**; there is no polkit rule for bootc or
+  rpm-ostree, and the wheel update unit takes fixed arguments.
+- **Rootless podman, skopeo and distrobox** read `~/.config/containers/policy.json` first, which the
+  user can write anyway, so the system default grants a session nothing it lacks.
+- **Features that would break under a default `reject`:** the Containers app's `podman pull`,
+  distrobox (the runtime portal's container shell), `tinker base add`, the local-model
+  `podman load`, dev images' `tilo os upgrade --to`, and possibly the installer's
+  `containers-storage` handoff. A tightened default therefore needs a root/user split (a
+  `reject` system default plus a per-user permissive policy) and an install scenario run.
+- **One uncovered Tilo origin:** the operator-built host image (`os/build-host.sh`) records
+  `localhost/tilo-host:latest`, which no scope covers.
+
+## P1-10 — The filesystem daemon's SELinux domain is permissive
+
+`os/usr/share/tilo/selinux/tilo-base.cil` declares `tilo_fs_t` and then
+`(typepermissive tilo_fs_t)`: "log-but-allow everything tilo_fs_t does while the enforcing
+allow-set is being established from real AVCs". The design puts the filesystem daemon in trust
+tier T0, whose boundary includes mandatory access control ([architecture.md](architecture.md)
+§2.3), but today the root FUSE daemon's domain only logs denials. Its systemd sandboxing (checked
+by `os/tests/kernel_hardening_invariants.sh`) still applies; the MAC layer does not.
+
+**Fix direction:** collect the AVCs from a booted image under real workloads, write the
+enforcing allow-set, drop `typepermissive`, and add an invariant that fails while the domain is
+permissive.
+
+**Resolved.** `tilo-base.cil` no longer makes `tilo_fs_t` permissive; its allow-set names each
+type fs uses, grouped by subsystem with the reason for each rule.
+`os/tests/kernel_hardening_invariants.sh` ("root FUSE daemon SELinux domain enforces with named
+types") fails if a `typepermissive` returns, if the FUSE device grant disappears, or if a rule
+grants `tilo_fs_t` a whole attribute, an unconfined domain or every permission of a class.
+Receipt: on a dev VM (image `tilo-vm:main-f4c9380-ci`, aarch64) with fs.service running under a
+certified device identity, the AVCs were collected with the domain permissive and dontaudit rules
+disabled, then this module was loaded and the same workload re-run enforcing: mounting
+`/var/workspace`, file create/write/append/rename/copy/truncate/chmod/xattr/delete as two local
+accounts, a 5 MB content round trip, the storage socket's snapshot and eviction requests, Iroh
+waking (relays, net report, DNS), a stop and start, and the native data plane's probes on a Btrfs
+store volume. No `tilo_fs_t` denial was logged and every operation matched the permissive run.
+Peer sync with a second device was not part of that run. The shipped kernel has no fanotify, so
+the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
+AVCs on a kernel that has it.
+
+## P1-11 — A Read Deny below the room does not withhold that record's channel key
+
+`docs/architecture/permissions.md` §5.3. Room grants can deny Read on one app or record, and every
+per-record read path honours it (`StatePeer::check_document_read`). Channel stewards used to admit
+devices per room: `allowed_devices` in `crates/session/shell/src/shell/channel_policy.rs` asked Read
+once, on the room node, and the steward in `crates/collab/tilo-action-broker/src/channel_encryption.rs`
+admitted every allowed device to every record channel of that room. A person denied one record
+therefore still received that record's MLS keys, and the room was the confidentiality boundary
+against the member's own modified client.
+
+**Resolved for records, apps and patterns of records.** Stewards admit per channel
+(`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
+`PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
+every door applies. A channel id is a hash of its record's route, so the steward names the record
+from a grant naming it or from the route a device sends beside its access request
+(`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
+id and keeps beside the channel's group across restarts. A channel whose record it cannot name is
+withheld from every device a Deny over a pattern could keep out
+(`collab_types::pattern_read_witnesses`), so omitting the route gains a denied device nothing. A
+denied device that held a key is removed in a new epoch of that channel alone. Held by
+`channel_encryption`'s `a_read_deny_on_an_app_withholds_every_routed_channel_of_it` and
+`a_device_withheld_from_one_channel_loses_only_that_channels_key`, `channel_policy`'s
+`a_read_deny_over_an_app_withholds_every_routed_channel_of_it`, the relay stewardship's
+`a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels` and
+`learned_routes_survive_a_restart_and_only_true_ones_are_kept`, and peer-state's
+`a_read_deny_on_a_record_withholds_only_that_records_channel`.
+
+**Remaining:** a Deny below a record (an item, a field) binds honest clients and doors only. One
+key opens the whole record, so against a modified client the record is the boundary; content that
+must stay hidden from a member belongs in a record of its own, denied by name or pattern.
+
+## P2-7 — `sudo` and polkit ship in the image although the design brokers every privileged operation
+
+[architecture.md](architecture.md) §4.6 says "No `sudo`, no `pkexec`, no general-purpose
+escalation". The image's package allowlist keeps `sudo` (`os/scripts/verify-runtime-crypto-packages.sh`)
+and installs polkit (`os/Containerfile`). Recorded as the gap between the design and this build,
+not as an exploitable path: who may use either is decided by the image's account and polkit
+configuration, which this entry does not assess.
+
+## P2-8 — Hardware shadow stacks are an x86-64 property only
+
+[architecture.md](architecture.md) lists hardware shadow stacks in the image-wide Tier 0.
+`os/kernel/config-fragments/x86_64.config` enables `X86_USER_SHADOW_STACK` and `X86_KERNEL_IBT`;
+`aarch64.config` says ARM pointer authentication and BTI are not equivalents and makes no such
+guarantee. ARM64 builds therefore lack this layer.
+
+## P1-12 — A filesystem grant covering the home directory reaches Tilo's private stores
+
+`crates/packaging/launcher/src/capabilities.rs`, `is_bindable_path`. A granted path is bound and
+allowed by Landlock with no filter beyond absolute-and-not-`/`, and Landlock cannot carve a hole
+beneath an allowed directory. An app granted `$HOME` or `~/.config` therefore reads, as the same
+uid, the identity store's fallback secrets (`~/.config/tilo/identity/secrets/*.key`, the person's
+root secret when no keyring answered at provisioning), any secret-vault `vault.key`, and with a
+writable grant can rewrite `trusted-attestors.toml` and `revoked-keys.toml`. Nothing is exposed
+without such a grant ([identity-security.md](../identity-security.md)).
+
+**Fix direction:** mask these paths in the mount namespace after the grant's bind (a tmpfs over
+the directories, `/dev/null` over the files), on both launcher pipelines.
+
+**Resolved in source.** `CapabilityPlan::for_app` confines every plan against
+`private_store_roots()` (`$XDG_CONFIG_HOME/tilo`, `$HOME/.config/tilo`, `$TILO_SECRETS_DIR`): a
+grant at or inside one is refused; a grant containing one keeps its bind and the whole directory is
+covered by an empty read-only tmpfs after every grant (`sandbox::push_capability_binds`, shared by
+both pipelines, and the Windows capsule planner). Masking alone would leave a writable grant able
+to rename `~/.config` aside and plant new trust files at the old path, so each directory between a
+writable grant and the store is bound onto itself (a mount point cannot be renamed or removed), and
+a writable grant holding a symlink on the store's route is bound read-only. Held by
+`room_confinement::a_home_grant_never_reaches_tilos_private_configuration` (live bwrap and
+Landlock: unreadable secret and vault key, unwritable trust files, unmovable `~/.config`, Documents
+grant unchanged) and the plan/argv tests in `capabilities.rs` and `sandbox.rs`. The macOS Seatbelt
+profile confines the same plan (`launcher_macos::policy::SeatbeltPolicy::resolve`) and, after every
+grant and the chooser's picked-path extension, denies each store outright and every write to each
+directory and symlink its path resolves through, spelled as the disk spells it, so nothing can
+rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `sandbox-exec`
+launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
+(`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
+
+## P2-9 — The per-launch identity broker loads the root secret and never uses it
+
+`crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the
+selected record *with* its secret (`runtime_identity::load_for_launch`, a Secret Service round
+trip or a read of the fallback file) into a broker thread that refuses `sign` for every record
+it can be given (`SigningIdentity::signs_with_root_key` is true whenever `device_certificate` is
+`None`, which every launcher-built identity is). The secret sits in launcher memory for the app's
+lifetime for nothing; app signatures come from the identity service.
+
+**Fix direction:** serve fd 15 from `runtime_identity::load_metadata_from_path`, which validates
+the record without contacting the secret provider.
+
+**Resolved in source.** `start_identity_broker` reads a store record through
+`runtime_identity::load_metadata_for_launch` (an explicit debug record through
+`load_metadata_from_path`) and serves it with `runtime_identity::broker::serve_metadata`, which
+answers metadata and refuses every `sign` with the same bytes. Neither contacts the secret
+provider; an unsecured store record still fails the launch, as does one naming a provider this
+session cannot resolve. The secret-loading `load_for_launch`, the identity-backed `broker::serve`
+and its dead local-signing arm are gone. Held by
+`crates/packaging/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
+(the secret is deleted from its provider before the launch),
+`crates/runtime/runtime-identity/src/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
+and `crates/runtime/runtime-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
 
 ---
 
@@ -788,10 +1065,10 @@ only; every other image reference is unverified.
 
 These are load-bearing and correct. Changing them requires understanding why they are as they are.
 
-- `crates/session/shell/src/shell/state.rs:2085-2093` — `apply_room_changes` merges into a **copy** first, because
+- `crates/session/shell/src/shell/state.rs` (`apply_room_changes`) — merges into a **copy** first, because
   *"a check that runs after the merge has already happened is not a check."* Whole batches are
   refused rather than partially applied.
-- `crates/session/shell/src/shell/state.rs:109-127` — `PeerOrigin` is *"named as the transport authenticated it —
+- `crates/session/shell/src/shell/state.rs` (`PeerOrigin`) — `PeerOrigin` is *"named as the transport authenticated it —
   not as the message claims."*
 - `crates/session/shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
@@ -799,7 +1076,7 @@ These are load-bearing and correct. Changing them requires understanding why the
   separately stored field, so the two cannot drift.
 - `crates/packaging/launcher/src/netgate.rs` — egress is fail-closed: if the gate cannot start the
   launch is refused, not downgraded.
-- `crates/collab/collab-types/src/caps.rs:447` — `host_covers` is shared by the grant model and the
+- `crates/collab/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
   egress gate specifically so the two interpretations cannot diverge.
 - `docs/app-model/trust.md:218` — package revocation is re-read at every launch; there is no
   "trust the install-time verification forever" cache.

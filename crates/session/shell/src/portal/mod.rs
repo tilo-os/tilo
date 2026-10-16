@@ -99,6 +99,7 @@ pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
 pub mod lifecycle;
+pub mod reply;
 // Native media observes this policy on every supported shell host.
 pub mod lockdown;
 #[cfg(any(test, target_os = "linux"))]
@@ -244,6 +245,25 @@ use crate::shell::state::{
     Access, AppId, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope,
     ResourceRef, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
+
+/// The `key` entry of a portal request's options (a D-Bus `a{sv}`) as `T`;
+/// `None` when it is absent or of another type.
+pub(crate) fn option<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<T> {
+    T::try_from(options.get(key)?.try_clone().ok()?).ok()
+}
+
+/// A text option an app may show the user or pass on: at most `max` bytes
+/// and free of control characters; `None` otherwise.
+pub(crate) fn text_option(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+    max: usize,
+) -> Option<String> {
+    option::<String>(options, key).filter(|v| v.len() <= max && !v.chars().any(char::is_control))
+}
 
 /// Identity of the sandboxed app that issued a portal request.
 ///
@@ -1271,7 +1291,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter();
-    let secret = SecretBackend::new(ctx.clone());
+    let secret = SecretBackend::new(ctx.clone(), connection.clone());
     let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;

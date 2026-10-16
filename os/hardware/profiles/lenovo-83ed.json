@@ -17,6 +17,18 @@
     "regulatory.db",
     "regulatory.db.p7s"
   ],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "brcmfmac-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
   "boot_modules": [
     "cfg80211",
     "mac80211",
@@ -38,5 +50,14 @@
     "qccdsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qccdsp8380.mbn",
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
   },
-  "wifi_wake_on_wlan": 0
+  "wifi_wake_on_wlan": 0,
+  "internal_keyboards": [
+    {
+      "name": "hid-over-i2c 048D:8987",
+      "bus": "i2c",
+      "vendor": "048D",
+      "product": "8987",
+      "devicetree_compatible": "lenovo,yoga-slim7x"
+    }
+  ]
 }

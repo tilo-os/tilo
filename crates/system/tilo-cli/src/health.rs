@@ -45,25 +45,7 @@ fn at<'v>(value: &'v Value, key: &str) -> &'v Value {
 }
 
 fn record_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(
-            || PathBuf::from(format!("/run/user/{}", current_uid())),
-            PathBuf::from,
-        )
-        .join("tilo/gpu-health.json")
-}
-
-fn current_uid() -> u32 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix("Uid:"))
-                .and_then(|ids| ids.split_whitespace().next())
-                .and_then(|uid| uid.parse().ok())
-        })
-        .unwrap_or(0)
+    tilo_paths::xdg::runtime_dir_or_default().join("tilo/gpu-health.json")
 }
 
 /// The verdict for `nodes` and the compositor's `record` (`None` when no

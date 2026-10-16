@@ -34,6 +34,7 @@ use tilo_browser_peer::{
     DocumentRoute, Host, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
     RemoteMember,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -171,6 +172,7 @@ impl AgentParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
+                watching: false,
             },
             Arc::new(identity.key.clone()),
             Arc::new(MemoryPeerStore::default()),
@@ -401,11 +403,7 @@ impl AgentParticipant {
         }
         let id = running.id.clone();
         if let Some(asking) = self.asking.take() {
-            let arrived = asking
-                .answer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
+            let arrived = asking.answer.lock_recover().take();
             let Some(answer) = arrived else {
                 self.asking = Some(asking);
                 return false;
@@ -588,9 +586,7 @@ impl AgentParticipant {
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
         witness.confirm(&caller, &request).then(move |given| {
-            *arrived
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given.unwrap_or(Err(
+            *arrived.lock_recover() = Some(given.unwrap_or(Err(
                 tilo_actions::remote::ActionHostError::ConfirmationRequired,
             )));
             control.wake();
@@ -765,8 +761,14 @@ impl AgentParticipant {
                     .seed(&route)
                     .ok_or_else(|| format!("the room has no record {record} of {app_id} yet"))??;
                 let seed = Seed::Existing {
-                    record: ui::record::RecordId::parse(record)
-                        .ok_or_else(|| format!("{record} is not a record id"))?,
+                    // A room-record app (Notes, Chat) publishes its package-primary
+                    // record under the empty wire record id.
+                    record: if record.is_empty() {
+                        ui::record::RecordId::package_primary()
+                    } else {
+                        ui::record::RecordId::parse(record)
+                            .ok_or_else(|| format!("{record} is not a record id"))?
+                    },
                     changes: vec![saved],
                 };
                 (seed, Some(route))
@@ -863,6 +865,14 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
+        let bound;
+        let arguments = match &descriptor {
+            Some(descriptor) => {
+                bound = descriptor.bind_prompt_text(arguments.clone());
+                &bound
+            }
+            None => arguments,
+        };
         let output = app
             .invoke(address, arguments, confirmed)
             .map_err(Refusal::Door)?;

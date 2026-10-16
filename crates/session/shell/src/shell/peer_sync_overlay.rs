@@ -333,6 +333,21 @@ impl PeerSyncOverlay {
         self.state.status = Some(t("peer-sync-paste-token"));
     }
 
+    /// Say the card's `request` is being carried out: minting, redeeming,
+    /// resending or cancelling waits on the network off the frame loop, and
+    /// [`Self::finish_typed_request`] replaces this once it is back.
+    pub fn begin_request(&mut self, request: &PeerSyncRequest) {
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInviteFor { .. }
+                | PeerSyncRequest::AcceptInvite(_)
+                | PeerSyncRequest::ResendInvitation(_)
+                | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.state.status = Some(t("peer-sync-working"));
+        }
+    }
+
     /// Apply the host's transport result. Failed named invites retain the
     /// typed name so they can be retried; successful connects close the input.
     pub fn finish_request(
@@ -1271,9 +1286,7 @@ impl PeerSyncOverlay {
     }
 
     fn draw_buttons(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics) {
-        let SheetMetrics {
-            rect, pad, body, ..
-        } = *m;
+        let SheetMetrics { rect, pad, .. } = *m;
         let (scene, transform, text, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let buttons: Vec<(String, Button)> = if self.state.invite_review_open {
@@ -1302,25 +1315,34 @@ impl PeerSyncOverlay {
         // (§9.6) with the Control radius (§9.1) — the former 30 px pills
         // were under the target and hand-painted an accent wash.
         let bh = f64::from(theme.tokens.metrics.min_pointer_target);
-        let pad_x = f64::from(theme.tokens.spacing.s3);
         let gap = f64::from(theme.tokens.spacing.s2);
         let by = rect.y1 - pad - bh;
         let mut bx = rect.x1 - pad;
         for (label, button) in buttons {
-            let (tw, _) = text.measure(&label, body, None);
-            let bw = f64::from(tw) + 2.0 * pad_x;
-            let brect = Rect::new(bx - bw, by, bx, by + bh);
             let primary = matches!(
                 button,
                 Button::Join | Button::CopyToken | Button::CreateInvite
             );
-            // The pass paints with the renderer reset to 1× (see `draw`), so
-            // the face is handed the theme-scaled label size explicitly.
-            let mut face = ui::widget::ButtonFace::new(brect, &label)
-                .control_size(ui::widget::ControlSize::Large);
-            if primary {
-                face = face.role(ButtonRole::Primary);
-            }
+            let face_at = |at: Rect| {
+                let face = ui::widget::ButtonFace::new(at, &label)
+                    .control_size(ui::widget::ControlSize::Large);
+                if primary {
+                    face.role(ButtonRole::Primary)
+                } else {
+                    face
+                }
+            };
+            // Sized by the face itself (its label style, role and padding),
+            // not by the label measured at the sheet's caption size: the
+            // Large face sets its label in its own, larger style, so a
+            // caption-measured width elided "Cancel" to "Ca...". The
+            // renderer is at 1x for this pass (see `draw`), so the face
+            // measures with the theme's own type size.
+            let bw = face_at(Rect::ZERO)
+                .intrinsic_width(text, theme)
+                .min(m.avail);
+            let brect = Rect::new(bx - bw, by, bx, by + bh);
+            let face = face_at(brect);
             ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
             self.button_labels.push(DrawnLabel {
@@ -1330,6 +1352,18 @@ impl PeerSyncOverlay {
             });
             bx = brect.x0 - gap;
         }
+    }
+
+    /// The sheet's rect and its drawn buttons' labels, as painted last frame.
+    #[cfg(test)]
+    pub fn drawn_labels_for_tests(&self) -> (Rect, Vec<String>) {
+        (
+            self.rect,
+            self.button_labels
+                .iter()
+                .map(|drawn| drawn.label.clone())
+                .collect(),
+        )
     }
 
     pub fn button_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {

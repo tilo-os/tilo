@@ -249,7 +249,9 @@ pub fn install(
                 }
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
-            "network" => {
+            // media: the optional extra video and audio formats. A scenario
+            // installs what the medium ships and nothing it would fetch.
+            "network" | "media" => {
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "disk" => disk_step(console, &state, choices, pace)?,
@@ -626,7 +628,8 @@ mod tests {
                     self.disk_passphrase = args["passphrase"].as_str().map(str::to_owned);
                 }
                 ("account", "next@installer") if self.passphrase.is_some() => self.step = "options",
-                ("options", "next@installer") => self.step = "review",
+                ("options", "next@installer") => self.step = "media",
+                ("media", "next@installer") => self.step = "review",
                 ("review", "set-recovery-promise@installer.review") => self.promise = true,
                 ("review", "begin@installer.review") => {
                     if !self.promise {
@@ -773,6 +776,7 @@ mod tests {
                     "disk",
                     "account",
                     "options",
+                    "media",
                     "review",
                     "install",
                     "power-off"

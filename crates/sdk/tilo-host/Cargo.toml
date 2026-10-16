@@ -32,11 +32,9 @@ portal = ["native", "dep:ashpd"]
 # runs on the workspace's tokio backend; the server lives on its own thread
 # with a private runtime.
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
-# Kept for compatibility: `tilo-notify` selects each target's notifications
-# without a feature.
-notifications = ["native"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.

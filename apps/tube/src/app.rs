@@ -80,6 +80,9 @@ pub struct TubeApp {
     /// Whether browsing can go back, read by the shell's Back chip.
     can_go_back: Rc<std::cell::Cell<bool>>,
     worker: Option<Worker>,
+    /// Wakes this window when the worker posts a result; the framework's,
+    /// from [`Self::wake_with`]. Detached (waking nothing) until attached.
+    wake: ui::WakeHandle,
     #[cfg(feature = "grayjay-sync")]
     device_sync: crate::sync::DeviceSync,
     #[cfg(feature = "grayjay-sync")]
@@ -208,6 +211,7 @@ impl TubeApp {
             local_history: None,
             bus,
             worker: None,
+            wake: ui::WakeHandle::detached(),
             #[cfg(feature = "grayjay-sync")]
             device_sync: crate::sync::DeviceSync::default(),
             #[cfg(feature = "grayjay-sync")]
@@ -227,9 +231,8 @@ impl TubeApp {
             online: false,
             kicked_off: false,
             playing_id: None,
-            player: Rc::new(RefCell::new(
-                VideoPlayer::new().with_engine(media::MediaEngine::new()),
-            )),
+            // No engine until something plays: see `playing_player`.
+            player: Rc::new(RefCell::new(VideoPlayer::new())),
             player_video: None,
             images: None,
             show_skip_end: None,
@@ -484,10 +487,6 @@ impl TubeApp {
     ///
     /// The transport carries a compact, bounded metadata package; every
     /// imported identifier is validated here first.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded validation per imported device-sync field keeps the import reviewable"
-    )]
     #[cfg(feature = "grayjay-sync")]
     fn import_device_sync_state(&mut self, remote: crate::sync::SyncState) -> bool {
         const MAX_SYNC_ENTITIES: usize = 100;
@@ -696,11 +695,16 @@ impl TubeApp {
         self.shell_stale = true;
     }
 
+    /// Wake this window through `wake` when the fetch worker posts a result.
+    pub(crate) fn wake_with(&mut self, wake: ui::WakeHandle) {
+        self.wake = wake;
+    }
+
     /// Test hook: fetch nothing, and fold the results the returned sender
     /// sends as the network's, whenever the test lands one.
     #[doc(hidden)]
-    pub fn script_worker_for_test(&mut self) -> std::sync::mpsc::SyncSender<crate::api::Update> {
-        let (worker, results) = crate::api::Worker::scripted();
+    pub fn script_worker_for_test(&mut self) -> crate::api::Updates {
+        let (worker, results) = crate::api::Worker::scripted(self.wake.clone());
         self.worker = Some(worker);
         results
     }
@@ -867,7 +871,7 @@ impl TubeApp {
         use ui::time::Duration;
         self.model.route = Route::Watch(video_id.to_string());
         {
-            let mut p = self.player.borrow_mut();
+            let mut p = self.playing_player();
             p.open(media::Source::Remote { url });
             p.play();
             p.reveal_controls();
@@ -933,6 +937,12 @@ impl TubeApp {
         }
         self.player_video = Some(video_id.to_string());
         self
+    }
+
+    /// Whether the shared player has built its media engine yet.
+    #[doc(hidden)]
+    pub fn media_engine_started_for_test(&self) -> bool {
+        self.player.borrow().engine().is_some()
     }
 
     /// Test accessor: the current route (read-only).
@@ -1181,6 +1191,8 @@ impl TubeApp {
                 // source so a new video starts clean once its URL lands.
                 self.player_video = None;
                 self.player.borrow_mut().pause();
+                // The decoder starts up while the stream URL resolves.
+                media::MediaEngine::prepare_in_background();
                 self.request_live(Request::PlayVideo(id));
             }
             // Left the watch page: pause the engine so audio stops and it isn't
@@ -1300,7 +1312,7 @@ impl TubeApp {
             }
         });
         {
-            let mut p = self.player.borrow_mut();
+            let mut p = self.playing_player();
             p.open(media::Source::Remote { url });
             p.play();
             if let Some(np) = now_playing {
@@ -1322,6 +1334,16 @@ impl TubeApp {
         // log, not an on-screen toast.
         tracing::debug!(%quality, has_audio, "stream loaded into player");
         true
+    }
+
+    /// The shared player, with its media engine built if this is the first
+    /// thing it plays. Tube builds no engine with its window: the first one
+    /// starts `GStreamer`, which took 0.8 s of the window's first frame
+    /// whether or not anything was ever watched.
+    fn playing_player(&self) -> std::cell::RefMut<'_, VideoPlayer> {
+        let mut player = self.player.borrow_mut();
+        player.ensure_engine(media::MediaEngine::new);
+        player
     }
 
     /// Resolve the current watch video's duration, if any.
@@ -1505,11 +1527,6 @@ impl TubeApp {
 
     /// Apply one drained action. Returns true if the model changed enough to
     /// warrant a structural rebuild.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per Action variant; the length is the number of actions the \
-                  screens push, not complexity in any one arm"
-    )]
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Navigate(route) => {
@@ -1613,7 +1630,7 @@ impl TubeApp {
     /// visible and cleared any misleading loading state.
     fn request(&mut self, req: Request) -> bool {
         if self.worker.is_none() {
-            self.worker = Some(Worker::spawn());
+            self.worker = Some(Worker::spawn(self.wake.clone()));
         }
         if let Some(w) = &self.worker
             && let Err(error) = w.request(req)
@@ -1693,10 +1710,13 @@ impl TubeApp {
         let mut fetch_channels: Vec<String> = Vec::new();
         for u in updates {
             match u {
+                // Segments, dislikes and comments show only on their video's
+                // own page; anywhere else a rebuild would redraw nothing new.
                 Update::Sponsor(id, segs) => {
+                    let shown = watching(&self.model.route, &id);
                     if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == id) {
                         v.sponsor = segs;
-                        changed = true;
+                        changed |= shown;
                     }
                 }
                 Update::DeArrow {
@@ -1719,13 +1739,14 @@ impl TubeApp {
                     }
                 }
                 Update::Dislikes { video, count } => {
+                    changed |= watching(&self.model.route, &video);
                     self.model.dislikes.insert(video, count);
-                    changed = true;
                 }
                 Update::Comments { video, comments } => {
+                    let shown = watching(&self.model.route, &video);
                     if let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video) {
                         v.comments = comments;
-                        changed = true;
+                        changed |= shown;
                     }
                 }
                 Update::SearchResults {
@@ -1948,6 +1969,11 @@ impl TubeApp {
     }
 }
 
+/// Whether `route` is the watch page of `video`.
+fn watching(route: &Route, video: &str) -> bool {
+    matches!(route, Route::Watch(open) if open == video)
+}
+
 impl FullscreenProvider for TubeApp {
     fn fullscreen_intent(&self) -> Option<bool> {
         FullscreenProvider::fullscreen_intent(&*self.player.borrow())
@@ -2031,6 +2057,10 @@ impl Widget for TubeApp {
         }
     }
 
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2097,11 +2127,6 @@ impl Widget for TubeApp {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
-                  branch is a short, independent dispatch to an already-extracted helper"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Back-navigation via the keyboard: Alt+Left / the BrowserBack key pop the
         // nav stack (the Back button, Escape below and the edge-swipe do too).
@@ -2187,14 +2212,6 @@ impl Widget for TubeApp {
         }
     }
 
-    fn on_external_event(
-        &mut self,
-        _payload: &str,
-        _state: &mut ui::widget::Edits<'_>,
-        _root: &ModelPath,
-    ) {
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let structure_dirty = std::mem::take(&mut self.structure_dirty);
         // Fold any results that arrived between events so live data still
@@ -2230,10 +2247,12 @@ impl Widget for TubeApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing while a fetch is outstanding so results fold in, and
-        // while images are still loading so freshly-decoded thumbnails/avatars
-        // repaint the moment they land.
-        self.worker.is_some() || self.images_pending()
+        // Keep syncing while images are still loading so freshly-decoded
+        // thumbnails/avatars repaint the moment they land. The worker's
+        // results need no polling: each one wakes the window
+        // (`api::Updates`). The worker lives as long as the window, so
+        // asking for idle syncs while it existed asked for them forever.
+        self.images_pending()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2336,10 +2355,50 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_result_wakes_the_window() {
+        // The network answers while nobody touches Tube: the result wakes
+        // the window, which shows it without waiting for input or an
+        // animation.
+        let mut scope = ui::wake::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = woke.send(event.requires_sync());
+            })
+            .unwrap();
+        let mut app = TubeApp::new();
+        app.wake_with(scope.handle());
+        let results = app.script_worker_for_test();
+        assert!(wakes.try_recv().is_err(), "nothing has arrived yet");
+        results
+            .send(Update::Status {
+                live: true,
+                label: "live".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            wakes.try_recv(),
+            Ok(true),
+            "the result woke the window to sync"
+        );
+        assert!(Widget::take_structure_dirty(&mut app), "and it folds in");
+    }
+
+    #[test]
+    fn a_window_with_its_fetch_worker_asks_for_no_idle_syncs() {
+        // The worker lives as long as the window and wakes it per result;
+        // an idle sync for as long as it existed was a busy loop in a
+        // collaborative window.
+        let mut app = TubeApp::new();
+        let _results = app.script_worker_for_test();
+        assert!(!Widget::needs_idle_sync(&app));
+    }
+
+    #[test]
     fn a_staged_catalogue_retires_the_live_worker_and_fetches_nothing() {
         // A live window has spawned its fetch worker by its first frame.
         let mut app = TubeApp::new().online();
-        app.worker = Some(Worker::spawn());
+        app.worker = Some(Worker::spawn(ui::WakeHandle::detached()));
         app.stage_model_for_test(crate::sample::model());
         assert!(
             app.worker.is_none(),

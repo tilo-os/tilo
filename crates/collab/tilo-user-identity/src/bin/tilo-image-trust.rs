@@ -243,9 +243,8 @@ fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
     // Live trust artifacts are mutable root authority, despite containing no
     // secret material. Reject aliases and writable-by-others inodes so an
     // update cannot verify bytes controlled through another pathname.
-    // SAFETY: geteuid takes no arguments and has no failure mode.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
@@ -552,9 +551,8 @@ fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
-    // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
     {
@@ -603,10 +601,9 @@ fn install_trust(
     }
     let metadata = std::fs::symlink_metadata(&trust_dir)
         .map_err(|error| format!("cannot inspect {}: {error}", trust_dir.display()))?;
-    // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_dir()
         || metadata.file_type().is_symlink()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.permissions().mode() & 0o777 != 0o700
     {
         return Err("trust directory must be caller-owned mode 0700 and not a symlink".into());
@@ -618,7 +615,7 @@ fn install_trust(
         .metadata()
         .map_err(|error| format!("cannot inspect update lock: {error}"))?;
     if !update_lock_metadata.is_file()
-        || update_lock_metadata.uid() != unsafe { libc::geteuid() }
+        || update_lock_metadata.uid() != rustix::process::geteuid().as_raw()
         || update_lock_metadata.mode() & 0o077 != 0
         || update_lock_metadata.nlink() != 1
     {
@@ -636,7 +633,7 @@ fn install_trust(
         .metadata()
         .map_err(|error| format!("cannot inspect arm lock: {error}"))?;
     if !lock_metadata.is_file()
-        || lock_metadata.uid() != unsafe { libc::geteuid() }
+        || lock_metadata.uid() != rustix::process::geteuid().as_raw()
         || lock_metadata.mode() & 0o077 != 0
         || lock_metadata.nlink() != 1
     {
@@ -872,8 +869,7 @@ fn lock_generation_state(path: &Path) -> Result<advisory_lock::FileLock, String>
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect generation lock: {error}"))?;
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() }
+    if metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {
@@ -897,8 +893,7 @@ fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
     if !metadata.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    if metadata.uid() != unsafe { libc::geteuid() }
+    if metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.nlink() != 1
     {

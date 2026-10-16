@@ -870,6 +870,38 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         );
     }
 
+    eprintln!("phase block_drag_near_the_visible_edge_asks_the_host_to_scroll");
+    {
+        let mut editor = block_gesture_fixture();
+        let handle = handle_x(&editor);
+        let first = editor.blocks()[0].line.get_rect();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 600.0);
+        let frame = std::time::Duration::from_millis(100);
+        // No drag, no scroll.
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
+        block_event(&mut editor, mouse_press());
+        // Pressed but not yet a drag.
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        // Mid-viewport: a drag that does not scroll.
+        block_event(&mut editor, cursor_moved(handle, 300.0));
+        assert!(editor.block_drag_active());
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        // In the bottom edge band: scrolls down, faster closer to the edge.
+        block_event(&mut editor, cursor_moved(handle, 575.0));
+        let slow = editor.tick_block_drag(viewport, frame);
+        block_event(&mut editor, cursor_moved(handle, 599.0));
+        let fast = editor.tick_block_drag(viewport, frame);
+        assert!(slow > 0.0 && fast > slow, "{slow} then {fast}");
+        // In the top edge band: scrolls up.
+        block_event(&mut editor, cursor_moved(handle, 5.0));
+        assert!(editor.tick_block_drag(viewport, frame) < 0.0);
+        // Escape ends the drag, and the scrolling with it.
+        block_event(&mut editor, named_key(NamedKey::Escape));
+        assert!(!editor.block_drag_active());
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+    }
+
     eprintln!("phase block_drag_escape_and_focus_loss_preserve_order");
     {
         for cancel in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {

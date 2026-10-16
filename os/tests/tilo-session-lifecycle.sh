@@ -8,6 +8,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$repo/tools/desktop-isolation.sh"
 tilo_test_isolate "$@"
 python3 "$repo/os/tests/flight_recorder_test.py"
+unset GNOME_KEYRING_CONTROL
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
 selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
@@ -18,8 +19,11 @@ release_workflow="$repo/.forgejo/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
-grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
-grep -Fqx '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
+grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES' "$wrapper"
+grep -Fqx '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES' "$wrapper"
+# The PAM-started keyring daemon's control socket reaches D-Bus activation, so
+# no second keyring daemon is spawned.
+grep -Fqx '  "$DBUS_UPDATE" --systemd GNOME_KEYRING_CONTROL' "$wrapper"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"
@@ -294,6 +298,25 @@ head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A full or failing disk must never keep the person from logging in. Here the
+# state directory cannot exist at all (its parent is a file), so every write
+# the wrapper and the recorder try fails, as on a full disk; the tests may run
+# as a namespace root, which permissions would not stop. The desktop still
+# starts, its exit status still comes back, and its output still reaches the
+# journal (stdout).
+mkdir -p "$tmp/full-state"
+printf 'not a directory\n' >"$tmp/full-state/tilo"
+full_dir="$tmp/full-state/tilo/session-logs"
+set +e
+XDG_STATE_HOME="$tmp/full-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/full-log" TILO_SESSION_DESKTOP_STATUS=6 \
+  timeout 20 "$test_wrapper" --backend drm >"$tmp/full-stdout" 2>"$tmp/full-stderr"
+status=$?
+set -e
+[ "$status" = 6 ] || { cat "$tmp/full-stderr" >&2; exit 1; }
+grep -Fqx "desktop-output --backend drm trace=$full_dir/frame-trace.csv" "$tmp/full-stdout"
+grep -Fqx 'desktop --backend drm' "$tmp/full-log"
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state
 # directory keeps this from rotating the record the checks below read.
@@ -312,13 +335,13 @@ tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no restart_request=no$'
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
-dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
-systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 EOF
 cmp "$tmp/expected" "$log"
 
@@ -330,13 +353,13 @@ XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_WRITE_L
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
-dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
-systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 EOF
 cmp "$tmp/expected" "$log"
 # The next login keeps the previous record, which tilo-session-report reads.
@@ -369,13 +392,13 @@ XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_VERIFY_
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
-dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
-systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 EOF
 cmp "$tmp/expected" "$log"
 
@@ -428,15 +451,15 @@ printf 'unlocked\nlocked\n' >"$tmp/expected-recovery"
 cmp "$tmp/expected-recovery" "$log.recovery"
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
-dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 desktop-term
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
-dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE=
-systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+dbus-update --systemd WAYLAND_DISPLAY= DISPLAY= XAUTHORITY= XDG_CURRENT_DESKTOP= XDG_SESSION_DESKTOP= XDG_SESSION_TYPE= GLIBC_TUNABLES=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES
 EOF
 cmp "$tmp/expected" "$log"
 restart_dir="$restart_state/tilo/session-logs"

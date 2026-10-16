@@ -29,6 +29,7 @@ use iroh_blobs::Hash;
 use super::VersionSource;
 use crate::content::RangeSet;
 use crate::hydration::Hydrator;
+use tilo_lock::MutexRecover as _;
 
 /// File names of stage files, so a restart can remove what a crash left.
 pub(super) const STAGE_FILE_PREFIX: &str = "stage-";
@@ -48,9 +49,7 @@ impl Stage {
     /// Lock the stage. A poisoned stage still holds the bytes writers were
     /// acknowledged for, so it is used rather than dropped.
     pub(super) fn lock(&self) -> MutexGuard<'_, WriteStage> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     pub(super) fn len(&self) -> u64 {
@@ -74,24 +73,113 @@ pub struct WriteStage {
     base: Option<Hash>,
 }
 
+/// Shared by all memory stages of one mount. Reservations include deferred
+/// zero filling and stay charged until the backing drops: truncating a Vec
+/// does not release its allocation. No inode or global map lock is needed.
+#[derive(Default)]
+pub(super) struct MemoryBudget {
+    reserved: AtomicU64,
+}
+
+struct MemoryBacking {
+    bytes: Vec<u8>,
+    budget: Arc<MemoryBudget>,
+    reserved: u64,
+}
+
+impl MemoryBacking {
+    fn reserve(&mut self, len: u64) -> io::Result<()> {
+        super::check_staged_size(len).map_err(io::Error::from_raw_os_error)?;
+        let growth = len.saturating_sub(self.reserved);
+        if growth == 0 {
+            return Ok(());
+        }
+        let mut total = self.budget.reserved.load(Ordering::Acquire);
+        loop {
+            super::check_staged_growth(total, growth).map_err(io::Error::from_raw_os_error)?;
+            match self.budget.reserved.compare_exchange_weak(
+                total,
+                total.saturating_add(growth),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.reserved = len;
+                    return Ok(());
+                }
+                Err(current) => total = current,
+            }
+        }
+    }
+
+    fn resize(&mut self, len: u64) -> io::Result<()> {
+        let old_reservation = self.reserved;
+        self.reserve(len)?;
+        let result = resize_bytes(&mut self.bytes, len);
+        if result.is_err() {
+            self.budget.reserved.fetch_sub(
+                self.reserved.saturating_sub(old_reservation),
+                Ordering::AcqRel,
+            );
+            self.reserved = old_reservation;
+        }
+        result
+    }
+}
+
+impl Drop for MemoryBacking {
+    fn drop(&mut self) {
+        // Free before returning the reservation to concurrent writers.
+        drop(std::mem::take(&mut self.bytes));
+        self.budget
+            .reserved
+            .fetch_sub(self.reserved, Ordering::AcqRel);
+    }
+}
+
+fn resize_bytes(bytes: &mut Vec<u8>, len: u64) -> io::Result<()> {
+    let len = usize::try_from(len).map_err(|_| io::Error::from_raw_os_error(libc::EFBIG))?;
+    if len > bytes.len() {
+        bytes
+            .try_reserve_exact(len.saturating_sub(bytes.len()))
+            .map_err(|_| io::Error::from_raw_os_error(libc::ENOSPC))?;
+    }
+    bytes.resize(len, 0);
+    Ok(())
+}
+
 enum Backing {
     /// Bytes at their file offsets; shorter than `len` when the tail is
     /// zeros or still the base's.
-    Memory(Vec<u8>),
+    Memory(MemoryBacking),
     /// A private, sparse file removed when the stage is dropped.
     File(tempfile::NamedTempFile),
 }
 
 impl WriteStage {
-    /// A stage holding all of `bytes` (a document's export, a new file).
-    pub(super) fn complete(bytes: Vec<u8>, base: Option<Hash>) -> Self {
-        let len = bytes.len() as u64;
+    pub(super) fn empty(budget: Arc<MemoryBudget>) -> Self {
         Self {
-            backing: Backing::Memory(bytes),
-            len,
-            valid: RangeSet::full(len),
-            base,
+            backing: Backing::Memory(MemoryBacking {
+                bytes: Vec::new(),
+                budget,
+                reserved: 0,
+            }),
+            len: 0,
+            valid: RangeSet::new(),
+            base: None,
         }
+    }
+
+    /// A stage holding all of `bytes` (a document's export, a new file).
+    pub(super) fn complete(
+        bytes: &[u8],
+        base: Option<Hash>,
+        budget: Arc<MemoryBudget>,
+    ) -> io::Result<Self> {
+        let mut stage = Self::empty(budget);
+        stage.write(0, bytes)?;
+        stage.base = base;
+        Ok(stage)
     }
 
     /// A stage over `base_len` bytes of committed content `base`, of which
@@ -100,7 +188,12 @@ impl WriteStage {
     /// # Errors
     ///
     /// Returns an error when the stage file cannot be created.
-    pub(super) fn over(base: Option<Hash>, base_len: u64, dir: Option<&Path>) -> io::Result<Self> {
+    pub(super) fn over(
+        base: Option<Hash>,
+        base_len: u64,
+        dir: Option<&Path>,
+        budget: Arc<MemoryBudget>,
+    ) -> io::Result<Self> {
         let len = if base.is_some() { base_len } else { 0 };
         let backing = match dir {
             Some(dir) => {
@@ -110,7 +203,11 @@ impl WriteStage {
                 file.as_file().set_len(len)?;
                 Backing::File(file)
             }
-            None => Backing::Memory(Vec::new()),
+            None => Backing::Memory(MemoryBacking {
+                bytes: Vec::new(),
+                budget,
+                reserved: 0,
+            }),
         };
         Ok(Self {
             backing,
@@ -165,7 +262,27 @@ impl WriteStage {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        self.put(offset, data)?;
+        let previous_reservation = if let Backing::Memory(memory) = &mut self.backing {
+            // Even a small write into a huge base eventually materializes the
+            // whole memory stage at commit. Refuse it before allocating.
+            let previous = memory.reserved;
+            memory.reserve(self.len.max(end))?;
+            Some(previous)
+        } else {
+            None
+        };
+        if let Err(error) = self.put(offset, data) {
+            if let (Backing::Memory(memory), Some(previous)) =
+                (&mut self.backing, previous_reservation)
+            {
+                memory
+                    .budget
+                    .reserved
+                    .fetch_sub(memory.reserved.saturating_sub(previous), Ordering::AcqRel);
+                memory.reserved = previous;
+            }
+            return Err(error);
+        }
         if offset > self.len {
             // The hole between the old end and the write reads as zeros.
             self.valid.insert(self.len..offset);
@@ -181,10 +298,15 @@ impl WriteStage {
     ///
     /// Returns the backing's error.
     pub(super) fn set_len(&mut self, len: u64) -> io::Result<()> {
+        if let Backing::Memory(memory) = &mut self.backing {
+            memory.reserve(len)?;
+        }
         if len < self.len {
             match &mut self.backing {
-                Backing::Memory(bytes) => {
-                    bytes.truncate(usize::try_from(len).unwrap_or(usize::MAX));
+                Backing::Memory(memory) => {
+                    memory
+                        .bytes
+                        .truncate(usize::try_from(len).unwrap_or(usize::MAX));
                 }
                 Backing::File(file) => file.as_file().set_len(len)?,
             }
@@ -206,6 +328,9 @@ impl WriteStage {
     ///
     /// Returns the backing's error.
     pub(super) fn fill(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        if let Backing::Memory(memory) = &mut self.backing {
+            memory.reserve(self.len)?;
+        }
         let end = offset.saturating_add(bytes.len() as u64).min(self.len);
         for gap in self.gaps_in(&(offset.min(end)..end)) {
             let from = usize::try_from(gap.start.saturating_sub(offset)).unwrap_or(usize::MAX);
@@ -221,16 +346,17 @@ impl WriteStage {
 
     fn put(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         match &mut self.backing {
-            Backing::Memory(bytes) => {
+            Backing::Memory(memory) => {
                 let start = usize::try_from(offset)
                     .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
                 let end = start
                     .checked_add(data.len())
                     .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-                if bytes.len() < end {
-                    bytes.resize(end, 0);
+                if memory.bytes.len() < end {
+                    memory.resize(end as u64)?;
                 }
-                bytes
+                memory
+                    .bytes
                     .get_mut(start..end)
                     .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?
                     .copy_from_slice(data);
@@ -247,9 +373,11 @@ impl WriteStage {
         let start = range.start.min(end);
         let want = usize::try_from(end.saturating_sub(start))
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let mut out = vec![0_u8; want];
+        let mut out = Vec::new();
+        resize_bytes(&mut out, want as u64)?;
         match &self.backing {
-            Backing::Memory(bytes) => {
+            Backing::Memory(memory) => {
+                let bytes = &memory.bytes;
                 let from = usize::try_from(start)
                     .unwrap_or(usize::MAX)
                     .min(bytes.len());
@@ -315,12 +443,9 @@ impl WriteStage {
         }
         let len = self.len;
         match &mut self.backing {
-            Backing::Memory(bytes) => {
-                bytes.resize(
-                    usize::try_from(len).map_err(|_| io::Error::from_raw_os_error(libc::EFBIG))?,
-                    0,
-                );
-                Ok(VersionSource::Bytes(bytes))
+            Backing::Memory(memory) => {
+                memory.resize(len)?;
+                Ok(VersionSource::Bytes(&memory.bytes))
             }
             Backing::File(file) => {
                 file.as_file().set_len(len)?;
@@ -455,12 +580,85 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_memory_stages_share_one_budget_and_charge_document_copies() {
+        let budget = Arc::new(MemoryBudget::default());
+        let stages = std::thread::scope(|scope| {
+            let workers: [_; 3] = std::array::from_fn(|_| {
+                let budget = Arc::clone(&budget);
+                scope.spawn(move || {
+                    let mut stage = WriteStage::over(None, 0, None, budget).unwrap();
+                    let result = stage.set_len(super::super::MAX_STAGED_FILE_BYTES);
+                    (stage, result)
+                })
+            });
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            stages.iter().filter(|(_, result)| result.is_ok()).count(),
+            2
+        );
+        let failure = stages
+            .iter()
+            .find_map(|(_, result)| result.as_ref().err())
+            .unwrap();
+        assert_eq!(failure.raw_os_error(), Some(libc::ENOSPC));
+        assert_eq!(
+            budget.reserved.load(Ordering::Acquire),
+            super::super::MAX_STAGED_TOTAL_BYTES
+        );
+        assert_eq!(
+            WriteStage::complete(b"document export", None, Arc::clone(&budget))
+                .err()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::ENOSPC),
+        );
+        drop(stages);
+        assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
+        let mut document = WriteStage::complete(b"export", None, budget).unwrap();
+        assert_eq!(bytes_of(&mut document), b"export");
+    }
+
+    #[test]
+    fn filling_or_writing_a_huge_memory_base_fails_before_allocating() {
+        let budget = Arc::new(MemoryBudget::default());
+        let mut stage = WriteStage::over(
+            Some(Hash::from([3; 32])),
+            super::super::MAX_STAGED_FILE_BYTES.saturating_add(1),
+            None,
+            Arc::clone(&budget),
+        )
+        .unwrap();
+        assert_eq!(
+            stage.write(0, b"x").unwrap_err().raw_os_error(),
+            Some(libc::EFBIG)
+        );
+        assert_eq!(
+            stage.fill(0, b"x").unwrap_err().raw_os_error(),
+            Some(libc::EFBIG)
+        );
+        assert_eq!(budget.reserved.load(Ordering::Acquire), 0);
+        // Shrinking an unopened large base to a small prefix remains possible.
+        stage.set_len(1).unwrap();
+        stage.fill(0, b"x").unwrap();
+        assert_eq!(bytes_of(&mut stage), b"x");
+    }
+
+    #[test]
     fn a_stage_tracks_written_holes_truncation_and_base_ranges_in_both_backings() {
         let dir = tempfile::tempdir().unwrap();
         for file_backed in [false, true] {
             let base = Hash::from([3; 32]);
-            let mut stage =
-                WriteStage::over(Some(base), 10, file_backed.then(|| dir.path())).unwrap();
+            let mut stage = WriteStage::over(
+                Some(base),
+                10,
+                file_backed.then(|| dir.path()),
+                Arc::new(MemoryBudget::default()),
+            )
+            .unwrap();
             assert_eq!(stage.is_file_backed(), file_backed);
             assert_eq!(stage.gaps(), vec![0..10]);
             stage.write(4, b"ab").unwrap();

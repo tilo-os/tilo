@@ -121,6 +121,76 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(committed.revision)
     }
+    /// Complete the original creator's bootstrap in a room another device
+    /// governs (a host that created the empty record for it): the bootstrap
+    /// becomes this member's own signed change onto the record's exact
+    /// revision, admitted and published like any other write of it. The
+    /// governor's signature never covers member-supplied bytes. Answers the
+    /// revision this device's committed view then holds.
+    ///
+    /// # Errors
+    /// Refuses governor or changed custody, a changed revision, malformed or
+    /// oversized data, a change the room does not let this member make, or
+    /// failed publication.
+    pub fn initialize_application_record_as_member(
+        &self,
+        room: RoomId,
+        creator: &DeviceCert,
+        key: &SigningKey,
+        initialization: ApplicationInitialization<'_>,
+        now: SystemTime,
+    ) -> Result<[u8; 32], String> {
+        use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+        if initialization.document.is_empty() || initialization.document.len() > 64 * 1024 {
+            return Err("application initialization exceeds bootstrap limit".into());
+        }
+        let route = initialization.route;
+        let adds_state = self.with_current(room, |view| {
+            member_bootstrap(view, creator, key, initialization, now)
+                .map(|changes| changes.is_some())
+        })?;
+        if adds_state {
+            self.commit_document_with_current(
+                room,
+                |view| {
+                    let changes = member_bootstrap(view, creator, key, initialization, now)?
+                        .ok_or("application initialization revision changed")?;
+                    let message = view.peer().clone().publish_incremental(
+                        &route.app,
+                        &route.record,
+                        changes,
+                        key,
+                        now,
+                    )?;
+                    let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
+                        return Err("application initialization is not a document write".into());
+                    };
+                    Ok(OwnerCommitRequest {
+                        room: room.to_string(),
+                        operation: CommitOperation::Document {
+                            app: route.app.clone(),
+                            record: route.record.clone(),
+                            envelope,
+                        },
+                    })
+                },
+                now,
+            )?;
+        }
+        self.with_current(room, |view| {
+            match view.read_document(
+                creator.device_public_key,
+                &route.app,
+                &route.record,
+                None,
+                64 * 1024,
+                now,
+            )? {
+                crate::DocumentRead::Captured(committed) => Ok(committed.revision),
+                _ => Err("initialized application capture unavailable".into()),
+            }
+        })
+    }
     /// Create an empty, canonical record with actual current governor custody.
     /// Existing records remain byte-identical. Publication is durable before
     /// this returns; the caller may only then admit the creator's channel.
@@ -167,6 +237,71 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(true)
     }
+}
+
+/// The changes `initialization` adds to the record `view` holds, as this
+/// member (`creator`, signing with `key`) would sign them: `None` when the
+/// bootstrap adds nothing. Checks member custody (another device governs)
+/// and that the record is still at the revision the creator read.
+fn member_bootstrap(
+    view: &crate::NativeCommittedView,
+    creator: &DeviceCert,
+    key: &SigningKey,
+    initialization: ApplicationInitialization<'_>,
+    now: SystemTime,
+) -> Result<Option<Vec<u8>>, String> {
+    if creator != view.device()
+        || creator == view.governor()
+        || key.verifying_key().to_bytes() != creator.device_public_key
+    {
+        return Err("application initialization lacks current member custody".into());
+    }
+    let route = initialization.route;
+    match view.read_document(
+        creator.device_public_key,
+        &route.app,
+        &route.record,
+        Some(initialization.revision),
+        64 * 1024,
+        now,
+    )? {
+        crate::DocumentRead::Unchanged(_) => {}
+        crate::DocumentRead::CheckpointPending => {
+            return Err("application initialization waits for a checkpoint".into());
+        }
+        crate::DocumentRead::Captured(_) => {
+            return Err("application initialization revision changed".into());
+        }
+    }
+    let held = view
+        .peer()
+        .document(&route.app, &route.record)
+        .ok_or("application record is not in the room")?;
+    let mut record = automerge::AutoCommit::load(&held).map_err(|error| error.to_string())?;
+    let heads = record.get_heads();
+    // The app's bytes are untrusted: taken in by the isolated admission,
+    // onto the record's graph, adding only what the bootstrap brings and
+    // never replacing what the room holds.
+    match tilo_automerge_isolate::apply(
+        &mut record,
+        initialization.document,
+        tilo_automerge_isolate::Dependencies::RequireComplete,
+    )
+    .map_err(|error| error.to_string())?
+    {
+        tilo_automerge_isolate::Applied::Changed(_) => {}
+        tilo_automerge_isolate::Applied::MissingDependencies => {
+            return Err("application initialization does not build on the record".into());
+        }
+    }
+    let changes = record.save_after(&heads);
+    if record.get_heads() == heads || changes.is_empty() {
+        return Ok(None);
+    }
+    if changes.len() > 64 * 1024 {
+        return Err("application initialization exceeds bootstrap limit".into());
+    }
+    Ok(Some(changes))
 }
 
 #[derive(Clone, Copy)]

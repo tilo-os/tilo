@@ -110,8 +110,8 @@ mod linux {
                 .map_err(io::Error::other)?;
             socket.send(&process_binding::MAGIC)?;
             socket.send(&nonce)?;
-            // SAFETY: geteuid has no preconditions and reads the current kernel uid.
-            let peer = process_binding::receive(&socket, &nonce, unsafe { libc::geteuid() })?;
+            let peer =
+                process_binding::receive(&socket, &nonce, rustix::process::geteuid().as_raw())?;
             if !peer.belongs_to(child.id(), start)
                 || fs::read(format!("/proc/{}/exe", peer.pid()))? != fs::read("/usr/bin/bash")?
             {

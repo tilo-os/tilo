@@ -45,17 +45,6 @@ const SPARK_LINE_WIDTH: f64 = 1.5;
 /// Height reserved at the top of the plot for the title / legend strip.
 const HEADER_H: f64 = 22.0;
 
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// One labelled data series. `data` is sampled left-to-right across the
 /// plot; `color` is the line/area tint; `legend` is the label shown in the
 /// chart's legend strip (empty string = omit from the legend).
@@ -628,10 +617,8 @@ impl Chart {
                     scene,
                     labels.title,
                     tokens.colors.text_primary,
-                    translated(
-                        transform,
-                        rect.x0,
-                        centered_text_top(rect.y0, header_h, title_h),
+                    transform.pre_translate(
+                        (rect.x0, centered_text_top(rect.y0, header_h, title_h)).into(),
                     ),
                     None,
                     &title_style.clone().with_weight(style.title_weight),
@@ -652,7 +639,7 @@ impl Chart {
                     scene,
                     &s.legend,
                     tokens.colors.text_dim,
-                    translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
+                    transform.pre_translate((lx, centered_text_top(rect.y0, header_h, th)).into()),
                     None,
                     &legend_style,
                 );
@@ -691,7 +678,7 @@ impl Chart {
                 scene,
                 label,
                 tokens.colors.text_dim,
-                translated(transform, rect.x1 - f64::from(tw), y - f64::from(th) / 2.0),
+                transform.pre_translate((rect.x1 - f64::from(tw), y - f64::from(th) / 2.0).into()),
                 None,
                 &legend_style,
             );

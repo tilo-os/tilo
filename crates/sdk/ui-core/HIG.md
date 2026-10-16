@@ -550,14 +550,16 @@ Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
 **Status has two homes.** What a person reads while working and expects to
 stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
 `chrome::status_bar`, which reserves its band (`status_bar::split`) so it
-never covers content. A change worth noticing once (a page turn, "Saved") is
+never covers content. A change worth noticing once (a page turn, a finished sync) is
 the transient `StatusBubble`: it shows on change, hides by itself and floats
 in its area's bottom-trailing corner. An error the person must act on is a
 `Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
-button). A document's save state is `SaveStatusSurface`: "Saving…" and
-"Saved" in the transient bubble, a failed save an error card with Try again
-that stays until the save succeeds; an app never pins a bubble open or paints
-its own save pill.
+button). A document's save state is `SaveStatusSurface`: autosave is the
+system's job, so "Saving…" and "Saved" never show (they stay in the
+accessibility status); a failed save is an error card with Try again that
+stays until the save succeeds, and that success is a one-time "Saved" in the
+transient bubble. An app never pokes or pins a save bubble or paints its own
+save pill.
 
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on
@@ -967,13 +969,16 @@ these intents (`colors.intent`):
 |---|---|---|
 | inverted | `intent.inverted` / `inverted_hover` + `intent.on_inverted` | a primary action, a switch that is on, a checked box, a slider's filled track, a progress fill |
 | selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item, and a menu's armed row at the overlay step (§9.3) |
-| your colour | `intent.you` (= `border_focus`) | the focus ring, the text caret, selection handles, a drop or insertion indicator |
+| your colour | `intent.you` (= `border_focus`) | the keyboard focus ring (never focus a click gave), the text caret, selection handles, a drop or insertion indicator |
 | selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
 | status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
 | presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a participant's cursor, selection, avatar and attribution; chart and tag series |
 
 Links are primary ink with an underline. An "active" icon is primary ink, an
-inactive one secondary ink.
+inactive one secondary ink. Which window has keyboard input is state, not
+you: the focused window's edge (`window_edge_focused`) and its active tab's
+keyline are neutral ink, so your colour is not painted around a window all
+day. A resting readout's labels are ink too; a status hue is not a label.
 
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for

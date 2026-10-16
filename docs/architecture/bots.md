@@ -819,7 +819,7 @@ pub struct BotRequirements {
 | `crates/collab/actions` | `CallerPrincipal::Bot`, `CallerPrincipal::subject`, `Caller::bot`, `ActorKind::Bot`. `Appearance`, `Persona`, `ActionInvoker::appearance`, `ActionContext::caused_by`, `InvokeRequest::appearance`. Compact codec words. |
 | `crates/collab/automation` | `TriggerSpec::RecordChanged`, `IncomingMessage` matching, `dispatch` module (new), `grant::least_privilege` / `rules` (moved from `apps/shortcuts`), appearance on `StepKind::Invoke`, bot rules in `check`. |
 | `crates/collab/tilo-peer-state` | `Installation`, `GovernedDelegateRow` (was `GovernedAgentRow`). |
-| `crates/hosting/tilo-relay-protocol` | `Delegation` / `Delegate` (was `AgentDelegation`). |
+| `crates/collab/workspace-join` | `delegation::{Delegation, Delegate}` (was `AgentDelegation`), below `tilo-peer-state`; `tilo-relay-protocol` re-exports the module as `tilo_relay_protocol::delegation`. |
 | `crates/hosting/tilo-relay` | `bots` feature and `--bots`. `room_access` and certification accept bot delegations. |
 | `crates/agent/agent-participant` | `bot.rs` (new): `BotHost`, bot participants, connector outside worker supervision, `bots.json`. |
 | `crates/sdk/tilo-resource`, `tilo-resource-macros` | `ActionCx::invoker`, `ActionCx::appearance`, `#[action(incoming_message)]`, `#[action(moderation)]`. |

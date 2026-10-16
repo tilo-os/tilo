@@ -75,6 +75,9 @@ pub struct PickerScope {
     pub initial_dir: PathBuf,
     /// Every directory the user may reach from the dialog; the widget refuses to navigate outside these.
     pub roots: Vec<PathBuf>,
+    /// The person's home folder, when the dialog should offer it (and the
+    /// usual folders under it) in its sidebar. Only what `roots` allows shows.
+    pub home: Option<PathBuf>,
 }
 
 impl PickerScope {
@@ -102,6 +105,7 @@ impl PickerScope {
         Self {
             initial_dir: documents_dir(home.as_deref()).unwrap_or(fallback),
             roots,
+            home,
         }
     }
 

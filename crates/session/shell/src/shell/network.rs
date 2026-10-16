@@ -10,22 +10,32 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
+mod home_peer_reader;
 mod hosted_topology;
 #[cfg(test)]
 mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
+mod native_admission;
+#[cfg(test)]
+mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod native_replay_budget_tests;
 #[cfg(test)]
 mod paired_continuity_tests;
+mod peer_sync_worker;
 mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+#[cfg(test)]
+mod tick_bench;
+#[cfg(test)]
+mod tick_off_loop_tests;
+pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod agent_question_tests;
@@ -656,13 +666,9 @@ struct RegisteredHomePeer {
     expectation: crate::network::actor::HomePeerExpectation,
 }
 
-fn registered_home_peer_addrs(
-    local_user: Option<[u8; 32]>,
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
-) -> Result<Vec<RegisteredHomePeer>, String> {
-    let Some(local_user) = local_user else {
-        return Ok(Vec::new());
-    };
+/// The registrations in the home-peer registry, read from disk. Not for the
+/// compositor's loop: [`HomePeerInputs`] reads it on a worker.
+fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String> {
     let path = home_peer_registry_path();
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -673,16 +679,38 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Err("home-peer registry exceeds its bounded schema".into());
     }
-    let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
-        match std::fs::read(&path).ok().and_then(|bytes| {
-            serde_json::from_slice::<Vec<tilo_relay_protocol::HomePeerRegistration>>(&bytes).ok()
-        }) {
-            Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
-            _ => {
-                tracing::warn!(path = %path.display(), "home-peer registry is invalid");
-                return Err("home-peer registry is invalid".into());
-            }
-        };
+    match std::fs::read(&path).ok().and_then(|bytes| {
+        serde_json::from_slice::<Vec<tilo_relay_protocol::HomePeerRegistration>>(&bytes).ok()
+    }) {
+        Some(registrations) if registrations.len() <= MAX_HOME_PEERS => Ok(registrations),
+        _ => {
+            tracing::warn!(path = %path.display(), "home-peer registry is invalid");
+            Err("home-peer registry is invalid".into())
+        }
+    }
+}
+
+fn registered_home_peer_addrs(
+    local_user: Option<[u8; 32]>,
+    relay_workspace_ids: &std::collections::BTreeSet<u64>,
+) -> Result<Vec<RegisteredHomePeer>, String> {
+    let Some(local_user) = local_user else {
+        return Ok(Vec::new());
+    };
+    Ok(home_peers_from_registrations(
+        read_home_peer_registry()?,
+        local_user,
+        relay_workspace_ids,
+    ))
+}
+
+/// The dialable home peers among `registrations`: those of `local_user` that
+/// serve one of `relay_workspace_ids`.
+fn home_peers_from_registrations(
+    registrations: Vec<tilo_relay_protocol::HomePeerRegistration>,
+    local_user: [u8; 32],
+    relay_workspace_ids: &std::collections::BTreeSet<u64>,
+) -> Vec<RegisteredHomePeer> {
     let mut addrs = Vec::new();
     for registration in registrations {
         if registration.label.is_empty()
@@ -727,7 +755,36 @@ fn registered_home_peer_addrs(
     }
     addrs.sort_by_key(|host| host.addr.id.to_string());
     addrs.dedup_by_key(|host| host.addr.id);
-    Ok(addrs)
+    addrs
+}
+
+/// What the periodic home-peer refresh reads from disk.
+struct HomePeerInputs {
+    /// Rooms an enrollment delivered (`personal-rooms.json`).
+    enrolled_rooms: Vec<RoomId>,
+    /// Enrolled device keys, this device included.
+    direct_devices: Vec<[u8; 32]>,
+    registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
+}
+
+impl HomePeerInputs {
+    /// Read the files. Waits for the disk: the compositor's loop never calls
+    /// this, its reader thread does.
+    fn read() -> Self {
+        let peers = personal_device_peer_path();
+        Self {
+            enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
+            direct_devices: read_personal_device_peers(&peers),
+            registrations: read_home_peer_registry(),
+        }
+    }
+
+    /// [`Self::read`] after the state writer has written what this process
+    /// queued, so the refresh sees the rooms export it just made.
+    fn read_after_pending_writes() -> Self {
+        crate::shell::durable_writer::global().flush();
+        Self::read()
+    }
 }
 
 /// Device endpoint ids this machine should dial directly.
@@ -882,11 +939,35 @@ struct RoomPush {
     /// Each room's document heads as last announced (or first seen, which
     /// announces nothing: a peer that lacks older history pulls it).
     announced: std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>,
+    /// The tree's write generation right after the last full projection.
+    /// Projection reads nothing but the tree, and every tree write bumps the
+    /// generation, so while it holds there is nothing to project.
+    projected_generation: Option<u64>,
+    /// The generation right after a check that found no trigger moved:
+    /// until it changes, only the fallback projection has anything to do.
+    checked_generation: Option<u64>,
+    /// When a tick found the tree held by another thread: the push runs
+    /// again at [`ROOM_PUSH_RETRY`] rather than waiting for the lock.
+    retry_at: Option<std::time::Instant>,
 }
+
+/// How soon a room push that found the tree held by another thread tries
+/// again: about a frame, so a change still goes out promptly, while the
+/// loop never waits on that thread's write.
+const ROOM_PUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(8);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
 const MAX_NET_EVENTS_PER_TICK: usize = 8;
+
+/// Where a tick admits signed relay input.
+#[derive(Clone, Copy)]
+enum Admission {
+    /// On the ticking thread, which may wait for the state file.
+    InPlace,
+    /// On the admission worker: the compositor's frame loop.
+    OffLoop,
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct PendingInvitation {
@@ -992,13 +1073,9 @@ fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric 
         .unwrap_or_default()
 }
 
-fn persist_device_fabric(
-    path: &Path,
-    fabric: &crate::shell::device_fabric::DeviceFabric,
-) -> Result<(), String> {
-    let bytes = fabric
-        .encode_checkpoint()
-        .map_err(|error| format!("encode checkpoint: {error}"))?;
+/// Replace the fabric checkpoint with `bytes`, keeping the last readable one
+/// as its backup. Every write is synced, so this waits for the disk.
+fn write_device_fabric_checkpoint(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
@@ -1006,11 +1083,11 @@ fn persist_device_fabric(
     let prior = std::fs::read(path)
         .ok()
         .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
-        .unwrap_or_else(|| bytes.clone());
+        .unwrap_or_else(|| bytes.to_vec());
     let backup = device_fabric_backup_path(path);
     tilo_files::native::atomic::write_with_mode(&backup, &prior, 0o600)
         .map_err(|error| format!("write {}: {error}", backup.display()))?;
-    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
         .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
@@ -1030,14 +1107,146 @@ fn personal_continuity_backup_path(path: &Path) -> PathBuf {
     path.with_extension("postcard.backup")
 }
 
-fn purge_personal_continuity_store(path: &Path) {
+/// Remove the continuity store and its backup. Returns whether both are gone.
+fn purge_personal_continuity_store(path: &Path) -> bool {
+    let mut purged = true;
     for candidate in [path.to_path_buf(), personal_continuity_backup_path(path)] {
         match std::fs::remove_file(&candidate) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 tracing::warn!(%error, path = %candidate.display(), "personal continuity purge failed");
+                purged = false;
             }
+        }
+    }
+    purged
+}
+
+/// What this process last asked a state file that only it writes to hold,
+/// or nothing while that is unknown.
+///
+/// The network's upkeep runs on whatever wakes the compositor's loop, at
+/// most every couple of seconds, and asks for the same files each time: the
+/// exported room list, the continuity store or its purge. Asked for what
+/// the file already holds, it must touch nothing. Queueing the write wakes
+/// the state writer, and the write's own check (opening the file to compare)
+/// wakes every inotify watcher on its directory, the shell's among them. An
+/// idle desktop whose clock turned a minute did all of that on each turn.
+#[derive(Clone, Default)]
+struct KnownContents(Arc<Mutex<Option<FileContents>>>);
+
+/// A file and its bytes, `None` for no file.
+type FileContents = (PathBuf, Option<Vec<u8>>);
+
+impl KnownContents {
+    /// Record that `path` is to hold `contents` (`None`: no file), and return
+    /// whether that changes what it was known to hold.
+    fn changes(&self, path: &Path, contents: Option<&[u8]>) -> bool {
+        let Ok(mut known) = self.0.lock() else {
+            return true;
+        };
+        if known
+            .as_ref()
+            .is_some_and(|(at, held)| at == path && held.as_deref() == contents)
+        {
+            return false;
+        }
+        *known = Some((path.to_path_buf(), contents.map(<[u8]>::to_vec)));
+        true
+    }
+
+    /// A write did not land: what the file holds is unknown again, so the
+    /// next request writes it.
+    fn forget(&self) {
+        if let Ok(mut known) = self.0.lock() {
+            *known = None;
+        }
+    }
+}
+
+/// What may happen only once a continuity value is on disk, such as
+/// acknowledging the owner claims it carries.
+///
+/// The value is written on the state writer, never on the compositor's loop
+/// (a backup and a primary, four fsyncs that take seconds under I/O
+/// pressure). Each value handed to the writer gets the next sequence number;
+/// a successful write marks its number durable. An obligation waits for the
+/// value it was registered behind, or any later one: a newer value replaces
+/// a queued older one, and holds at least as much. It runs on the thread
+/// that next calls [`Self::settle`] (the loop's sync round, or the collab
+/// broker reading owner views), never on the writer, which a flush waits on.
+#[derive(Clone, Default)]
+struct ContinuityDurability(Arc<Mutex<DurabilityLedger>>);
+
+/// How many obligations wait for the disk at most.
+const MAX_CONTINUITY_OBLIGATIONS: usize = 64;
+
+type ContinuityObligation = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct DurabilityLedger {
+    /// The newest value handed to the writer.
+    submitted: u64,
+    /// Every value up to this one is on disk.
+    durable: u64,
+    pending: Vec<(u64, ContinuityObligation)>,
+}
+
+impl ContinuityDurability {
+    /// Number the next value handed to the writer.
+    fn submit(&self) -> u64 {
+        let Ok(mut ledger) = self.0.lock() else {
+            return 0;
+        };
+        ledger.submitted = ledger.submitted.saturating_add(1);
+        ledger.submitted
+    }
+
+    /// The writer put value `sequence` (and so everything it replaced) on
+    /// disk.
+    fn written(&self, sequence: u64) {
+        if let Ok(mut ledger) = self.0.lock() {
+            ledger.durable = ledger.durable.max(sequence);
+        }
+    }
+
+    /// Run `obligation` once the newest value handed to the writer is on
+    /// disk.
+    ///
+    /// While writes keep failing (a full disk), every sync round adds one, so
+    /// only the newest [`MAX_CONTINUITY_OBLIGATIONS`] wait. Dropping an older
+    /// one is what a failed write always meant: its claims stay
+    /// unacknowledged, and its closed tabs stay recorded, until a later
+    /// round's value covers them.
+    fn after_newest(&self, obligation: impl FnOnce() + Send + 'static) {
+        if let Ok(mut ledger) = self.0.lock() {
+            let sequence = ledger.submitted;
+            if ledger.pending.len() >= MAX_CONTINUITY_OBLIGATIONS {
+                drop(ledger.pending.remove(0));
+            }
+            ledger.pending.push((sequence, Box::new(obligation)));
+        }
+    }
+
+    /// Run, here, every obligation whose value is on disk.
+    fn settle(&self) {
+        let ready: Vec<ContinuityObligation> = {
+            let Ok(mut ledger) = self.0.lock() else {
+                return;
+            };
+            let durable = ledger.durable;
+            let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut ledger.pending)
+                .into_iter()
+                .partition(|(sequence, _)| *sequence <= durable);
+            ledger.pending = waiting;
+            ready
+                .into_iter()
+                .map(|(_, obligation)| obligation)
+                .collect()
+        };
+        for obligation in ready {
+            obligation();
         }
     }
 }
@@ -1066,10 +1275,19 @@ fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
     }
 }
 
+/// Encode and write `value`; the network writes through
+/// [`write_personal_continuity`] with the bytes it keeps.
+#[cfg(test)]
 fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) -> bool {
     let Ok(bytes) = postcard::to_allocvec(value) else {
         return false;
     };
+    write_personal_continuity(path, &bytes)
+}
+
+/// Write the encoded continuity to `path`, with its backup. Waits for the
+/// disk: callers on the compositor thread hand it to the state writer.
+fn write_personal_continuity(path: &Path, bytes: &[u8]) -> bool {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -1079,8 +1297,8 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
     let current = std::fs::read(path).ok();
     // A quiet tree asks to persist the same state on every sync round. The
     // primary already holds it, and rewriting it costs four fsyncs (file and
-    // directory, for backup and primary) on the compositor thread.
-    if current.as_deref() == Some(bytes.as_slice()) {
+    // directory, for backup and primary).
+    if current.as_deref() == Some(bytes) {
         return true;
     }
     // Establish the recovery point before replacing the primary. Refusing to
@@ -1089,7 +1307,7 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
     // recovery rule above sound even across repeated failures.
     let prior = current
         .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
-        .unwrap_or_else(|| bytes.clone());
+        .unwrap_or_else(|| bytes.to_vec());
     if let Err(error) = tilo_files::native::atomic::write_with_mode(
         &personal_continuity_backup_path(path),
         &prior,
@@ -1098,7 +1316,7 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
         tracing::warn!(%error, path = %path.display(), "personal continuity backup failed");
         return false;
     }
-    if tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600).is_err() {
+    if tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).is_err() {
         tracing::warn!(path = %path.display(), "personal continuity persistence failed");
         return false;
     }
@@ -1115,10 +1333,33 @@ fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
     })
 }
 
+/// Hand the pending invitations to the state writer. Issuing, resending,
+/// cancelling, redeeming and pruning them all run on the compositor's loop,
+/// and the write's fsyncs can take seconds under I/O pressure. The rows are
+/// encoded now, while the caller holds them; a newer copy that has not been
+/// written yet replaces this one.
 fn persist_pending_invitations(
     path: &Path,
     invitations: &std::collections::HashMap<[u8; 32], PendingInvitation>,
 ) {
+    let Some(bytes) = encode_pending_invitations(invitations) else {
+        return;
+    };
+    let path = path.to_path_buf();
+    crate::shell::durable_writer::global().submit(path.clone(), move || {
+        write_pending_invitations(&path, &bytes);
+    });
+}
+
+fn encode_pending_invitations(
+    invitations: &std::collections::HashMap<[u8; 32], PendingInvitation>,
+) -> Option<Vec<u8>> {
+    let mut rows: Vec<_> = invitations.values().cloned().collect();
+    rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
+    serde_json::to_vec_pretty(&rows).ok()
+}
+
+fn write_pending_invitations(path: &Path, bytes: &[u8]) {
     let Some(parent) = path.parent() else {
         return;
     };
@@ -1126,12 +1367,7 @@ fn persist_pending_invitations(
         tracing::warn!(%error, path = %path.display(), "could not create pending invitation directory");
         return;
     }
-    let mut rows: Vec<_> = invitations.values().cloned().collect();
-    rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
-    let Ok(bytes) = serde_json::to_vec_pretty(&rows) else {
-        return;
-    };
-    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
+    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
 }
@@ -1141,6 +1377,8 @@ fn persist_pending_invitations(
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
+    native_admission: native_admission::State,
+    peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
@@ -1214,6 +1452,8 @@ pub struct ShellNetwork {
     /// When [`Self::note_session_reachability`] last told the relays what
     /// the session has recorded. `None` until the first tick.
     session_reach_checked: Mutex<Option<std::time::Instant>>,
+    /// Reads the files the refresh needs, off the compositor thread.
+    home_peer_reader: home_peer_reader::HomePeerReader<HomePeerInputs>,
     /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
     /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -1236,6 +1476,14 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// What `personal_continuity_path` was last asked to hold.
+    personal_continuity_store: KnownContents,
+    /// Owner-claim acknowledgements and closed-tab bookkeeping waiting for
+    /// the continuity value they describe to reach the disk.
+    personal_continuity_durability: ContinuityDurability,
+    /// What the exported room list (`personal-rooms.json`) was last asked to
+    /// hold.
+    personal_rooms_export: KnownContents,
     /// The person's workspace list, shared by all of their devices. `None`
     /// on a device the identity layer has not certified for a person.
     personal_workspaces: Option<Mutex<crate::shell::personal_workspaces::PersonalWorkspaces>>,
@@ -1765,12 +2013,15 @@ impl ShellNetwork {
         let pending_invitations_path = pending_invites_path(state_dir);
         let personal_continuity_path = personal_continuity_path(state_dir);
         let app_continuations_permitted =
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
+        let personal_continuity_store = KnownContents::default();
         let persisted_continuity = if app_continuations_permitted {
             load_personal_continuity(&personal_continuity_path)
         } else {
-            purge_personal_continuity_store(&personal_continuity_path);
+            if purge_personal_continuity_store(&personal_continuity_path) {
+                personal_continuity_store.changes(&personal_continuity_path, None);
+            }
             PersistedPersonalContinuity {
                 counter: 0,
                 continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
@@ -1824,6 +2075,9 @@ impl ShellNetwork {
             personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
+            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+                HomePeerInputs::read_after_pending_writes,
+            ),
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -1840,6 +2094,9 @@ impl ShellNetwork {
             personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
+            personal_continuity_store,
+            personal_continuity_durability: ContinuityDurability::default(),
+            personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
             #[cfg(test)]
@@ -1857,6 +2114,8 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            native_admission: native_admission::State::default(),
+            peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
@@ -2178,6 +2437,7 @@ impl ShellNetwork {
             | NeighbourMsg::SyncResp { room, .. }
             | NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
@@ -2602,6 +2862,7 @@ impl ShellNetwork {
             message,
             NeighbourMsg::MlsGovernance { .. }
                 | NeighbourMsg::MlsAccessRequest { .. }
+                | NeighbourMsg::MlsRoutedAccessRequest { .. }
                 | NeighbourMsg::MlsGovernanceAck { .. }
         ) {
             return false;
@@ -3248,16 +3509,6 @@ impl ShellNetwork {
     ) -> Result<(), String> {
         let device = decode_lower_hex_32(device_hex)
             .ok_or_else(|| "device is not an enrolled device id".to_string())?;
-        let local = self
-            .personal_continuity_device
-            .as_ref()
-            .and_then(|device| decode_lower_hex_32(device.as_str()));
-        let enrolled = self.enrolled_personal_devices(local);
-        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
-            return Err("device is not an enrolled device".into());
-        }
-        let endpoint = iroh::EndpointId::from_bytes(&device)
-            .map_err(|_| "device is not an enrolled device id".to_string())?;
         // A named workspace is sent on that room's topic: the device confines
         // the caller to the room a request arrives on. Otherwise use the
         // first shared room where the device is actually present.
@@ -3265,11 +3516,7 @@ impl ShellNetwork {
             .provider
             .strip_prefix("workspace:")
             .and_then(RoomId::parse);
-        let shared = self.online_enrolled_room(endpoint, named)?;
-        let topic = room_topic_id(shared);
-        if !self.join_topic(topic) {
-            return Err("the shared workspace is not joined".into());
-        }
+        let (endpoint, _, topic) = self.enrolled_device_route(device, named)?;
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
                 on_behalf_of: None,
@@ -3288,6 +3535,78 @@ impl ShellNetwork {
         } else {
             Err("the action could not be handed to the enrolled device".into())
         }
+    }
+
+    /// Where an enrolled device is reached: its endpoint, and the shared
+    /// workspace (room and topic) it is present in — `named` when given. A
+    /// device that is not in the enrolment list is refused, so this cannot
+    /// address an arbitrary endpoint.
+    fn enrolled_device_route(
+        &self,
+        device: [u8; 32],
+        named: Option<RoomId>,
+    ) -> Result<(iroh::EndpointId, RoomId, u64), String> {
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .and_then(|device| decode_lower_hex_32(device.as_str()));
+        let enrolled = self.enrolled_personal_devices(local);
+        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
+            return Err("device is not an enrolled device".into());
+        }
+        let endpoint = iroh::EndpointId::from_bytes(&device)
+            .map_err(|_| "device is not an enrolled device id".to_string())?;
+        let shared = self.online_enrolled_room(endpoint, named)?;
+        let topic = room_topic_id(shared);
+        if !self.join_topic(topic) {
+            return Err("the shared workspace is not joined".into());
+        }
+        Ok((endpoint, shared, topic))
+    }
+
+    /// Invoke an application's action on another of this device's person's
+    /// own devices for `person`, and follow it there: the answer is the
+    /// other device's outcome, when it reports one. Nothing waits for it.
+    ///
+    /// Only the person this device belongs to reaches their devices, and
+    /// only a device that is enrolled, authenticated to this shell as one of
+    /// theirs, unexpired and unrevoked, and present in a workspace both
+    /// share. The other device decides the request for this device as its
+    /// transport authenticates it, as it does any request of the person's.
+    ///
+    /// # Errors
+    ///
+    /// Why the invocation cannot be sent.
+    pub fn invoke_own_device(
+        self: &Arc<Self>,
+        person: &str,
+        checked: &tilo_actions::remote::own_device::Checked,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>, String>
+    {
+        let user = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device holds no identity".to_string())?;
+        if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
+            return Err("only the person this device belongs to reaches their devices".into());
+        }
+        if !self
+            .authenticated_devices_of(&user)
+            .iter()
+            .any(|cert| cert.device_public_key == checked.device)
+        {
+            return Err("the device is not one of the person's authenticated devices".into());
+        }
+        let (endpoint, room, topic) = self.enrolled_device_route(checked.device, None)?;
+        let forwarded = checked.forwarded(&room.to_string(), request);
+        let peer = Arc::new(crate::shell::remote_action_link::PeerActionHost::new(
+            Arc::clone(self),
+            topic,
+            endpoint,
+        ));
+        Ok(peer
+            .invoke_until_settled(forwarded, crate::shell::remote_action_link::FOLLOW_DEADLINE)
+            .map(own_device_outcome))
     }
 
     fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
@@ -3612,7 +3931,10 @@ impl ShellNetwork {
     /// the compatibility/control topic. Rooms accepted later are joined by
     /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
-        self.adopt_enrolled_rooms();
+        // Startup, once: the first refresh may not have been read yet.
+        self.adopt_enrolled_rooms(&personal_room_ids(
+            &personal_device_peer_path().with_file_name("personal-rooms.json"),
+        ));
         self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {
@@ -3628,11 +3950,8 @@ impl ShellNetwork {
         }
     }
 
-    fn adopt_enrolled_rooms(&self) {
-        let path = personal_device_peer_path().with_file_name("personal-rooms.json");
-        // Read the file before taking the tree's write lock: the frame
-        // painter reads the same tree.
-        let rooms = personal_room_ids(&path);
+    /// Join the rooms an enrollment delivered to this device's tree.
+    fn adopt_enrolled_rooms(&self, rooms: &[RoomId]) {
         if rooms.is_empty() {
             return;
         }
@@ -3641,7 +3960,7 @@ impl ShellNetwork {
         };
         let mut tree = replica.tree.write();
         for room in rooms {
-            tree.join_enrolled_room(room);
+            tree.join_enrolled_room(*room);
         }
     }
 
@@ -3664,15 +3983,29 @@ impl ShellNetwork {
         let Ok(bytes) = serde_json::to_vec(&ids) else {
             return;
         };
-        // Runs on every home-peer refresh; the room list rarely changes, and
-        // an unchanged rewrite still costs a file and a directory fsync.
-        if std::fs::read(&path).is_ok_and(|current| current == bytes) {
+        // Runs on every home-peer refresh, on the compositor's loop; the room
+        // list rarely changes. A list this session already exported is left
+        // alone without waking the state writer or opening the file.
+        if !self.personal_rooms_export.changes(&path, Some(&bytes)) {
             return;
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = tilo_files::native::atomic::write(&path, &bytes);
+        // The first export of a session may find the list a previous one
+        // left; an unchanged rewrite would still cost a file and a directory
+        // fsync. The comparison and the write belong to the state writer,
+        // which keeps the newest per file.
+        let target = path.clone();
+        let known = self.personal_rooms_export.clone();
+        crate::shell::durable_writer::global().submit(path, move || {
+            if std::fs::read(&target).is_ok_and(|current| current == bytes) {
+                return;
+            }
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if tilo_files::native::atomic::write(&target, &bytes).is_err() {
+                known.forget();
+            }
+        });
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
@@ -3692,19 +4025,32 @@ impl ShellNetwork {
             .is_ok()
     }
 
-    /// Reload newly approved same-identity home peers. This is safe to call
-    /// from the frame loop: it reads a bounded local registry, queues dials
-    /// with `try_send`, and never waits for relay discovery or a connection.
+    /// Reload newly approved same-identity home peers, reading the files here
+    /// and waiting for the disk. The compositor's loop does not call this: its
+    /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
     pub fn refresh_home_peer_hosts(&self) -> bool {
+        self.apply_home_peer_inputs(&HomePeerInputs::read())
+    }
+
+    /// Apply what the reader published, if it published anything. Reads and
+    /// writes no file: it queues dials with `try_send` and never waits for
+    /// relay discovery or a connection.
+    fn apply_published_home_peers(&self) {
+        if let Some(inputs) = self.home_peer_reader.take() {
+            let _ = self.apply_home_peer_inputs(&inputs);
+        }
+    }
+
+    fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
         // An enrollment can deliver rooms after this session started. Adopt
         // them and join their topics, or a request sent to this device on
         // such a room never arrives.
-        self.adopt_enrolled_rooms();
+        self.adopt_enrolled_rooms(&inputs.enrolled_rooms);
         let mut changed = self.join_room_topics();
         // Direct peers are how a setup machine reaches the device it
         // enrolled, with or without a relay. A missing or malformed relay
         // registry must not skip them.
-        changed |= self.dial_direct_peers();
+        changed |= self.dial_direct_peers(&inputs.direct_devices);
         let mut relay_workspace_ids = self
             .replica
             .lock()
@@ -3714,9 +4060,13 @@ impl ShellNetwork {
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
-        let Ok(desired) =
-            registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
-        else {
+        let desired = match self.personal_continuity_user {
+            None => Ok(Vec::new()),
+            Some(user) => inputs.registrations.clone().map(|registrations| {
+                home_peers_from_registrations(registrations, user, &relay_workspace_ids)
+            }),
+        };
+        let Ok(desired) = desired else {
             // Preserve existing routes for availability, but fail closed for
             // secrets when current enrollment authority cannot be proven.
             self.update_registered_home_device_ids(std::collections::HashSet::clear);
@@ -3805,8 +4155,8 @@ impl ShellNetwork {
     }
 
     /// Dial enrolled devices this session has not reached yet.
-    fn dial_direct_peers(&self) -> bool {
-        let direct = self.enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()));
+    fn dial_direct_peers(&self, enrolled: &[[u8; 32]]) -> bool {
+        let direct = enrolled_endpoints(enrolled, Some(*self.local_peer_id.as_bytes()));
         let Ok(connected) = self.dialed_direct_peers.lock() else {
             return false;
         };
@@ -3834,7 +4184,8 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
-        let _ = self.refresh_home_peer_hosts();
+        // The files are read by the worker; `tick` applies what it publishes.
+        self.home_peer_reader.request();
     }
 
     /// The current iroh address published in an invite. It contains the
@@ -4150,24 +4501,27 @@ impl ShellNetwork {
         let route =
             crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
         drop(tree);
-        let relay_room = match route {
-            InviteRoute::Relay => Some(
-                self.administered_room(ws.room)
-                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?,
-            ),
-            InviteRoute::ShareOnRelay => self.share_on_home_relay(local, ws.room, &ws.name)?,
+        let terms = relay_rooms::RelayInvitation {
+            role,
+            recipient: recipient_user_public_key,
+            invitee,
+            lifetime: expiry_seconds_from_now,
+        };
+        match route {
+            InviteRoute::Relay => {
+                let held = self
+                    .administered_room(ws.room)
+                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
+                return self.issue_relay_invitation(&held, &terms);
+            }
+            InviteRoute::ShareOnRelay => {
+                if let Some(token) = self.share_on_home_relay(local, ws.room, &ws.name, &terms)? {
+                    return Ok(token);
+                }
+            }
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
                 return Err(route.refusal().unwrap_or_default().into());
             }
-        };
-        if let Some(relay_room) = relay_room {
-            return self.issue_relay_invitation(
-                &relay_room,
-                role,
-                recipient_user_public_key,
-                invitee,
-                expiry_seconds_from_now,
-            );
         }
         // The invitee will dial this device, so the invite names its home
         // relay: from behind a NAT a direct address alone may not reach it,
@@ -4415,14 +4769,14 @@ impl ShellNetwork {
 
     #[allow(
         clippy::unused_self,
-        reason = "tests inject a per-network policy snapshot while production loads the device-local store"
+        reason = "tests inject a per-network policy snapshot while production reads the session's followed device-local policy"
     )]
     fn continuity_policy(&self) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
         #[cfg(test)]
         if let Some(policy) = self.continuity_policy_override {
             return policy;
         }
-        crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
     }
 
     fn permits_continuity(
@@ -4455,10 +4809,31 @@ impl ShellNetwork {
         {
             registry.clear_remote();
         }
-        if let Some(path) = self.personal_continuity_path.as_deref() {
-            purge_personal_continuity_store(path);
+        // Every upkeep round asks again while the switch is off; the store is
+        // purged once, when it goes off (or a purge failed).
+        if let Some(path) = self.personal_continuity_path.as_deref()
+            && self.personal_continuity_store.changes(path, None)
+        {
+            // Behind any write queued for the store, so a write the policy
+            // change overtook cannot bring the file back.
+            let target = path.to_path_buf();
+            let known = self.personal_continuity_store.clone();
+            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                if !purge_personal_continuity_store(&target) {
+                    known.forget();
+                }
+            });
         }
-        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
+        // Asked on every boundary of every tick while the switch is off: only
+        // staged offers need the tree for writing. A write that removed
+        // nothing would still wait for any thread holding the tree, and wake
+        // every reader that watches its generation.
+        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone())
+            && {
+                let tree = tree.read();
+                !tree.continuation_tabs.is_empty() || !tree.continuation_rooms.is_empty()
+            }
+        {
             let mut tree = tree.write();
             tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
             tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
@@ -4565,16 +4940,31 @@ impl ShellNetwork {
         if !self.enforce_app_continuations_policy() {
             return None;
         }
-        let durable = self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
-        if durable && !pending_closed_tabs.is_empty() {
-            let mut tree = tree_handle.write();
-            for (tab, room) in pending_closed_tabs {
+        if self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision()) {
+            self.forget_closed_tabs_once_on_disk(tree_handle, pending_closed_tabs);
+        }
+        Some(bytes)
+    }
+
+    /// The tabs `closed` were recorded as closed in the continuity value just
+    /// handed to the writer; the tree forgets them once that value is on disk.
+    fn forget_closed_tabs_once_on_disk(
+        &self,
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        closed: std::collections::HashMap<crate::shell::state::TabId, RoomId>,
+    ) {
+        if closed.is_empty() {
+            return;
+        }
+        self.personal_continuity_durability.after_newest(move || {
+            let mut tree = tree.write();
+            for (tab, room) in closed {
                 if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
                     tree.continuation_closed_tabs.remove(&tab);
                 }
             }
-        }
-        Some(bytes)
+        });
+        self.personal_continuity_durability.settle();
     }
 
     fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
@@ -4585,40 +4975,74 @@ impl ShellNetwork {
         self.persist_personal_continuity_with_claims(None)
     }
 
+    /// Hand the continuity value to the state writer and, with `claims`, the
+    /// acknowledgement of the owner claims up to that revision, to run once
+    /// the value is on disk. Whether a write was queued or was not needed.
+    ///
+    /// Every sync round asks for this from the compositor's loop, so it never
+    /// writes itself: the write (a backup and a primary, four fsyncs) can
+    /// take seconds under I/O pressure. The writer keeps the newest value per
+    /// file, and a quiet round asks for what the store already holds and
+    /// queues nothing.
     fn persist_personal_continuity_with_claims(&self, claims: Option<u64>) -> bool {
+        // Acknowledge what earlier rounds' writes have since put on disk.
+        self.personal_continuity_durability.settle();
         if !self.enforce_app_continuations_policy() {
             return false;
         }
         let Some(path) = self.personal_continuity_path.as_deref() else {
             return false;
         };
-        let (Ok(counter), Ok(continuity)) = (
-            self.personal_continuity_counter.lock(),
-            self.personal_continuity.lock(),
-        ) else {
-            return false;
-        };
-        let durable = persist_personal_continuity(
-            path,
-            &PersistedPersonalContinuity {
+        // The value is captured under the ledger/counter locks; whatever is
+        // written and acknowledged below is exactly this capture.
+        let value = {
+            let (Ok(counter), Ok(continuity)) = (
+                self.personal_continuity_counter.lock(),
+                self.personal_continuity.lock(),
+            ) else {
+                return false;
+            };
+            PersistedPersonalContinuity {
                 counter: *counter,
                 continuity: continuity.clone(),
-            },
-        );
-        // The acknowledgement refers to the exact value durably written
-        // while these ledger/counter locks remain held, never a later capture.
-        if durable
-            && let Some(revision) = claims
+            }
+        };
+        let Ok(bytes) = postcard::to_allocvec(&value) else {
+            return false;
+        };
+        if self.personal_continuity_store.changes(path, Some(&bytes)) {
+            let sequence = self.personal_continuity_durability.submit();
+            let target = path.to_path_buf();
+            let known = self.personal_continuity_store.clone();
+            let durability = self.personal_continuity_durability.clone();
+            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                if write_personal_continuity(&target, &bytes) {
+                    durability.written(sequence);
+                } else {
+                    known.forget();
+                }
+            });
+        }
+        // The acknowledgement refers to the captured value, never a later
+        // capture, and runs only once that value (or a newer one) is on disk.
+        if let Some(revision) = claims
             && let Some(snapshot) = self
                 .personal_continuity_device
                 .as_ref()
-                .and_then(|device| continuity.snapshot_for(device))
-            && let Ok(mut registry) =
-                crate::shell::personal_continuity_registry::global_registry().lock()
+                .and_then(|device| value.continuity.snapshot_for(device))
+                .cloned()
         {
-            registry.acknowledge_owner_claims(revision, snapshot);
+            self.personal_continuity_durability.after_newest(move || {
+                if let Ok(mut registry) =
+                    crate::shell::personal_continuity_registry::global_registry().lock()
+                {
+                    registry.acknowledge_owner_claims(revision, &snapshot);
+                }
+            });
         }
-        durable
+        // A value the disk already held is acknowledged at once.
+        self.personal_continuity_durability.settle();
+        true
     }
 
     /// What chrome needs to offer continuing another device's focused tab:
@@ -4661,6 +5085,9 @@ impl ShellNetwork {
         ui::collaboration::owner_view::OwnerView,
         Option<AuthenticatedPersonalRoute>,
     )> {
+        // Owner claims whose continuity value has reached the disk since the
+        // last round are acknowledged before the views are read.
+        self.personal_continuity_durability.settle();
         let permitted = self.enforce_app_continuations_policy();
         let enrolled: std::collections::HashSet<_> = self
             .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
@@ -4961,11 +5388,6 @@ impl ShellNetwork {
     /// is still current. Holding the route registry through command enqueue
     /// gives departure a defined ordering: either enqueue wins, or departure
     /// removes authority first and this call fails without sending.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the route registry guard is held through enqueue on purpose: it orders this \
-                  send against departure, which must remove authority before or after it"
-    )]
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
@@ -5056,12 +5478,27 @@ impl ShellNetwork {
         path.with_file_name("personal-display-observations.json")
     }
 
+    /// Persist `fabric` without waiting for the disk. Called with the fabric
+    /// locked by the compositor's loop, on every change a peer or this device
+    /// makes and on each presence heartbeat; the checkpoint, its backup and the
+    /// sidecar are three synced writes, which on a busy disk held the loop for
+    /// hundreds of milliseconds and the fabric lock with it. The bytes are
+    /// encoded here, while `fabric` is held, and written by the state writer,
+    /// newest per file; session exit flushes it.
     fn persist_device_fabric(
         &self,
         path: &Path,
         fabric: &crate::shell::device_fabric::DeviceFabric,
     ) -> Result<(), String> {
-        persist_device_fabric(path, fabric)?;
+        let bytes = fabric
+            .encode_checkpoint()
+            .map_err(|error| format!("encode checkpoint: {error}"))?;
+        let owned = path.to_path_buf();
+        crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+            if let Err(error) = write_device_fabric_checkpoint(&owned, &bytes) {
+                tracing::warn!(%error, "device fabric persistence failed");
+            }
+        });
         self.persist_display_observations(path, fabric)
     }
 
@@ -5071,7 +5508,13 @@ impl ShellNetwork {
         fabric: &crate::shell::device_fabric::DeviceFabric,
     ) -> Result<(), String> {
         if let Some(user) = self.personal_continuity_user {
-            display_observations::save(&Self::display_observations_path(path), fabric, user)?;
+            let bytes = display_observations::encode(fabric, user)?;
+            let sidecar = Self::display_observations_path(path);
+            crate::shell::durable_writer::global().submit(sidecar.clone(), move || {
+                if let Err(error) = display_observations::write(&sidecar, &bytes) {
+                    tracing::warn!(%error, "display observation persistence failed");
+                }
+            });
         }
         Ok(())
     }
@@ -5240,12 +5683,33 @@ impl ShellNetwork {
         input_declines::load(&path, user)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_display_input_declines(
         &self,
         devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::save(&path, user, devices)
+    }
+
+    /// [`Self::save_display_input_declines`] on the state writer: granting or
+    /// revoking input control runs on the compositor's loop, and the write's
+    /// fsyncs can take seconds under I/O pressure. A newer save that has not
+    /// started replaces this one; `failed` runs on the writer when the write
+    /// fails.
+    pub(crate) fn save_display_input_declines_in_background(
+        &self,
+        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        failed: impl FnOnce(String) + Send + 'static,
+    ) -> Result<(), String> {
+        let (path, user) = self.display_input_declines_path()?;
+        let devices = devices.clone();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = input_declines::save(&path, user, &devices) {
+                failed(error);
+            }
+        });
+        Ok(())
     }
 
     /// The person whose devices form this device's personal fabric.
@@ -5281,26 +5745,63 @@ impl ShellNetwork {
             &crate::shell::device_fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            update(&mut snapshot.unlock, stamp);
+            Ok(())
+        })
+    }
+
+    /// Edit this device's own fabric snapshot and publish it under the next
+    /// stamp. The read, the edit and the write happen under one hold of the
+    /// fabric, so an edit never builds on a snapshot another thread (the
+    /// device fabric's pump) has replaced meanwhile, and two edits never
+    /// claim the same stamp. `edit` must not take the fabric itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this device has no fabric identity or presence
+    /// yet, `edit` refuses, or the edited snapshot is invalid.
+    fn modify_local_device_fabric(
+        &self,
+        edit: impl FnOnce(
+            &mut crate::shell::device_fabric::DeviceFabricSnapshot,
+            &crate::shell::device_fabric::FabricStamp,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
         let local = self
             .personal_continuity_device
             .clone()
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
+        let changed = {
+            let mut fabric = self.device_fabric.lock().map_err(|_| {
+                crate::shell::device_fabric::FabricError::InvalidCheckpoint.to_string()
+            })?;
+            let mut snapshot = fabric
+                .snapshots()
+                .get(&local)
+                .cloned()
+                .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
+            let stamp = crate::shell::device_fabric::FabricStamp {
+                counter: fabric.max_counter().saturating_add(1).max(1),
+                device: local,
+            };
+            edit(&mut snapshot, &stamp)?;
+            snapshot.presence.stamp = stamp;
+            snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
+            let changed = fabric.upsert(snapshot).map_err(|error| error.to_string())?;
+            if changed
+                && let Some(path) = self.device_fabric_path.as_deref()
+                && let Err(error) = self.persist_device_fabric(path, &fabric)
+            {
+                tracing::warn!(%error, "device fabric persistence failed");
+            }
+            drop(fabric);
+            changed
         };
-        update(&mut snapshot.unlock, &stamp);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        if changed {
+            self.publish_device_fabric_snapshot();
+        }
+        Ok(())
     }
 
     /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
@@ -5334,39 +5835,23 @@ impl ShellNetwork {
                 }
             }));
         }
-        let local = self
-            .personal_continuity_device
-            .clone()
-            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
         let recipients = self.certified_secret_recipients();
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
-        };
-        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
-            ssid,
-            security,
-            password,
-            &snapshot.owner,
-            recipients.iter().cloned(),
-            stamp.clone(),
-        )
-        .map_err(|error| error.to_string())?;
-        snapshot
-            .wifi
-            .retain(|saved| saved.network_id != credential.network_id);
-        snapshot.wifi.push(credential);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+                ssid,
+                security,
+                password,
+                &snapshot.owner,
+                recipients.iter().cloned(),
+                stamp.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            snapshot
+                .wifi
+                .retain(|saved| saved.network_id != credential.network_id);
+            snapshot.wifi.push(credential);
+            Ok(())
+        })
     }
 
     /// Decrypt a retained credential only for this certified device.
@@ -5932,7 +6417,10 @@ impl ShellNetwork {
     /// rename within one network round trip instead of at their next pull.
     /// At most one message per room per tick. Cheap when idle: rooms are
     /// projected only when the desktop document, the peer-merge epoch or the
-    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed.
+    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed,
+    /// and never while the tree is unwritten since the last projection.
+    /// Runs on the compositor's loop, so it never waits for the tree: held
+    /// by another thread, the push retries at [`Self::next_deadline`].
     /// A batch that landed from a peer is re-announced once, which reaches
     /// a member that missed the original; the echo changes nothing for
     /// those that already hold it, so it does not repeat.
@@ -5944,18 +6432,37 @@ impl ShellNetwork {
             return;
         };
         let now = std::time::Instant::now();
+        let generation = handle.generation();
+        let due = push
+            .last_full
+            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
+        if push.projected_generation == Some(generation)
+            || (!due && push.checked_generation == Some(generation))
+        {
+            push.retry_at = None;
+            return;
+        }
+        // Projecting writes the room documents. Another thread holding the
+        // tree (a worker, the portal, a protocol callback) would hold the
+        // loop for as long as it keeps it; the push runs again shortly
+        // instead ([`Self::next_deadline`]).
+        let Some(mut tree) = handle.try_write() else {
+            push.retry_at = Some(now.checked_add(ROOM_PUSH_RETRY).unwrap_or(now));
+            return;
+        };
+        push.retry_at = None;
+        // This guard's release is the next bump; a later one is a write
+        // made after this projection.
+        let projected = handle.generation().wrapping_add(1);
         let mut outgoing = Vec::new();
-        let mut tree = handle.write();
         let trigger = (
             tree.current_heads(),
             tree.desktop.room_epoch,
             tree.desktop.external_revision,
         );
-        let due = push
-            .last_full
-            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
         let moved = push.trigger.as_ref() != Some(&trigger);
         if !moved && !due {
+            push.checked_generation = Some(projected);
             return;
         }
         if moved {
@@ -5965,6 +6472,7 @@ impl ShellNetwork {
         }
         push.trigger = Some(trigger);
         push.last_full = Some(now);
+        push.projected_generation = Some(projected);
         let rooms = tree.rooms();
         push.announced.retain(|room, _| rooms.contains(room));
         for room in rooms {
@@ -6012,7 +6520,30 @@ impl ShellNetwork {
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Transport polling never blocks; durable
     /// native admission yields after one event so replay cannot monopolize a turn.
+    ///
+    /// Signed relay input is admitted in place, which publishes the state
+    /// file: for a thread that may wait for the disk. The compositor's loop
+    /// ticks with [`Self::frame_tick`].
     pub fn tick(&self) {
+        self.tick_with(Admission::InPlace);
+    }
+
+    /// [`Self::tick`] for the compositor's frame loop, which must never wait
+    /// for the state file: signed relay input is admitted on a worker
+    /// ([`native_admission`]), and no later event is handled until that
+    /// admission's remainder ran here.
+    pub fn frame_tick(&self) {
+        self.tick_with(Admission::OffLoop);
+    }
+
+    /// When [`Self::frame_tick`] must run again though nothing wakes the
+    /// loop: a room push that found the tree held by another thread retries
+    /// then.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.room_push.lock().ok().and_then(|push| push.retry_at)
+    }
+
+    fn tick_with(&self, admission: Admission) {
         self.remote_action_replies.expire(std::time::Instant::now());
         self.note_session_reachability(false);
         // Local room changes go out the tick they land; the periodic pull
@@ -6021,7 +6552,11 @@ impl ShellNetwork {
         self.kick_periodic_sync();
         self.reconcile_personal_workspaces();
         self.refresh_home_peer_hosts_periodically();
-        self.finish_shared_rooms();
+        self.apply_published_home_peers();
+        match admission {
+            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::OffLoop => self.finish_shared_rooms_off_loop(),
+        }
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
@@ -6030,16 +6565,40 @@ impl ShellNetwork {
         let Ok(mut event_rx) = self.event_rx.lock() else {
             return;
         };
+        // An admission handed off the loop completes before any later event.
+        match self.take_native_admission() {
+            native_admission::Lane::Busy => return,
+            native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
+            native_admission::Lane::Idle => {}
+        }
+        // Inbound events read the room's governance from the native owner.
+        // While it opens (off this thread: binding its writer and publishing
+        // its generation can take seconds) they stay queued, in order, and
+        // the open wakes the loop once it ends.
+        if !event_rx.is_empty()
+            && matches!(
+                self.native_owner_status(),
+                native_enrollment::NativeOwnerStatus::Opening
+            )
+        {
+            return;
+        }
         for _ in 0..MAX_NET_EVENTS_PER_TICK {
             let Ok(event) = event_rx.try_recv() else {
                 break;
             };
-            let native_admission = matches!(&event, NetEvent::NativeInput(_));
-            self.dispatch_net_event(event);
+            let admits = matches!(&event, NetEvent::NativeInput(_));
+            match (admission, event) {
+                (Admission::OffLoop, NetEvent::NativeInput(input)) => {
+                    self.dispatch_native_input_off_loop(input);
+                }
+                (_, event) => self.dispatch_net_event(event),
+            }
             // Signed replay may cross a durable writer and publish app state.
             // Leave the remaining FIFO queued until the next UI turn, where
-            // control requests can progress between actual admissions.
-            if native_admission {
+            // control requests can progress between actual admissions; an
+            // admission off the loop holds them until it is back.
+            if admits {
                 break;
             }
         }
@@ -6054,7 +6613,7 @@ impl ShellNetwork {
     )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
-            NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
+            NetEvent::NativeInput(input) => self.dispatch_native_input(input),
             NetEvent::Live { ws, from, frame } => self.handle_live_frame(ws, from, &frame),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
@@ -6829,6 +7388,21 @@ impl ShellNetwork {
                     self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
                         room,
                         request,
+                        route: None,
+                    });
+                }
+            }
+            NeighbourMsg::MlsRoutedAccessRequest {
+                room,
+                request,
+                route,
+                ..
+            } => {
+                if let Some(room) = RoomId::parse(&room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request,
+                        route: Some(route),
                     });
                 }
             }
@@ -7063,6 +7637,7 @@ impl ShellNetwork {
             | NeighbourMsg::RemoteAction { .. }
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
             | NeighbourMsg::PersonalWorkspaces { .. } => None,
         }
@@ -7344,10 +7919,6 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
-    )]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
@@ -7708,6 +8279,9 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
+        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+            HomePeerInputs::read_after_pending_writes,
+        ),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -7719,6 +8293,9 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        personal_continuity_store: KnownContents::default(),
+        personal_continuity_durability: ContinuityDurability::default(),
+        personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
         personal_focus_recency: Mutex::default(),
@@ -7754,6 +8331,8 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        native_admission: native_admission::State::default(),
+        peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),
@@ -7826,6 +8405,47 @@ pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
             .build()
             .expect("fixture network runtime"),
     );
+}
+
+/// How an own-device invocation ended, from the other device's last word
+/// on it: its output, or why it failed there or never ran.
+fn own_device_outcome(
+    settled: Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
+) -> tilo_action_broker::services::OwnDeviceOutcome {
+    use tilo_actions::InvocationUpdate;
+    let failure = |code: &str, message: String, retryable: bool| {
+        Box::new(tilo_actions::ActionFailure {
+            code: code.to_owned(),
+            message,
+            details: None,
+            retryable,
+        })
+    };
+    match settled {
+        Ok(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+        Ok(InvocationUpdate::Failed { error, .. }) => Err(Box::new(error)),
+        Ok(InvocationUpdate::Cancelled { message, .. }) => Err(failure(
+            "cancelled",
+            message.unwrap_or_else(|| "the other device cancelled the action".into()),
+            false,
+        )),
+        Ok(
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. },
+        ) => Err(failure(
+            "unsettled",
+            "the other device did not finish the action".into(),
+            true,
+        )),
+        Err(error) => {
+            let retryable = matches!(
+                error,
+                tilo_actions::remote::ActionHostError::Unavailable { .. }
+            );
+            Err(failure(error.code(), error.to_string(), retryable))
+        }
+    }
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -7943,6 +8563,11 @@ mod tests {
                 .flat_map(|group| &group.tabs)
                 .any(|candidate| candidate.id == tab),
             "the pushed change carries the new tab"
+        );
+        assert_eq!(changes.len(), 1, "one incremental change, not a checkpoint");
+        eprintln!(
+            "room-push-work mutation-ticks=1 batches=1 changes={}",
+            changes.len()
         );
 
         net.tick();
@@ -8194,6 +8819,69 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    fn the_periodic_refresh_applies_what_the_reader_published() {
+        // Same inputs as the blocking refresh above, through the loop's path:
+        // a request, then an apply once the worker has read the files.
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"not-json").unwrap();
+        let device = [0x23_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        net.refresh_home_peer_hosts_periodically();
+        let mut dialed = false;
+        tilo_test_env::wait_until("the enrolled device to be dialed", || {
+            net.apply_published_home_peers();
+            dialed |= std::iter::from_fn(|| commands.try_recv().ok()).any(
+                |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device),
+            );
+            dialed
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_loops_home_peer_refresh_does_not_wait_for_the_registry() {
+        // The registry is a pipe nobody writes: opening it for reading waits
+        // for a writer, as a read waits for a busy disk. The loop's calls must
+        // return anyway; only the reader thread waits.
+        let dir = tempfile::tempdir().expect("temp");
+        let registry = dir.path().join("home-peers.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&registry)
+                .status()
+                .expect("mkfifo")
+                .success()
+        );
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        for _ in 0..20 {
+            net.refresh_home_peer_hosts_periodically();
+            net.apply_published_home_peers();
+        }
+        net.tick();
+        // Let the reader finish, so its thread does not outlive the test.
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&registry)
+                .expect("open the pipe"),
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
     fn a_room_enrolled_after_startup_is_joined() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
@@ -8240,8 +8928,11 @@ mod tests {
         env.set("XDG_STATE_HOME", &state);
         let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         assert!(net.join_default_workspace());
+        // The export is written by the state writer, not the calling thread.
+        crate::shell::persist::wait_for_saves();
         let published = std::fs::metadata(&export).expect("export").ino();
         let _ = net.refresh_home_peer_hosts();
+        crate::shell::persist::wait_for_saves();
         assert_eq!(
             std::fs::metadata(&export).expect("export").ino(),
             published,
@@ -8436,6 +9127,161 @@ mod tests {
         );
     }
 
+    /// An application's action reaches another device only when that device
+    /// is the person's own: enrolled, authenticated to this shell under the
+    /// person's root, unrevoked, and asked for by the person this device
+    /// belongs to. Every refusal sends nothing; the one that passes is an
+    /// ordinary invocation of the app's action in the shared room, under
+    /// the original invocation's id.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn own_device_invocations_reach_only_the_persons_own_authenticated_devices() {
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+            sign_device_cert, sign_revocation_entry,
+        };
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let user = root.verifying_key().to_bytes();
+        let device = iroh::SecretKey::from_bytes(&[0x63; 32]).public();
+        let certified = |root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.as_bytes(),
+                device_label: "Desktop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).expect("certified device");
+            cert
+        };
+
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device.as_bytes())]).unwrap(),
+        )
+        .unwrap();
+        let room = "11111111-1111-4111-8111-111111111111";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let net = Arc::new(net);
+        assert!(net.join_default_workspace());
+        let topic = room_topic_id(RoomId::parse(room).expect("room"));
+        net.live_room_peers
+            .lock()
+            .expect("live peers")
+            .insert((topic, device));
+        while commands.try_recv().is_ok() {}
+
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(user);
+        let checked = tilo_actions::remote::own_device::Invocation {
+            device: hex::encode(device.as_bytes()),
+            app: "so.tilo.settings".into(),
+            resource: "settings.root".into(),
+            action: "storage-summary".into(),
+            arguments: None,
+        }
+        .check()
+        .expect("valid");
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::own_device::target(),
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let sent = |commands: &mut mpsc::Receiver<NetCmd>| {
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter_map(|command| match command {
+                    NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "an enrolled device that has not authenticated as the person's is refused"
+        );
+        let origin = crate::shell::state::PeerOrigin::peer(&device);
+        net.peer_identities
+            .insert(origin.clone(), certified(&stranger_root), 2)
+            .expect("stranger's device");
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "the same endpoint certified by another person is not the person's device"
+        );
+        net.peer_identities
+            .insert(origin, certified(&root), 2)
+            .expect("own device");
+        assert!(
+            net.invoke_own_device(&hex::encode([0x70; 32]), &checked, &request)
+                .is_err(),
+            "only the person this device belongs to reaches their devices"
+        );
+        let mut unenrolled = checked.clone();
+        unenrolled.device = *iroh::SecretKey::from_bytes(&[0x64; 32]).public().as_bytes();
+        assert!(
+            net.invoke_own_device(&person, &unenrolled, &request)
+                .is_err()
+        );
+        assert!(sent(&mut commands).is_empty(), "no refusal sent anything");
+
+        let _answer = net
+            .invoke_own_device(&person, &checked, &request)
+            .expect("the person's own authenticated device");
+        let delivered = sent(&mut commands);
+        let [(ws, target, NeighbourMsg::RemoteAction { frame })] = delivered.as_slice() else {
+            panic!("exactly one remote action frame, not {}", delivered.len());
+        };
+        assert_eq!((*ws, *target), (topic, device));
+        let decoded = tilo_actions::remote::RemoteActionFrame::decode(frame).expect("frame");
+        let tilo_actions::remote::RemoteActionMessage::Invoke(forwarded) = decoded.message else {
+            panic!("expected an invocation");
+        };
+        assert_eq!(forwarded.invocation, request.invocation);
+        assert_eq!(
+            tilo_actions::remote::application_provider(&forwarded.target.provider),
+            Some((room, "so.tilo.settings"))
+        );
+        assert_eq!(forwarded.target.address.action, "storage-summary");
+
+        let mut revoked = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: *device.as_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        let mut list = RevocationList::new();
+        list.insert(revoked).expect("listed");
+        net.peer_identities.set_revocations(user, &list);
+        let mut retry = request;
+        retry.invocation = tilo_actions::InvocationId::new();
+        assert!(
+            net.invoke_own_device(&person, &checked, &retry).is_err(),
+            "a revoked device is refused"
+        );
+        assert!(sent(&mut commands).is_empty());
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     fn enrolled_rooms_stay_after_startup_when_continuations_are_off() {
@@ -8473,6 +9319,173 @@ mod tests {
             owner.as_deref(),
             Some(crate::shell::state::local_user_id().as_str())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_quiet_upkeep_round_queues_no_state_write() {
+        // The upkeep runs on whatever wakes the compositor's loop, a clock
+        // minute on an idle desktop. Asked for what the files already hold,
+        // it must not wake the state writer, whose check opens the file and
+        // wakes every inotify watcher on the directory.
+        fn submits() -> usize {
+            crate::shell::durable_writer::SUBMITS_ON_THIS_THREAD.with(std::cell::Cell::get)
+        }
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let state = dir.path().join("state");
+        let export = state.join("tilo/personal-rooms.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", &state);
+        let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        let store = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(store.clone());
+        assert!(net.join_default_workspace());
+        assert!(net.persist_personal_continuity());
+        crate::shell::persist::wait_for_saves();
+        assert!(export.exists(), "the room list is exported");
+        assert!(store.exists(), "the continuity store is written");
+
+        let before = submits();
+        let _ = net.refresh_home_peer_hosts();
+        assert!(net.persist_personal_continuity());
+        assert_eq!(
+            submits(),
+            before,
+            "an unchanged room list and continuity store must not be queued again"
+        );
+
+        // Turning app continuations off purges the store once, not on every
+        // round that finds it off.
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        assert!(!net.enforce_app_continuations_policy());
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            !store.exists(),
+            "revoking app continuations purges the store"
+        );
+        let before = submits();
+        assert!(!net.enforce_app_continuations_policy());
+        assert!(!net.enforce_app_continuations_policy());
+        assert_eq!(submits(), before, "a purged store is not purged again");
+
+        // Allowed again, the next round writes it back.
+        net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
+        assert!(net.persist_personal_continuity());
+        crate::shell::persist::wait_for_saves();
+        assert!(store.exists(), "the store is written once allowed again");
+    }
+
+    /// Every sync round captures and persists the personal continuity from
+    /// the compositor's loop. With owner claims to acknowledge, the store
+    /// was written there (four fsyncs) and froze the desktop under I/O
+    /// pressure; now the state writer writes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capturing_personal_continuity_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (mut net, _commands) = personal_continuity_network_for_test([0x45; 32]);
+        let store = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(store.clone());
+        assert!(net.join_default_workspace());
+        crate::shell::persist::wait_for_saves();
+        let checkpoint = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            net.local_continuity_snapshot_bytes()
+        })
+        .expect("the round captures a checkpoint without a disk sync");
+        crate::shell::durable_writer::global().flush();
+        let stored = load_personal_continuity(&store);
+        assert_eq!(
+            postcard::to_allocvec(&stored.continuity).unwrap(),
+            checkpoint,
+            "the state writer stored exactly the captured checkpoint"
+        );
+    }
+
+    /// Each of the person's devices restates its fabric checkpoint, and the
+    /// merge reaches the compositor's loop through `net.tick`. The merged
+    /// fabric and its backup (four fsyncs) are written by the state writer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn merging_a_peer_fabric_checkpoint_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(path.clone());
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
+        let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
+        crate::shell::durable_writer::global().flush();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                peer_device.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                payload,
+            );
+        });
+        assert!(net.device_fabric().snapshots().contains_key(&owner));
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            load_device_fabric(&path).snapshots().contains_key(&owner),
+            "the state writer stored the merged fabric"
+        );
+    }
+
+    #[test]
+    fn continuity_obligations_wait_for_the_write_of_their_value() {
+        let durability = ContinuityDurability::default();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let first = durability.submit();
+        let record = |label: &'static str| {
+            let ran = Arc::clone(&ran);
+            move || ran.lock().unwrap().push(label)
+        };
+        durability.after_newest(record("first"));
+        let second = durability.submit();
+        durability.after_newest(record("second"));
+        durability.settle();
+        assert!(ran.lock().unwrap().is_empty(), "nothing is on disk yet");
+        durability.written(first);
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first"]);
+        // A later value written stands for every earlier one, even one the
+        // writer replaced before it started.
+        durability.written(second);
+        durability.written(first);
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
+        durability.after_newest(record("already durable"));
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first", "second", "already durable"]);
+
+        // Writes that keep failing leave a bounded backlog.
+        ran.lock().unwrap().clear();
+        let failing = durability.submit();
+        for _ in 0..MAX_CONTINUITY_OBLIGATIONS + 10 {
+            durability.after_newest(record("waiting"));
+        }
+        durability.written(failing);
+        durability.settle();
+        assert_eq!(ran.lock().unwrap().len(), MAX_CONTINUITY_OBLIGATIONS);
     }
 
     #[test]
@@ -9005,7 +10018,7 @@ mod tests {
         );
     }
 
-    fn personal_continuity_network_for_test(
+    pub(super) fn personal_continuity_network_for_test(
         user_public_key: [u8; 32],
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         let (mut net, commands) =
@@ -9411,10 +10424,12 @@ mod tests {
             let path = dir.path().join("personal-continuity.postcard");
             net.personal_continuity_path = Some(path.clone());
             assert!(net.persist_personal_continuity());
+            crate::shell::persist::wait_for_saves();
             assert!(path.exists());
 
             net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
             assert!(!net.enforce_app_continuations_policy());
+            crate::shell::persist::wait_for_saves();
 
             assert!(
                 net.personal_continuity
@@ -9709,7 +10724,10 @@ mod tests {
             fabric_path,
             &state_dir.join("personal-device-fabric.postcard")
         );
-        persist_device_fabric(fabric_path, &network.device_fabric.lock().unwrap()).unwrap();
+        network
+            .persist_device_fabric(fabric_path, &network.device_fabric.lock().unwrap())
+            .unwrap();
+        crate::shell::persist::wait_for_saves();
         assert!(fabric_path.is_file());
         assert_eq!(
             std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
@@ -9789,7 +10807,11 @@ mod tests {
         saved
             .observe_display_outputs(&owner, &stamp, vec![observation.clone()])
             .unwrap();
-        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        display_observations::write(
+            &path,
+            &display_observations::encode(&saved, [7; 32]).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -9844,7 +10866,11 @@ mod tests {
                 vec![observation],
             )
             .unwrap();
-        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        display_observations::write(
+            &path,
+            &display_observations::encode(&saved, [7; 32]).unwrap(),
+        )
+        .unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let enrolled = BTreeSet::from([owner.clone()]);
@@ -9903,6 +10929,78 @@ mod tests {
     }
 
     #[test]
+    fn persisting_the_fabric_never_waits_for_the_disk_on_the_calling_thread() {
+        // The compositor's loop persists the fabric on every change and each
+        // presence heartbeat, with the fabric locked. The checkpoint, its backup
+        // and the display sidecar are synced writes; they run on the state
+        // writer. Park that writer, and the call must still return with
+        // nothing on disk yet.
+        let user = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32])
+            .verifying_key()
+            .to_bytes();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(checkpoint_path.clone());
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            dir.path().join("parked-writer-blocker"),
+            move || {
+                started.send(()).unwrap();
+                let _ = parked.recv();
+            },
+        );
+        running.recv().unwrap();
+        net.persist_device_fabric(&checkpoint_path, &net.device_fabric.lock().unwrap())
+            .unwrap();
+        assert!(
+            !checkpoint_path.exists(),
+            "the checkpoint was written on the calling thread"
+        );
+        assert!(
+            !ShellNetwork::display_observations_path(&checkpoint_path).exists(),
+            "the display sidecar was written on the calling thread"
+        );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
+        assert!(checkpoint_path.is_file(), "the writer never wrote it");
+        assert!(device_fabric_backup_path(&checkpoint_path).is_file());
+    }
+
+    #[test]
+    fn a_sync_round_persists_continuity_without_waiting_for_the_disk() {
+        // It runs from the compositor's loop on every sync round. Park the
+        // state writer: the call may not wait for it, and nothing reaches the
+        // disk until it is released.
+        let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
+            .verifying_key()
+            .to_bytes();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(path.clone());
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            dir.path().join("parked-writer-blocker"),
+            move || {
+                started.send(()).unwrap();
+                let _ = parked.recv();
+            },
+        );
+        running.recv().unwrap();
+        assert!(net.persist_personal_continuity());
+        assert!(
+            !path.exists(),
+            "the continuity store was written on the calling thread"
+        );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
+        assert!(path.is_file(), "the writer never wrote it");
+    }
+
+    #[test]
     fn offline_display_cache_preserves_facts_without_live_route_authority() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
         let user = root.verifying_key().to_bytes();
@@ -9926,6 +11024,7 @@ mod tests {
             .unwrap();
         net.persist_device_fabric(&checkpoint_path, &net.device_fabric.lock().unwrap())
             .unwrap();
+        crate::shell::persist::wait_for_saves();
         *net.device_fabric.lock().unwrap() = load_device_fabric(&checkpoint_path);
         net.restore_display_observations();
         let devices = net.person_display_devices(&local);
@@ -9949,6 +11048,7 @@ mod tests {
         assert_eq!(net.person_display_devices(&local)[0].outputs.len(), 1);
         net.forget_device_fabric(&owner);
         assert!(net.person_display_devices(&local).is_empty());
+        crate::shell::persist::wait_for_saves();
         let store: serde_json::Value = serde_json::from_slice(
             &std::fs::read(ShellNetwork::display_observations_path(&checkpoint_path)).unwrap(),
         )
@@ -10039,7 +11139,12 @@ mod tests {
             let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
             let mut expected = crate::shell::device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
-            persist_device_fabric(&path, &expected).unwrap();
+            let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
+                .verifying_key()
+                .to_bytes();
+            let (net, _commands) = personal_continuity_network_for_test(user);
+            net.persist_device_fabric(&path, &expected).unwrap();
+            crate::shell::persist::wait_for_saves();
             std::fs::write(&path, b"damaged").unwrap();
             assert_eq!(load_device_fabric(&path), expected);
         }
@@ -10806,6 +11911,7 @@ mod tests {
             active_tab: browser_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         source_tree
             .continuation_file_references
@@ -11009,6 +12115,8 @@ mod tests {
         drop(tree);
         drop(replica);
 
+        // The checkpoint is written on the state writer.
+        crate::shell::durable_writer::global().flush();
         let restarted = load_personal_continuity(&continuity_path);
         assert!(
             restarted.counter >= closed_source.stamp.counter,
@@ -11374,6 +12482,7 @@ mod tests {
                 (second.id, second.clone()),
             ]);
             persist_pending_invitations(&path, &persisted);
+            crate::shell::durable_writer::global().flush();
             assert_eq!(load_pending_invitations(&path).len(), 2);
             #[cfg(unix)]
             {
@@ -11388,9 +12497,17 @@ mod tests {
             net.pending_invitations_path = Some(path.clone());
             *net.pending_identity_admissions.lock().unwrap() = persisted;
             assert_eq!(net.resend_invitation(&first.id).unwrap(), "signed-one");
+            // Cancelling runs on the compositor's loop, which must not wait
+            // for the disk: the store is written on the state writer.
+            #[cfg(target_os = "linux")]
+            assert!(crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(
+                || net.cancel_invitation(&first.id)
+            ));
+            #[cfg(not(target_os = "linux"))]
             assert!(net.cancel_invitation(&first.id));
             assert!(net.resend_invitation(&first.id).is_err());
             assert_eq!(net.resend_invitation(&second.id).unwrap(), "signed-two");
+            crate::shell::durable_writer::global().flush();
             let restored = load_pending_invitations(&path);
             assert_eq!(restored, vec![second]);
         }
@@ -11621,10 +12738,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn redeemed_invites_grant_exactly_their_signed_role_and_name() {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one invite is redeemed, exercised and revoked end to end"
-        )]
         /// Whether the author `net` authenticated for `envelope` may make
         /// the change it carries, decided the way the broker decides it.
         fn document_allowed(
@@ -13060,7 +14173,8 @@ mod tests {
     /// on a room topic, whichever room the window showing it is in.
     #[test]
     fn a_person_records_content_travels_only_between_the_persons_devices() {
-        use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+        use tilo_action_broker::record_content::PIECE_BYTES;
+        use tilo_content::hash_bytes;
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
         let user = root.verifying_key().to_bytes();
@@ -13083,7 +14197,7 @@ mod tests {
         let poster: Vec<u8> = (0..PIECE_BYTES + 9)
             .map(|index| u8::try_from(index % 239).unwrap())
             .collect();
-        let hash = content_hash(&poster);
+        let hash = hash_bytes(&poster);
         laptop_content.offer(&route, &hash, &poster).unwrap();
         let mut arrivals = phone_content.subscribe(&route);
 
@@ -13862,7 +14976,7 @@ mod tests {
         assert!(
             matches!(
                 queued.as_slice(),
-                [InboundChannelGovernance::AccessRequest { room: queued_room, request }]
+                [InboundChannelGovernance::AccessRequest { room: queued_room, request, route: None }]
                     if *queued_room == room && request.channel == channel
             ),
             "only the copy on the room's own topic is queued: {queued:?}"

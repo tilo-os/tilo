@@ -3,7 +3,7 @@
 //! governor commits with transport acknowledgements or DTO mutation.
 use super::*;
 use std::os::unix::fs::PermissionsExt as _;
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 
 pub(super) struct Attached {
     pub owner: NativeWorkspaceOwner,

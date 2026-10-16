@@ -5,205 +5,239 @@
       "id": "so.tilo.api-tester",
       "name": "API Tester",
       "category": "Development",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "api_tester"
     },
     {
       "id": "so.tilo.calculator",
       "name": "Calculator",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "calculator"
     },
     {
       "id": "so.tilo.calendar",
       "name": "Calendar",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "calendar"
     },
     {
       "id": "so.tilo.camera",
       "name": "Camera",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "camera"
     },
     {
       "id": "so.tilo.canvas",
       "name": "Canvas",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "canvas"
     },
     {
       "id": "so.tilo.chat",
       "name": "Chat",
       "category": "Network",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "chat"
     },
     {
       "id": "so.tilo.chip-design",
       "name": "Chip Design",
       "category": "Development",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "chip_design"
     },
     {
       "id": "so.tilo.clocks",
       "name": "Clocks",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "clocks"
     },
     {
       "id": "so.tilo.contacts",
       "name": "Contacts",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "contacts"
     },
     {
       "id": "so.tilo.diffmerge",
       "name": "Diff & Merge",
       "category": "Development",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "diffmerge"
     },
     {
       "id": "so.tilo.ebook",
       "name": "E-Book Reader",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "ebook"
     },
     {
       "id": "so.tilo.feeds",
       "name": "Feeds",
       "category": "Network",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "feeds"
     },
     {
       "id": "so.tilo.hex-editor",
       "name": "Hex Editor",
       "category": "Development",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "hex_editor"
     },
     {
       "id": "so.tilo.maps",
       "name": "Maps",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "maps"
     },
     {
       "id": "so.tilo.messages",
       "name": "Messages",
       "category": "Network",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "messages"
     },
     {
       "id": "so.tilo.music",
       "name": "Music",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "music"
     },
     {
       "id": "so.tilo.notes",
       "name": "Notes",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "notes"
     },
     {
       "id": "so.tilo.passwords",
       "name": "Passwords",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "passwords"
     },
     {
       "id": "so.tilo.pdf-viewer",
       "name": "PDF Viewer",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "pdf_viewer"
     },
     {
       "id": "so.tilo.photos",
       "name": "Photos",
       "category": "Graphics",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "photos"
     },
     {
       "id": "so.tilo.scratchpad",
       "name": "Scratchpad",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "scratchpad"
     },
     {
       "id": "so.tilo.sheets",
       "name": "Sheets",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "sheets"
     },
     {
       "id": "so.tilo.shortcuts",
       "name": "Shortcuts",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "shortcuts"
     },
     {
       "id": "so.tilo.slides",
       "name": "Slides",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "slides"
     },
     {
       "id": "so.tilo.snippets",
       "name": "Snippets",
       "category": "Development",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "snippets"
     },
     {
       "id": "so.tilo.speed-test",
       "name": "Speed Test",
       "category": "System",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "speed_test"
     },
     {
       "id": "so.tilo.themes",
       "name": "Theme Studio",
       "category": "System",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "themes"
     },
     {
       "id": "so.tilo.totp",
       "name": "TOTP",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "totp"
     },
     {
       "id": "so.tilo.tube",
       "name": "Tube",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "tube"
     },
     {
       "id": "so.tilo.typst-editor",
       "name": "Typst Editor",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "typst_editor"
     },
     {
       "id": "so.tilo.video-editor",
       "name": "Video Editor",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "video_editor"
     },
     {
       "id": "so.tilo.video-player",
       "name": "Video Player",
       "category": "Multimedia",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "video_player"
     },
     {
       "id": "so.tilo.weather",
       "name": "Weather",
       "category": "Utility",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "weather"
     },
     {
       "id": "so.tilo.word-processor",
       "name": "Word Processor",
       "category": "Office",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "module": "word_processor"
     }
   ],
   "unavailable": [
@@ -304,7 +338,7 @@
     },
     {
       "id": "so.tilo.imager",
-      "name": "Disk Imager",
+      "name": "Tilo Installer",
       "category": "System",
       "platforms": [
         "linux",

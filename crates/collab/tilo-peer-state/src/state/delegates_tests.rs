@@ -6,8 +6,8 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_join::delegation::{DelegateScope, Delegation};
 use web_time::{Duration, SystemTime};
 
 use crate::{StatePeer, TransportOrigin};
@@ -61,7 +61,7 @@ fn delegation(
     Delegation::sign(
         person,
         device,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_workspace_join::delegation::Delegate::Agent {
             agent_id: "scribe".into(),
         },
         "Scribe",
@@ -108,6 +108,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     // Only the pinned authority admits, and only within the delegation.
     assert!(
         governor
+            .governance_mut()
             .admit_agent(cert.clone(), granted.clone(), &other_device, now)
             .is_err()
     );
@@ -120,6 +121,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     assert!(
         governor
+            .governance_mut()
             .admit_agent(cert.clone(), elsewhere, &authority, now)
             .unwrap_err()
             .contains("not delegated this room")
@@ -127,6 +129,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let lapsed = delegation(&person, device, &room, now - Duration::from_secs(10), now);
     assert!(
         governor
+            .governance_mut()
             .admit_agent(cert.clone(), lapsed, &authority, now)
             .unwrap_err()
             .contains("not current")
@@ -134,6 +137,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let (_, someone_else) = agent(&person, 9);
     assert!(
         governor
+            .governance_mut()
             .admit_agent(someone_else, granted.clone(), &authority, now)
             .unwrap_err()
             .contains("another device")
@@ -143,6 +147,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     sign_device_cert(&mut powerful, &person).unwrap();
     assert!(
         governor
+            .governance_mut()
             .admit_agent(powerful, granted.clone(), &authority, now)
             .is_err()
     );
@@ -157,19 +162,28 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     assert!(
         governor
+            .governance_mut()
             .admit_agent(foreign, foreign_grant, &authority, now)
             .unwrap_err()
             .contains("owner's agents")
     );
-    assert!(governor.governed_agents(now).unwrap().is_empty());
+    assert!(
+        governor
+            .governance()
+            .governed_agents(now)
+            .unwrap()
+            .is_empty()
+    );
 
     assert!(
         governor
+            .governance_mut()
             .admit_agent(cert.clone(), granted.clone(), &authority, now)
             .unwrap()
     );
     assert!(
         !governor
+            .governance_mut()
             .admit_agent(cert, granted, &authority, now)
             .unwrap(),
         "admitting the same delegation again changes nothing"
@@ -213,10 +227,10 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
             .allows(&governance, tilo_action_policy::roles::GOVERNANCE_KIND, now),
         "the person's own device governs"
     );
-    let readers = member.governed_access(now).unwrap();
+    let readers = member.governance().governed_access(now).unwrap();
     assert!(readers.member_devices.contains(&device));
     assert_eq!(
-        member.governed_agents(now).unwrap(),
+        member.governance().governed_agents(now).unwrap(),
         vec![crate::GovernedAgent {
             device_public_key: device,
             user_public_key: person.verifying_key().to_bytes(),
@@ -250,12 +264,13 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     assert!(
         !member
+            .governance()
             .governed_access(after)
             .unwrap()
             .member_devices
             .contains(&device)
     );
-    assert!(!member.governed_agents(after).unwrap()[0].acting);
+    assert!(!member.governance().governed_agents(after).unwrap()[0].acting);
     assert!(
         governor
             .receive_from(TransportOrigin::RelayDelta(device), late, after)
@@ -289,7 +304,7 @@ fn admit_agent_refuses_a_bot_delegation() {
     let bot = Delegation::sign(
         &person,
         cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Bot {
+        tilo_workspace_join::delegation::Delegate::Bot {
             installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
         },
         "Bridge",
@@ -303,7 +318,9 @@ fn admit_agent_refuses_a_bot_delegation() {
     )
     .unwrap();
     assert_eq!(
-        governor.admit_agent(cert, bot, &authority, now),
+        governor
+            .governance_mut()
+            .admit_agent(cert, bot, &authority, now),
         Err("the delegation is not an agent's".into())
     );
 }
@@ -323,20 +340,28 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
         now + Duration::from_secs(3600),
     );
     governor
+        .governance_mut()
         .admit_agent(cert.clone(), granted, &authority, now)
         .unwrap();
     let mut member = governor.clone();
     let before = edit(&mut member, &key, now);
 
-    assert!(governor.withdraw_agent(device, &other_device, now).is_err());
+    assert!(
+        governor
+            .governance_mut()
+            .withdraw_agent(device, &other_device, now)
+            .is_err()
+    );
     let withdrawn = now + Duration::from_secs(5);
     assert!(
         governor
+            .governance_mut()
             .withdraw_agent(device, &authority, withdrawn)
             .unwrap()
     );
     assert!(
         !governor
+            .governance_mut()
             .withdraw_agent(device, &authority, withdrawn)
             .unwrap()
     );
@@ -348,16 +373,20 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
     );
     assert!(
         !governor
+            .governance()
             .governed_access(withdrawn)
             .unwrap()
             .member_devices
             .contains(&device)
     );
-    let roster = governor.governed_agents(withdrawn).unwrap();
+    let roster = governor.governance().governed_agents(withdrawn).unwrap();
     assert_eq!(roster[0].withdrawn_at_ns, Some(ns(withdrawn)));
     assert!(!roster[0].acting);
     assert_eq!(
-        governor.governed_agent(&device).map(|(_, _, at)| at),
+        governor
+            .governance()
+            .governed_agent(&device)
+            .map(|(_, _, at)| at),
         Some(Some(ns(withdrawn)))
     );
     // What it wrote before the withdrawal is still its own.
@@ -384,6 +413,7 @@ fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
     );
     assert!(
         governor
+            .governance_mut()
             .admit_agent(cert.clone(), renewed, &authority, withdrawn)
             .unwrap_err()
             .contains("withdrawn")
@@ -420,6 +450,7 @@ fn members_and_agents_never_trade_places() {
     );
     assert!(
         governor
+            .governance_mut()
             .admit_agent(
                 plain.clone(),
                 window(plain.device_public_key),
@@ -432,6 +463,7 @@ fn members_and_agents_never_trade_places() {
     // Nor is a member withdrawn as an agent.
     assert!(
         governor
+            .governance_mut()
             .withdraw_agent(member_cert.device_public_key, &authority, now)
             .unwrap_err()
             .contains("member, not an agent")
@@ -442,6 +474,7 @@ fn members_and_agents_never_trade_places() {
     sign_device_cert(&mut as_agent, &person).unwrap();
     assert!(
         governor
+            .governance_mut()
             .admit_agent(
                 as_agent,
                 window(member_cert.device_public_key),

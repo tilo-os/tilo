@@ -13,9 +13,11 @@ homepage.workspace = true
 # present the same model. Hosts supply tab contents through `TileSource`.
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The workspace history pane reads causal documents and draws with the
@@ -35,6 +37,8 @@ winit.workspace = true
 [dev-dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
+# The integration tests count named scopes on the frame path.
+tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
 
 [lints]
 workspace = true

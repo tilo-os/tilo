@@ -21,6 +21,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::namespace::Namespace;
+use tilo_lock::MutexRecover as _;
 
 /// A change is written once this long passes without another.
 pub const QUIET: Duration = Duration::from_millis(500);
@@ -62,10 +63,7 @@ pub fn spawn_persister<F>(namespace: Arc<Mutex<Namespace>>, flush: F) -> tokio::
 where
     F: FnMut(&Arc<Mutex<Namespace>>, Pending) -> Pending + Send + 'static,
 {
-    let changes = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .subscribe_changes();
+    let changes = namespace.lock_recover().subscribe_changes();
     tokio::spawn(persist(namespace, changes, flush))
 }
 
@@ -91,9 +89,7 @@ async fn persist<F>(
         }
         settle(&mut changes).await;
         let (heads, progress) = {
-            let mut namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut namespace = namespace.lock_recover();
             (namespace.heads(), namespace.peer_sync_generation())
         };
         let pending = Pending {

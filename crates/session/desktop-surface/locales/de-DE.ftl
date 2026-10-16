@@ -19,11 +19,21 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] SIEHT ZU
        *[other] SEHEN ZU
     }
+topbar-watching-count = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
+topbar-watching-description = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 topbar-sharing-surface = Oberfläche { $surface }
 topbar-open-overview = Übersicht öffnen
+topbar-tilo-menu = Tilo-Menü
 topbar-previous-workspace = Vorheriger Arbeitsbereich
 topbar-next-workspace = Nächster Arbeitsbereich
 topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
+topbar-workspace-host = Gehostet bei { $host }
 topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
@@ -78,6 +88,20 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
+topbar-strips = Leisten in diesem Arbeitsbereich
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Zu { $name } wechseln, { $count ->
+    [0] niemand dort
+    [one] eine Person dort
+   *[other] { $count } Personen dort
+}
+topbar-strip-add = Leiste hinzufügen
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] Eine weitere Leiste
+   *[other] { $count } weitere Leisten
+}, zu { $name } wechseln
+topbar-strip-name-placeholder = Leiste benennen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -533,27 +557,27 @@ a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigung
 a11y-notifications-cleared = Benachrichtigungen gelöscht
 a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
 a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
+a11y-notifications-newer = Neuere Benachrichtigungen
+a11y-notifications-older = Ältere Benachrichtigungen
 a11y-notifications = Benachrichtigungen
-notification-action-open = Öffnen
 notification-center-title = Benachrichtigungen
 notification-center-empty = Keine neuen Benachrichtigungen
 notification-center-cleared = Benachrichtigungen gelöscht
 notification-center-clear-all = Alle löschen
-notification-center-position = Neueste { $first }–{ $last } von { $total }
-notification-center-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
+notification-center-position = { $first }–{ $last } von { $total }
+notification-center-close = Benachrichtigungen schließen
+notification-center-back-to-list = Zurück zu den Benachrichtigungen
 notification-center-newer = ↑ Neuere
-notification-center-at-newest = Neueste erreicht
 notification-center-older = ↓ Ältere
-notification-center-at-oldest = Älteste erreicht
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. Von { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
+host-action-source-identity = Identität
+host-action-source-devices = Geräte
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen
@@ -574,6 +598,7 @@ notification-dnd-held = { $status } · { $count } zurückgehalten
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
+notification-not-now = Später
 notification-app-failed-title = Eine App konnte nicht geöffnet werden
 notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 
@@ -880,22 +905,33 @@ a11y-shell-people-present = Jetzt anwesend
 a11y-shell-people-now = Jetzt: { $activity }
 a11y-shell-people-intent = Absicht: { $status }
 a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-people-recent = Zuletzt: { $summary }
+a11y-shell-people-recent-inferred = Zuletzt, zusammengefasst: { $summary }
+a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
+a11y-shell-people-recent-toggle-description = Eine kurze Zusammenfassung der letzten Minuten ein- oder ausblenden
+a11y-shell-people-watching = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 a11y-shell-status-name = Dein Zusammenarbeitsstatus
 a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
 a11y-shell-status-set = Lege fest, woran du gerade arbeitest
-a11y-shell-status-automatic = Automatischer Status
-a11y-shell-status-manual = Nur manueller Status
-a11y-shell-status-off = Status ausblenden
+people-panel-sharing-line-auto = Du teilst, was du gerade machst
+people-panel-sharing-line-manual = Du teilst nur, was du selbst schreibst
+people-panel-sharing-line-off = Du teilst nicht, was du gerade machst
+people-panel-sharing-change = Ändern
+people-panel-sharing-choice-auto = Automatisch teilen
+people-panel-sharing-choice-manual = Selbst schreiben
+people-panel-sharing-choice-off = Nicht teilen
+a11y-shell-rename = Deinen Namen ändern, { $name }
+a11y-shell-rename-description = Wähle den Namen, den andere hier sehen
+a11y-shell-sharing-change = Ändern, was du teilst
 a11y-shell-status-automatic-description = Einen kurzen Status lokal aus den letzten Aktionen im Arbeitsbereich ableiten
 a11y-shell-status-manual-description = Nur selbst eingegebenen Text teilen
 a11y-shell-status-off-description = Keinen Status in diesem Arbeitsbereich veröffentlichen
 a11y-shell-follow-collaborator = Mitwirkender Person folgen
 a11y-shell-follow = { $name } folgen
 a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
-a11y-shell-people-previous = Vorherige Personen
-a11y-shell-people-previous-description = Die vorherigen Personen in diesem Arbeitsbereich anzeigen
-a11y-shell-people-next = Weitere Personen
-a11y-shell-people-next-description = Die nächsten Personen in diesem Arbeitsbereich anzeigen
 a11y-shell-invite = Personen einladen
 a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
 a11y-shell-join = Arbeitsbereich beitreten
@@ -926,16 +962,15 @@ launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N 
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier
+people-panel-watching = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
 people-panel-screen-visible = Bildschirm gerade sichtbar
 people-panel-only-you = Nur du bist hier
 people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
 people-panel-status-empty = Lege fest, woran du gerade arbeitest …
 people-panel-own-status = Du · { $status }
-people-panel-sharing-auto = Automatisch
-people-panel-previous-page = Vorherige Personen
-people-panel-next-page = Nächste Personen
-people-panel-sharing-manual = Manuell
-people-panel-sharing-hidden = Verborgen
 people-panel-agent-tag = Agent
 people-panel-invited-tag = eingeladen
 people-panel-following = Du folgst
@@ -1024,8 +1059,16 @@ overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
 
-notification-center-read = Lesen
-notification-center-read-description = Vollständige Benachrichtigung lesen
+# Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
+tilo-menu-about = Über diesen Computer
+tilo-about-title = Über diesen Computer
+tilo-about-lead = Das ist Tilo, ein Betriebssystem.
+tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.
+tilo-about-body-native = Es läuft direkt hier, auf diesem Computer.
+tilo-about-link-notify = Benachrichtigt werden
+tilo-about-link-source = Quellcode
+tilo-about-link-community = Community
+
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
@@ -1083,7 +1126,8 @@ activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
-activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
+activity-morning-source-unnamed = Gewählte Quelle
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 
 activity-morning-open = Morgenquelle öffnen

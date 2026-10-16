@@ -296,7 +296,7 @@ pub fn physicalkey_to_scancode(key: PhysicalKey) -> Option<u32> {
                 NativeKeyCode::Xkb(raw) => Some(raw),
                 _ => None,
             };
-        },
+        }
     };
 
     match code {
@@ -963,7 +963,11 @@ impl XkbKeymap {
             mod5: mod_index_for_name(keymap, b"Mod5\0"),
         };
 
-        Self { keymap, _mods_indices: mods_indices, _core_keyboard_id }
+        Self {
+            keymap,
+            _mods_indices: mods_indices,
+            _core_keyboard_id,
+        }
     }
 
     #[cfg(x11_platform)]

@@ -20,6 +20,10 @@ use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
+/// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
+const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSEXT_DIR];
+/// A registry larger than this is not one `tilo-install` wrote.
+const USER_REGISTRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/bin/tilo-control";
@@ -841,6 +845,73 @@ impl Apply for SystemdApply {
         })
     }
 
+    fn private_control(
+        &mut self,
+        session: &Session,
+        args: &[String],
+        input: &str,
+    ) -> Result<ControlResult, DaemonError> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let pid = self
+            .session_pid(session)
+            .ok_or_else(|| DaemonError::InvalidParams("slot session is not running".into()))?;
+        // Use the slot's verified control binary, not the older image's client.
+        let mut child = Command::new("nsenter")
+            .args([
+                "--mount",
+                "--target",
+                &pid.to_string(),
+                "--",
+                "runuser",
+                "-u",
+                &session.user,
+                "--",
+                "env",
+            ])
+            .arg(format!(
+                "TILO_TEST_CONTROL={}",
+                session.control_socket.display()
+            ))
+            .arg(TILO_CONTROL)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| {
+                DaemonError::InvalidParams("could not start private control client".into())
+            })?;
+        let sent = child
+            .stdin
+            .take()
+            .ok_or_else(|| {
+                DaemonError::InvalidParams("private control stdin is unavailable".into())
+            })?
+            .write_all(input.as_bytes());
+        if sent.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::InvalidParams(
+                "could not send private control arguments".into(),
+            ));
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|_| DaemonError::InvalidParams("private control client failed".into()))?;
+        if !output.status.success() {
+            return Err(DaemonError::InvalidParams(
+                "private action was refused; inspect its declared parameters and custody state"
+                    .into(),
+            ));
+        }
+        Ok(ControlResult {
+            exit_code: 0,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::new(),
+        })
+    }
+
     fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
         // Restart=always turns a failing start into active/activating flapping,
         // so the unit has to stay active under one main process for a while.
@@ -1115,6 +1186,32 @@ impl Apply for SystemdApply {
             )
         })
     }
+    fn user_packages(
+        &mut self,
+        session: &Session,
+    ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError> {
+        user_registry(&session.user)
+    }
+
+    fn image_has_runtime(&mut self, version: &str) -> bool {
+        let relative = Path::new("usr/lib/tilo-runtime").join(version);
+        if !Path::new("/").join(&relative).is_dir() {
+            return false;
+        }
+        // `/usr` is the image's own unless systemd-sysext merged extensions
+        // over it. The image's lower `/usr` is then out of reach, so the
+        // directory counts as the image's only when no extension carries it.
+        if !Path::new("/usr/.systemd-sysext").exists() {
+            return true;
+        }
+        !SYSEXT_SEARCH_DIRS
+            .iter()
+            .filter_map(|dir| fs::read_dir(dir).ok())
+            .flatten()
+            .flatten()
+            .any(|extension| extension.path().join(&relative).exists())
+    }
+
     fn install_cohort_app(
         &mut self,
         session: &Session,
@@ -1384,6 +1481,55 @@ const DESKTOP_STATE: [&str; 5] = [
     "state.automerge.meta",
     "state.json.invocations",
 ];
+
+/// The rows of `user`'s own package registry, read as root from a file
+/// the account owns, without following a link the account could plant.
+fn user_registry(
+    user: &str,
+) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError> {
+    use std::io::Read as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+    #[derive(serde::Deserialize)]
+    struct RegistryFile {
+        #[serde(default)]
+        entry: Vec<package_store::registry::InstalledPackage>,
+    }
+
+    let failed = |detail: String| DaemonError::Apply {
+        step: format!("read {user}'s package registry"),
+        detail,
+    };
+    let (Some(home), Some(uid)) = (home_of(user), uid_of(user)) else {
+        return Err(failed("the account has no home or uid".into()));
+    };
+    let path = Path::new(&home).join(".local/share/tilo-apps/registry.toml");
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(failed(format!("{}: {error}", path.display()))),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| failed(format!("{}: {error}", path.display())))?;
+    if !metadata.is_file() || metadata.uid() != uid || metadata.len() > USER_REGISTRY_MAX_BYTES {
+        return Err(failed(format!(
+            "{} is not a bounded regular file the account owns",
+            path.display()
+        )));
+    }
+    let mut text = String::new();
+    file.take(USER_REGISTRY_MAX_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|error| failed(format!("{}: {error}", path.display())))?;
+    toml::from_str::<RegistryFile>(&text)
+        .map(|registry| registry.entry)
+        .map_err(|error| failed(format!("{}: {error}", path.display())))
+}
 
 fn home_of(user: &str) -> Option<String> {
     let output = Command::new("getent")

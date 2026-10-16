@@ -2,7 +2,7 @@
 //! Each window keeps its own renderer: repeated looks reuse decoded pictures
 //! and paint simulations without borrowing the live viewport's caches.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_content::ContentStore;
@@ -12,6 +12,7 @@ use crate::model::Artwork;
 use crate::render::Renderer;
 use crate::resource::ViewOp;
 use crate::view_ops::{self, Picture};
+use ui::lock::MutexRecover as _;
 
 #[derive(Clone, Default)]
 pub struct Pictures {
@@ -35,7 +36,7 @@ impl Pictures {
         content: ContentStore,
         select: &crate::selection::Select,
     ) -> Result<crate::subject::Prepared, String> {
-        let mut cached = self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.renderer.lock_recover();
         let worker = cached.get_or_insert_with(|| Worker {
             renderer: Renderer::default(),
             text: TextRenderer::new(),
@@ -63,7 +64,7 @@ impl Pictures {
         content: ContentStore,
         op: &ViewOp,
     ) -> Result<(Picture, Value), String> {
-        let mut cached = self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.renderer.lock_recover();
         let worker = cached.get_or_insert_with(|| Worker {
             renderer: Renderer::default(),
             text: TextRenderer::new(),

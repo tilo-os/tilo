@@ -83,6 +83,43 @@ pub enum InputSpec {
     },
 }
 
+impl ActionDescriptor {
+    /// The parameter this action's one line of typed text goes into, when it
+    /// is a prompted action: what an agent or a host holding only the
+    /// descriptor learns instead of assuming a name.
+    #[must_use]
+    pub fn prompt_param(&self) -> Option<&str> {
+        match self.input {
+            InputSpec::Text { .. } => self
+                .params
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| self.params.first())
+                .map(|param| param.name.as_ref()),
+            InputSpec::None => None,
+        }
+    }
+
+    /// `arguments` as this action takes them. A text argument on the wire
+    /// (`InvokeArgument::Text`) names no parameter and reaches a host as a lone
+    /// [`PROMPTED_PARAM`](crate::PROMPTED_PARAM); it is moved under this
+    /// action's own prompt parameter. Anything else is returned as given.
+    #[must_use]
+    pub fn bind_prompt_text(
+        &self,
+        mut arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        if arguments.len() == 1
+            && let Some(name) = self.prompt_param()
+            && name != crate::PROMPTED_PARAM
+            && let Some(text) = arguments.remove(crate::PROMPTED_PARAM)
+        {
+            arguments.insert(name.to_owned(), text);
+        }
+        arguments
+    }
+}
+
 impl InputSpec {
     fn of(input: &ActionInput) -> Self {
         match input {
@@ -201,6 +238,13 @@ pub enum DoorError {
     UnexpectedArgument(ActionAddress),
     /// Typed arguments failed the action's declared schema.
     InvalidArguments(String),
+    /// A typed argument is a number outside the range its parameter
+    /// declares: [`InvalidArguments`](Self::InvalidArguments) whose bound
+    /// reaches the caller as data ([`DoorError::failure_details`]).
+    ArgumentOutOfRange {
+        param: String,
+        violation: crate::params::ArgViolation,
+    },
     /// The address exists and is intentionally advertised, but its current
     /// precondition is not satisfied.
     Unavailable { code: String, reason: String },
@@ -237,10 +281,41 @@ impl DoorError {
             DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
             DoorError::MissingArgument(_)
             | DoorError::UnexpectedArgument(_)
-            | DoorError::InvalidArguments(_) => "invalid_arguments",
+            | DoorError::InvalidArguments(_)
+            | DoorError::ArgumentOutOfRange { .. } => "invalid_arguments",
             DoorError::Unavailable { .. } => "action_unavailable",
             DoorError::ConfirmationRequired => "action_confirmation_required",
             DoorError::Failed(_) => "action_failed",
+        }
+    }
+
+    /// What an [`ActionFailure`](crate::ActionFailure) reporting this
+    /// refusal carries beside its message, for a caller to act on without
+    /// reading prose: `{"param": …, "violation": …}` for an argument out of
+    /// its declared range.
+    #[must_use]
+    pub fn failure_details(&self) -> Option<serde_json::Value> {
+        match self {
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                Some(serde_json::json!({ "param": param, "violation": violation }))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// An argument out of its declared range keeps its bound as data; every
+/// other argument refusal is reported in words.
+impl From<crate::params::ArgError> for DoorError {
+    fn from(error: crate::params::ArgError) -> Self {
+        match error {
+            crate::params::ArgError::OutOfRange { name, violation } => {
+                DoorError::ArgumentOutOfRange {
+                    param: name,
+                    violation,
+                }
+            }
+            error => DoorError::InvalidArguments(error.to_string()),
         }
     }
 }
@@ -260,6 +335,9 @@ impl std::fmt::Display for DoorError {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
             DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
+            DoorError::ArgumentOutOfRange { param, violation } => {
+                write!(f, "argument `{param}` {violation}")
+            }
             DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
             DoorError::ConfirmationRequired => {
                 f.write_str("this action requires explicit confirmation")
@@ -398,8 +476,8 @@ pub fn encode(
 ///
 /// Returns [`DoorError::Unknown`] when the address is not published,
 /// [`DoorError::Unavailable`] when policy currently disables it, or
-/// [`DoorError::InvalidArguments`] when the object violates its parameter
-/// contract.
+/// [`DoorError::InvalidArguments`] (or [`DoorError::ArgumentOutOfRange`])
+/// when the object violates its parameter contract.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -407,9 +485,7 @@ pub fn encode_json(
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let encoded = spec
-        .build_json(arguments)
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+    let encoded = spec.build_json(arguments).map_err(DoorError::from)?;
     if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
         return Err(DoorError::InvalidArguments(
             String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -671,8 +747,7 @@ fn dispatch_encoded_with_context(
             spec.kind.as_str()
         )));
     }
-    let mut context =
-        ActionContext::for_resource(resource.id.as_str(), &resource.kind, &resource.label);
+    let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }
@@ -761,10 +836,10 @@ mod tests {
         vec![
             Resource::new("notes.note:1", "notes.note", "Harbour")
                 .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, star_does).unwrap())
-                .with_action(ActionSpec::prompted(
+                .with_action(ActionSpec::prompted_param(
                     "retitle",
                     "Rename",
-                    "New title",
+                    ActionParam::required("title", crate::ParamType::Text, "New title"),
                     "title",
                     ExecutionLocus::ClientLocal,
                     move |text| encoded(&retitle_does(text)),
@@ -956,6 +1031,37 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a refused call left no change");
         assert!(doc.get(&ROOT, "title").unwrap().is_none());
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
+    }
+
+    /// A text argument on the wire names no parameter; the descriptor says
+    /// where it goes.
+    #[test]
+    fn a_wire_text_argument_goes_under_the_actions_own_prompt_parameter() {
+        let tree = open();
+        let described = survey(&tree);
+        let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
+        assert_eq!(retitle_spec.prompt_param(), Some("title"));
+        let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            retitle_spec.bind_prompt_text(lone.clone()),
+            serde_json::json!({"title": "Ledger"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // Already named, or more than one argument: left as given.
+        let named = serde_json::json!({"title": "Ledger"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(retitle_spec.bind_prompt_text(named.clone()), named);
+        // An action that collects no text has no prompt parameter.
+        let star_spec = described.iter().find(|d| d.address == star()).unwrap();
+        assert_eq!(star_spec.prompt_param(), None);
+        assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
     }
 
     /// An action the app never registered a decoder for cannot be run, even

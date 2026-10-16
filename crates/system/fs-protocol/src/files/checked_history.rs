@@ -196,3 +196,40 @@ pub struct CheckedHistoryResponseV1 {
     pub schema_version: u16,
     pub outcome: CheckedHistoryOutcomeV1,
 }
+
+/// Progress and cancellation of the hydration behind a history restore or a
+/// conflict resolution, by the request's id: the restore's `intent_id`, or
+/// the `conflict_id` being resolved.
+///
+/// A restore or resolution whose content is not yet on this device answers
+/// its write with `EINPROGRESS` instead of holding the caller while the
+/// bytes download. Reading `<prefix><id>` on the same file returns a
+/// [`HistoryJobResponseV1`]; writing [`HISTORY_JOB_CANCEL`] to it stops the
+/// download. Once the job is ready, the caller repeats the exact request,
+/// which commits from local content.
+pub const HISTORY_JOB_XATTR_PREFIX: &str = "user.tilo.history-job.";
+/// The value written to a history-job attribute to cancel it.
+pub const HISTORY_JOB_CANCEL: &[u8] = b"cancel";
+
+/// Where the hydration behind one history request stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state", deny_unknown_fields)]
+pub enum HistoryJobStateV1 {
+    /// `done` of `total` verified bytes are local. `total` is 0 until every
+    /// manifest involved is known.
+    Hydrating { done: u64, total: u64 },
+    /// Every byte is local: repeat the request to commit it.
+    Ready,
+    /// A peer could not supply the content. Repeating the request retries.
+    Failed,
+    /// The caller cancelled the download. Repeating the request starts over.
+    Cancelled,
+}
+
+/// Bounded reply read from a history-job attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryJobResponseV1 {
+    pub schema_version: u16,
+    pub state: HistoryJobStateV1,
+}

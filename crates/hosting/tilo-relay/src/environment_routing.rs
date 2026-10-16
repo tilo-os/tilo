@@ -113,7 +113,7 @@ pub(crate) struct RoutingContext {
 }
 
 impl RoutingContext {
-    fn trust(&self) -> RelayTrust<'_> {
+    pub(crate) fn trust(&self) -> RelayTrust<'_> {
         RelayTrust {
             revocations: &self.revocations,
             policy: &self.trust_policy,
@@ -128,7 +128,7 @@ impl RoutingContext {
         self.trust().cert(peer, tilo_clock::unix_now_ns()).is_ok()
     }
 
-    async fn workspace(&self, workspace_id: u64) -> Option<SharedWorkspace> {
+    pub(crate) async fn workspace(&self, workspace_id: u64) -> Option<SharedWorkspace> {
         self.workspaces.lock().await.get(&workspace_id).cloned()
     }
 }
@@ -185,16 +185,41 @@ pub(crate) async fn serve_stream(
         return Ok(());
     };
     if !context.still_trusted(&peer) {
-        refuse(
-            &mut send,
-            Refusal::NotAMember,
-            "this device is no longer admitted",
-        )
-        .await?;
+        if matches!(open, StreamOpen::ComputeContent { .. }) {
+            crate::compute_content::refuse(&mut send, "not_authorised").await?;
+        } else if matches!(open, StreamOpen::ComputeContentProof { .. }) {
+            crate::compute_content::refuse_proof(&mut send, "not_authorised").await?;
+        } else {
+            refuse(
+                &mut send,
+                Refusal::NotAMember,
+                "this device is no longer admitted",
+            )
+            .await?;
+        }
         let _ = send.finish();
         return Ok(());
     }
     let outcome = match open {
+        StreamOpen::ComputeContent {
+            version,
+            workspace_id,
+            job_id,
+            digest,
+        } => {
+            let asked = (workspace_id, job_id, digest);
+            crate::compute_content::route_content(&context, &peer, version, asked, &mut send).await
+        }
+        StreamOpen::ComputeContentProof {
+            version,
+            workspace_id,
+            job_id,
+            digest,
+            nonce,
+        } => {
+            let asked = (workspace_id, job_id, digest, nonce);
+            crate::compute_content::route_proof(&context, &peer, version, asked, &mut send).await
+        }
         StreamOpen::Environment {
             version,
             workspace_id,

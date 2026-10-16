@@ -787,6 +787,97 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     assert!((pan_offset(&handle) - before).abs() < 0.01);
 }
 
+/// A browser page presents on animation frames, and a trackpad's wheel
+/// events outpace them: each event pans the strip at once, and the next
+/// frame moves the laid-out windows there without solving any size.
+#[test]
+fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
+    };
+    let drawn = first_window_x(&driver);
+    let start = pan_offset(&handle);
+    let frames = driver.relayout_frames();
+    let ((), wheels) = tilo_resource::profiling::observe(|| {
+        for _ in 0..3 {
+            driver.send_host_event(&pixel_wheel(-10.0, 0.0));
+        }
+    });
+    assert_eq!(driver.relayout_frames(), frames, "a wheel lays nothing out");
+    assert_eq!(
+        phase_calls(&wheels, "ui.host_tick"),
+        0,
+        "a strip pan is view-only: its tick is the frame's"
+    );
+    assert!(driver.frame_schedule().queued_work, "it asks for a frame");
+
+    let (polled, frame) = tilo_resource::profiling::observe(|| driver.poll_frame().unwrap());
+    assert!(polled);
+    assert_eq!(
+        phase_calls(&frame, "ui.host_tick"),
+        1,
+        "the frame ticks once"
+    );
+    assert_eq!(
+        driver.relayout_frames(),
+        frames + 1,
+        "one frame for all three"
+    );
+    let stats = driver.last_relayout();
+    assert!(
+        !stats.rebuilt && !stats.measured,
+        "a pan only re-applies positions: {stats:?}, asked by {:?}",
+        driver.layout_measure_requesters()
+    );
+    assert!(
+        (pan_offset(&handle) - start - 30.0).abs() < 0.01,
+        "each wheel panned the strip 1:1"
+    );
+    assert!(
+        (drawn - first_window_x(&driver) - 30.0).abs() < 0.01,
+        "the windows are laid out where the strip panned to"
+    );
+    assert!(
+        !driver.frame_schedule().queued_work,
+        "the frame took the wheels' work"
+    );
+}
+
+fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
+    ui::winit::event::WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+            ui::winit::dpi::PhysicalPosition::new(dx, dy),
+        ),
+        phase: ui::winit::event::TouchPhase::Moved,
+    }
+}
+
+fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize {
+    rows.iter()
+        .find(|row| row.phase == phase)
+        .map_or(0, |row| row.calls)
+}
+
+/// Only a wheel the strip pans with skips its own tick: one that reaches the
+/// window under the pointer may dispatch there, so it ticks at once.
+#[test]
+fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let start = pan_offset(&handle);
+    let ((), rows) = tilo_resource::profiling::observe(|| {
+        driver.send_host_event(&pixel_wheel(0.0, -10.0));
+    });
+    assert!(
+        (pan_offset(&handle) - start).abs() < 0.01,
+        "a vertical wheel pans nothing"
+    );
+    assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
+}
+
 #[test]
 fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
@@ -995,7 +1086,7 @@ fn a_tab_the_host_asks_to_rebuild_gets_its_content_again() {
 }
 
 #[test]
-fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
+fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() {
     fn groups(node: &ui::headless::InspectionNode, out: &mut Vec<[f64; 4]>) {
         if node.widget == "WindowGroup" {
             out.push(node.rect);
@@ -1021,35 +1112,130 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     );
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
+    let first = handle.snapshot("g", vec![]).active.unwrap();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    let shown = |driver: &ui::headless::FrameHarness, index: usize| {
+        let mut rects = Vec::new();
+        groups(&driver.inspection().root, &mut rects);
+        rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let [x, _, width, _] = rects[index];
+        x.max(0.0) < (x + width).min(1200.0) - width / 2.0
+    };
     driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
-    // A mouse tilt wheel held to the right: one run of line-delta clicks,
-    // which winit reports with negative x.
-    for rightward in [0.3, 1.0, 2.0, 1.0, 0.5] {
-        driver.send(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
+    // A sideways wheel spun to the right as Firefox reports it: six lines a
+    // notch, which winit reports with negative x.
+    let before = pan_offset(&handle);
+    for _ in 0..4 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
     driver.relayout();
+    assert!(
+        (pan_offset(&handle) - before - 960.0).abs() < 0.5,
+        "four notches pan the strip four notches' travel"
+    );
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
-        entries[1].route,
-        "one run of clicks, one window along the strip"
+        first,
+        "the strip moves under focus while the wheel spins"
     );
-    for _ in 0..3 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        driver.send(&ui::synthetic_input::mouse_wheel(-1.0, 0.0));
-        driver.relayout();
+    let spun = pan_offset(&handle);
+    settle(&mut driver);
+    let followed = handle.snapshot("g", vec![]).active.unwrap();
+    let index = entries.iter().position(|e| e.route == followed).unwrap();
+    assert!(index > 0, "focus follows the strip once the wheel stops");
+    assert!(
+        shown(&driver, index),
+        "to a window mostly in view, window {index}"
+    );
+    assert!(
+        (pan_offset(&handle) - spun).abs() < 0.5,
+        "and the strip stays where the wheel left it"
+    );
+
+    // A long spin stops at the strip's end and keeps the rest of the spin.
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
+    driver.relayout();
+    let pan = handle.snapshot("g", vec![]).desktop_pan.unwrap();
+    assert!((pan.offset - pan.max).abs() < 0.5, "hard stop at the end");
+    settle(&mut driver);
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
         entries[3].route,
-        "stops at the last window"
+        "focus follows to the last window"
     );
-    let mut rects = Vec::new();
-    groups(&driver.inspection().root, &mut rects);
-    rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
-    let [x, _, width, _] = rects[3];
+    assert!(shown(&driver, 3));
+}
+
+#[test]
+fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..4)
+        .map(|i| tab(&mut minter, &format!("App{i}")))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]).entries[3].route.clone();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+    }
+    driver.relayout();
+    settle(&mut driver);
+
+    // A spin whose notches arrive slowly, one or two at a time with pauses
+    // between them, as a busy page gets them: each pause ends a gesture and
+    // focus follows, but the strip still pans exactly the notches' travel.
+    let from = pan_offset(&handle);
+    for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
+        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
+        driver.relayout();
+        settle(&mut driver);
+    }
     assert!(
-        x >= 0.0 && x + width <= 1200.5,
-        "the focused window is in view: {rects:?}"
+        (pan_offset(&handle) - (from - 20.0 * 40.0)).abs() < 0.5,
+        "twenty slow notches pan twenty lines: {} from {from}",
+        pan_offset(&handle)
+    );
+
+    // Where the spin left the strip, windows are cut at both edges. A later
+    // change to the strip's geometry, here the last window a pixel wider,
+    // keeps it there rather than re-framing it onto a window's edge.
+    let held = pan_offset(&handle);
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
+    );
+    settle(&mut driver);
+    assert!(
+        (pan_offset(&handle) - held).abs() < 0.5,
+        "a window's width changing keeps the strip where the wheel left it: {} from {held}",
+        pan_offset(&handle)
     );
 }
 

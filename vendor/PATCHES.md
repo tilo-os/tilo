@@ -32,8 +32,13 @@ checksum-verified registry releases in the lock, each with one small patch
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
 kernel cancels on resume or a clock step replaces it), and no gossip cache
-sweep once a topic's caches are empty. Network changes still arrive through
-netlink at once. Each directory's `TILO-PATCH.md` has the details and an
+sweep once a topic's caches are empty or membership shuffle without an active
+neighbor. A returning neighbor rearms the shuffle once. Network changes still arrive through
+netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
+a router sends every few seconds (a BPF filter on its netlink socket) instead of
+waking the process to ignore them. Its monitor also re-reads the interfaces
+once its netlink socket has subscribed, so a change made while it starts is
+not lost. Each directory's `TILO-PATCH.md` has the details and an
 upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
 `iroh` and `iroh-gossip` build an `rlib` only: as path packages their
 upstream `cdylib` dropped the hash from the library filenames, so two builds
@@ -123,6 +128,21 @@ The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a
 published crate cannot name a feature the release lacks).
+
+`vendor/wgpu-hal/src/vulkan/adapter.rs` also asks for
+`VK_EXT_image_drm_format_modifier` (Vulkan 1.2+, next to the external-memory
+extensions it already enables) when the device has it. `ui::dmabuf_import`
+reads `Device::enabled_device_extensions` and, with the extension, imports a
+client dma-buf with the producer's exact plane offset and row pitch; on the
+crates.io release, which lacks it, the import keeps its linear-only path.
+It also enables `VK_EXT_queue_family_foreign`, and a texture made with
+`TextureMemory::ForeignExternal` (a client dma-buf import) makes its first
+barrier an acquire from `VK_QUEUE_FAMILY_FOREIGN_EXT`.
+It enables `VK_KHR_external_semaphore_fd` when the device has it, and
+`vulkan::Queue::add_wait_semaphore` makes the queue's next submission wait for
+a binary semaphore: `ui::dmabuf_import::wait_for_writes` imports a client
+dma-buf's pending write fence (a sync file) into one, so the GPU reads the
+buffer only after the client's writes, without a thread waiting.
 
 The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
 instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
@@ -379,6 +399,12 @@ thirty open/close cycles leave only the wallpaper resident at the size it
 started with, and told images went the atlas comes down within a few passes
 while an expired request waits the long way again.
 
+- `ImageCache::evict_superseded`: once an image does not fit and the atlas is
+  at its maximum, residents the current pass has not drawn go at once instead
+  of after two passes. A client frame over half the atlas's side (a 4K buffer
+  rendered at twice the output's density) cannot sit beside the frame it
+  replaces, and the new frame was omitted: the tile drew its backdrop only.
+
 ## Scratch shrink (`bump_budget.rs`, `wgpu_engine.rs`, `lib.rs`)
 
 Upstream and the bump-budget patch above size a renderer's working memory for
@@ -511,6 +537,15 @@ pipeline. On GL nothing is deferred (one context lock, see "one init thread
 on GL"). `Renderer::new` is unchanged except that the parallel initial build
 starts the longest shaders first. `deferred_pipelines()` reports what is
 pending and what a render had to build itself.
+
+`Renderer::new_async_deferring(device, options, deferral)` is the same for
+`new_async`, which the browser uses: it awaits only the pipelines `deferral`
+does not defer. `start_deferred_pipelines_async` then starts every deferred
+pipeline through `create_compute_pipeline_async` without waiting. Renders poll
+those compiles before encoding and install the finished ones. A render can't
+wait for a promise, so a deferred pipeline it dispatches whose compile is not
+in yet is created synchronously, and the GPU process compiles it before the
+dispatch. This works on every target; native windows keep the threads.
 
 ## zlink-macros
 

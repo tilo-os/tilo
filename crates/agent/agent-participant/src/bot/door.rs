@@ -17,7 +17,7 @@
 //! is retried in order and the entry performed again.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::context::Cause;
@@ -35,6 +35,7 @@ use tilo_browser_peer::DocumentRoute;
 
 use super::item_json::OutboxRow;
 use crate::participant::actions::{door_status, record_of, record_provider};
+use tilo_lock::MutexRecover as _;
 
 /// What the door needs of the bot's session and replicas.
 pub trait DoorParticipant: Send {
@@ -159,14 +160,11 @@ impl<P: DoorParticipant> BotDoor<P> {
 
     /// The cause every change of the next run records.
     pub fn set_cause(&self, cause: Option<Cause>) {
-        *self.cause.lock().unwrap_or_else(PoisonError::into_inner) = cause;
+        *self.cause.lock_recover() = cause;
     }
 
     fn cause(&self) -> Option<Cause> {
-        self.cause
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.cause.lock_recover().clone()
     }
 
     fn actor(&self) -> String {
@@ -184,9 +182,7 @@ impl<P: DoorParticipant> BotDoor<P> {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, P> {
-        self.participant
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.participant.lock_recover()
     }
 
     fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
@@ -438,12 +434,7 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
         if !self.its_own(caller) {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
-        let known = self
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&request.invocation)
-            .cloned();
+        let known = self.ledger.lock_recover().get(&request.invocation).cloned();
         if let Some(status) = known {
             return Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -452,8 +443,7 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
         }
         let result = self.run(&request).map(|status| {
             self.ledger
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .insert(request.invocation, status.clone());
             InvocationReceipt {
                 invocation: request.invocation,
@@ -469,12 +459,7 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
         }
         // Steps taken before a restart are found when the run invokes them
         // again ([`RunStep`]); the ledger knows this door's own.
-        let status = self
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()?;
+        let status = self.ledger.lock_recover().get(id).cloned()?;
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
 

@@ -333,6 +333,20 @@ def touch_first(ctx, res):
     ctx.wait_state(lambda s: _pointer_kind(s) != "hidden", 5, "the cursor back after moving the mouse")
 
 
+def _type_a_word(ctx, k: dict) -> None:
+    """Tap three letters and then Space on the on-screen keyboard shown at `k`.
+
+    The keyboard composes letters as preedit and commits only at a word boundary
+    (Space, punctuation, Return), so letters alone never reach a field as committed
+    text. Space commits the word without activating anything, as Return would in
+    Search. Above the four key rows sit a toolbar and a suggestion bar, so 55 % of
+    the height lands on the first letter row and 90 % on the wide Space key."""
+    for fx in (0.2, 0.45, 0.7):
+        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
+        ctx.settle(0.4)
+    ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * 0.5)), str(int(k["y"] + k["h"] * 0.9)))
+
+
 @check("W19", AREA, "On-screen keyboard: tapping a text field shows it, tapping its keys types into "
                     "the field, and typing on the physical keyboard hides it")
 def on_screen_keyboard(ctx, res):
@@ -355,10 +369,7 @@ def on_screen_keyboard(ctx, res):
     ctx.shot("W19-keyboard")
     k = osk["shown"]
     before = osk.get("commits", 0)
-    # Letter keys fill the middle rows; three taps across the second row.
-    for fx in (0.2, 0.45, 0.7):
-        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
-        ctx.settle(0.4)
+    _type_a_word(ctx, k)
     st = ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("commits", 0) > before,
                         10, "text committed into the field by tapping keyboard keys")
     res.metrics["commits"] = st["chrome"]["on_screen_keyboard"]["commits"] - before
@@ -424,11 +435,15 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
                    "the on-screen keyboard service connected once a touchscreen is present")
     ctx.vm.key("super+space")
     ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
-    t = core.target_map(ctx.vm.targets())
-    fields = sorted((r for n, r in t.items() if "SearchField" in n), key=lambda r: r[2] * r[3])
-    if not fields:
-        raise Unobservable(f"no SearchField among the targets while search is open ({len(t)} targets)")
-    f = fields[-1]
+    targets = ctx.vm.targets()
+    ctx.write("W20-search-targets.json", json.dumps(targets, indent=2))
+    t = core.target_map(targets)
+    # Search is a CommandPalette, not the in-content SearchField widget.
+    # Its query target shares the editable accessibility row's bounds; the
+    # legacy command_palette_input target covers the entire result card.
+    f = t.get("command-palette:query")
+    if f is None:
+        raise Unobservable(f"no command-palette:query target while search is open ({len(t)} targets)")
     ctx.vm.input("touch", "tap", str(int(f[0] + f[2] / 2)), str(int(f[1] + f[3] / 2)))
     st = ctx.wait_state(lambda s: _keyboard(s).get("shown"), 15,
                         "the on-screen keyboard shown for the search field")
@@ -438,13 +453,12 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
     ctx.shot("W20-keyboard-over-search")
     k = kb["shown"]
     before = kb.get("commits", 0)
-    for fx in (0.2, 0.45, 0.7):
-        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
-        ctx.settle(0.4)
-    st = ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("query"), 10,
+    _type_a_word(ctx, k)
+    st = ctx.wait_state(lambda s: ((s["chrome"].get("palette") or {}).get("query") or "").strip(), 10,
                         "the keyboard's keys typed into the search field")
     res.metrics["query"] = st["chrome"]["palette"]["query"]
     res.metrics["commits"] = _keyboard(st).get("commits", 0) - before
+    expect(res.metrics["commits"] > 0, "the on-screen keyboard committed the typed word")
     expect((st["chrome"].get("palette") or {}).get("visible"),
            "tapping the keyboard kept search open")
     ctx.shot("W20-typed")

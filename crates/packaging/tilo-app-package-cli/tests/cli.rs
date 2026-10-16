@@ -781,7 +781,7 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
             &attested.meta,
             &[],
             std::slice::from_ref(&trust),
-            &RevocationList::empty()
+            &RevocationList::default()
         ),
         tilo_app_package::Verification::AttestedBy { .. }
     ));
@@ -807,7 +807,7 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
             &attested.meta,
             &[],
             &[unknown],
-            &RevocationList::empty()
+            &RevocationList::default()
         ),
         tilo_app_package::Verification::UntrustedPublisher { .. }
     ));
@@ -820,7 +820,7 @@ fn cli_attest_preserves_payload_and_original_publisher_with_scoped_recipient_tru
             &attested.meta,
             &[],
             &[foreign],
-            &RevocationList::empty()
+            &RevocationList::default()
         ),
         tilo_app_package::Verification::UntrustedPublisher { .. }
     ));

@@ -1321,6 +1321,21 @@ impl RichTextLayout {
             if run.line_i < cursor_start.line || run.line_i > cursor_end.line {
                 continue;
             }
+            // A wrapped paragraph is one logical line of many visual rows, and
+            // `highlight` segments every grapheme of a row it is given. A row
+            // whose glyphs all end before the range or start after it selects
+            // nothing (as in `selection_rects_many_within`): skip it.
+            let (mut low, mut high) = (usize::MAX, 0);
+            for glyph in run.glyphs {
+                low = low.min(glyph.start);
+                high = high.max(glyph.end);
+            }
+            if low == usize::MAX
+                || (run.line_i == cursor_start.line && high <= cursor_start.index)
+                || (run.line_i == cursor_end.line && low >= cursor_end.index)
+            {
+                continue;
+            }
             for (x, width) in run.highlight(cursor_start, cursor_end) {
                 rects.push((x, run.line_top, x + width, run.line_top + run.line_height));
             }
@@ -2901,6 +2916,52 @@ second line",
                 expected.as_slice(),
                 "{cluster:?}"
             );
+        }
+    }
+
+    /// Skipping the visual rows a range cannot touch returns exactly the
+    /// rectangles a scan of every row does, for every range of wrapped,
+    /// multi-line, mixed-direction and clustered text.
+    #[test]
+    fn selection_rects_match_a_scan_of_every_row() {
+        let scan = |shaped: &RichTextLayout, start: usize, end: usize| {
+            let mut rects = Vec::new();
+            if start >= end {
+                return rects;
+            }
+            let (cursor_start, cursor_end) = (shaped.cursor_at(start), shaped.cursor_at(end));
+            for run in shaped.buffer.layout_runs() {
+                if run.line_i < cursor_start.line || run.line_i > cursor_end.line {
+                    continue;
+                }
+                for (x, width) in run.highlight(cursor_start, cursor_end) {
+                    rects.push((x, run.line_top, x + width, run.line_top + run.line_height));
+                }
+            }
+            rects
+        };
+        for text in [
+            "one long paragraph that wraps across several visual rows of the layout",
+            "first line\nsecond line wraps once it is long enough\n\nfourth",
+            "שלום mixed العربية words wrapping 👩‍💻 é ffi",
+        ] {
+            for width in [60.0, 140.0, 400.0] {
+                let shaped = layout(text, width);
+                let boundaries: Vec<usize> = text
+                    .char_indices()
+                    .map(|(at, _)| at)
+                    .chain([text.len()])
+                    .collect();
+                for &start in &boundaries {
+                    for &end in &boundaries {
+                        assert_eq!(
+                            shaped.selection_rects(start, end),
+                            scan(&shaped, start, end),
+                            "{text:?} at {width}: {start}..{end}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

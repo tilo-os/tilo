@@ -177,7 +177,7 @@ impl BundleRoot {
     /// Returns the write error.
     pub fn lease(&self, version: &str, now: u64) -> io::Result<()> {
         let path = self.state_file(LEASES_DIR, version)?;
-        write_atomically(&path, now.to_string().as_bytes())
+        tilo_files::native::atomic::write(&path, now.to_string().as_bytes())
     }
 
     /// Keep `version` until [`Self::unpin`].
@@ -187,7 +187,7 @@ impl BundleRoot {
     /// Returns the write error.
     pub fn pin(&self, version: &str) -> io::Result<()> {
         let path = self.state_file(PINS_DIR, version)?;
-        write_atomically(&path, b"")
+        tilo_files::native::atomic::write(&path, b"")
     }
 
     /// Stop keeping `version` for its pin alone.
@@ -610,16 +610,6 @@ fn remove_file_if_present(path: &Path) -> io::Result<()> {
 
 /// Replace `path` in one rename. The temporary name starts with a dot, so a
 /// leftover one reads as an expired lease of no bundle and is dropped.
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let nanos = tilo_clock::unix_now_ns() % 1_000_000_000;
-    let name = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!(".{name}.{}.{nanos}", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
-}
-
 /// Bytes of the regular files under `path`, links not followed.
 fn tree_size(path: &Path) -> u64 {
     let mut total = 0u64;

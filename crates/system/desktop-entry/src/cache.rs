@@ -25,6 +25,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::scan::{Scan, scan_dirs};
+use tilo_lock::MutexRecover as _;
 
 /// How long a scan is reused before the directories are re-examined.
 pub const SCAN_TTL: Duration = Duration::from_secs(5);
@@ -55,9 +56,7 @@ pub fn cached_scan() -> Scan {
 pub fn cached_scan_snapshot() -> (u64, Scan) {
     let dirs = crate::scan::application_dirs();
     let desktop = crate::scan::current_desktops();
-    let mut guard = cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = cell().lock_recover();
 
     if let Some(cached) = guard.as_mut() {
         if cached.at.elapsed() < SCAN_TTL {
@@ -94,9 +93,7 @@ pub fn cached_scan_generation() -> u64 {
 /// changed — a Flatpak install finishing, say — and by tests, which
 /// share this process-wide state.
 pub fn invalidate() {
-    let mut guard = cell()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = cell().lock_recover();
     *guard = None;
     REVISION.fetch_add(1, Ordering::Release);
     drop(guard);

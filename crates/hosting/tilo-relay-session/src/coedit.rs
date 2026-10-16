@@ -67,14 +67,14 @@ pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50
 /// variants that can have one are decoded, to tell which; the body itself is
 /// sent and forwarded as it came.
 #[must_use]
-pub fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
+pub fn presence_slot(body: &[u8]) -> Option<neighbour_wire::PresenceSlot> {
     if !body
         .first()
-        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
+        .is_some_and(|tag| neighbour_wire::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
     {
         return None;
     }
-    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
+    postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
         .ok()?
         .presence_slot()
 }
@@ -286,6 +286,14 @@ impl RelayCoeditSession {
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// The device key of the relay this session is with, as its handshake
+    /// authenticated it: the device a remote action for the relay itself is
+    /// addressed to.
+    #[must_use]
+    pub const fn relay_device_public_key(&self) -> [u8; 32] {
+        self.client.relay_peer.device_public_key
     }
 
     /// Publish and retain a complete checkpoint for `channel`.

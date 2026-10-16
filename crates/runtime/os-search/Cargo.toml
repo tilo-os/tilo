@@ -11,6 +11,7 @@ name = "tilo_os_search"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Result ids the host search holds: opaque, stable per app and resource.
 blake3.workspace = true
 # The one door every caller browses and opens resources through.

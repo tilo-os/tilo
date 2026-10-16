@@ -29,7 +29,7 @@ Each adapter reads what a benchmark already prints and emits records through
   frame). `scripts/perf/latency_bench.py` (headless, nightly) and
   `scripts/perf/device_latency_bench.py` (reference hardware) call it.
 - `idle-wakeups LOG...`: the idle-wakeup gate
-  (`crates/session/shell/tests/idle_wakeups.rs`) prints one
+  (`crates/session/shell/examples/idle-wakeups.rs`) prints one
   `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
@@ -75,12 +75,41 @@ Each adapter reads what a benchmark already prints and emits records through
   (an agent call adding one item, end to end), `.recompute_ms.<size>` (one
   focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
   recomputation of the live window's order); every timing is a sample.
+- `notes-latency LOG...`: the `NOTES-LATENCY {json}` line of
+  `apps/notes/examples/notes-latency.rs`: Notes over a 27-note, 838-block
+  notebook, each input sent through the host's input path and timed to the
+  end of the host frame that shows it and to the GPU raster of that frame.
+  Each workload (`type`, `enter`, `backspace`, `scroll`, `pointer`, `idle`,
+  `open`) becomes `render.notes_latency.<workload>.to_frame_ms` and
+  `.to_raster_ms`, every input (or input-free frame) a sample. A run without
+  raster timings (no GPU) fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
   and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
+- `room-load REPORT_JSON...`: `tilo-room-load bench` reports
+  (`crates/dev/room-load`), one per run of the same configuration. Each run
+  is one sample of `hosting.room.<kpi>.g<guests>` (`ROOM_LOAD_KPIS`): the
+  guests' p99 join and chat delivery, the host's peak resident memory and its
+  CPU during the hold. A run in which a guest failed or did not join is not a
+  measurement and fails the adapter.
+- `browser-qualification REPORT_JSON`: the browser runtime qualification's
+  report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
+  one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
+  frame interval and frame's runtime CPU is a sample, and each round's idle
+  frame rate one; the demo's two only when the run had the demo. The report must name the env's renderer, commit and profile,
+  and an unthrottled page.
+- `native-stream REPORT_JSON`: the native stream qualification's report
+  (`scripts/perf/native_stream_qualification.mjs`): a session's window
+  streamed to the browser desktop. Each sample list becomes one `stream.*` KPI
+  (`STREAM_KPIS`), and the frames sent but never drawn one
+  `stream.frame.missed` sample (percent). A stream in a codec other than
+  H.264 (`--codec vp9`) is its own series, its codec after the group
+  (`stream.vp9.frame.latency`), so it never shares a baseline with H.264's.
+  The report must name the env's renderer, commit and profile, and be
+  correct: an incorrect run is a failure, never a measurement.
 
 Usage:
 
@@ -93,7 +122,10 @@ Usage:
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
+    python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
+    python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
+    python3 tools/perf/adapters.py native-stream --env-json env.json stream.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -247,7 +279,7 @@ def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
         lines = [match for line in log.splitlines() if (match := IDLE_WAKEUPS_LINE.search(line.rstrip()))]
         if len(lines) != 1:
             raise ValueError(f"expected one `IDLE-WAKEUPS` line per run, found {len(lines)}: "
-                             "did the gate run with --nocapture?")
+                             "did the idle-wakeups executable finish its measurement?")
         fields = dict(pair.split("=", 1) for pair in lines[0].group(1).split())
         missing = [name for name in (*IDLE_WAKEUPS_KPIS, "window_ms") if name not in fields]
         if missing:
@@ -367,6 +399,37 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
+
+
+NOTES_LATENCY_PREFIX = "NOTES-LATENCY "
+# The example's workloads, each a pair of KPIs.
+NOTES_LATENCY_WORKLOADS = ("type", "enter", "backspace", "scroll", "pointer", "idle", "open")
+
+
+def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the Notes input-latency example."""
+    samples: dict[str, list[float]] = {}
+    for log in logs:
+        lines = [line.strip()[len(NOTES_LATENCY_PREFIX):] for line in log.splitlines()
+                 if line.strip().startswith(NOTES_LATENCY_PREFIX)]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `NOTES-LATENCY` line per run, found {len(lines)}: "
+                             "did notes-latency run to the end?")
+        report = json.loads(lines[0])
+        for workload in NOTES_LATENCY_WORKLOADS:
+            figures = report["workloads"][workload]
+            for stage in ("to_frame_ms", "to_raster_ms"):
+                if figures.get(stage) is None:
+                    raise ValueError(f"notes-latency took no `{stage}` for `{workload}`: no GPU?")
+                values = [float(value) for value in figures[stage]["values"]]
+                if not values:
+                    raise ValueError(f"notes-latency took no `{workload}` samples")
+                samples.setdefault(f"render.notes_latency.{workload}.{stage}", []).extend(values)
+    if not logs:
+        raise ValueError("no notes-latency logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
 
 
 FILES_NAME_INDEX_LINE = re.compile(
@@ -498,6 +561,168 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     return records
 
 
+# What one `tilo-room-load bench` report becomes: KPI, unit, and how to read it.
+ROOM_LOAD_KPIS = {
+    "hosting.room.join_p99_ms": ("ms", lambda report: report["join_ms"]["p99"]),
+    "hosting.room.chat_p99_ms": ("ms", lambda report: report["chat_ms"]["p99"]),
+    "hosting.room.rss_mib_peak": ("MiB", lambda report: report["host"]["rss_mib_peak"]),
+    # Cores during the hold, as a share of one CPU.
+    "hosting.room.cpu_percent": ("percent", lambda report: report["host"]["hold_cpu_cores"] * 100.0),
+}
+
+
+def room_load(reports: list[dict[str, Any]], env: dict[str, Any]) -> list[record.Record]:
+    """Records for repeated room-load bench runs of one configuration."""
+    if not reports:
+        raise ValueError("no room-load report")
+    configs = {json.dumps(report["config"], sort_keys=True) for report in reports}
+    if len(configs) != 1:
+        raise ValueError(f"the reports ran different configurations: {sorted(configs)}")
+    config = reports[0]["config"]
+    guests = int(config["guests"])
+    for number, report in enumerate(reports, 1):
+        failures = {**report.get("failures", {}), **report.get("spectators", {}).get("failures", {})}
+        if failures or int(report["joined"]) != guests or int(report["chat_rx"]) == 0:
+            raise ValueError(f"run {number}: {report['joined']} of {guests} guests joined, "
+                             f"{report['chat_rx']} chat changes delivered, failures {failures}")
+    meta = {**env.get("meta", {}), "guests": str(guests), "runs": str(len(reports)),
+            "rooms": str(config["rooms"]), "cursor_hz": str(config["cursor_hz"]),
+            "chat_every_s": str(config["chat_every_s"]), "host_threads": str(config.get("host_threads") or "all"),
+            "machine_cores": str(reports[0]["host"]["machine_cores"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(f"{kpi}.g{guests}", unit, [read(report) for report in reports],
+                                meta=meta, **base)
+            for kpi, (unit, read) in ROOM_LOAD_KPIS.items()]
+
+
+# The browser runtime qualification's report samples (scripts/perf/browser_qualification.mjs)
+# and the KPI each becomes, with its unit.
+BROWSER_KPIS = {
+    "load_ms": ("browser.load.desktop_presented", "ms"),
+    "open_ms": ("browser.open.first_frame", "ms"),
+    "open_ready_ms": ("browser.open.ready", "ms"),
+    "activate_ms": ("browser.activate.first_frame", "ms"),
+    "demo_interval_ms": ("browser.demo.frame_interval", "ms"),
+    "demo_work_ms": ("browser.demo.frame_work", "ms"),
+    "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
+}
+# Reported only by a run with the demo workload (`--demo-seconds` above 0).
+BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
+
+
+def browser_qualification(report: dict[str, Any], env: dict[str, Any],
+                          require_clean: bool = True) -> list[record.Record]:
+    """Records for one browser runtime qualification report.
+
+    The report must have measured the environment the records claim: its
+    WebGPU adapter is the env's renderer, its bundle a build of the env's
+    commit in the env's profile, clean unless `require_clean=False` (the A/B
+    lane, whose output directory sits untracked in the checkout it builds),
+    and its page CPU unthrottled: a throttled run stands in for older
+    hardware and is never this series. The demo's KPIs come from a run with
+    the demo and only from one.
+    """
+    if report.get("schema") != 1:
+        raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
+    bundle, workload = report["bundle"], report["workload"]
+    if report["renderer"] != env["renderer"]:
+        raise ValueError(f"the report measured on {report['renderer']}, not the env's {env['renderer']}")
+    if bundle["profile"] != env["profile"]:
+        raise ValueError(f"the bundle is a {bundle['profile']} build, not the env's {env['profile']}")
+    if bundle["revision"] != env["commit"] or (require_clean and bundle["dirty"]):
+        raise ValueError(f"the bundle was built from {bundle['revision']}"
+                         f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
+    if workload.get("cpuThrottle", 1) != 1:
+        raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
+    samples = report["samples"]
+    demo = float(workload.get("demoSeconds", 0)) > 0
+    fields = [field for field in BROWSER_KPIS if demo or field not in BROWSER_DEMO_FIELDS]
+    missing = [field for field in fields if not samples.get(field)]
+    if missing:
+        raise ValueError(f"the report has no samples for {missing}")
+    if not demo and any(samples.get(field) for field in BROWSER_DEMO_FIELDS):
+        raise ValueError("the report has demo samples from a run without the demo")
+    adapter = report.get("adapter") or {}
+    meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
+            "browser": report["browser"]["product"],
+            "adapter": " ".join(str(value) for value in adapter.values() if value) or "unknown",
+            "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
+            "rounds": str(workload["rounds"]), "apps": ",".join(workload["apps"]),
+            "input_hz": str(workload["inputHz"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(*BROWSER_KPIS[field], samples[field], meta=meta, **base) for field in fields]
+
+
+STREAM_KPIS = {
+    "startup_ms": ("stream.startup.first_picture", "ms"),
+    "frame_latency_ms": ("stream.frame.latency", "ms"),
+    "frame_interval_ms": ("stream.frame.interval", "ms"),
+    "encode_ms": ("stream.encode.frame", "ms"),
+    "input_ms": ("stream.input.latency", "ms"),
+}
+# The codec whose series carries no codec in its ids: H.264's series predate
+# the others and keep their ids, so their baselines continue.
+STREAM_DEFAULT_CODEC = "h264"
+
+
+def stream_kpi(kpi: str, codec: str) -> str:
+    """`kpi` for a stream in `codec`: `stream.vp9.frame.latency` for VP9's
+    `stream.frame.latency`, unchanged for H.264's."""
+    if codec == STREAM_DEFAULT_CODEC:
+        return kpi
+    group, rest = kpi.split(".", 1)
+    return f"{group}.{codec}.{rest}"
+
+
+def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one native stream qualification report.
+
+    Like the browser qualification's, the report must have measured the
+    environment the records claim: the env's WebGPU renderer and a clean
+    build of the env's commit in its profile. A run the harness judged
+    incorrect (a decoder error, a corrupt or stale picture, a lost press) is
+    refused: its numbers measure a broken stream.
+    """
+    if report.get("schema") != 1:
+        raise ValueError(f"native stream report schema {report.get('schema')!r}, not 1")
+    bundle, session = report["bundle"], report["session"]
+    if report["renderer"] != env["renderer"]:
+        raise ValueError(f"the report measured on {report['renderer']}, not the env's {env['renderer']}")
+    if bundle["profile"] != env["profile"]:
+        raise ValueError(f"the bundle is a {bundle['profile']} build, not the env's {env['profile']}")
+    if bundle["revision"] != env["commit"] or bundle["dirty"]:
+        raise ValueError(f"the bundle was built from {bundle['revision']}"
+                         f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
+    failures = report["correctness"]["failures"]
+    if failures:
+        raise ValueError(f"the stream was incorrect: {'; '.join(failures)}")
+    codec = report["workload"]["codec"]
+    if not re.fullmatch(r"[a-z][a-z0-9]*", codec):
+        raise ValueError(f"the report names codec {codec!r}")
+    if session["codec"] != codec:
+        raise ValueError(f"the session streamed {session['codec']}, not the requested {codec}")
+    samples = report["samples"]
+    missing = [field for field in STREAM_KPIS if not samples.get(field)]
+    if missing:
+        raise ValueError(f"the report has no samples for {missing}")
+    counts = report["counts"]
+    delivered = float(counts["deliveredPercent"])
+    if not 0.0 <= delivered <= 100.0:
+        raise ValueError(f"delivered {delivered} % is not a share")
+    meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "browser": report["browser"]["product"],
+            "encoder": session["encoder"], "encoder_hardware": str(bool(session["hardware"])).lower(),
+            "window": f"{session['width']}x{session['height']}", "fps": str(session["fps"]),
+            "carrier": report["workload"]["carrier"], "codec": codec,
+            "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
+            "frames_sent": str(counts["sent"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    records = [record.from_samples(stream_kpi(kpi, codec), unit, samples[field], meta=meta, **base)
+               for field, (kpi, unit) in STREAM_KPIS.items()]
+    records.append(record.from_samples(stream_kpi("stream.frame.missed", codec), "percent",
+                                       [round(100.0 - delivered, 2)], meta=meta, **base))
+    return records
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -530,14 +755,32 @@ def main(argv: list[str] | None = None) -> int:
                                    help="records from framework-scaling's FRAMEWORK-FOCUS lines")
     focusing.add_argument("--env-json", required=True, type=Path)
     focusing.add_argument("logs", nargs="+", type=Path)
+    notes = commands.add_parser("notes-latency", help="records from notes-latency's NOTES-LATENCY line")
+    notes.add_argument("--env-json", required=True, type=Path)
+    notes.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
     hosting.add_argument("report", type=Path)
+    rooms = commands.add_parser("room-load", help="records from tilo-room-load bench reports")
+    rooms.add_argument("--env-json", required=True, type=Path)
+    rooms.add_argument("reports", nargs="+", type=Path)
+    browser = commands.add_parser("browser-qualification",
+                                  help="records from scripts/perf/browser_qualification.mjs's report")
+    browser.add_argument("--env-json", required=True, type=Path)
+    browser.add_argument("report", type=Path)
+    stream = commands.add_parser("native-stream",
+                                 help="records from scripts/perf/native_stream_qualification.mjs's report")
+    stream.add_argument("--env-json", required=True, type=Path)
+    stream.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
-        if args.command == "hosting-load":
+        if args.command == "browser-qualification":
+            records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
+        elif args.command == "native-stream":
+            records = native_stream(json.loads(args.report.read_text(encoding="utf-8")), env)
+        elif args.command == "hosting-load":
             records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
             for item in records:
@@ -545,6 +788,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['collaborators_per_vm']} collaborators per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
+        elif args.command == "room-load":
+            records = room_load([json.loads(path.read_text(encoding="utf-8")) for path in args.reports], env)
         elif args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "workspace-switch":
@@ -562,6 +807,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "framework-focus":
             records = framework_focus([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                       env)
+        elif args.command == "notes-latency":
+            records = notes_latency([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                    env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "files-name-index":

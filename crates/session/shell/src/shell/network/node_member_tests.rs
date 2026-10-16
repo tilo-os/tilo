@@ -18,7 +18,6 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use tilo_browser_peer::{DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
-use tilo_relay::rooms::{RoomAdminClient, RoomCommand};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{HostIdentity, Reach, ShellNetwork};
@@ -137,26 +136,12 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         serde_json::to_string(&relay_addr).unwrap(),
     );
 
-    // The browser creates the company workspace and writes the plan.
+    // The company workspace is on the node, with the browser in it, and the
+    // browser writes the plan.
     let acme = runtime.block_on(async {
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&browser_key.to_bytes()))
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind()
-            .await
-            .unwrap();
-        let admin = RoomAdminClient::new(endpoint.clone(), browser.clone());
-        let acme = admin.create(relay_addr.clone(), "Acme").await.unwrap();
-        admin
-            .send(
-                relay_addr.clone(),
-                RoomCommand::Enter {
-                    room: acme.room.clone(),
-                },
-            )
-            .await
-            .unwrap();
-        endpoint.close().await;
+        let rooms = relay.rooms().unwrap();
+        let acme = rooms.create("Acme").await.unwrap();
+        rooms.enter(&acme.room, &browser).await.unwrap();
         acme
     });
     let ada = {
@@ -168,8 +153,9 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                     relay_url: None,
                 },
                 cert: browser,
-                host_cert: node,
+                host_cert: node.clone(),
                 revocations: RevocationList::new(),
+                watching: false,
             },
             Arc::new(browser_key),
             Arc::new(MemoryPeerStore::default()),
@@ -236,7 +222,10 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     )
     .unwrap();
 
-    // It finds the workspace among its host's rooms and joins it.
+    // It finds the workspace among its host's rooms and joins it, through
+    // the host's own `tilo.host` actions on its continuity workspace: it
+    // lists the rooms and enters this one, and the host answers the
+    // invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
     net.join_host_rooms();
     until("the session to hold the company workspace", || {
@@ -367,6 +356,46 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         }
     });
     assert_eq!(seen, DocumentMutation::Snapshot(reply));
+
+    // The session administers the room it holds through the room's own
+    // `tilo.workspace` governance actions on its relay session, as an agent
+    // or a screen reader would: the relay issues the invitation, and
+    // cancelling it there takes it off the relay's pending list.
+    let target = net
+        .administered_room(room)
+        .expect("a relay of Ada's governs the room the session holds");
+    let token = net
+        .issue_relay_invitation(
+            &target,
+            &super::relay_rooms::RelayInvitation {
+                role: crate::network::invite::InviteRole::Viewer,
+                recipient: None,
+                invitee: Some("Grace"),
+                lifetime: 600,
+            },
+        )
+        .expect("the relay issues the invitation through the room's action");
+    assert!(!token.is_empty());
+    let pending = || {
+        runtime
+            .block_on(relay.rooms().unwrap().pending(&acme.room, &node))
+            .unwrap()
+    };
+    let issued = pending()
+        .into_iter()
+        .find(|invitation| invitation.invitee_name.as_deref() == Some("Grace"))
+        .expect("the relay holds the invitation it issued");
+    assert_eq!(issued.role, tilo_peer_state::join::MemberRole::Viewer);
+    assert!(
+        net.cancel_relay_invitation(room, issued.invite_id)
+            .expect("the relay cancels it through the room's action")
+    );
+    assert!(
+        !pending()
+            .iter()
+            .any(|invitation| invitation.invite_id == issued.invite_id),
+        "a cancelled invitation is no longer pending at the relay"
+    );
 
     // The browser announces no identity to the session, yet its actions
     // reach it as the room's governance admitted it: asking for the

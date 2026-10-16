@@ -17,6 +17,7 @@ path = "src/lib.rs"
 test-support = ["dep:iroh-relay"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 iroh.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"], optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

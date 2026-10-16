@@ -39,10 +39,14 @@ disallowed-methods = [
     { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
-    { path = "libc::flock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock", allow-invalid = true },
     { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
     # An AutoCommit logs a patch event per applied op even when nothing will
     # read it, and never drops them. Take changes in through tilo_automerge.
+    { path = "libc::geteuid", reason = "use rustix::process::geteuid().as_raw()", allow-invalid = true },
+    { path = "libc::getuid", reason = "use rustix::process::getuid().as_raw()", allow-invalid = true },
+    { path = "libc::getegid", reason = "use rustix::process::getegid().as_raw()", allow-invalid = true },
+    { path = "libc::getgid", reason = "use rustix::process::getgid().as_raw()", allow-invalid = true },
     { path = "automerge::AutoCommit::apply_changes", reason = "use tilo_automerge::ApplyIncoming::apply_incoming" },
     { path = "automerge::AutoCommit::apply_changes_batch", reason = "use tilo_automerge::ApplyIncoming::apply_incoming_batch" },
     { path = "automerge::AutoCommit::load_incremental", reason = "use tilo_automerge::ApplyIncoming::load_incoming" },

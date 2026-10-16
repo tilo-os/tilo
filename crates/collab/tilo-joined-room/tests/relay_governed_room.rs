@@ -17,19 +17,20 @@
 use collab_types::CommitNamed as _;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::rooms::{RoomAdminClient, RoomCommand, RoomReply};
+use tilo_relay::rooms::IssueInvitationRequest;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -55,6 +56,31 @@ fn certificate(
     };
     sign_device_cert(&mut cert, root).unwrap();
     cert
+}
+
+/// The text of an Editor's invitation to `room`, for `person` only, that
+/// the relay governing it issues for the room's owner `issuer`.
+async fn invite(relay: &Relay, issuer: &DeviceCert, room: &str, person: [u8; 32]) -> String {
+    let invitation = relay
+        .rooms()
+        .unwrap()
+        .issue(
+            room,
+            issuer,
+            IssueInvitationRequest {
+                request_id: person,
+                role: MemberRole::Editor,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    join::encode_invitation_text(&invitation.signed_invitation)
 }
 
 async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
@@ -206,9 +232,9 @@ impl Native {
 }
 
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)
@@ -248,36 +274,12 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
     .unwrap();
     let address = relay.node_addr();
 
-    // Alice's device creates the room on her relay, enters it and invites
-    // Bob's person.
-    let admin = RoomAdminClient::new(endpoint(&laptop_key).await, laptop.clone());
-    let room = admin
-        .create(address.clone(), "Design review")
-        .await
-        .unwrap();
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { .. }
-    ));
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(bob.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
-    let invitation = join::encode_invitation_text(&invitation.signed_invitation);
+    // Alice's room on her relay, her device in it as its owner's, and Bob's
+    // person invited.
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Design review").await.unwrap();
+    rooms.enter(&room.room, &laptop).await.unwrap();
+    let invitation = invite(&relay, &laptop, &room.room, bob.verifying_key().to_bytes()).await;
 
     // Bob's native device redeems it, installs the room and connects.
     let directory = tempfile::tempdir().unwrap();
@@ -439,29 +441,16 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
     )
     .await
     .unwrap();
-    let address = relay.node_addr();
-    let admin = RoomAdminClient::new(endpoint(&laptop_key).await, laptop.clone());
-    let room = admin.create(address.clone(), "Mine").await.unwrap();
-    admin
-        .send(
-            address.clone(),
-            RoomCommand::Enter {
-                room: room.room.clone(),
-            },
-        )
-        .await
-        .unwrap();
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(alice.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
-    let invitation = join::encode_invitation_text(&invitation.signed_invitation);
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Mine").await.unwrap();
+    rooms.enter(&room.room, &laptop).await.unwrap();
+    let invitation = invite(
+        &relay,
+        &laptop,
+        &room.room,
+        alice.verifying_key().to_bytes(),
+    )
+    .await;
     let directory = tempfile::tempdir().unwrap();
     let native = Native::join(
         directory.path(),

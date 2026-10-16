@@ -19,6 +19,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
@@ -42,6 +43,7 @@ registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-files = { path = "../../platform/tilo-files" }
+bounded-command = { path = "../../system/bounded-command" }
 # The portability rules table deserializes into typed rules.
 serde.workspace = true
 serde_json.workspace = true
@@ -62,6 +64,9 @@ workspace-hack = { version = "0.1" }
 serde_yaml = "0.9"
 tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
+# The outside-repository journey publishes into a real registry on loopback.
+registry-server = { path = "../../packaging/registry-server" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

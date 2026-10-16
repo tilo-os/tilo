@@ -39,14 +39,24 @@ use tilo_user_identity::DeviceCert;
 
 use crate::document::{ContentCipher, DocumentRoute};
 
-/// First and longest wait before a waiting member asks again.
-const REQUEST_FIRST_MS: u64 = 2_000;
+/// First and longest wait before a waiting member asks again. An answer
+/// takes the request's turn in the host's order and then the steward's
+/// change's: in a public room a crowd is joining, seconds. Every ask is two
+/// retained writes the host fans out to the whole room, so asking again
+/// before an answer could arrive only lengthened that wait.
+const REQUEST_FIRST_MS: u64 = 8_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
 /// The wait from which a member asks with a fresh key package: the host
 /// keeps only a channel's newest change, so an admission replaced before it
 /// reached this page is gone, and the steward answers the same request
-/// once.
-const REQUEST_FRESH_MS: u64 = 16_000;
+/// once. A replaced admission the page hears of (a later change of its
+/// channel) is asked about again at once (`MemberEvent::Desynchronised`);
+/// this wait is for one it never hears of. A fresh key package from a
+/// device the steward already admitted makes it remove the device and add
+/// it again, changes every member applies: asked after 16 s, in a crowd
+/// whose admissions took longer than that to arrive, it replaced them
+/// faster than they arrived.
+const REQUEST_FRESH_MS: u64 = 60_000;
 /// How long a member holds back acknowledging the changes it applied after
 /// joining. Acknowledgements are cumulative and only spare the steward
 /// redelivery, while every member of a busy channel acknowledging every
@@ -95,11 +105,13 @@ impl ContentCipher for KeysCipher {
 /// A governance message this device has to sign and send: the device key
 /// is in page custody, so signing happens in the session.
 pub(crate) enum Outgoing {
-    /// Ask the steward for access.
+    /// Ask the steward for access, naming the record the channel carries
+    /// so the steward can decide Read on it.
     Request {
         workspace_id: u64,
         room: String,
         request: MlsAccessRequestV1,
+        route: collab_types::ChannelRoute,
     },
     /// Acknowledge every frame applied so far.
     Ack {
@@ -747,6 +759,10 @@ impl Channels {
             workspace_id: route.workspace_id,
             room: route.document.cluster_id.clone(),
             request,
+            route: collab_types::ChannelRoute::new(
+                route.document.app_id.as_str(),
+                route.document.record.as_str(),
+            ),
         });
     }
 }

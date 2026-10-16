@@ -103,30 +103,70 @@ fn colours_code(kind: TokenKind) -> bool {
     )
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
-)]
-fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
+/// What one line of a code run is highlighted from: the run's language and
+/// every line up to and including it, since a line's colours depend on the
+/// parse state the lines above it leave (an open string or comment).
+struct SyntaxKeys(rustc_hash::FxHasher);
+
+impl SyntaxKeys {
+    fn new(language: &str) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        std::hash::Hasher::write(&mut hasher, language.as_bytes());
+        std::hash::Hasher::write_usize(&mut hasher, language.len());
+        Self(hasher)
+    }
+
+    fn line_key(&mut self, line: &str) -> u64 {
+        std::hash::Hasher::write(&mut self.0, line.as_bytes());
+        std::hash::Hasher::write_usize(&mut self.0, line.len());
+        std::hash::Hasher::finish(&self.0)
+    }
+}
+
+/// Colour each fenced code run by its grammar, and clear the colours of
+/// every other block. A run is highlighted again only when its language or
+/// one of its lines changed since its colours were derived: each line keeps
+/// the key it was coloured under, so an unchanged frame parses nothing.
+/// Returns how many lines were highlighted.
+fn refresh_syntax_colors(blocks: &mut [Block]) -> usize {
+    let mut highlighted = 0usize;
     let mut index = 0usize;
-    while index < blocks.len() {
-        let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
-            block.line.set_transient_colors(Vec::new());
+    while let Some(block) = blocks.get(index) {
+        let BlockKind::CodeBlock { lang } = &block.kind else {
+            if let Some(block) = blocks.get_mut(index) {
+                block.line.set_transient_colors(Vec::new());
+            }
             index = index.saturating_add(1);
             continue;
         };
-        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
-        while index < blocks.len()
-            && languages.get(index).and_then(Option::as_deref) == Some(language)
-            && blocks[start].same_code_group(&blocks[index])
+        let mut end = start.saturating_add(1);
+        while blocks
+            .get(end)
+            .is_some_and(|next| block.same_code_group(next))
         {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
+            end = end.saturating_add(1);
+        }
+        index = end;
+        let language = lang.as_deref().unwrap_or_default();
+        let Some(run) = blocks.get(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(language);
+        if run
+            .iter()
+            .all(|line| line.line.transient_colors_key() == Some(keys.line_key(line.text())))
+        {
+            continue;
+        }
+        let language = language.to_owned();
+        let Some(run) = blocks.get_mut(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(&language);
+        let mut state = SyntaxHighlighter::for_token_or_plain(&language).start();
+        for block in run {
+            let key = keys.line_key(block.text());
             let colors = state
                 .highlight_line(block.text())
                 .into_iter()
@@ -136,10 +176,11 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
                     kind: span.kind,
                 })
                 .collect();
-            block.line.set_transient_colors(colors);
-            index = index.saturating_add(1);
+            block.line.set_keyed_transient_colors(key, colors);
+            highlighted = highlighted.saturating_add(1);
         }
     }
+    highlighted
 }
 
 /// Each `CodeBlock` stores one authored source line. It may wrap visually;
@@ -462,14 +503,6 @@ pub struct TransclusionPreview {
     pub excerpt: String,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag tracks an independent, orthogonal piece of transient \
-              widget state (focus, paint-dirty, taffy-structure-dirty, \
-              edit-in-flight, commit-pending, doc-structure-dirty); merging \
-              them into a bitflags/enum would not change behavior and this \
-              struct is private to the module"
-)]
 struct ImageAttachment {
     source: String,
     editing: bool,
@@ -566,6 +599,14 @@ pub struct BlockEditor {
     font_scale: f32,
     #[cfg(test)]
     painted_blocks: usize,
+    /// Code lines syntax-highlighted, for tests that a frame derives
+    /// colours only for what changed.
+    #[cfg(test)]
+    highlighted_lines: usize,
+    /// Formula previews whose source text was joined, for tests that a
+    /// frame derives it only for what it paints.
+    #[cfg(test)]
+    formula_sources: usize,
     dirty: bool,
     paint_damage: crate::widget::paint_damage::PaintDamage,
     /// Where each line this draw painted past its own rect (a correction
@@ -652,6 +693,10 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
+    /// Edge-scroll timing of the handle drag, shared with every other
+    /// reorder gesture ([`crate::reorder`]): the pointer near the editor's
+    /// top or bottom edge asks the host to scroll.
+    block_drag_scroll: crate::reorder::ReorderController<usize>,
     /// Host clip in window coordinates, including the visible editor gutter.
     /// Tooltip discovery runs independently of paint clipping.
     tooltip_viewport: Option<Rect>,
@@ -672,12 +717,20 @@ pub struct BlockEditor {
     table_preview_rects: Vec<Option<Rect>>,
     table_editors: HashMap<String, crate::widget::block_editor_table::DocumentTable>,
     table_mode_controls: HashMap<String, TableModeControl>,
+    /// Each block's accessibility row as the last frame built it, by
+    /// position ([`Self::access_rows`]).
+    access_rows: std::cell::RefCell<Vec<Option<AccessRow>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
     /// Retain decoded dimensions even if the bounded image cache evicts pixels.
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
     image_attachments: HashMap<String, ImageAttachment>,
+    /// Height of the host's visible document area, which bounds an image
+    /// preview (see [`Self::set_viewport_height`]).
+    viewport_height: Option<f64>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
@@ -800,6 +853,10 @@ impl BlockEditor {
             font_scale: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
+            #[cfg(test)]
+            highlighted_lines: 0,
+            #[cfg(test)]
+            formula_sources: 0,
             dirty: true,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
             line_overhang: HashMap::new(),
@@ -834,6 +891,7 @@ impl BlockEditor {
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
+            block_drag_scroll: crate::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
             local_author: None,
@@ -843,9 +901,13 @@ impl BlockEditor {
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
             table_mode_controls: HashMap::new(),
+            access_rows: std::cell::RefCell::new(Vec::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            access_row_builds: std::cell::Cell::new(0),
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
+            viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
@@ -917,6 +979,18 @@ impl BlockEditor {
     /// window-coordinate clip as painting (including the handle gutter).
     pub fn set_tooltip_viewport(&mut self, viewport: Option<Rect>) {
         self.tooltip_viewport = viewport;
+    }
+
+    /// The height of the host's visible document area (a scrolling host's
+    /// viewport, not the editor's content extent). An image preview is
+    /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
+    /// picture leaves room to see and drag past it. Hosts refresh it before
+    /// layout; returns whether it changed, so a host can lay out again.
+    pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
+        let height = height.filter(|height| height.is_finite() && *height > 0.0);
+        let changed = self.viewport_height != height;
+        self.viewport_height = height;
+        changed
     }
 
     pub fn empty_hint(&self) -> &str {
@@ -1203,7 +1277,7 @@ impl BlockEditor {
                 table.blur_projection();
             }
         }
-        if !focused && self.block_drag.take().is_some() {
+        if !focused && self.take_block_drag().is_some() {
             self.dirty = true;
         }
         if focused == self.is_focused {
@@ -3151,6 +3225,578 @@ impl BlockEditor {
         true
     }
 
+    /// [`Widget::accessibility_shared`], with `control` added to every
+    /// block's row. Each row is the one of the last frame while nothing it
+    /// is built from changed ([`Self::access_rows`]), so a keystroke builds
+    /// the row of the block it typed into, not the document's.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
+    )]
+    pub fn accessibility_shared_with(
+        &self,
+        control: Option<&RowControl<'_>>,
+    ) -> Option<crate::a11y::SharedAccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<AccessNode> = self
+            .formula_chrome
+            .iter()
+            .enumerate()
+            .filter_map(|(start, chrome)| {
+                let chrome = chrome.as_ref()?;
+                let syntax = match chrome.descriptor.syntax {
+                    crate::math::FormulaSyntax::Tex => "TeX",
+                    crate::math::FormulaSyntax::Typst => "Typst",
+                };
+                let source = self
+                    .blocks
+                    .get(start..=chrome.end)?
+                    .iter()
+                    .map(Block::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(
+                    AccessNode::new(Role::Group)
+                        .with_name(format!("{syntax} formula"))
+                        .with_hashed_key(format!("notes.formula:{}", self.blocks.get(start)?.id))
+                        .with_value(source)
+                        .with_children(vec![
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Source editor")
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                )),
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Visual editor")
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                )),
+                        ]),
+                )
+            })
+            .collect();
+        children.extend(
+            self.code_copy_hits
+                .iter()
+                .filter_map(|(bounds, start, end)| {
+                    let run = self.blocks.get(*start..=*end)?;
+                    let language = run.first().and_then(|block| match &block.kind {
+                        BlockKind::CodeBlock { lang } => lang.as_deref(),
+                        _ => None,
+                    });
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(language.map_or_else(
+                                || "Copy code".to_string(),
+                                |lang| format!("Copy {lang} code"),
+                            ))
+                            .with_action_target(self.code_copy_run_target(*start, *end)?)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState::new().focusable(true)),
+                    )
+                }),
+        );
+        if self.find_visible {
+            if let Some(search) = self.find_field.accessibility() {
+                children.push(
+                    search
+                        .with_name(crate::i18n!("block-editor-find-placeholder"))
+                        .with_action_target("notes.find:query"),
+                );
+            }
+            if self.replace_enabled {
+                if let Some(field) = self.replace_field.accessibility() {
+                    children.push(
+                        field
+                            .with_name(crate::i18n!("block-editor-replace-placeholder"))
+                            .with_action_target("notes.find:replacement"),
+                    );
+                }
+                if let Some(button) = self.replace_all_button.accessibility() {
+                    children.push(
+                        button
+                            .with_action_target("notes.find:replace-all")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!self.can_replace_all()),
+                            ),
+                    );
+                }
+                if let Some(button) = self.replace_button.accessibility() {
+                    children.push(
+                        button.with_action_target("notes.find:replace").with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(self.find_replace_request().is_none()),
+                        ),
+                    );
+                }
+            }
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-previous"))
+                    .with_action_target("notes.find:previous")
+                    .with_bounds(self.find_previous_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-next"))
+                    .with_action_target("notes.find:next")
+                    .with_bounds(self.find_next_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("block-editor-find-close"))
+                    .with_action_target("notes.find:close")
+                    .with_bounds(self.find_close_rect)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        let mut children: Vec<std::sync::Arc<AccessNode>> =
+            children.into_iter().map(std::sync::Arc::new).collect();
+        children.extend(self.access_rows(control));
+        if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
+            fn namespace_targets(node: &mut AccessNode) {
+                if let Some(target) = node.action_target.take() {
+                    node.action_target = Some(format!("notes.slash-menu:{target}"));
+                }
+                for child in &mut node.children {
+                    namespace_targets(child);
+                }
+            }
+            namespace_targets(&mut menu);
+            menu.semantic_key = Some("notes.slash-menu".into());
+            menu.bounds = Some(self.slash_menu.get_rect().into());
+            children.push(std::sync::Arc::new(menu));
+        }
+        Some(crate::a11y::SharedAccessNode {
+            node: AccessNode::new(Role::Document)
+                .with_description(
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
+                )
+                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true)),
+            children,
+        })
+    }
+
+    /// Every block's row of the accessibility tree, in order. A row whose
+    /// block has no table, image or embedded note is the very row of the
+    /// last frame while everything it is built from is the same
+    /// ([`AccessRowInputs`]); only the others are built. Debug builds build
+    /// the kept rows too and prove them equal, as the App proves a tree it
+    /// did not walk.
+    fn access_rows(
+        &self,
+        control: Option<&RowControl<'_>>,
+    ) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
+        let total = self.blocks.len();
+        let selected_blocks = self
+            .retained_block_selection
+            .as_ref()
+            .and_then(|_| self.selected_block_range());
+        // Every block's controls carry the same labels: look each up once,
+        // not once per block per frame.
+        let labels = AccessRowContext {
+            change_type: crate::i18n!("block-editor-change-type"),
+            text: crate::i18n::I18nManager::lookup("widget-block-text", None),
+            indent: crate::i18n::I18nManager::lookup("widget-block-indent", None),
+            outdent: crate::i18n::I18nManager::lookup("widget-block-outdent", None),
+            revision: crate::i18n::I18nManager::revision(),
+            control,
+        };
+        let mut kept = self.access_rows.borrow_mut();
+        kept.resize_with(total, || None);
+        self.blocks
+            .iter()
+            .zip(kept.iter_mut())
+            .enumerate()
+            .map(|(index, (block, slot))| {
+                let selected = selected_blocks
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&index));
+                let inputs = self.access_row_inputs(index, block, total, selected, &labels);
+                let plain = self.access_row_is_plain(block);
+                if plain
+                    && let Some(row) = slot.as_ref().filter(|row| row.inputs == inputs)
+                    && self.kept_access_row_holds(row, index, block, &inputs, &labels)
+                {
+                    return row.node.clone();
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                self.access_row_builds
+                    .set(self.access_row_builds.get().wrapping_add(1));
+                let node = std::sync::Arc::new(self.access_row(index, block, &inputs, &labels));
+                match slot {
+                    Some(row) if plain => {
+                        row.inputs.update(inputs);
+                        row.node = node.clone();
+                    }
+                    _ => {
+                        *slot = plain.then(|| AccessRow {
+                            inputs: inputs.into_owned(),
+                            node: node.clone(),
+                        });
+                    }
+                }
+                node
+            })
+            .collect()
+    }
+
+    /// The block rows [`Self::access_rows`] built rather than kept, since
+    /// the editor was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_row_builds_for_test(&self) -> usize {
+        self.access_row_builds.get()
+    }
+
+    /// Whether `block`'s row is built from its [`AccessRowInputs`] alone:
+    /// no table, image or embedded note, whose parts read the editor's
+    /// controls, previews and geometry for them.
+    fn access_row_is_plain(&self, block: &Block) -> bool {
+        !matches!(block.kind, BlockKind::Table { .. })
+            && !self.image_attachments.contains_key(&block.id)
+            && transclusion_target(block).is_none()
+            && standalone_markdown_image(block.text()).is_none()
+    }
+
+    /// Whether the row kept for `block` is the row it would build now.
+    /// Release builds trust its inputs; debug builds build it and compare,
+    /// failing a test outright where they differ and rebuilding it (and
+    /// logging) in any other debug build, so a row is never stale where it
+    /// can be seen.
+    fn kept_access_row_holds(
+        &self,
+        row: &AccessRow,
+        index: usize,
+        block: &Block,
+        inputs: &AccessRowInputs<'_>,
+        labels: &AccessRowContext<'_>,
+    ) -> bool {
+        if !cfg!(debug_assertions) {
+            return true;
+        }
+        let fresh = self.access_row(index, block, inputs, labels);
+        let holds = fresh == *row.node;
+        assert!(
+            holds || !cfg!(any(test, feature = "test-support")),
+            "block {} changed its accessibility row with nothing it is kept by changing: kept {:?}, built {fresh:?}",
+            block.id,
+            row.node,
+        );
+        if !holds {
+            tracing::error!(
+                block = %block.id,
+                "a block changed its accessibility row with nothing it is kept by changing"
+            );
+        }
+        holds
+    }
+
+    /// What block `index`'s row is built from.
+    fn access_row_inputs<'a>(
+        &self,
+        index: usize,
+        block: &'a Block,
+        total: usize,
+        selected: bool,
+        labels: &AccessRowContext<'_>,
+    ) -> AccessRowInputs<'a> {
+        let line = block.line.get_rect();
+        AccessRowInputs {
+            id: std::borrow::Cow::Borrowed(&block.id),
+            kind: std::borrow::Cow::Borrowed(&block.kind),
+            text: std::borrow::Cow::Borrowed(block.text()),
+            marks: std::borrow::Cow::Borrowed(block.line.marks()),
+            line_state: block.line.accessibility_state(),
+            indent: block.indent(),
+            line,
+            controls: self.block_drag_handle_rect(index).unwrap_or(line),
+            position: index.saturating_add(1),
+            total,
+            selected,
+            up_disabled: self.neighboring_group(index, true).is_none(),
+            down_disabled: self.neighboring_group(index, false).is_none(),
+            indent_disabled: self
+                .blocks
+                .get(self.movable_group(index))
+                .is_some_and(|group| group.iter().any(|block| block.indent() >= MAX_LIST_INDENT)),
+            labels: labels.revision,
+            control: labels.control.map(|control| control.key),
+        }
+    }
+
+    /// Block `index`'s row of the accessibility tree: a group holding its
+    /// text, its controls and its parts (a table, an image, an embedded
+    /// note, its links), built from `inputs` and, for those parts, the
+    /// editor's state for them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one block's row and every part it can hold, emitted in reading order"
+    )]
+    fn access_row(
+        &self,
+        index: usize,
+        block: &Block,
+        inputs: &AccessRowInputs<'_>,
+        labels: &AccessRowContext<'_>,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let AccessRowInputs {
+            indent,
+            line,
+            controls: bounds,
+            position,
+            total,
+            selected,
+            up_disabled,
+            down_disabled,
+            indent_disabled,
+            ..
+        } = *inputs;
+        let mut block_children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Move block up")
+                .with_action_target(Self::block_move_target(&block.id, "up"))
+                .with_bounds(bounds)
+                .with_state(
+                    AccessState::new()
+                        .focusable(!up_disabled)
+                        .disabled(up_disabled),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Move block down")
+                .with_action_target(Self::block_move_target(&block.id, "down"))
+                .with_bounds(bounds)
+                .with_state(
+                    AccessState::new()
+                        .focusable(!down_disabled)
+                        .disabled(down_disabled),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name(labels.change_type.clone())
+                .with_action_target(format!("notes.block-type:{}", block.id))
+                .with_bounds(bounds)
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        if block.kind.is_editable()
+            && line.height() > 0.0
+            && let Some(text) = block.line.accessibility()
+        {
+            block_children.insert(
+                0,
+                text.with_name(labels.text.clone())
+                    .with_action_target(format!("notes.block-text:{}", block.id))
+                    .with_bounds(line),
+            );
+        }
+        for (direction, label, disabled) in [
+            ("in", &labels.indent, indent_disabled),
+            ("out", &labels.outdent, indent == 0),
+        ] {
+            block_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(label.clone())
+                    .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
+                    .with_bounds(bounds)
+                    .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
+            );
+        }
+        if let Some(target) = transclusion_target(block) {
+            let name = self
+                .transclusion_previews
+                .get(&target)
+                .map_or("embedded note", |preview| preview.title.as_str());
+            let card_bounds = self
+                .transclusion_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .map_or(line, |(rect, _)| rect);
+            block_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Open embedded note: {name}"))
+                    .with_description("Live preview of a linked note")
+                    .with_action_target(transclusion_action_target(target))
+                    .with_bounds(card_bounds)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        if matches!(block.kind, BlockKind::Table { .. }) {
+            if let Some(control) = self.table_mode_controls.get(&block.id)
+                && let Some(mut button) = control.button.accessibility()
+            {
+                button = button
+                    .with_bounds(control.button.get_rect())
+                    .with_action_target(format!("notes.table-mode:{}", block.id));
+                block_children.push(button);
+                for (prefix, button) in [
+                    ("notes.table-add-row", &control.add_row),
+                    ("notes.table-add-column", &control.add_column),
+                ] {
+                    if let Some(node) = button.accessibility() {
+                        block_children.push(
+                            node.with_bounds(button.get_rect())
+                                .with_action_target(format!("{prefix}:{}", block.id)),
+                        );
+                    }
+                }
+            }
+            let table_bounds = self
+                .table_preview_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .unwrap_or(line);
+            let headers = markdown_table_data_rows(block.text())
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let rows = markdown_table_data_rows(block.text())
+                .into_iter()
+                .enumerate()
+                .map(|(row_index, row)| {
+                    let cells = row
+                        .into_iter()
+                        .enumerate()
+                        .map(|(column_index, value)| {
+                            let target =
+                                format!("notes.table-cell:{}:{row_index}:{column_index}", block.id);
+                            let mut input = AccessNode::new(Role::MultilineTextInput)
+                                .with_name(decode_table_cell(
+                                    headers.get(column_index).copied().unwrap_or(""),
+                                ))
+                                .with_value(decode_table_cell(value))
+                                .with_action_target(target)
+                                .with_state(AccessState::new().focusable(true));
+                            if let Some(rect) = self
+                                .table_editors
+                                .get(&block.id)
+                                .and_then(|table| table.projected_rect(row_index, column_index))
+                            {
+                                input = input.with_bounds(rect);
+                            }
+                            AccessNode::new(Role::Cell)
+                                .with_name(if row_index == 0 {
+                                    format!("Column {}", column_index.saturating_add(1))
+                                } else {
+                                    format!(
+                                        "Cell {}, {}",
+                                        row_index,
+                                        column_index.saturating_add(1)
+                                    )
+                                })
+                                .with_description(decode_table_cell(
+                                    headers.get(column_index).copied().unwrap_or(""),
+                                ))
+                                .with_value(decode_table_cell(value))
+                                .with_children(vec![input])
+                        })
+                        .collect();
+                    AccessNode::new(Role::Row)
+                        .with_name(if row_index == 0 {
+                            "Header row".to_string()
+                        } else {
+                            format!("Row {row_index}")
+                        })
+                        .with_children(cells)
+                })
+                .collect();
+            block_children.push(
+                AccessNode::new(Role::Table)
+                    .with_name("Markdown table")
+                    .with_value(block.text())
+                    .with_bounds(table_bounds)
+                    .with_children(rows),
+            );
+        }
+        if let Some(image) = self.image_attachments.get(&block.id) {
+            if let Some(button) = image.button().accessibility() {
+                block_children.push(
+                    button
+                        .with_bounds(image.button().get_rect())
+                        .with_action_target(format!(
+                            "notes.image-{}:{}",
+                            if image.editing { "done" } else { "edit" },
+                            block.id
+                        )),
+                );
+            }
+            if image.editing {
+                block_children.push(
+                    AccessNode::new(Role::MultilineTextInput)
+                        .with_name(crate::i18n!("notes-image-source"))
+                        .with_value(block.text())
+                        .with_action_target(format!("notes.image-source:{}", block.id))
+                        .with_bounds(line)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(block.line.is_focused()),
+                        ),
+                );
+            }
+        }
+        if let Some((alt, destination)) = self
+            .image_attachments
+            .get(&block.id)
+            .and_then(|image| standalone_markdown_image(&image.source))
+            .or_else(|| standalone_markdown_image(block.text()))
+        {
+            let bounds = self
+                .image_preview_rects
+                .get(index)
+                .and_then(|entry| *entry)
+                .unwrap_or(line);
+            block_children.push(
+                AccessNode::new(Role::Image)
+                    .with_name(if alt.is_empty() { "Image" } else { alt })
+                    .with_description(destination)
+                    .with_bounds(bounds),
+            );
+        }
+        for span in block.line.marks() {
+            let (name, target) = match &span.mark {
+                Mark::Link(id) if !id.is_nil() => {
+                    ("Open linked note".to_string(), page_link_action_target(*id))
+                }
+                Mark::ExternalLink(url) => (
+                    "Open external link".to_string(),
+                    external_link_action_target(url),
+                ),
+                _ => continue,
+            };
+            block_children.push(
+                AccessNode::new(Role::Link)
+                    .with_name(name)
+                    .with_value(block.text().get(span.range.clone()).unwrap_or_default())
+                    .with_action_target(target)
+                    .with_bounds(line)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        if let Some(control) = labels.control {
+            block_children.push((control.build)(&block.id, line));
+        }
+        let level = usize::from(indent).saturating_add(1);
+        let group = AccessNode::new(Role::Group)
+            .with_name(format!(
+                "{} block {position}",
+                accessible_kind_name(&block.kind)
+            ))
+            .with_semantic_key(format!("notes.block:{}", block.id))
+            .with_state(AccessState::new().selected(selected))
+            .with_hashed_key(format!("notes.block:group:{}", block.id))
+            .with_position(position, total)
+            .with_level(level)
+            .with_bounds(line)
+            .with_children(block_children);
+        // Also in words, which every screen reader reads: the platform
+        // bridge does not carry a group's level.
+        if level > 1 {
+            group.with_description(format!("Level {level}"))
+        } else {
+            group
+        }
+    }
+
     fn block_move_target(block_id: &str, direction: &str) -> String {
         format!("notes.block-move:{block_id}:{direction}")
     }
@@ -3345,15 +3991,23 @@ impl BlockEditor {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
         let mut painted = Vec::new();
-        for index in 0..self.blocks.len() {
+        // At most three blocks show a handle: the dragged one, the caret's and
+        // the hovered one. Only those are measured.
+        let mut shown = [
+            self.block_drag.map(|drag| drag.source),
+            self.focused.filter(|_| self.is_focused),
+            hovered,
+        ];
+        shown.sort_unstable();
+        let mut previous = None;
+        for index in shown.into_iter().flatten() {
+            if previous.replace(index) == Some(index) {
+                continue;
+            }
             let Some(handle) = self.block_drag_handle_rect(index) else {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
-            let contains_caret = self.is_focused && self.focused == Some(index);
-            if !active && !contains_caret && hovered != Some(index) {
-                continue;
-            }
             painted.push(handle);
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
@@ -3490,6 +4144,51 @@ impl BlockEditor {
         true
     }
 
+    /// End the handle drag, whatever ends it.
+    fn take_block_drag(&mut self) -> Option<BlockDrag> {
+        self.block_drag_scroll.cancel();
+        self.block_drag.take()
+    }
+
+    /// Whether a block is being dragged by its handle (past the click
+    /// threshold). Such a drag near the edge of the editor's visible area
+    /// needs [`Self::tick_block_drag`] every frame.
+    pub fn block_drag_active(&self) -> bool {
+        self.block_drag.is_some_and(|drag| drag.active)
+    }
+
+    /// How far the host should scroll its document, in logical pixels
+    /// (positive is down), for the `elapsed` since the last tick: nonzero
+    /// while the pointer of an active block drag is in the edge band of
+    /// `viewport`, faster the closer to the edge. The editor does not own
+    /// its scrolling; the host scrolls, lays the editor out again and the
+    /// drop target follows the pointer ([`Self::retarget_block_drag`] runs
+    /// with that layout).
+    pub fn tick_block_drag(&mut self, viewport: Rect, elapsed: crate::time::Duration) -> f64 {
+        if !self.block_drag_active() {
+            return 0.0;
+        }
+        self.block_drag_scroll
+            .tick(viewport, elapsed, crate::time::now())
+            .scroll_delta
+    }
+
+    /// Point the active drag's drop target at the block under the pointer,
+    /// now that the blocks have moved under it (the host scrolled).
+    pub fn retarget_block_drag(&mut self) {
+        let y = self.last_mouse_pos.y;
+        let Some(mut drag) = self.block_drag.filter(|drag| drag.active) else {
+            return;
+        };
+        if let Some(target) = self.block_at_y(y)
+            && target != drag.target
+        {
+            drag.target = target;
+            self.block_drag = Some(drag);
+            self.dirty = true;
+        }
+    }
+
     /// Complete or cancel a handle drag before normal text routing sees its
     /// terminal event. A cancelled drag never changed the projection; a drop
     /// is immediately captured by the semantic action bridge.
@@ -3506,7 +4205,7 @@ impl BlockEditor {
             }
         );
         if (escape || matches!(event, WindowEvent::Focused(false)))
-            && self.block_drag.take().is_some()
+            && self.take_block_drag().is_some()
         {
             *ctx.handled = true;
             self.dirty = true;
@@ -3520,7 +4219,7 @@ impl BlockEditor {
                 ..
             }
         );
-        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
+        let Some(drag) = released.then(|| self.take_block_drag()).flatten() else {
             return false;
         };
         if drag.active {
@@ -4061,9 +4760,17 @@ impl BlockEditor {
         Some((start, end))
     }
 
-    fn refresh_live_link_hits(&mut self, theme: &Theme) {
+    /// The links of the blocks this frame `painted`: a link off screen has
+    /// no geometry anyone can point at, and its line's shaped positions may
+    /// be from an earlier frame.
+    fn refresh_live_link_hits(&mut self, theme: &Theme, painted: &[bool]) {
         self.live_link_hits.clear();
-        for block in &self.blocks {
+        for (block, _) in self
+            .blocks
+            .iter()
+            .zip(painted)
+            .filter(|(_, painted)| **painted)
+        {
             let line = &block.line;
             for span in line.marks() {
                 let target = match &span.mark {
@@ -4119,6 +4826,29 @@ impl BlockEditor {
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
         self.edit_pending = true;
+    }
+
+    /// Where the caret is in the document, for a host that keeps it in
+    /// view while editing: the focused block's caret, never an open
+    /// overlay's field (the slash menu, a link popover, find), whose own
+    /// rect says nothing about where the person is writing.
+    pub fn document_caret_rect(&self) -> Option<Rect> {
+        let block = self.blocks.get(self.focused?)?;
+        if self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing)
+        {
+            return None;
+        }
+        if let Some(rect) = self
+            .table_editors
+            .get(&block.id)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
+        {
+            return Some(rect);
+        }
+        Widget::ime_cursor_rect(&block.line)
     }
 
     /// So the host can avoid stealing focus from the popover.
@@ -4674,6 +5404,119 @@ struct TablePreviewLayout {
     cell_heights: Vec<Vec<f64>>,
 }
 
+/// One block's row of the editor's accessibility tree as the last frame
+/// built it, and what it was built from.
+struct AccessRow {
+    inputs: AccessRowInputs<'static>,
+    node: std::sync::Arc<crate::a11y::AccessNode>,
+}
+
+/// Everything a plain block's accessibility row is built from
+/// ([`BlockEditor::access_row_is_plain`]): while these are the same, so is
+/// the row. Compared in order, the geometry a scroll moves first and the
+/// text last.
+#[derive(Debug, PartialEq)]
+struct AccessRowInputs<'a> {
+    line: Rect,
+    /// Where its controls are: its drag handle, or its line without one.
+    controls: Rect,
+    position: usize,
+    total: usize,
+    selected: bool,
+    up_disabled: bool,
+    down_disabled: bool,
+    indent_disabled: bool,
+    indent: u8,
+    /// The revision of the translations its labels were looked up in.
+    labels: u64,
+    /// The key of the control its host adds to it ([`RowControl`]).
+    control: Option<u64>,
+    /// The text node's state and selection.
+    line_state: crate::widget::text_input::TextAccessibilityState,
+    kind: std::borrow::Cow<'a, BlockKind>,
+    id: std::borrow::Cow<'a, str>,
+    text: std::borrow::Cow<'a, str>,
+    /// Its links.
+    marks: std::borrow::Cow<'a, [MarkSpan]>,
+}
+
+impl AccessRowInputs<'_> {
+    fn into_owned(self) -> AccessRowInputs<'static> {
+        use std::borrow::Cow;
+        AccessRowInputs {
+            id: Cow::Owned(self.id.into_owned()),
+            kind: Cow::Owned(self.kind.into_owned()),
+            text: Cow::Owned(self.text.into_owned()),
+            marks: Cow::Owned(self.marks.into_owned()),
+            line_state: self.line_state,
+            indent: self.indent,
+            line: self.line,
+            controls: self.controls,
+            position: self.position,
+            total: self.total,
+            selected: self.selected,
+            up_disabled: self.up_disabled,
+            down_disabled: self.down_disabled,
+            indent_disabled: self.indent_disabled,
+            labels: self.labels,
+            control: self.control,
+        }
+    }
+}
+
+impl AccessRowInputs<'static> {
+    /// Become `inputs`, keeping the id, kind, text and marks already held
+    /// where they are the same: a row a scroll moved copies no text.
+    fn update(&mut self, inputs: AccessRowInputs<'_>) {
+        use std::borrow::Cow;
+        if self.id != inputs.id {
+            self.id = Cow::Owned(inputs.id.into_owned());
+        }
+        if self.kind != inputs.kind {
+            self.kind = Cow::Owned(inputs.kind.into_owned());
+        }
+        if self.text != inputs.text {
+            self.text = Cow::Owned(inputs.text.into_owned());
+        }
+        if self.marks != inputs.marks {
+            self.marks = Cow::Owned(inputs.marks.into_owned());
+        }
+        self.line_state = inputs.line_state;
+        self.indent = inputs.indent;
+        self.line = inputs.line;
+        self.controls = inputs.controls;
+        self.position = inputs.position;
+        self.total = inputs.total;
+        self.selected = inputs.selected;
+        self.up_disabled = inputs.up_disabled;
+        self.down_disabled = inputs.down_disabled;
+        self.indent_disabled = inputs.indent_disabled;
+        self.labels = inputs.labels;
+        self.control = inputs.control;
+    }
+}
+
+/// What every block row of one frame shares: its controls' labels, looked
+/// up once a frame, and the control a host adds to each row.
+struct AccessRowContext<'a> {
+    change_type: String,
+    text: String,
+    indent: String,
+    outdent: String,
+    revision: u64,
+    control: Option<&'a RowControl<'a>>,
+}
+
+/// A control a host adds to every block's accessibility row (a rich-text
+/// surface's Duplicate button), built with the row and kept with it.
+pub struct RowControl<'a> {
+    /// Everything the control is built from but the block's id and its
+    /// row's bounds: a kept row keeps its control while this is the same.
+    pub key: u64,
+    /// The control of the block with this id, whose row has these bounds.
+    pub build: &'a dyn Fn(&str, Rect) -> crate::a11y::AccessNode,
+}
+
 struct TableModeControl {
     button: crate::widget::Button,
     requested: std::rc::Rc<std::cell::Cell<bool>>,
@@ -5069,7 +5912,7 @@ fn draw_formula_preview(
             "Type a formula above to preview it",
             12.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+            transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
             None,
         );
         return;
@@ -5113,7 +5956,7 @@ fn draw_formula_preview(
             &message,
             11.0,
             theme.tokens.colors.text_dim,
-            translated(transform, rect.x0 + 6.0, rect.y1 - 15.0),
+            transform.pre_translate((rect.x0 + 6.0, rect.y1 - 15.0).into()),
             None,
         );
     }
@@ -5145,11 +5988,8 @@ fn draw_formula_chrome(
         syntax,
         11.0,
         colors.text_primary,
-        translated(
-            transform,
-            chrome.syntax_badge.x0 + 7.0,
-            chrome.syntax_badge.y0 + 5.0,
-        ),
+        transform
+            .pre_translate((chrome.syntax_badge.x0 + 7.0, chrome.syntax_badge.y0 + 5.0).into()),
         None,
     );
     for (rect, label, selected) in [
@@ -5183,7 +6023,7 @@ fn draw_formula_chrome(
             } else {
                 colors.text_dim
             },
-            translated(transform, rect.x0 + 7.0, rect.y0 + 5.0),
+            transform.pre_translate((rect.x0 + 7.0, rect.y0 + 5.0).into()),
             None,
         );
     }
@@ -6287,17 +7127,6 @@ impl BlockEditor {
     }
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -6432,7 +7261,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                             ctx.scene,
                             label,
                             ctx.theme.tokens.colors.text_primary,
-                            translated(ctx.transform, x, y),
+                            ctx.transform.pre_translate((x, y).into()),
                             width,
                             &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
                         );
@@ -6442,7 +7271,8 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                         ctx.scene,
                         value,
                         ctx.theme.tokens.colors.text_primary,
-                        translated(ctx.transform, x, y + label_height + 4.0 * scale),
+                        ctx.transform
+                            .pre_translate((x, y + label_height + 4.0 * scale).into()),
                         width,
                         &TextStyle::new(14.0),
                     );
@@ -6519,7 +7349,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                     ctx.scene,
                     value,
                     ctx.theme.tokens.colors.text_primary,
-                    translated(ctx.transform, x, y),
+                    ctx.transform.pre_translate((x, y).into()),
                     Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
                     &TextStyle::new(14.0).with_weight(if row_index == 0 {
                         crate::text_render::TextWeight::Bold
@@ -6533,6 +7363,18 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
+/// The share of the host's visible height an image preview may take at
+/// most, aspect kept: a large picture never fills the editor.
+pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
+
+/// The largest rect of the picture's aspect inside `rect`, centred.
+fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
+    let ratio =
+        (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
+    let size = (f64::from(width) * ratio, f64::from(height) * ratio);
+    Rect::from_center_size(rect.center(), size)
+}
+
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -6542,7 +7384,13 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
     let scale = f64::from(ctx.theme.text_scale);
     let radius = 8.0 * scale;
-    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
+    let image = ctx.image_store.and_then(|store| store.get(destination));
+    // A preview capped to the viewport is narrower than the column: the
+    // plate hugs the picture rather than letterboxing it.
+    let plate = image.as_ref().map_or(rect, |image| {
+        fitted_image_rect(rect, (image.width, image.height))
+    });
+    let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
@@ -6550,13 +7398,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         None,
         &shape,
     );
-    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
-        let ratio = (rect.width() / f64::from(image.width).max(1.0))
-            .min(rect.height() / f64::from(image.height).max(1.0));
-        let width = f64::from(image.width) * ratio;
-        let height = f64::from(image.height) * ratio;
-        let fitted = Rect::from_center_size(rect.center(), (width, height));
-        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, fitted, &image, 0.0);
+    if let Some(image) = image {
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -6592,11 +7435,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene,
         label,
         ctx.theme.tokens.colors.text_primary,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 18.0 * scale,
-        ),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 18.0 * scale).into()),
         Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
         &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
@@ -6605,11 +7445,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         destination,
         13.0,
         ctx.theme.tokens.colors.text_dim,
-        translated(
-            ctx.transform,
-            rect.x0 + 58.0 * scale,
-            rect.y0 + 42.0 * scale,
-        ),
+        ctx.transform
+            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
         Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
@@ -6879,7 +7716,7 @@ fn draw_transclusion_card(
         scene,
         &title,
         ink.ink,
-        translated(transform, title_x, title_y),
+        transform.pre_translate((title_x, title_y).into()),
         None,
         &title_style,
     );
@@ -6889,11 +7726,7 @@ fn draw_transclusion_card(
         scene,
         &excerpt,
         ink.ink_dim,
-        translated(
-            transform,
-            title_x,
-            title_y + title_h + f64::from(tokens.spacing.s1),
-        ),
+        transform.pre_translate((title_x, title_y + title_h + f64::from(tokens.spacing.s1)).into()),
         None,
         &excerpt_style,
     );
@@ -6945,7 +7778,7 @@ fn draw_numbered_prefix(
         &label,
         font_size,
         ctx.theme.tokens.colors.text_primary,
-        translated(ctx.transform, origin.x, origin.y),
+        ctx.transform.pre_translate((origin.x, origin.y).into()),
         None,
     );
 }
@@ -7197,6 +8030,13 @@ impl Widget for BlockStackLeaf {
         self.editor().is_some_and(Widget::layout_needs_measure)
     }
 
+    /// Its size is the editor's stack, so it can change only when the editor
+    /// reports a change (a leaf would otherwise always claim one).
+    fn is_layout_dirty(&self) -> bool {
+        self.editor()
+            .is_some_and(|editor| editor.is_layout_dirty() || editor.layout_needs_measure())
+    }
+
     fn name(&self) -> &'static str {
         "BlockStack"
     }
@@ -7290,6 +8130,11 @@ impl BlockEditor {
                     || standalone_markdown_image(block.text()).is_some()
             })
             .collect();
+        let max_image_height = self.viewport_height.map(|height| {
+            crate::num::u32_of_i64(crate::num::i64_of_f64(
+                (height * IMAGE_VIEWPORT_FRACTION).round(),
+            ))
+        });
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -7299,6 +8144,7 @@ impl BlockEditor {
                 Some(dimensions) => super::rich_text_line::ImagePreview::Present {
                     dimensions,
                     editing: image.is_some_and(|image| image.editing),
+                    max_height: max_image_height,
                 },
                 None => super::rich_text_line::ImagePreview::Absent,
             });
@@ -7596,7 +8442,6 @@ impl Widget for BlockEditor {
     }
 
     #[allow(
-        clippy::too_many_lines,
         clippy::cast_possible_truncation,
         reason = "the five-pass widget contract builds the editor's layout nodes in one pass with finite pixel dimensions"
     )]
@@ -7968,7 +8813,9 @@ impl Widget for BlockEditor {
             } else {
                 ""
             };
-            block.line.inner_mut().set_placeholder(hint);
+            if block.line.inner().placeholder() != hint {
+                block.line.inner_mut().set_placeholder(hint);
+            }
             // New lines (a split, a paste) take the editor's alignment too.
             if block.line.align() != self.text_align {
                 block.line.set_align(self.text_align);
@@ -7977,19 +8824,20 @@ impl Widget for BlockEditor {
 
         let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
+        // Syntax colours are derived per change, not per frame; an unchanged
+        // run keeps the colours it has.
+        let highlighted = refresh_syntax_colors(&mut self.blocks);
+        #[cfg(test)]
+        {
+            self.highlighted_lines = self.highlighted_lines.saturating_add(highlighted);
+        }
+        #[cfg(not(test))]
+        let _ = highlighted;
+
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
         let ordinals = numbered_ordinals(&self.blocks);
-        let code_languages: Vec<Option<String>> = self
-            .blocks
-            .iter()
-            .map(|block| match &block.kind {
-                BlockKind::CodeBlock { lang } => Some(lang.clone().unwrap_or_default()),
-                _ => None,
-            })
-            .collect();
-        apply_syntax_colors(&mut self.blocks, &code_languages);
         let mut run_start = 0;
         let code_runs = self
             .blocks
@@ -8005,58 +8853,6 @@ impl Widget for BlockEditor {
                 Some(run_start)
             })
             .collect::<Vec<_>>();
-        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
-        let mut formula_index = 0usize;
-        while formula_index < self.blocks.len() {
-            let Some(descriptor) = self
-                .blocks
-                .get(formula_index)
-                .and_then(|b| formula_descriptor(&b.kind))
-            else {
-                formula_index = formula_index.saturating_add(1);
-                continue;
-            };
-            let end = formula_run_end(&self.blocks, formula_index);
-            let source = self
-                .blocks
-                .get(formula_index..=end)
-                .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
-                .unwrap_or_default();
-            if let Some(slot) = formula_runs.get_mut(formula_index) {
-                *slot = Some(FormulaRunPreview {
-                    end,
-                    descriptor,
-                    source,
-                });
-            }
-            formula_index = end.saturating_add(1);
-        }
-
-        self.code_copy_hits.clear();
-        let mut code_index = 0usize;
-        while code_index < code_languages.len() {
-            let Some(Some(_)) = code_languages.get(code_index) else {
-                code_index = code_index.saturating_add(1);
-                continue;
-            };
-            let mut end = code_index;
-            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
-                end = end.saturating_add(1);
-            }
-            if formula_runs.get(code_index).is_none_or(Option::is_none)
-                && let Some(line) = line_rects.get(code_index)
-            {
-                let size = 22.0 * self.text_scale;
-                let rect = Rect::new(
-                    line.x1 - size - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
-                    line.x1 - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
-                );
-                self.code_copy_hits.push((rect, code_index, end));
-            }
-            code_index = end.saturating_add(1);
-        }
 
         let paint_rects: Vec<_> = (0..self.blocks.len())
             .map(|index| self.block_paint_rect(index))
@@ -8085,6 +8881,70 @@ impl Widget for BlockEditor {
                         .is_some_and(|group| group.contains(&index))
             })
             .collect();
+
+        // A run's ground, formula preview and copy chrome are painted by its
+        // first line, so only a run whose first line paints needs them: the
+        // rest of the document derives nothing this frame.
+        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
+        let mut formula_index = 0usize;
+        while formula_index < self.blocks.len() {
+            let Some(descriptor) = self
+                .blocks
+                .get(formula_index)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                formula_index = formula_index.saturating_add(1);
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, formula_index);
+            if painted.get(formula_index).copied().unwrap_or(false) {
+                let source = self
+                    .blocks
+                    .get(formula_index..=end)
+                    .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default();
+                #[cfg(test)]
+                {
+                    self.formula_sources = self.formula_sources.saturating_add(1);
+                }
+                if let Some(slot) = formula_runs.get_mut(formula_index) {
+                    *slot = Some(FormulaRunPreview {
+                        end,
+                        descriptor,
+                        source,
+                    });
+                }
+            }
+            formula_index = end.saturating_add(1);
+        }
+
+        self.code_copy_hits.clear();
+        let mut code_index = 0usize;
+        while code_index < code_runs.len() {
+            let Some(Some(_)) = code_runs.get(code_index) else {
+                code_index = code_index.saturating_add(1);
+                continue;
+            };
+            let mut end = code_index;
+            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
+                end = end.saturating_add(1);
+            }
+            if painted.get(code_index).copied().unwrap_or(false)
+                && formula_descriptor(&self.blocks[code_index].kind).is_none()
+                && let Some(line) = line_rects.get(code_index)
+            {
+                let size = 22.0 * self.text_scale;
+                let rect = Rect::new(
+                    line.x1 - size - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
+                    line.x1 - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
+                );
+                self.code_copy_hits.push((rect, code_index, end));
+            }
+            code_index = end.saturating_add(1);
+        }
+
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
@@ -8480,7 +9340,7 @@ impl Widget for BlockEditor {
                 0.0
             };
             let delta = drag_offset;
-            let ghost_transform = translated(ctx.transform, delta.x, delta.y);
+            let ghost_transform = ctx.transform.pre_translate((delta.x, delta.y).into());
             let card = vello::kurbo::RoundedRect::from_rect(bounds, 6.0);
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -8529,7 +9389,7 @@ impl Widget for BlockEditor {
                 .is_some_and(|group| group.contains(start));
             let chrome_transform = if dragging_this_group {
                 let delta = drag_offset;
-                translated(ctx.transform, delta.x, delta.y)
+                ctx.transform.pre_translate((delta.x, delta.y).into())
             } else {
                 ctx.transform
             };
@@ -8554,14 +9414,12 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let language =
-                code_languages
-                    .get(*start)
-                    .and_then(Option::as_ref)
-                    .map_or(
-                        "Code",
-                        |value| if value.is_empty() { "Code" } else { value },
-                    );
+            let language = match self.blocks.get(*start).map(|block| &block.kind) {
+                Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
+                    lang.as_str()
+                }
+                _ => "Code",
+            };
             // The language label starts where the code does.
             let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
@@ -8670,7 +9528,7 @@ impl Widget for BlockEditor {
         // style, scale, and BiDi changes unclickable.
         #[cfg(test)]
         let links_probe = crate::profiling::frame_probe::span("block_link_hits");
-        self.refresh_live_link_hits(theme);
+        self.refresh_live_link_hits(theme, &painted);
         #[cfg(test)]
         drop(links_probe);
         if let Some(prefix) = outside_prefix {
@@ -9046,22 +9904,7 @@ impl Widget for BlockEditor {
         if self.slash_menu.is_visible() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
-        let block = self.blocks.get(self.focused?)?;
-        if self
-            .image_attachments
-            .get(&block.id)
-            .is_some_and(|image| !image.editing)
-        {
-            return None;
-        }
-        if let Some(rect) = self
-            .table_editors
-            .get(&block.id)
-            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
-        {
-            return Some(rect);
-        }
-        Widget::ime_cursor_rect(&block.line)
+        self.document_caret_rect()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -9150,414 +9993,19 @@ impl Widget for BlockEditor {
 
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
-    #[expect(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
-        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
-    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let mut children: Vec<AccessNode> = self
-            .formula_chrome
-            .iter()
-            .enumerate()
-            .filter_map(|(start, chrome)| {
-                let chrome = chrome.as_ref()?;
-                let syntax = match chrome.descriptor.syntax {
-                    crate::math::FormulaSyntax::Tex => "TeX",
-                    crate::math::FormulaSyntax::Typst => "Typst",
-                };
-                let source = self
-                    .blocks
-                    .get(start..=chrome.end)?
-                    .iter()
-                    .map(Block::text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Some(
-                    AccessNode::new(Role::Group)
-                        .with_name(format!("{syntax} formula"))
-                        .with_hashed_key(format!("notes.formula:{}", self.blocks.get(start)?.id))
-                        .with_value(source)
-                        .with_children(vec![
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Source editor")
-                                .with_state(AccessState::new().checked(
-                                    chrome.descriptor.mode == crate::math::FormulaMode::Source,
-                                )),
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name("Visual editor")
-                                .with_state(AccessState::new().checked(
-                                    chrome.descriptor.mode == crate::math::FormulaMode::Visual,
-                                )),
-                        ]),
-                )
-            })
-            .collect();
-        children.extend(
-            self.code_copy_hits
-                .iter()
-                .filter_map(|(bounds, start, end)| {
-                    let run = self.blocks.get(*start..=*end)?;
-                    let language = run.first().and_then(|block| match &block.kind {
-                        BlockKind::CodeBlock { lang } => lang.as_deref(),
-                        _ => None,
-                    });
-                    Some(
-                        AccessNode::new(Role::Button)
-                            .with_name(language.map_or_else(
-                                || "Copy code".to_string(),
-                                |lang| format!("Copy {lang} code"),
-                            ))
-                            .with_action_target(self.code_copy_run_target(*start, *end)?)
-                            .with_bounds(*bounds)
-                            .with_state(AccessState::new().focusable(true)),
-                    )
-                }),
-        );
-        if self.find_visible {
-            if let Some(search) = self.find_field.accessibility() {
-                children.push(
-                    search
-                        .with_name(crate::i18n!("block-editor-find-placeholder"))
-                        .with_action_target("notes.find:query"),
-                );
-            }
-            if self.replace_enabled {
-                if let Some(field) = self.replace_field.accessibility() {
-                    children.push(
-                        field
-                            .with_name(crate::i18n!("block-editor-replace-placeholder"))
-                            .with_action_target("notes.find:replacement"),
-                    );
-                }
-                if let Some(button) = self.replace_all_button.accessibility() {
-                    children.push(
-                        button
-                            .with_action_target("notes.find:replace-all")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(!self.can_replace_all()),
-                            ),
-                    );
-                }
-                if let Some(button) = self.replace_button.accessibility() {
-                    children.push(
-                        button.with_action_target("notes.find:replace").with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .disabled(self.find_replace_request().is_none()),
-                        ),
-                    );
-                }
-            }
-            children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-previous"))
-                    .with_action_target("notes.find:previous")
-                    .with_bounds(self.find_previous_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-next"))
-                    .with_action_target("notes.find:next")
-                    .with_bounds(self.find_next_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-close"))
-                    .with_action_target("notes.find:close")
-                    .with_bounds(self.find_close_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-        }
-        let total = self.blocks.len();
-        let selected_blocks = self
-            .retained_block_selection
-            .as_ref()
-            .and_then(|_| self.selected_block_range());
-        children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
-            let up_disabled = self.neighboring_group(index, true).is_none();
-            let position = index.saturating_add(1);
-            let down_disabled = self.neighboring_group(index, false).is_none();
-            let bounds = self
-                .block_drag_handle_rect(index)
-                .unwrap_or_else(|| block.line.get_rect());
-            let mut block_children = vec![
-                AccessNode::new(Role::Button)
-                    .with_name("Move block up")
-                    .with_action_target(Self::block_move_target(&block.id, "up"))
-                    .with_bounds(bounds)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(!up_disabled)
-                            .disabled(up_disabled),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Move block down")
-                    .with_action_target(Self::block_move_target(&block.id, "down"))
-                    .with_bounds(bounds)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(!down_disabled)
-                            .disabled(down_disabled),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-change-type"))
-                    .with_action_target(format!("notes.block-type:{}", block.id))
-                    .with_bounds(bounds)
-                    .with_state(AccessState::new().focusable(true)),
-            ];
-            if block.kind.is_editable()
-                && block.line.get_rect().height() > 0.0
-                && let Some(text) = block.line.accessibility()
-            {
-                block_children.insert(
-                    0,
-                    text.with_name(crate::i18n::I18nManager::format("widget-block-text", &[]))
-                        .with_action_target(format!("notes.block-text:{}", block.id))
-                        .with_bounds(block.line.get_rect()),
-                );
-            }
-            for (direction, label, disabled) in [
-                (
-                    "in",
-                    "widget-block-indent",
-                    self.blocks[self.movable_group(index)]
-                        .iter()
-                        .any(|b| b.indent() >= MAX_LIST_INDENT),
-                ),
-                ("out", "widget-block-outdent", block.indent() == 0),
-            ] {
-                block_children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::I18nManager::format(label, &[]))
-                        .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
-                        .with_bounds(bounds)
-                        .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
-                );
-            }
-            if let Some(target) = transclusion_target(block) {
-                let name = self
-                    .transclusion_previews
-                    .get(&target)
-                    .map_or("embedded note", |preview| preview.title.as_str());
-                let card_bounds = self
-                    .transclusion_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .map_or_else(|| block.line.get_rect(), |(rect, _)| rect);
-                block_children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(format!("Open embedded note: {name}"))
-                        .with_description("Live preview of a linked note")
-                        .with_action_target(transclusion_action_target(target))
-                        .with_bounds(card_bounds)
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            if matches!(block.kind, BlockKind::Table { .. }) {
-                if let Some(control) = self.table_mode_controls.get(&block.id)
-                    && let Some(mut button) = control.button.accessibility()
-                {
-                    button = button
-                        .with_bounds(control.button.get_rect())
-                        .with_action_target(format!("notes.table-mode:{}", block.id));
-                    block_children.push(button);
-                    for (prefix, button) in [
-                        ("notes.table-add-row", &control.add_row),
-                        ("notes.table-add-column", &control.add_column),
-                    ] {
-                        if let Some(node) = button.accessibility() {
-                            block_children.push(
-                                node.with_bounds(button.get_rect())
-                                    .with_action_target(format!("{prefix}:{}", block.id)),
-                            );
-                        }
-                    }
-                }
-                let table_bounds = self
-                    .table_preview_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .unwrap_or_else(|| block.line.get_rect());
-                let headers = markdown_table_data_rows(block.text())
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default();
-                let rows = markdown_table_data_rows(block.text())
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row_index, row)| {
-                        let cells = row
-                            .into_iter()
-                            .enumerate()
-                            .map(|(column_index, value)| {
-                                let target = format!(
-                                    "notes.table-cell:{}:{row_index}:{column_index}",
-                                    block.id
-                                );
-                                let mut input = AccessNode::new(Role::MultilineTextInput)
-                                    .with_name(decode_table_cell(
-                                        headers.get(column_index).copied().unwrap_or(""),
-                                    ))
-                                    .with_value(decode_table_cell(value))
-                                    .with_action_target(target)
-                                    .with_state(AccessState::new().focusable(true));
-                                if let Some(rect) = self
-                                    .table_editors
-                                    .get(&block.id)
-                                    .and_then(|table| table.projected_rect(row_index, column_index))
-                                {
-                                    input = input.with_bounds(rect);
-                                }
-                                AccessNode::new(Role::Cell)
-                                    .with_name(if row_index == 0 {
-                                        format!("Column {}", column_index.saturating_add(1))
-                                    } else {
-                                        format!(
-                                            "Cell {}, {}",
-                                            row_index,
-                                            column_index.saturating_add(1)
-                                        )
-                                    })
-                                    .with_description(decode_table_cell(
-                                        headers.get(column_index).copied().unwrap_or(""),
-                                    ))
-                                    .with_value(decode_table_cell(value))
-                                    .with_children(vec![input])
-                            })
-                            .collect();
-                        AccessNode::new(Role::Row)
-                            .with_name(if row_index == 0 {
-                                "Header row".to_string()
-                            } else {
-                                format!("Row {row_index}")
-                            })
-                            .with_children(cells)
-                    })
-                    .collect();
-                block_children.push(
-                    AccessNode::new(Role::Table)
-                        .with_name("Markdown table")
-                        .with_value(block.text())
-                        .with_bounds(table_bounds)
-                        .with_children(rows),
-                );
-            }
-            if let Some(image) = self.image_attachments.get(&block.id) {
-                if let Some(button) = image.button().accessibility() {
-                    block_children.push(
-                        button
-                            .with_bounds(image.button().get_rect())
-                            .with_action_target(format!(
-                                "notes.image-{}:{}",
-                                if image.editing { "done" } else { "edit" },
-                                block.id
-                            )),
-                    );
-                }
-                if image.editing {
-                    block_children.push(
-                        AccessNode::new(Role::MultilineTextInput)
-                            .with_name(crate::i18n!("notes-image-source"))
-                            .with_value(block.text())
-                            .with_action_target(format!("notes.image-source:{}", block.id))
-                            .with_bounds(block.line.get_rect())
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .focused(block.line.is_focused()),
-                            ),
-                    );
-                }
-            }
-            if let Some((alt, destination)) = self
-                .image_attachments
-                .get(&block.id)
-                .and_then(|image| standalone_markdown_image(&image.source))
-                .or_else(|| standalone_markdown_image(block.text()))
-            {
-                let bounds = self
-                    .image_preview_rects
-                    .get(index)
-                    .and_then(|entry| *entry)
-                    .unwrap_or_else(|| block.line.get_rect());
-                block_children.push(
-                    AccessNode::new(Role::Image)
-                        .with_name(if alt.is_empty() { "Image" } else { alt })
-                        .with_description(destination)
-                        .with_bounds(bounds),
-                );
-            }
-            for span in block.line.marks() {
-                let (name, target) = match &span.mark {
-                    Mark::Link(id) if !id.is_nil() => {
-                        ("Open linked note".to_string(), page_link_action_target(*id))
-                    }
-                    Mark::ExternalLink(url) => (
-                        "Open external link".to_string(),
-                        external_link_action_target(url),
-                    ),
-                    _ => continue,
-                };
-                block_children.push(
-                    AccessNode::new(Role::Link)
-                        .with_name(name)
-                        .with_value(block.text().get(span.range.clone()).unwrap_or_default())
-                        .with_action_target(target)
-                        .with_bounds(block.line.get_rect())
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-            let level = usize::from(block.indent()).saturating_add(1);
-            let group = AccessNode::new(Role::Group)
-                .with_name(format!(
-                    "{} block {position}",
-                    accessible_kind_name(&block.kind)
-                ))
-                .with_semantic_key(format!("notes.block:{}", block.id))
-                .with_state(
-                    AccessState::new().selected(
-                        selected_blocks
-                            .as_ref()
-                            .is_some_and(|range| range.contains(&index)),
-                    ),
-                )
-                .with_hashed_key(format!("notes.block:group:{}", block.id))
-                .with_position(position, total)
-                .with_level(level)
-                .with_bounds(block.line.get_rect())
-                .with_children(block_children);
-            // Also in words, which every screen reader reads: the platform
-            // bridge does not carry a group's level.
-            if level > 1 {
-                group.with_description(format!("Level {level}"))
-            } else {
-                group
-            }
-        }));
-        if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
-            fn namespace_targets(node: &mut AccessNode) {
-                if let Some(target) = node.action_target.take() {
-                    node.action_target = Some(format!("notes.slash-menu:{target}"));
-                }
-                for child in &mut node.children {
-                    namespace_targets(child);
-                }
-            }
-            namespace_targets(&mut menu);
-            menu.semantic_key = Some("notes.slash-menu".into());
-            menu.bounds = Some(self.slash_menu.get_rect().into());
-            children.push(menu);
-        }
-        Some(
-            AccessNode::new(Role::Document)
-                .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
-                )
-                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true))
-                .with_children(children),
-        )
+        self.accessibility_shared()
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        self.accessibility_shared_with(None)
+    }
+
+    /// The document node above is never hidden; answer without building
+    /// every block's subtree.
+    fn accessibility_hidden(&self) -> bool {
+        false
     }
 
     #[expect(
@@ -10370,6 +10818,7 @@ impl BlockEditor {
             start: self.last_mouse_pos,
             active: false,
         });
+        self.block_drag_scroll.begin(source, self.last_mouse_pos);
         *ctx.focus_target = Some(ctx.node_id);
         *ctx.handled = true;
         self.dirty = true;
@@ -10511,6 +10960,8 @@ impl BlockEditor {
                 self.dirty = true;
             }
             self.block_drag = Some(drag);
+            self.block_drag_scroll
+                .update(logical, None, crate::time::now(), |_, _| true);
             return;
         }
 
@@ -10581,7 +11032,7 @@ impl BlockEditor {
         true
     }
 
-    /// The leading `/` still falls through to `TextInput` (visible
+    /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
@@ -10626,6 +11077,17 @@ impl BlockEditor {
                 .selection_range()
                 .map_or(block.line.cursor_pos(), |(start, _)| start)
         });
+        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
+        // only at the start of a block or after whitespace.
+        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
+            let text = block.line.value();
+            text.get(..trigger_byte.min(text.len()))
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace)
+        });
+        if !after_boundary {
+            return;
+        }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
@@ -11480,9 +11942,6 @@ impl BlockEditor {
         if *ctx.handled {
             return true;
         }
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.dirty = true;
-        }
         let mut change = None;
         let mut focused = None;
         let mut exit = None;
@@ -11498,6 +11957,20 @@ impl BlockEditor {
                     exit = Some((index, down));
                 }
             }
+        }
+        // A pointer move repaints a table's controls whose hover it changed
+        // and a focused cell it may drag a selection in. A move that reaches
+        // neither repaints nothing here, so a hand resting on the mouse over
+        // a note costs no frame and no accessibility walk.
+        if matches!(event, WindowEvent::CursorMoved { .. })
+            && (focused.is_some()
+                || self.table_mode_controls.values().any(|control| {
+                    control.button.needs_redraw()
+                        || control.add_row.needs_redraw()
+                        || control.add_column.needs_redraw()
+                }))
+        {
+            self.dirty = true;
         }
         if let Some(index) = focused {
             self.clear_cross_block_selection();

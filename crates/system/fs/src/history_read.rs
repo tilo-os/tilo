@@ -198,15 +198,13 @@ impl QuickFS {
         version_id: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, Error> {
         self.read_file_history_preview_using(ino, scope, version_id, |hash| {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
+            // Bounded: a preview reads at most one byte past its limit.
             let limit = u64::try_from(fs_protocol::MAX_HISTORY_PREVIEW_BYTES)
                 .unwrap_or(u64::MAX)
                 .saturating_add(1);
-            tokio::task::block_in_place(|| {
-                runtime.block_on(async move { hydrator.read(Hash::from(hash), 0, limit).await })
-            })
-            .map_err(|_| Error::Unavailable)
+            self.hydrator
+                .block_on(self.hydrator.read(Hash::from(hash), 0, limit))
+                .map_err(|_| Error::Unavailable)
         })
     }
     pub(super) fn read_file_history_preview_using(
@@ -251,11 +249,9 @@ impl QuickFS {
         }
         // FileVersion content_hash identifies the chunk manifest, not raw
         // bytes. The bytes must be exactly the chunks the manifest names.
-        let hydrator = self.hydrator.clone();
-        let runtime = hydrator.runtime_handle.clone();
-        let manifest = tokio::task::block_in_place(|| {
-            runtime.block_on(async move { hydrator.local_manifest_index(Hash::from(hash.0)).await })
-        });
+        let manifest = self
+            .hydrator
+            .block_on(self.hydrator.local_manifest_index(Hash::from(hash.0)));
         if !manifest.is_some_and(|manifest| manifest.verify(&bytes)) {
             return Err(Error::Unavailable);
         }

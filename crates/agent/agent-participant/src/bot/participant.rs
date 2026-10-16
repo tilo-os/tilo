@@ -10,7 +10,6 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, DoorError};
-use tilo_automation::dispatch::RecordEvent;
 use tilo_browser_peer::{
     DocumentRoute, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
 };
@@ -18,7 +17,6 @@ use tilo_relay_protocol::delegation::Delegation;
 use tilo_relay_protocol::live::{LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use super::events_since;
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::participant::ParticipantConfig;
 use crate::participant::unopened::Unopened;
@@ -97,6 +95,7 @@ impl BotParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
+                watching: false,
             },
             Arc::new(identity.key.clone()),
             Arc::new(MemoryPeerStore::default()),
@@ -256,30 +255,6 @@ impl BotParticipant {
         }
     }
 
-    /// Every change after `cursors` (record id to hex heads) in each held
-    /// record, in causal order per record, each with the heads after it. A
-    /// record with no cursor yields nothing: the caller starts it at
-    /// [`Self::heads`].
-    pub fn events_after(
-        &self,
-        cursors: &BTreeMap<String, Vec<String>>,
-    ) -> Vec<(RecordEvent, Vec<String>)> {
-        let mut out = Vec::new();
-        for (route, app) in &self.replicas {
-            let Some(since) = cursors.get(&route.record) else {
-                continue;
-            };
-            let kind = self
-                .catalogue
-                .get(&route.app_id)
-                .map_or("", |definition| definition.record_kind.as_str());
-            out.extend(
-                app.read_history(|doc| events_since(&self.room, &route.record, kind, doc, since)),
-            );
-        }
-        out
-    }
-
     /// The heads of the held record `record`, hex.
     #[must_use]
     pub fn heads(&self, record: &str) -> Option<Vec<String>> {
@@ -303,15 +278,6 @@ impl BotParticipant {
             .iter()
             .find(|(route, _)| route.record == record)
             .map(|(_, app)| app)
-    }
-
-    /// The route of the held record `record`.
-    #[must_use]
-    pub fn route_of_record(&self, record: &str) -> Option<DocumentRoute> {
-        self.replicas
-            .keys()
-            .find(|route| route.record == record)
-            .cloned()
     }
 
     /// Invoke one action of the record at `route` as `invoker` within

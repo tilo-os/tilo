@@ -7,11 +7,12 @@ use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_joined_room::testing as internals;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 
 fn edit(
     owner: &NativeWorkspaceOwner,
@@ -295,6 +296,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
                 let original: NeighbourMsg = postcard::from_bytes(&original).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&original, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_some(),
@@ -332,6 +334,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[62; 32]))
         .unwrap();
     remote
+        .governance_mut()
         .publish_governed_revocations(&[revoked.clone()], &governor_key, now)
         .unwrap();
     owner
@@ -579,6 +582,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 let projected: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&projected, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_none()
@@ -1007,6 +1011,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
             active_tab: 990_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         index
     };

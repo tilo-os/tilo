@@ -1,0 +1,64 @@
+[package]
+name = "tilo-install-helpers"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The installer's privileged helpers: the live side of USB-free installation, the signed offline target, the setup handoff copy, dev SSH keys, the VM export cache and install proof."
+
+[lib]
+name = "tilo_install_helpers"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-install-handoff-copy"
+path = "src/bin/handoff_copy.rs"
+
+[[bin]]
+name = "tilo-install-dev-ssh"
+path = "src/bin/dev_ssh.rs"
+
+[[bin]]
+name = "tilo-vm-bootc-copy-cache"
+path = "src/bin/vm_bootc_copy_cache.rs"
+
+[[bin]]
+name = "tilo-installer-offline-target"
+path = "src/bin/offline_target.rs"
+
+[[bin]]
+name = "tilo-staging-handoff"
+path = "src/bin/staging_handoff.rs"
+
+[[bin]]
+name = "tilo-vm-install-proof"
+path = "src/bin/vm_install_proof.rs"
+
+# The loopback proofs (os/tests/staging_helper_loop.sh,
+# os/tests/staging_reclaim_loop.sh) run the staging handoff against fixture
+# firmware variables, a fixture ESP and fixture lsblk output: the seams the
+# shipped tilo-staging-handoff never takes from anywhere.
+[[example]]
+name = "staging-handoff-fixture"
+path = "examples/staging-handoff-fixture.rs"
+
+[dependencies]
+# Strict base64 of SSH public keys, as base64.b64decode(validate=True).
+hex.workspace = true
+# No-follow opens of the copied handoff files and the effective user, without
+# FFI.
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+# The staging handoff's JSON, with a repeated field refused.
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# The export cache's receipt: a private temporary file renamed into place.
+tempfile.workspace = true
+tilo-pycompat = { path = "../tilo-pycompat" }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+base64.workspace = true

@@ -1,7 +1,5 @@
 //! LAN/OOB completion for a pre-authorised Tilo device enrollment token.
 
-use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -15,6 +13,8 @@ use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
+use tilo_identity_host::device_fleet::DeviceFleetStore;
+use tilo_identity_host::enrollment::{EnrollmentRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
@@ -176,6 +176,20 @@ enum OutOfBand {
         /// other devices over their device-admin route); repeatable.
         #[arg(long = "capability", value_name = "CAPABILITY")]
         capabilities: Vec<String>,
+        /// Also record the certified host as one of the person's home peers
+        /// in the identity root's home-peer registry, so this device shares
+        /// workspaces on it: the endpoint id of the relay it runs, hex, as
+        /// `device-key` prints it. Needs the `host` capability.
+        #[arg(long, value_name = "HEX")]
+        home_peer_service: Option<String>,
+        /// A direct address that relay listens on, kept as its dial hint;
+        /// repeatable. Without one the relay is found by its endpoint id.
+        #[arg(
+            long = "home-peer-addr",
+            value_name = "ADDR",
+            requires = "home_peer_service"
+        )]
+        home_peer_addrs: Vec<std::net::SocketAddr>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -196,6 +210,17 @@ enum OutOfBand {
 enum EnrollmentKind {
     HomePeer,
     PersonalDevice,
+}
+
+impl EnrollmentKind {
+    /// The role a token for this kind admits, with its one capability preset
+    /// and shape check.
+    const fn role(self) -> EnrollmentRole {
+        match self {
+            Self::HomePeer => EnrollmentRole::HomePeer,
+            Self::PersonalDevice => EnrollmentRole::PersonalDevice,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -336,38 +361,25 @@ fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
         .join(format!("{}.json", hex::encode(user)))
 }
 
+/// The person's device fleet: the canonical record of their devices and
+/// revocations, kept in their identity directory.
+fn fleet_store(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+) -> DeviceFleetStore {
+    DeviceFleetStore::at(identity_dir, IdentityPaths::under(identity_root))
+}
+
 fn fleet_revokes_device(
+    identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     user: [u8; 32],
     device: [u8; 32],
 ) -> anyhow::Result<bool> {
-    let bytes = std::fs::read(fleet_path(identity_dir, user))?;
-    if bytes.len() > 1024 * 1024 {
-        bail!("device fleet exceeds 1 MiB");
-    }
-    let fleet: FleetProjection =
-        serde_json::from_slice(&bytes).context("device fleet is invalid")?;
-    if fleet.schema_version != 1
-        || fleet.identity_id != hex::encode(user)
-        || fleet.certificates.len() > 256
-        || fleet.revocations.len() > 256
-        || fleet
-            .certificates
-            .iter()
-            .any(|cert| cert.user_public_key != user || verify_device_cert(cert).is_err())
-    {
-        bail!("device fleet violates its bounded verified schema");
-    }
-    let mut revocations = RevocationList::new();
-    for entry in fleet.revocations {
-        if entry.user_public_key != user {
-            bail!("device fleet contains a revocation from another identity");
-        }
-        revocations
-            .insert(entry)
-            .context("device fleet contains an invalid revocation")?;
-    }
-    Ok(revocations.is_revoked(&device))
+    Ok(fleet_store(identity_root, identity_dir)
+        .load(&hex::encode(user))
+        .context("device fleet is invalid")?
+        .is_revoked(&device))
 }
 
 /// Whether a certificate names one of this person's own devices: one that
@@ -473,8 +485,7 @@ fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
         use std::os::unix::ffi::OsStrExt as _;
         use std::os::unix::fs::MetadataExt as _;
 
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Ok(());
         }
         let parent = path
@@ -517,8 +528,7 @@ fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()
         if !current.is_dir() {
             bail!("{} is not a directory", directory.display());
         }
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
+        let euid = rustix::process::geteuid().as_raw();
         if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
             std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
                 .context("share the enrollment directory like its parent")?;
@@ -532,8 +542,7 @@ fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        // SAFETY: geteuid has no preconditions.
-        Ok(std::fs::metadata(directory)?.uid() == unsafe { libc::geteuid() })
+        Ok(std::fs::metadata(directory)?.uid() == rustix::process::geteuid().as_raw())
     }
     #[cfg(not(unix))]
     {
@@ -1147,6 +1156,7 @@ fn register_home_peer(
     cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
     relay_workspace_ids: &[u64],
+    relay_endpoint: Option<iroh_base::EndpointAddr>,
 ) -> anyhow::Result<()> {
     let path = tilo_relay::home_peer_registry_path(identity_root);
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
@@ -1187,7 +1197,7 @@ fn register_home_peer(
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id,
         relay_service_node_id: hex::encode(relay_service_node_id),
-        relay_endpoint: None,
+        relay_endpoint,
         label: cert.device_label.clone(),
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
@@ -1567,30 +1577,6 @@ fn verify_finalized(
     Ok(())
 }
 
-fn consume_nonce(
-    identity_root: &std::path::Path,
-    nonce: &[u8; 16],
-    device_public_key: [u8; 32],
-) -> anyhow::Result<()> {
-    let dir = identity_root.join("enrollment-nonces");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(hex::encode(nonce));
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = std::fs::read_to_string(path)?;
-            if existing.trim() == hex::encode(device_public_key) {
-                return Ok(());
-            }
-            bail!("enrollment token has already been consumed by another device");
-        }
-        Err(error) => return Err(error.into()),
-    };
-    file.write_all(hex::encode(device_public_key).as_bytes())?;
-    file.sync_all()?;
-    Ok(())
-}
-
 fn now_ns() -> anyhow::Result<u64> {
     try_unix_now_ns().context("system clock precedes the Unix epoch")
 }
@@ -1688,15 +1674,15 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
-    if kind == EnrollmentKind::HomePeer
-        && (!token.capabilities.can_act_as_host || !token.capabilities.can_read_all_workspaces)
-    {
-        bail!("enrollment token does not grant home-server capabilities");
-    }
-    if kind == EnrollmentKind::PersonalDevice
-        && (token.capabilities.can_act_as_host || token.capabilities.can_read_all_workspaces)
-    {
-        bail!("enrollment token grants the wrong device role");
+    if !kind.role().admits(&token.capabilities) {
+        match kind {
+            EnrollmentKind::HomePeer => {
+                bail!("enrollment token does not grant home-server capabilities")
+            }
+            EnrollmentKind::PersonalDevice => {
+                bail!("enrollment token grants the wrong device role")
+            }
+        }
     }
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -1872,11 +1858,8 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 {
                                     restore_owner_from_parent(output)?;
                                 }
-                                consume_nonce(
-                                    identity_root,
-                                    &token.nonce,
-                                    device.verifying_key().to_bytes(),
-                                )?;
+                                NonceStore::under(identity_root)
+                                    .record(&token.nonce, device.verifying_key().to_bytes())?;
                                 if kind == EnrollmentKind::PersonalDevice {
                                     println!(
                                         "{}",
@@ -1917,10 +1900,6 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered pairing exchange; the requester lease is revalidated at every step of it"
-)]
 fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyhow::Result<()> {
     let JoinOptions {
         identity_root,
@@ -1981,12 +1960,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     continue;
                 };
                 if verify_enrollment_token(&token, now_ns()?).is_err()
-                    || (kind == EnrollmentKind::HomePeer
-                        && (!token.capabilities.can_act_as_host
-                            || !token.capabilities.can_read_all_workspaces))
-                    || (kind == EnrollmentKind::PersonalDevice
-                        && (token.capabilities.can_act_as_host
-                            || token.capabilities.can_read_all_workspaces))
+                    || !kind.role().admits(&token.capabilities)
                 {
                     continue;
                 }
@@ -2124,6 +2098,8 @@ struct ApprovalOptions<'a> {
 struct ApprovalIdentity {
     root: Box<dyn RootSigner>,
     device: ed25519_dalek::SigningKey,
+    /// This device's certificate, the issuer of the tokens it mints.
+    issuer_cert: DeviceCert,
     user_public_key: [u8; 32],
     relay_workspace_ids: Vec<u64>,
 }
@@ -2186,8 +2162,13 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         bail!("this device is not authorised to approve enrollment");
     }
     if let Some(directory) = options.identity_dir
-        && fleet_revokes_device(directory, user_public_key, issuer_cert.device_public_key)
-            .context("verify approving device fleet")?
+        && fleet_revokes_device(
+            options.identity_root,
+            directory,
+            user_public_key,
+            issuer_cert.device_public_key,
+        )
+        .context("verify approving device fleet")?
     {
         bail!("this device is revoked and cannot approve enrollment");
     }
@@ -2201,6 +2182,7 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
     Ok(ApprovalIdentity {
         root,
         device,
+        issuer_cert,
         user_public_key,
         relay_workspace_ids,
     })
@@ -2234,15 +2216,13 @@ fn handle_solicitation(
         let mut nonce = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let now = now_ns()?;
-        let issued_at_ns = validity_start_ns(now);
+        // Backdated for the joining device's clock, but never to before this
+        // device was certified: redemption checks the issuer at that instant.
+        let issued_at_ns = validity_start_ns(now).max(identity.issuer_cert.issued_at_ns);
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
-        let capabilities = match kind {
-            EnrollmentKind::HomePeer => DeviceCapabilities::host(),
-            EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
-        };
         let token = mint_enrollment_token(
             identity.user_public_key,
-            capabilities,
+            kind.role().preset(),
             issued_at_ns,
             expires_at_ns,
             nonce,
@@ -2292,14 +2272,7 @@ fn valid_pending_request(
         && token.user_public_key == identity.user_public_key
         && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
         && request.kind == kind
-        && match kind {
-            EnrollmentKind::HomePeer => {
-                token.capabilities.can_act_as_host && token.capabilities.can_read_all_workspaces
-            }
-            EnrollmentKind::PersonalDevice => {
-                !token.capabilities.can_act_as_host && !token.capabilities.can_read_all_workspaces
-            }
-        }
+        && kind.role().admits(&token.capabilities)
         && !wrong_selection)
 }
 
@@ -2358,10 +2331,12 @@ fn receive_approval_request(
     }
 }
 
+/// What the approval hands the device besides its certificate. The personal
+/// device's fleet is filled in once the token is redeemed, because the fleet
+/// then lists the new certificate.
 fn approval_projection(
     options: &ApprovalOptions<'_>,
     identity: &ApprovalIdentity,
-    cert: &DeviceCert,
 ) -> anyhow::Result<ApprovalProjection> {
     match options.kind {
         EnrollmentKind::HomePeer => {
@@ -2405,7 +2380,7 @@ fn approval_projection(
             })
         }
         EnrollmentKind::PersonalDevice => {
-            let identity_dir = options
+            options
                 .identity_dir
                 .context("identity directory is required for personal-device approval")?;
             Ok(ApprovalProjection {
@@ -2414,7 +2389,7 @@ fn approval_projection(
                     identity.user_public_key,
                     "My Tilo identity",
                 )?),
-                fleet_json: Some(project_personal_device(identity_dir, cert)?),
+                fleet_json: None,
                 home_peers_json: Some(bounded_home_peer_registry(
                     options.identity_root,
                     identity.user_public_key,
@@ -2429,17 +2404,15 @@ fn prepare_approval(
     identity: &ApprovalIdentity,
     pending: &PendingApproval,
 ) -> anyhow::Result<PreparedApproval> {
-    let mut cert = DeviceCert {
-        user_public_key: identity.user_public_key,
-        device_public_key: pending.request.device_public_key,
-        device_label: pending.request.label.clone(),
-        capabilities: pending.token.capabilities.clone(),
-        issued_at_ns: validity_start_ns(now_ns()?),
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_root_cert(&mut cert, identity.root.as_ref())?;
-    let projection = approval_projection(options, identity, &cert)?;
+    // Everything that can refuse runs before the token is redeemed: a refusal
+    // after it would spend the token on a device that never hears back.
+    let mut projection = approval_projection(options, identity)?;
+    let cert = redeem_pending(options, identity, pending)?;
+    if let Some(identity_dir) = options.identity_dir
+        && options.kind == EnrollmentKind::PersonalDevice
+    {
+        projection.fleet_json = Some(project_personal_device(identity_dir, &cert)?);
+    }
     let signed = sign_response(
         ResponsePayload {
             nonce: pending.token.nonce,
@@ -2460,6 +2433,41 @@ fn prepare_approval(
         pending.response_route,
     )?;
     Ok(PreparedApproval { signed, encrypted })
+}
+
+/// Redeem the pending token for the device's root-signed certificate, the way
+/// every redeemer does: the issuer is checked at the token's issue time and
+/// now and against the fleet's revocations, the nonce is spent in the shared
+/// store, and the certificate is in the person's fleet before it is sent.
+fn redeem_pending(
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+    pending: &PendingApproval,
+) -> anyhow::Result<DeviceCert> {
+    let now = now_ns()?;
+    let fleet = options
+        .identity_dir
+        .map(|identity_dir| fleet_store(options.identity_root, identity_dir));
+    tilo_identity_host::enrollment::redeem(
+        fleet.as_ref(),
+        &NonceStore::under(options.identity_root),
+        &Redemption {
+            token: &pending.token,
+            role: options.kind.role(),
+            device_public_key: pending.request.device_public_key,
+            label: &pending.request.label,
+            now_ns: now,
+            valid_from_ns: validity_start_ns(now),
+            local_issuer: Some(&identity.issuer_cert),
+        },
+        &|digest| {
+            identity
+                .root
+                .sign_message(digest)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        },
+    )
+    .context("redeem the enrollment token")
 }
 
 /// Wait for the device to acknowledge its signed configuration. The device
@@ -2515,20 +2523,10 @@ fn commit_approval(
             &prepared.signed.payload.cert,
             prepared.signed.payload.relay_service_node_id,
             &identity.relay_workspace_ids,
+            None,
         )?,
         EnrollmentKind::PersonalDevice => {
-            commit_personal_device(
-                options
-                    .identity_dir
-                    .context("identity directory is required")?,
-                identity.user_public_key,
-                prepared
-                    .signed
-                    .payload
-                    .fleet_json
-                    .as_deref()
-                    .context("fleet is required")?,
-            )?;
+            // The fleet has listed the device since its token was redeemed.
             // The device acknowledged the certificate this device just issued
             // under the identity's root: both are now this person's devices.
             let personal_peers = remember_personal_devices(
@@ -2541,11 +2539,6 @@ fn commit_approval(
             restore_owner_from_parent(&personal_peers)?;
         }
     }
-    consume_nonce(
-        options.identity_root,
-        &pending.token.nonce,
-        pending.request.device_public_key,
-    )?;
     let finalized = make_finalized(
         &prepared.encrypted,
         pending.token.nonce,
@@ -2633,6 +2626,36 @@ fn out_of_band_payload(
     })
 }
 
+/// A host certified out of band that this device records as one of its
+/// person's home peers: the relay it runs, and where that relay listens.
+struct OutOfBandHomePeer {
+    relay_service_node_id: [u8; 32],
+    relay_endpoint: Option<iroh_base::EndpointAddr>,
+}
+
+impl OutOfBandHomePeer {
+    /// `service` is the relay's endpoint id in hex, as `device-key` prints it.
+    fn parse(service: &str, addrs: &[std::net::SocketAddr]) -> anyhow::Result<Self> {
+        let relay_service_node_id: [u8; 32] = hex::decode(service.trim())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .context("--home-peer-service must be a 32-byte hex endpoint id")?;
+        let id = iroh_base::EndpointId::from_bytes(&relay_service_node_id)
+            .context("--home-peer-service is not an endpoint id")?;
+        let relay_endpoint = (!addrs.is_empty()).then(|| {
+            addrs
+                .iter()
+                .fold(iroh_base::EndpointAddr::new(id), |endpoint, addr| {
+                    endpoint.with_ip_addr(*addr)
+                })
+        });
+        Ok(Self {
+            relay_service_node_id,
+            relay_endpoint,
+        })
+    }
+}
+
 struct CertifyOptions<'a> {
     root_key: Option<&'a std::path::Path>,
     identity_root: &'a std::path::Path,
@@ -2640,6 +2663,7 @@ struct CertifyOptions<'a> {
     device: &'a str,
     label: &'a str,
     capabilities: &'a [String],
+    home_peer: Option<&'a OutOfBandHomePeer>,
     out: &'a std::path::Path,
 }
 
@@ -2651,6 +2675,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         device,
         label,
         capabilities,
+        home_peer,
         out,
     } = *options;
     let root: Box<dyn RootSigner> = match root_key {
@@ -2684,6 +2709,9 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
             }
         }
     }
+    if home_peer.is_some() && !granted.can_act_as_host {
+        bail!("only a device certified with the host capability can be a home peer");
+    }
     let mut cert = DeviceCert {
         user_public_key: root.public_key(),
         device_public_key,
@@ -2697,6 +2725,19 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     if let Some(identity_dir) = identity_dir {
         let fleet = project_personal_device(identity_dir, &cert)?;
         commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
+    }
+    if let Some(home_peer) = home_peer {
+        // The person's continuity shard, which every device of the person
+        // dials, as a nearby approval registers it.
+        register_home_peer(
+            identity_root,
+            &cert,
+            home_peer.relay_service_node_id,
+            &[tilo_relay::personal_continuity_workspace_id(
+                &cert.user_public_key,
+            )],
+            home_peer.relay_endpoint.clone(),
+        )?;
     }
     tilo_user_identity::persist::write_device_cert(out, &cert)?;
     Ok(())
@@ -2740,16 +2781,24 @@ fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
             device,
             label,
             capabilities,
+            home_peer_service,
+            home_peer_addrs,
             out,
-        } => certify(&CertifyOptions {
-            root_key: root_key.as_deref(),
-            identity_root: &identity_root,
-            identity_dir: identity_dir.as_deref(),
-            device: &device,
-            label: &label,
-            capabilities: &capabilities,
-            out: &out,
-        }),
+        } => {
+            let home_peer = home_peer_service
+                .map(|service| OutOfBandHomePeer::parse(&service, &home_peer_addrs))
+                .transpose()?;
+            certify(&CertifyOptions {
+                root_key: root_key.as_deref(),
+                identity_root: &identity_root,
+                identity_dir: identity_dir.as_deref(),
+                device: &device,
+                label: &label,
+                capabilities: &capabilities,
+                home_peer: home_peer.as_ref(),
+                out: &out,
+            })
+        }
         OutOfBand::InstallCert {
             identity_root,
             identity_dir,
@@ -3031,6 +3080,7 @@ mod tests {
             device: &device,
             label: "workstation (tilo-vm)",
             capabilities,
+            home_peer: None,
             out: &out,
         };
         let shell = ["shell".to_owned()];
@@ -3051,6 +3101,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fleet.certificates, vec![cert]);
+    }
+
+    /// A host certified out of band becomes one of the person's home peers:
+    /// the registry names its relay, where that relay listens and the
+    /// person's continuity shard, so the device shares workspaces on it. A
+    /// device that may not host is never registered.
+    #[test]
+    fn a_host_certified_out_of_band_is_registered_as_a_home_peer() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        paths.ensure_directories().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[45; 32]);
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        let host = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
+        let device = hex::encode(host.verifying_key().to_bytes());
+        let service = tilo_relay::daemon::relay_service_node_id(&host);
+        let addr: std::net::SocketAddr = "127.0.0.1:41234".parse().unwrap();
+        let out = identity_dir.path().join("host.cert");
+        let registry = tilo_relay::home_peer_registry_path(identity_root.path());
+
+        assert!(OutOfBandHomePeer::parse("not hex", &[addr]).is_err());
+        let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[addr]).unwrap();
+        let options = |capabilities| CertifyOptions {
+            root_key: None,
+            identity_root: identity_root.path(),
+            identity_dir: Some(identity_dir.path()),
+            device: &device,
+            label: "Home relay",
+            capabilities,
+            home_peer: Some(&home_peer),
+            out: &out,
+        };
+        let member = ["read-all".to_owned()];
+        let refused = certify(&options(&member)).unwrap_err();
+        assert!(refused.to_string().contains("host capability"), "{refused}");
+        assert!(!registry.exists() && !out.exists());
+
+        let host_capabilities = ["host".to_owned(), "read-all".to_owned()];
+        certify(&options(&host_capabilities)).unwrap();
+        let cert = tilo_user_identity::persist::read_device_cert(&out).unwrap();
+        assert_eq!(cert.capabilities, DeviceCapabilities::host());
+        let peers: Vec<HomePeerRegistration> =
+            serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+        assert_eq!(peers.len(), 1);
+        let peer = &peers[0];
+        assert_eq!(peer.device_node_id, device);
+        assert_eq!(peer.relay_service_node_id, hex::encode(service));
+        assert_eq!(
+            peer.user_public_key,
+            hex::encode(root.verifying_key().to_bytes())
+        );
+        assert_eq!(
+            peer.relay_workspace_ids,
+            vec![tilo_relay::personal_continuity_workspace_id(
+                &root.verifying_key().to_bytes()
+            )]
+        );
+        let endpoint = peer.relay_endpoint.as_ref().expect("the dial hint is kept");
+        assert_eq!(endpoint.id.as_bytes(), &service);
+        assert_eq!(endpoint.ip_addrs().copied().collect::<Vec<_>>(), vec![addr]);
+        assert_eq!(peer.device_cert.as_ref(), Some(&cert));
+        assert!(valid_home_peer_registration(peer));
+
+        // Certified again (a relay restarted on another port): one entry,
+        // the newest hint.
+        let moved: std::net::SocketAddr = "127.0.0.1:41235".parse().unwrap();
+        let home_peer = OutOfBandHomePeer::parse(&hex::encode(service), &[moved]).unwrap();
+        certify(&CertifyOptions {
+            home_peer: Some(&home_peer),
+            ..options(&host_capabilities)
+        })
+        .unwrap();
+        let peers: Vec<HomePeerRegistration> =
+            serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+        assert_eq!(peers.len(), 1);
+        let endpoint = peers[0].relay_endpoint.as_ref().unwrap();
+        assert_eq!(
+            endpoint.ip_addrs().copied().collect::<Vec<_>>(),
+            vec![moved]
+        );
     }
 
     #[test]
@@ -3096,6 +3227,7 @@ mod tests {
             device: &hex::encode(device.verifying_key().to_bytes()),
             label: "Node",
             capabilities: &capabilities,
+            home_peer: None,
             out: &own,
         })
         .unwrap();
@@ -3238,7 +3370,10 @@ mod tests {
             )
             .unwrap();
 
-            assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
+            assert!(
+                fleet_revokes_device(identity.path(), identity.path(), user, device_public_key)
+                    .unwrap()
+            );
         }
         // Phase `signed_response_rejects_bundle_tampering`.
         {
@@ -3560,7 +3695,7 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt as _;
-                let uid = unsafe { libc::geteuid() };
+                let uid = rustix::process::geteuid().as_raw();
                 assert_eq!(
                     std::fs::metadata(identity_dir.path().join("registry.json"))
                         .unwrap()
@@ -3808,6 +3943,7 @@ mod tests {
             &[tilo_relay::personal_continuity_workspace_id(
                 &root.verifying_key().to_bytes(),
             )],
+            None,
         )
         .unwrap();
 
@@ -4106,9 +4242,16 @@ mod tests {
         // Phase `enrollment_nonce_is_consumed_once`.
         {
             let dir = tempfile::tempdir().unwrap();
-            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-            consume_nonce(dir.path(), &[4; 16], [7; 32]).unwrap();
-            assert!(consume_nonce(dir.path(), &[4; 16], [8; 32]).is_err());
+            let nonces = NonceStore::under(dir.path());
+            nonces.record(&[4; 16], [7; 32]).unwrap();
+            nonces.record(&[4; 16], [7; 32]).unwrap();
+            assert!(nonces.record(&[4; 16], [8; 32]).is_err());
+            assert!(
+                dir.path()
+                    .join("enrollment-nonces")
+                    .join(hex::encode([4; 16]))
+                    .exists()
+            );
         }
         // Phase `approved_home_peer_registration_exposes_distinct_stable_node_ids`.
         {
@@ -4117,7 +4260,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
             let cert = payload(&root).cert;
-            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
+            register_home_peer(dir.path(), &cert, [8; 32], &[2, 9], None).unwrap();
             let json: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(tilo_relay::home_peer_registry_path(dir.path())).unwrap(),
             )
@@ -4143,7 +4286,9 @@ mod tests {
             let path = tilo_relay::home_peer_registry_path(dir.path());
             tilo_files::native::atomic::write_creating_parent(&path, b"not json").unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-            assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
+            assert!(
+                register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2], None).is_err()
+            );
             assert_eq!(std::fs::read(&path).unwrap(), b"not json");
         }
         // Phase `dropped_response_can_be_retried_with_the_same_authenticated_ack`.
@@ -4168,13 +4313,19 @@ mod tests {
             let response =
                 postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
 
-            // No ACK reached the first approver, so it did not consume the
-            // admission nonce. A restarted join/approve exchange may authenticate
-            // the same device and finish registration idempotently.
-            assert!(!dir.path().join("enrollment-nonces").exists());
+            // The approver spent the nonce for this device when it redeemed
+            // the token, before the response first left. However many ACKs
+            // are lost, the device finishes with that same response and
+            // records the nonce idempotently; no other device can.
+            let nonces = NonceStore::under(dir.path());
+            nonces
+                .claim(&[3; 16], device.verifying_key().to_bytes())
+                .unwrap();
             let ack = make_ack(&response, [3; 16], &device).unwrap();
             verify_ack(&ack, &response, [3; 16], device.verifying_key().to_bytes()).unwrap();
-            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
+            nonces
+                .record(&[3; 16], device.verifying_key().to_bytes())
+                .unwrap();
             let finalized =
                 make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root)
                     .unwrap();
@@ -4186,8 +4337,10 @@ mod tests {
                 root.verifying_key().to_bytes(),
             )
             .unwrap();
-            consume_nonce(dir.path(), &[3; 16], device.verifying_key().to_bytes()).unwrap();
-            assert!(consume_nonce(dir.path(), &[3; 16], [6; 32]).is_err());
+            nonces
+                .record(&[3; 16], device.verifying_key().to_bytes())
+                .unwrap();
+            assert!(nonces.record(&[3; 16], [6; 32]).is_err());
         }
     }
 

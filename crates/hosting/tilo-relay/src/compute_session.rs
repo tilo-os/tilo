@@ -6,11 +6,16 @@
 //!
 //! The first stream of a connection is the control stream: the handshake,
 //! then [`ComputeEnvelope`]s. Compute jobs and worker advertisements are the
-//! relay owner's devices' alone. Every further stream is one environment
+//! relay owner's devices' alone, as the host's authority decides
+//! (`HostOperation::ComputeControl`). Every further stream is one environment
 //! session, legacy-windows view or legacy launch
 //! ([`crate::environment_routing`]); those are open to any device the trust
-//! policy admits, and each is admitted by its workspace's membership.
+//! policy admits, and each is admitted by its workspace's membership. A
+//! further stream may also carry one content digest a job binds to the
+//! device asking for it ([`crate::compute_content`]), which is compute
+//! control again: the owner's devices only.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,21 +24,27 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
 use thiserror::Error;
 use tilo_clock::{unix_now_ms, unix_now_ns};
+use tilo_relay_protocol::environment::{ENVIRONMENT_PROTOCOL_VERSION, WorkerStreamOpen};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::compute::ComputeJobSpec;
+use crate::compute::{ComputeContentStore, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES};
+use crate::compute_content::{
+    ContentFetchError, answer_content, answer_proof, fetch_job_content, refuse, refuse_proof,
+};
 use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
-    MAX_COMPUTE_FRAME_BYTES,
+    MAX_COMPUTE_FRAME_BYTES, WORKER_LOST, WORKER_NOT_ADMITTED, WORKER_REVOKED,
 };
+use crate::environment_host::{EnvironmentStreamError, read_message};
 use crate::frame::{read_frame, write_frame};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::room_access::{self, Decision, DenyReason, RelayTrust, RoomOperation};
 use crate::workspace::SharedWorkspace;
+use tilo_lock::MutexRecover as _;
 
 const COMPUTE_OUTBOUND_CAPACITY: usize = 32;
 static COMPUTE_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -154,7 +165,8 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let owner = peer.user_public_key == protocol.identity.user_public_key;
+    let host_person = crate::host_authority::HostOperation::ComputeControl
+        .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
         protocol.routing(),
         peer.clone(),
@@ -164,6 +176,14 @@ async fn run_server_session(
     let (outbound, mut outbound_rx) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
     let (disconnect, mut disconnect_rx) = mpsc::channel(1);
     let mut attached = Vec::new();
+    // Workspaces this session offered compute in: the only ones whose jobs
+    // it can hold when it ends.
+    let mut advertised = BTreeSet::new();
+    // Workspaces that stopped admitting the device while it was attached,
+    // and the code its jobs there end with.
+    let mut refused = HashMap::new();
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
 
     let outcome = async {
         loop {
@@ -173,15 +193,31 @@ async fn run_server_session(
                 _ = disconnect_rx.recv() => {
                     break Err(ComputeSessionError::Protocol("outbound compute queue saturated".into()));
                 }
+                // The epoch's sender is a process-wide static and never
+                // closes, so this cannot spin on an error.
+                _ = authority.changed() => {
+                    refused = refused_workspaces(&protocol, &peer, &attached, &mut send).await;
+                    if !refused.is_empty() {
+                        break Err(ComputeSessionError::Protocol(
+                            "the compute device is no longer admitted".into(),
+                        ));
+                    }
+                }
                 outgoing = outbound_rx.recv() => {
                     let Some(outgoing) = outgoing else { break Ok(()); };
                     write_compute(&mut send, &outgoing).await?;
                 }
                 incoming = read_compute(&mut receive) => {
                     let incoming = incoming?;
-                    if !owner {
+                    // The host's person drives its compute, never an agent
+                    // of theirs: asked per message, so an agent registered
+                    // after its device connected is refused from then on.
+                    let controls =
+                        host_person && !protocol.trust().is_agent(&peer.device_public_key);
+                    if !controls {
                         // Another user's device reaches environments on its
-                        // own streams; the control stream is the owner's.
+                        // own streams; the control stream is the host's
+                        // person's.
                         if matches!(incoming, ComputeEnvelope::Ping) {
                             write_compute(&mut send, &ComputeEnvelope::Pong).await?;
                             continue;
@@ -211,9 +247,14 @@ async fn run_server_session(
                             "compute message sent before workspace attach".into(),
                         ));
                     }
+                    let advertising = match &incoming {
+                        ComputeEnvelope::Advertise { workspace_id, .. } => Some(*workspace_id),
+                        _ => None,
+                    };
                     if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
                         write_compute(&mut send, &reply).await?;
                     }
+                    advertised.extend(advertising);
                 }
             }
         }
@@ -222,14 +263,100 @@ async fn run_server_session(
 
     for workspace_id in attached {
         if let Some(workspace) = find_workspace(&protocol.workspaces, workspace_id).await {
-            workspace
-                .lock()
-                .await
-                .compute
-                .detach(&peer.device_public_key);
+            // A worker's jobs end with it, truthfully and now: the
+            // requester is told why instead of waiting out each job.
+            let lost = advertised
+                .contains(&workspace_id)
+                .then(|| refused.get(&workspace_id).copied().unwrap_or(WORKER_LOST));
+            release_workspace(workspace, peer.device_public_key, &disconnect, lost).await;
         }
     }
     outcome
+}
+
+/// The attached workspaces that no longer admit `peer` to compute, each
+/// with the code its jobs end with. Each refusal is told to the peer on
+/// `send`, best effort: the session ends next.
+async fn refused_workspaces(
+    protocol: &ComputeProtocol,
+    peer: &AuthenticatedPeer,
+    attached: &[u64],
+    send: &mut SendStream,
+) -> HashMap<u64, &'static str> {
+    let trust = protocol.trust();
+    let mut refused = HashMap::new();
+    for workspace_id in attached {
+        let Some(workspace) = find_workspace(&protocol.workspaces, *workspace_id).await else {
+            continue;
+        };
+        let decision = room_access::decide(
+            &*workspace.lock().await,
+            &trust,
+            peer,
+            RoomOperation::Compute,
+        );
+        if let Decision::Deny(reason) = decision {
+            let code = match reason {
+                DenyReason::Revoked => WORKER_REVOKED,
+                _ => WORKER_NOT_ADMITTED,
+            };
+            refused.insert(*workspace_id, code);
+            let _ = write_compute(
+                send,
+                &ComputeEnvelope::NotAuthorised {
+                    workspace_id: *workspace_id,
+                    reason: reason.reason().into(),
+                },
+            )
+            .await;
+        }
+    }
+    refused
+}
+
+/// Release `device`'s compute state in `workspace` when this session (whose
+/// disconnect signal is `disconnect`) still holds it, and when it was
+/// working there, end its jobs with `lost`. The job scan is blocking I/O,
+/// so it runs on the blocking pool with the workspace lock moved along.
+async fn release_workspace(
+    workspace: SharedWorkspace,
+    device: [u8; 32],
+    disconnect: &mpsc::Sender<()>,
+    lost: Option<&'static str>,
+) {
+    let Some(code) = lost else {
+        workspace
+            .lock()
+            .await
+            .compute
+            .detach_session(&device, disconnect);
+        return;
+    };
+    let mut runtime = workspace.lock_owned().await;
+    let disconnect = disconnect.clone();
+    let released = tokio::task::spawn_blocking(move || {
+        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *runtime;
+        if !compute.detach_session(&device, &disconnect) {
+            return Ok(0);
+        }
+        compute.fail_worker_jobs(store, &device, code, &mut next_queue_sequence)
+    })
+    .await;
+    match released {
+        Ok(Ok(0)) => {}
+        Ok(Ok(ended)) => tracing::info!(
+            worker = %hex::encode(device),
+            ended,
+            code,
+            "ended a departed worker's compute jobs"
+        ),
+        Ok(Err(error)) => tracing::warn!(
+            worker = %hex::encode(device),
+            %error,
+            "could not end a departed worker's compute jobs"
+        ),
+        Err(_) => tracing::warn!("ending a departed worker's compute jobs panicked"),
+    }
 }
 
 /// Serve every further stream of an authenticated connection.
@@ -560,9 +687,87 @@ pub struct ComputeClient {
     relay_peer: AuthenticatedPeer,
     own_device: [u8; 32],
     send: SendStream,
-    receive: RecvStream,
+    /// What the control stream delivered, read by a task of the client's own: a frame
+    /// is never half-read by a [`Self::receive`] that was cancelled.
+    deliveries: mpsc::Receiver<Result<ComputeEnvelope, ComputeSessionError>>,
+    /// Reads the control stream while the client lives.
+    _reader: AbortOnDrop,
     connection: Connection,
     endpoint: Endpoint,
+    /// Jobs this client submitted that have not ended, by id: what their
+    /// worker may fetch from it.
+    submitted: SubmittedJobs,
+    /// Serves those inputs while the client lives.
+    serving: Option<AbortOnDrop>,
+}
+
+/// What a submitted job lets its worker fetch from the requester.
+struct SubmittedJob {
+    workspace_id: u64,
+    worker: [u8; 32],
+    inputs: BTreeSet<[u8; 32]>,
+}
+
+type SubmittedJobs = Arc<std::sync::Mutex<HashMap<[u8; 16], SubmittedJob>>>;
+
+/// Answer one relay-opened stream on a requester's connection, for a job
+/// this requester submitted, to that job's worker, from `inputs`: an input's
+/// bytes, or a proof that this device holds them.
+async fn serve_input(
+    inputs: &Arc<dyn ComputeContentStore>,
+    submitted: &SubmittedJobs,
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+) -> Result<(), EnvironmentStreamError> {
+    let Some(open) = read_message::<_, WorkerStreamOpen>(receive).await? else {
+        return Ok(());
+    };
+    // A requester hosts nothing else on its compute connection.
+    let (version, workspace_id, asker, job_id, digest, nonce) = match open {
+        WorkerStreamOpen::ComputeContent {
+            version,
+            workspace_id,
+            asker,
+            job_id,
+            digest,
+        } => (version, workspace_id, asker, job_id, digest, None),
+        WorkerStreamOpen::ComputeContentProof {
+            version,
+            workspace_id,
+            asker,
+            job_id,
+            digest,
+            nonce,
+        } => (version, workspace_id, asker, job_id, digest, Some(nonce)),
+        _ => return Ok(()),
+    };
+    // The relay already checked the job binds this digest to this worker;
+    // the requester checks again against what it actually submitted.
+    let bound = version == ENVIRONMENT_PROTOCOL_VERSION
+        && submitted.lock_recover().get(&job_id).is_some_and(|job| {
+            job.workspace_id == workspace_id
+                && job.worker == asker.device
+                && job.inputs.contains(&digest)
+        });
+    if !bound {
+        return match nonce {
+            Some(_) => refuse_proof(send, "not_authorised").await,
+            None => refuse(send, "not_authorised").await,
+        };
+    }
+    let inputs = Arc::clone(inputs);
+    let (found, locator) = tokio::task::spawn_blocking(move || {
+        let found = inputs.get(digest);
+        let locator = nonce.and_then(|_| inputs.locator(digest));
+        (found, locator)
+    })
+    .await
+    .unwrap_or_else(|_| (Err("input read panicked".into()), None));
+    match nonce {
+        // Proving reads the bytes as serving would, but sends none.
+        Some(nonce) => answer_proof(send, (digest, nonce), found, locator).await,
+        None => answer_content(send, digest, found).await,
+    }
 }
 
 /// One received compute message and its optional durable delivery token.
@@ -623,14 +828,103 @@ impl ComputeClient {
         }
         let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
+        let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
+        let reader = AbortOnDrop(tokio::spawn(async move {
+            loop {
+                let read = read_compute(&mut receive).await;
+                let ended = read.is_err();
+                if delivered.send(read).await.is_err() || ended {
+                    break;
+                }
+            }
+        }));
         Ok(Self {
             relay_peer,
             own_device,
             send,
-            receive,
+            deliveries,
+            _reader: reader,
             connection,
             endpoint,
+            submitted: Arc::default(),
+            serving: None,
         })
+    }
+
+    /// Serve the inputs of the jobs this client [`submit`](Self::submit)s
+    /// from `inputs`, this device's workspace content, until the client is
+    /// dropped. Only a submitted, unfinished job's worker gets a digest,
+    /// and only one that job lists: the worker reads exactly what this
+    /// device chose to hand it.
+    pub fn serve_inputs(&mut self, inputs: Arc<dyn ComputeContentStore>) {
+        let connection = self.connection.clone();
+        let submitted = Arc::clone(&self.submitted);
+        self.serving = Some(AbortOnDrop(tokio::spawn(async move {
+            while let Ok((mut send, mut receive)) = connection.accept_bi().await {
+                let inputs = Arc::clone(&inputs);
+                let submitted = Arc::clone(&submitted);
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        serve_input(&inputs, &submitted, &mut send, &mut receive).await
+                    {
+                        tracing::debug!(%error, "compute input stream ended");
+                    }
+                    let _ = send.finish();
+                });
+            }
+        })));
+    }
+
+    /// Fetch the bytes of `digest`, which job `job_id` binds to this
+    /// device: an output of a job it submitted, or an input of a job it
+    /// runs. See [`fetch_job_content`].
+    ///
+    /// # Errors
+    ///
+    /// As [`fetch_job_content`].
+    pub async fn fetch_content(
+        &self,
+        workspace_id: u64,
+        job_id: [u8; 16],
+        digest: [u8; 32],
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, ContentFetchError> {
+        fetch_job_content(&self.connection, workspace_id, job_id, digest, max_bytes).await
+    }
+
+    /// Fetch every output a completed job reported into `into`, this
+    /// device's workspace content, and return how many bytes arrived.
+    ///
+    /// # Errors
+    ///
+    /// The first output that could not be fetched or kept.
+    pub async fn retrieve_outputs(
+        &self,
+        binding: &ComputeJobBinding,
+        outputs: &[[u8; 32]],
+        into: &dyn ComputeContentStore,
+    ) -> Result<u64, ContentFetchError> {
+        let mut received = 0_u64;
+        for digest in outputs {
+            let bytes = self
+                .fetch_content(
+                    binding.workspace_id,
+                    binding.job_id,
+                    *digest,
+                    MAX_COMPUTE_OUTPUT_BYTES,
+                )
+                .await?;
+            into.put(*digest, &bytes)
+                .map_err(ContentFetchError::Store)?;
+            received = received.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        Ok(received)
+    }
+
+    /// The certified device this client authenticated as.
+    #[must_use]
+    pub const fn own_device(&self) -> [u8; 32] {
+        self.own_device
     }
 
     #[must_use]
@@ -657,11 +951,17 @@ impl ComputeClient {
 
     /// Receive the next typed compute envelope.
     ///
+    /// Cancel-safe: the control stream is read by a task of the client's
+    /// own, so a `receive` dropped in a `select!` or a timeout loses nothing.
+    ///
     /// # Errors
     ///
-    /// Returns an error on EOF, an oversize frame, or invalid encoding.
+    /// Returns an error on EOF, an oversize frame, or invalid encoding, and
+    /// once the stream has ended.
     pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
-        let envelope = read_compute(&mut self.receive).await?;
+        let envelope = self.deliveries.recv().await.ok_or_else(|| {
+            ComputeSessionError::Connection("the compute control stream has ended".into())
+        })??;
         if let ComputeEnvelope::Delivery {
             workspace_id,
             sequence,
@@ -677,6 +977,12 @@ impl ComputeClient {
                 return Err(ComputeSessionError::Protocol(
                     "invalid nested compute delivery".into(),
                 ));
+            }
+            // A job that ended needs no more inputs from this requester.
+            if let ComputeEnvelope::Result { result } = &*message
+                && result.binding.requester == self.own_device
+            {
+                self.submitted.lock_recover().remove(&result.binding.job_id);
             }
             return Ok(ComputeDelivery {
                 workspace_id: Some(workspace_id),
@@ -732,6 +1038,14 @@ impl ComputeClient {
                 "compute request does not belong to this certified client".into(),
             ));
         }
+        self.submitted.lock_recover().insert(
+            spec.job_id,
+            SubmittedJob {
+                workspace_id: spec.workspace_id,
+                worker: spec.worker,
+                inputs: spec.inputs.iter().copied().collect(),
+            },
+        );
         self.send(&ComputeEnvelope::Request { spec: spec.clone() })
             .await
     }

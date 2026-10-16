@@ -88,7 +88,7 @@ mod tests {
                 Action::SetValue("second".into()),
             ),
         ];
-        let before = super::super::settle_mark(&doc);
+        let before = crate::doc::settle_mark(&doc);
         for (control, action) in &mut controls {
             control.sync(&doc, &ROOT);
             assert!(control.perform_action(
@@ -98,7 +98,7 @@ mod tests {
                 &ROOT
             ));
             assert_eq!(
-                super::super::settle_mark(&doc),
+                crate::doc::settle_mark(&doc),
                 before,
                 "a value control cannot write its read source"
             );

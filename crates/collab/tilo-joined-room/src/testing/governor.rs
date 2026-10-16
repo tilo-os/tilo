@@ -6,17 +6,17 @@
 //! admits the member and returns the room's full checkpoint. Its outgoing
 //! publications are that checkpoint, re-signed on every mutation and refresh.
 use ed25519_dalek::SigningKey;
+use neighbour_wire::{NeighbourMsg, Retention};
 use std::{collections::BTreeMap, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_peer_state::{
-    GovernedAccess, NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
         JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
         WorkspaceDelegation, WorkspaceDelegationPermissions,
     },
     seed_room,
-    transport::Retention,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -117,13 +117,14 @@ impl TestGovernor {
             &governor_key,
         )
         .unwrap();
-        peer.admit_certificate_with_workspace_delegation(
-            host.clone(),
-            delegation.clone(),
-            &governor_key,
-            now,
-        )
-        .unwrap();
+        peer.governance_mut()
+            .admit_certificate_with_workspace_delegation(
+                host.clone(),
+                delegation.clone(),
+                &governor_key,
+                now,
+            )
+            .unwrap();
         let mut governor = Self {
             peer,
             governor_key,
@@ -222,12 +223,14 @@ impl TestGovernor {
             None,
             &self.governor_key,
         )?;
-        self.peer.admit_certificate_with_workspace_delegation(
-            host.clone(),
-            delegation.clone(),
-            &self.governor_key,
-            SystemTime::now(),
-        )?;
+        self.peer
+            .governance_mut()
+            .admit_certificate_with_workspace_delegation(
+                host.clone(),
+                delegation.clone(),
+                &self.governor_key,
+                SystemTime::now(),
+            )?;
         self.host = host;
         self.host_key = host_key;
         self.delegation = Some(delegation);
@@ -327,7 +330,7 @@ impl TestGovernor {
     /// # Errors
     /// The room's governance is missing.
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
-        self.peer.governed_access(now)
+        self.peer.governance().governed_access(now)
     }
 
     /// The ids of the grants naming the agent `agent` in this governor's
@@ -357,7 +360,9 @@ impl TestGovernor {
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
         let now = SystemTime::now();
         let mut candidate = self.peer.clone();
-        candidate.reconcile_media_governance(&self.governor_key, now)?;
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&self.governor_key, now)?;
         let admitted_generation = candidate
             .admitted_room()
             .map(tilo_peer_state::durability::entries)
@@ -518,7 +523,9 @@ impl TestGovernor {
             ns(now),
         )?;
         let mut candidate = self.peer.clone();
-        candidate.admit_invited_member(&redemption, &self.host_key, now)?;
+        candidate
+            .governance_mut()
+            .admit_invited_member(&redemption, &self.host_key, now)?;
         let previous = std::mem::replace(&mut self.peer, candidate);
         if let Err(error) = self.refresh_checkpoint() {
             self.peer = previous;

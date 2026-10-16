@@ -16,7 +16,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::retained::{GenerationGc, create_dir, current, durable_write, sync_dir};
+use super::retained::{create_dir, current, durable_write, sync_dir};
 use super::{RETAINED_DIR, StoreError, WorkspaceStore};
 
 /// One retained file of a channel, read back.
@@ -24,7 +24,8 @@ use super::{RETAINED_DIR, StoreError, WorkspaceStore};
 pub(crate) struct ChannelEntry {
     /// Authenticated author of the lineage it is in.
     pub author: [u8; 32],
-    /// The retained co-edit body (for documents, a `NeighbourMsg`).
+    /// The retained co-edit body (for documents, the desktop's peer-sync
+    /// message, which only the injected `ShellPayloads` adapter reads).
     pub body: Vec<u8>,
     /// Digest of the whole file, which [`WorkspaceStore::replace_channel`]
     /// removes by.
@@ -175,6 +176,8 @@ impl WorkspaceStore {
         remove: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Replaced, StoreError> {
         self.tail_cache.invalidate();
+        // Rewrites lineages of every author on the channel.
+        self.forget_channel_listing(channel);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let mut outcome = Replaced::default();
@@ -199,7 +202,7 @@ impl WorkspaceStore {
                 .collect();
             let offset = written.len().saturating_sub(1);
             outcome.kept = outcome.kept.saturating_add(written.len());
-            rewrite(&lineage, &written, &survivors, offset)?;
+            rewrite(self, &lineage, &written, &survivors, offset)?;
             done.insert(lineage);
         }
         for (lineage, _) in self.channel_lineages(channel)? {
@@ -216,7 +219,7 @@ impl WorkspaceStore {
             let before = outcome.removed;
             let kept = survivors(&active, remove, &mut outcome)?;
             if outcome.removed != before {
-                rewrite(&lineage, &[], &kept, 0)?;
+                rewrite(self, &lineage, &[], &kept, 0)?;
             }
         }
         Ok(outcome)
@@ -243,8 +246,10 @@ fn survivors(
 }
 
 /// Switch `lineage` to a new generation holding `written` and then the
-/// `survivors` (hard links, in order), and collect the old generations.
+/// `survivors` (hard links, in order), and collect the old generations
+/// (later, while a capture is leased: [`WorkspaceStore::collect_or_defer`]).
 fn rewrite(
+    store: &WorkspaceStore,
     lineage: &Path,
     written: &[(String, Vec<u8>)],
     survivors: &[PathBuf],
@@ -270,11 +275,12 @@ fn rewrite(
     }
     sync_dir(&generation)?;
     durable_write(&lineage.join("CURRENT"), name.as_bytes())?;
-    let mut gc = GenerationGc::new(lineage.to_path_buf())?;
-    while matches!(
-        gc.step(super::bounded::WorkLimit::default())?,
-        super::bounded::Step::More
-    ) {}
+    if let Some(mut gc) = store.collect_or_defer(lineage.to_path_buf(), false)? {
+        while matches!(
+            gc.step(super::bounded::WorkLimit::default())?,
+            super::bounded::Step::More
+        ) {}
+    }
     Ok(())
 }
 

@@ -251,15 +251,21 @@ impl ActionCatalog {
         results: &[SearchResult],
         visible: &[usize],
     ) -> Vec<Option<ActionHierarchy>> {
+        // Each provider once by id (the first registered, as a scan would
+        // find), not a scan of the registry per row.
+        let mut providers: std::collections::HashMap<&str, &dyn super::SearchProvider> =
+            std::collections::HashMap::new();
+        for provider in registry.providers_iter() {
+            providers.entry(provider.id()).or_insert(provider);
+        }
         let mut hierarchies = vec![None; results.len()];
         for &index in visible {
             let Some((result, hierarchy)) = results.get(index).zip(hierarchies.get_mut(index))
             else {
                 continue;
             };
-            *hierarchy = registry
-                .providers_iter()
-                .find(|provider| provider.id() == result.provider_id)
+            *hierarchy = providers
+                .get(result.provider_id.as_str())
                 .and_then(|provider| provider.action_hierarchy(&result.id));
         }
         hierarchies
@@ -314,6 +320,54 @@ impl ActionCatalog {
 
     pub fn enumerate(&self) -> Vec<ExportedAction> {
         self.enumerate_rows(0..self.visible.len())
+    }
+
+    /// Narrow and order the visible rows for a caller that reads the
+    /// listing as a whole (an agent over the control socket), where the
+    /// palette's ranking by score would put every file whose path contains
+    /// the word beside the one app that offers the action.
+    ///
+    /// With no `kinds`, every kind is kept except files and folders, which
+    /// stay out unless `files`: a checkout's worth of `markdown.rs` is not
+    /// what a search for an app's action means. With `kinds` (`application`,
+    /// `action`, `note`, `file`, …; singular or plural, any case) only those
+    /// are kept, files included when named. The rows left are ordered live
+    /// app resources and their actions first, then by kind in the palette's
+    /// own order, each group keeping its relevance order.
+    pub fn arrange(&mut self, kinds: &[String], files: bool) {
+        fn normal(name: &str) -> String {
+            let mut name: String = name
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect();
+            if name.ends_with('s') {
+                name.pop();
+            }
+            name
+        }
+        let wanted: Vec<String> = kinds.iter().map(|kind| normal(kind)).collect();
+        let results = &self.results;
+        self.visible.retain(|&index| {
+            results.get(index).is_some_and(|result| {
+                if wanted.is_empty() {
+                    files || !matches!(result.kind, ResourceKind::File | ResourceKind::Folder)
+                } else {
+                    wanted.contains(&normal(result.kind.id()))
+                }
+            })
+        });
+        self.visible.sort_by_key(|&index| {
+            results.get(index).map_or((u8::MAX, u8::MAX), |result| {
+                (
+                    u8::from(
+                        result.provider_id
+                            != crate::shell::search::providers::live_app_actions::PROVIDER_ID,
+                    ),
+                    result.kind.sort_key().0,
+                )
+            })
+        });
     }
 
     /// The visible actions' addresses, in [`Self::enumerate`]'s order,
@@ -637,6 +691,82 @@ mod tests {
         tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
+    }
+
+    #[test]
+    fn an_agents_listing_ranks_apps_first_and_leaves_files_out_until_asked() {
+        let row = |kind: ResourceKind, provider: &str, id: &str| {
+            SearchResult::nullary(kind, provider, id, id, None, 0, |_, _, _| {})
+        };
+        let results = [
+            row(ResourceKind::File, "files", "/src/a/markdown.rs"),
+            row(ResourceKind::Folder, "files", "/src/a"),
+            row(ResourceKind::Application, "applications", "so.tilo.notes"),
+            row(ResourceKind::Action, "actions", "window.new"),
+            row(ResourceKind::Action, "app-actions", "notes.new-page"),
+            row(ResourceKind::File, "files", "/src/b/markdown.rs"),
+            row(ResourceKind::Note, "notes", "todo"),
+        ];
+        let catalog = || {
+            let visible = (0..results.len()).collect();
+            ActionCatalog {
+                results: results
+                    .iter()
+                    .map(|result| {
+                        SearchResult::nullary(
+                            result.kind.clone(),
+                            result.provider_id.clone(),
+                            result.id.clone(),
+                            result.title.clone(),
+                            None,
+                            0,
+                            |_, _, _| {},
+                        )
+                    })
+                    .collect(),
+                visible,
+                hierarchies: vec![None; results.len()],
+                completion: super::super::QueryCompletion::default(),
+            }
+        };
+        let ids = |catalog: &ActionCatalog| -> Vec<String> {
+            catalog.addresses().map(|(_, id)| id.to_owned()).collect()
+        };
+
+        let mut by_default = catalog();
+        by_default.arrange(&[], false);
+        assert_eq!(
+            ids(&by_default),
+            ["notes.new-page", "window.new", "so.tilo.notes", "todo"],
+            "live app rows lead, then kinds in the palette's order, and no file"
+        );
+        let mut with_files = catalog();
+        with_files.arrange(&[], true);
+        assert_eq!(
+            ids(&with_files),
+            [
+                "notes.new-page",
+                "window.new",
+                "so.tilo.notes",
+                "todo",
+                "/src/a/markdown.rs",
+                "/src/b/markdown.rs",
+                "/src/a",
+            ],
+            "files come last and keep their relevance order"
+        );
+        let mut files_only = catalog();
+        files_only.arrange(&["File".into()], false);
+        assert_eq!(
+            ids(&files_only),
+            ["/src/a/markdown.rs", "/src/b/markdown.rs"]
+        );
+        let mut narrowed = catalog();
+        narrowed.arrange(&["applications".into(), "note".into()], false);
+        assert_eq!(ids(&narrowed), ["so.tilo.notes", "todo"]);
+        let mut nothing = catalog();
+        nothing.arrange(&["no-such-kind".into()], true);
+        assert!(nothing.is_empty());
     }
 
     fn registry_with_actions() -> SearchRegistry {
@@ -988,6 +1118,7 @@ mod tests {
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             let ran = std::rc::Rc::clone(&self.ran);
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Document,
                 provider_id: "params".to_string(),
@@ -1030,6 +1161,7 @@ mod tests {
 
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "receipts".into(),
@@ -1209,6 +1341,7 @@ mod tests {
             let polls = std::rc::Rc::clone(&self.polls);
             let refuse = self.refuse;
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().into(),

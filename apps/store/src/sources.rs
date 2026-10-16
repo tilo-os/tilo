@@ -7,7 +7,7 @@
 
 use registry_types::{RegistryImageKind, RegistryVersion, TappArtifact};
 
-use crate::flathub_client::{AppStreamRecord, PopularEntry};
+use crate::flathub_client::AppStreamRecord;
 use crate::model::{
     BotListing, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
@@ -22,6 +22,7 @@ use package_store::InstalledPackage;
 ///
 /// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
+#[cfg(test)]
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
@@ -164,33 +165,48 @@ fn preferred_locale() -> String {
         .unwrap_or_else(|| "en".into())
 }
 
+/// The source label of an installed Tilo app no repository currently
+/// describes; the details page explains why, once.
+pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
+
 /// Turn an installed Tilo package into a local-only Store row.
 ///
-/// A verified catalogue entry normally supplies the richer description and
+/// A verified catalogue entry normally supplies the description, artwork and
 /// update metadata. That entry is not guaranteed to be reachable forever,
 /// though: a user must still be able to launch, pin, or remove software that
 /// is already on their device while its registry is offline or has withdrawn
-/// it. This deliberately publishes no download URL or claimed latest version,
-/// so the UI cannot offer an update based on stale or invented metadata.
-pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
+/// it. The package's own signed manifest (`about`) still names and files the
+/// app, and the installed tree has a size, so the row says what the app is.
+/// It publishes no download URL or claimed latest version, so the UI cannot
+/// offer an update based on stale or invented metadata.
+pub fn installed_tilo_to_store_item(
+    entry: &InstalledPackage,
+    about: Option<&app_host::client::PackageAbout>,
+) -> StoreItem {
+    let locale = preferred_locale();
     StoreItem {
         bot: None,
         id: entry.id.clone(),
-        // Package ids are the only durable local display metadata available
-        // from app-host's list endpoint. Do not manufacture a publisher name
-        // or copy one from an unrelated catalogue row.
-        name: entry.id.clone(),
-        description: "Installed on this device. Catalogue details are unavailable.".into(),
+        name: about.map_or_else(
+            || package_store::display_name_for_package_id(&entry.id),
+            |about| about.name_for(&locale).to_owned(),
+        ),
+        // The manifest has no description. Saying so on every row is noise;
+        // the details page names the repository that has not answered.
+        description: String::new(),
         tagline: String::new(),
         supported_languages: Vec::new(),
-        categories: Vec::new(),
+        categories: about
+            .and_then(|about| about.category.clone())
+            .into_iter()
+            .collect(),
         icon_url: None,
         screenshot_urls: Vec::new(),
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Tilo {
-            registry_name: "Installed on this device".into(),
+            registry_name: INSTALLED_ON_DEVICE.into(),
         },
         // app-host accepts only packages whose signature and declared package
         // identity verified at installation. This is not a current registry
@@ -201,7 +217,8 @@ pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: None,
-            size_bytes: 0,
+            size_bytes: entry.payload_bytes,
+            runtime: None,
         }],
         publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
             .then(|| entry.publisher_key_hex.clone()),
@@ -224,52 +241,7 @@ fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemV
         download_url: Some(tapp.tapp_url.clone()),
         root_hash_hex: Some(tapp.tapp_root_hash_hex.clone()),
         size_bytes: tapp.tapp_size_bytes,
-    }
-}
-
-/// Convert a Flathub popular entry (id-only) into a placeholder
-/// store item — the store shows the id + a "Loading…" description
-/// until a follow-up `fetch_appstream` populates the record.
-///
-/// `installed_flatpaks` is the `(app_id, version)` snapshot from
-/// the app-host service.
-pub fn flathub_placeholder_to_item(
-    p: &PopularEntry,
-    installed_flatpaks: &[(String, String)],
-) -> StoreItem {
-    let installed = installed_flatpaks
-        .iter()
-        .find(|(id, _)| id == &p.app_id)
-        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
-            version: v.clone(),
-            available: String::new(),
-            pinned: false,
-            user_managed: true,
-        });
-    StoreItem {
-        bot: None,
-        id: p.app_id.clone(),
-        name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
-        description: String::new(),
-        tagline: String::new(),
-        supported_languages: Vec::new(),
-        categories: Vec::new(),
-        icon_url: None,
-        screenshot_urls: Vec::new(),
-        homepage_url: None,
-        source_url: None,
-        install_ref_path: None,
-        source: StoreSource::Flathub,
-        trust: StoreTrust::Flathub,
-        versions: vec![StoreItemVersion {
-            version: String::new(),
-            released_at_unix: 0,
-            download_url: None,
-            root_hash_hex: None,
-            size_bytes: 0,
-        }],
-        publisher_pubkey_hex: None,
-        installed,
+        runtime: tapp.target.runtime.clone(),
     }
 }
 
@@ -299,6 +271,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed: InstalledState::Installed {
@@ -452,6 +425,7 @@ pub fn flathub_record_to_item(
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed,
@@ -505,7 +479,7 @@ pub fn distinct_categories(items: &[StoreItem]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::registry_client::TrustLevel;
     use ed25519_dalek::SigningKey;
@@ -583,6 +557,22 @@ mod tests {
     }
 
     #[test]
+    fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
+        let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
+        let runtime = "tilo-runtime/2026.10.10-chromium";
+        let version = &mut entry.versions[0];
+        version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
+        let stored = tilo_version_to_store(version, version.tapp().unwrap());
+        assert_eq!(stored.runtime.as_deref(), Some(runtime));
+        let item = tilo_to_store_item(&verified(entry), "Tilo main", &[]);
+        assert!(item.bot.is_none());
+        assert_eq!(
+            item.action_kind(true),
+            crate::model::ActionKind::RuntimeInstall
+        );
+    }
+
+    #[test]
     fn native_catalogue_matches_cli_target_channel_and_version_selection() {
         let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
         let mut foreign = entry.versions[0].clone();
@@ -605,7 +595,12 @@ mod tests {
         );
     }
 
-    fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
+    pub(crate) fn tilo_entry(
+        id: &str,
+        name: &str,
+        version: &str,
+        publisher: [u8; 32],
+    ) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
             kind: registry_types::EntryKind::App,
@@ -645,7 +640,7 @@ mod tests {
         e
     }
 
-    fn installed_package(
+    pub(crate) fn installed_package(
         id: impl Into<String>,
         version: impl Into<String>,
         publisher_key_hex: impl Into<String>,
@@ -713,7 +708,7 @@ mod tests {
         );
     }
 
-    fn verified(entry: RegistryEntry) -> VerifiedEntry {
+    pub(crate) fn verified(entry: RegistryEntry) -> VerifiedEntry {
         VerifiedEntry {
             entry,
             trust: TrustLevel::PublisherSigned,
@@ -776,14 +771,14 @@ mod tests {
 
         // Case `locally_installed_tilo_item_stays_actionable_without_catalogue_metadata`.
         {
-            let item = installed_tilo_to_store_item(&installed_package(
-                "so.tilo.offline",
-                "1.2.3",
-                "ab".repeat(32),
-                true,
-                true,
-            ));
-            assert_eq!(item.name, "so.tilo.offline");
+            let item = installed_tilo_to_store_item(
+                &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
+                None,
+            );
+            // Without a manifest the id still yields a readable name, never
+            // the raw reverse-DNS id or a sentence about missing metadata.
+            assert_eq!(item.name, "Offline");
+            assert!(item.description.is_empty());
             assert!(item.installed.is_installed());
             assert!(item.installed.is_pinned());
             assert!(!item.installed.update_available());
@@ -812,16 +807,27 @@ mod tests {
     /// Merging, category dedup and `AppStream` descriptions.
     #[test]
     fn source_merging_dedups_and_describes() {
+        let flathub_item = |app_id: &str, name: &str| {
+            let record = AppStreamRecord {
+                app_id: app_id.into(),
+                name: name.into(),
+                summary: String::new(),
+                description: String::new(),
+                icon: None,
+                current_release_version: None,
+                categories: Vec::new(),
+                homepage: None,
+                urls: None,
+                screenshots: Vec::new(),
+            };
+            flathub_record_to_item(&record, &[])
+        };
         // Case `merge_dedups_by_name_tilo_wins`.
         {
             let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
             let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
             // Flathub carries a same-name item; it must be dropped.
-            let fh = PopularEntry {
-                app_id: "com.other.Notes".into(),
-                name: Some("Notes".into()),
-            };
-            let fh_item = flathub_placeholder_to_item(&fh, &[]);
+            let fh_item = flathub_item("com.other.Notes", "Notes");
             let merged = merge(vec![tilo], vec![fh_item]);
             assert_eq!(merged.len(), 1);
             assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
@@ -834,13 +840,7 @@ mod tests {
                 "Tilo main",
                 &[],
             );
-            let f = flathub_placeholder_to_item(
-                &PopularEntry {
-                    app_id: "org.videolan.VLC".into(),
-                    name: Some("VLC".into()),
-                },
-                &[],
-            );
+            let f = flathub_item("org.videolan.VLC", "VLC");
             let merged = merge(vec![q], vec![f]);
             assert_eq!(merged.len(), 2);
         }

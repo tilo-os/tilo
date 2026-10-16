@@ -102,6 +102,7 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
         }],
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     ws.strips.push(strip);
     let mut tree = WorkspaceTree::bootstrap_default();

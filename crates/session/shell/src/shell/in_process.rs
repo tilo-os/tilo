@@ -308,8 +308,13 @@ impl InProcessApps {
     /// from now on.
     #[must_use]
     pub fn reaching_broker(mut self, broker: SessionBroker) -> Self {
-        self.broker = Some(broker);
+        self.reach_broker(broker);
         self
+    }
+
+    /// [`Self::reaching_broker`] on apps already shared with a host.
+    pub fn reach_broker(&mut self, broker: SessionBroker) {
+        self.broker = Some(broker);
     }
 
     /// A collaboration manager for `component`, mounted in `room`, on the
@@ -1150,7 +1155,6 @@ mod tests {
             crate::shell::hosted_inputs::HostedDocument {
                 provider_id: "org.nirios.Editor",
                 path: file,
-                text: "moor at the east quay\n".into(),
             },
         );
         let editor = mount_tab(
@@ -1543,9 +1547,8 @@ mod tests {
                     );
                     break;
                 }
-                Err(tilo_actions::remote::ActionHostError::InvalidRequest { reason })
-                    if reason.contains("list it again") && std::time::Instant::now() < deadline => {
-                }
+                Err(tilo_actions::remote::ActionHostError::StaleRevision)
+                    if std::time::Instant::now() < deadline => {}
                 Err(error) => panic!("the new note was refused: {error:?}"),
             }
         }

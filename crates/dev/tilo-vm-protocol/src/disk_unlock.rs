@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 /// The unchanged console semantic operations carried by the authenticated admin route.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceActions {
     pub line: String,

@@ -153,6 +153,9 @@ struct TrustedServiceLaunch {
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
     continuation_instance: Option<u64>,
+    /// The broker's ticket for the launch that started this process: the
+    /// startup token the compositor gave it, never read back from the app.
+    launch_ticket: Option<u64>,
 }
 
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
@@ -189,6 +192,10 @@ fn register_launched_process(
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
+    // Its scope starts in the foreground tier; the focus policy keeps it
+    // there only until the window appears and settles.
+    #[cfg(target_os = "linux")]
+    ::launcher::priority::notify_launch(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.insert(
             pid,
@@ -251,13 +258,14 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 #[cfg(any(test, target_os = "linux"))]
 #[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
-    register_trusted_window_launch(pid, identity, None);
+    register_trusted_window_launch(pid, identity, None, None);
 }
 
 fn register_trusted_window_launch(
     pid: u32,
     identity: ServiceLaunchIdentity,
     continuation_instance: Option<u64>,
+    launch_ticket: Option<u64>,
 ) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
@@ -271,6 +279,7 @@ fn register_trusted_window_launch(
             identity,
             registered_at: Instant::now(),
             continuation_instance,
+            launch_ticket,
         },
     );
 }
@@ -335,6 +344,7 @@ pub(crate) fn authenticated_window_launch(
                 tilo_action_broker::services::AuthenticatedApplicationLaunch {
                     creation: launch.identity.application_creation.clone(),
                     continuation_instance: launch.continuation_instance,
+                    launch_ticket: launch.launch_ticket,
                 },
             );
         }
@@ -361,6 +371,7 @@ fn take_in_process_window_launch(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
             creation: launch.identity.application_creation,
             continuation_instance: launch.continuation_instance,
+            launch_ticket: None,
         },
     )
 }
@@ -462,6 +473,8 @@ pub fn windows_compat_entry_generation() -> u64 {
 
 #[cfg(any(test, target_os = "linux"))]
 fn unregister_launched_process(pid: u32) {
+    #[cfg(target_os = "linux")]
+    ::launcher::priority::notify_launch_exited(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
     }
@@ -950,6 +963,97 @@ impl LaunchError {
     }
 }
 
+/// Why a launch failed before the app's process existed, as a closed set the
+/// notification can name. `detail` on the event stays in the log; this is
+/// what the person reads, so a refusal is never reported as "the launcher is
+/// unavailable" unless the launcher really is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchFailure {
+    /// `tilo-launcher` is missing or its process could not be created.
+    LauncherUnavailable,
+    ProviderUnavailable,
+    NotInstalled,
+    NotAGuiApp,
+    NotAManagedService,
+    NotAuthorized,
+    NoDisplay,
+    NoWorkspace,
+    ShellOwnedIntent,
+    IdentityUnavailable,
+    RegistryUnreadable,
+    HostAppRefused,
+    /// The room's file permissions changed between choosing to open the app
+    /// and starting it, so the grants it was given no longer hold.
+    AuthorityChanged,
+    /// The room's file permissions were not published in time.
+    AuthorityTimedOut,
+    /// The sandbox's file permissions could not be supervised.
+    SandboxSupervision,
+    /// The previous copy of the app is still shutting down.
+    PreviousInstanceBusy,
+    /// Held launches released by a failed prerequisite and other causes with
+    /// no more specific copy.
+    Other,
+}
+
+impl LaunchFailure {
+    /// Classify the error that stopped `register_sandbox` or the sandbox
+    /// supervision around it.
+    #[cfg(any(test, target_os = "linux"))]
+    pub(crate) fn of_authority_error(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::AuthorityChanged,
+            std::io::ErrorKind::TimedOut => Self::AuthorityTimedOut,
+            _ => Self::SandboxSupervision,
+        }
+    }
+
+    pub(crate) const fn message_key(self) -> &'static str {
+        match self {
+            Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
+            Self::ProviderUnavailable => "launch-error-provider-unavailable",
+            Self::NotInstalled => "launch-error-not-installed",
+            Self::NotAGuiApp => "launch-error-not-gui-app",
+            Self::NotAManagedService => "launch-error-not-managed-service",
+            Self::NotAuthorized => "launch-error-not-authorized",
+            Self::NoDisplay => "launch-error-no-display",
+            Self::NoWorkspace => "launch-error-no-workspace",
+            Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
+            Self::IdentityUnavailable => "launch-error-identity-unavailable",
+            Self::RegistryUnreadable => "launch-error-registry-unreadable",
+            Self::HostAppRefused => "launch-error-host-app-refused",
+            Self::AuthorityChanged => "launch-failed-authority-changed",
+            Self::AuthorityTimedOut => "launch-failed-authority-timeout",
+            Self::SandboxSupervision => "launch-error-sandbox-supervision",
+            Self::PreviousInstanceBusy => "launch-failed-previous-instance",
+        }
+    }
+}
+
+impl LaunchError {
+    /// The typed reason this error is reported under.
+    pub(crate) const fn failure(&self) -> LaunchFailure {
+        match self {
+            Self::ProviderUnavailable { .. } => LaunchFailure::ProviderUnavailable,
+            Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => LaunchFailure::NotInstalled,
+            Self::NotAGuiApp { .. } => LaunchFailure::NotAGuiApp,
+            Self::NotAManagedService { .. } => LaunchFailure::NotAManagedService,
+            Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
+                LaunchFailure::NotAuthorized
+            }
+            Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
+                LaunchFailure::LauncherUnavailable
+            }
+            Self::NoDisplay => LaunchFailure::NoDisplay,
+            Self::NoWorkspace => LaunchFailure::NoWorkspace,
+            Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
+            Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
+            Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
+            Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
+        }
+    }
+}
+
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.user_message())
@@ -975,7 +1079,11 @@ pub enum LaunchEventKind {
     /// `tilo-launcher` is running with this host pid.
     Started { pid: u32 },
     /// The child could not be spawned at all.
-    SpawnFailed { detail: String },
+    SpawnFailed {
+        /// Why, as the person is told. `detail` is the log's account of it.
+        reason: LaunchFailure,
+        detail: String,
+    },
     /// The launch chain exited non-zero. `stderr_tail` is the last few
     /// lines it printed — usually the actual reason.
     Failed {
@@ -1014,8 +1122,8 @@ impl LaunchEvent {
     /// copied into notification chrome.
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
         let body = match &self.kind {
-            LaunchEventKind::SpawnFailed { .. } => {
-                crate::shell::i18n::t("launch-failed-launcher-unavailable")
+            LaunchEventKind::SpawnFailed { reason, .. } => {
+                crate::shell::i18n::t(reason.message_key())
             }
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
@@ -1048,7 +1156,7 @@ impl LaunchEvent {
     /// terminal escapes cannot alter the surrounding log record.
     pub(crate) fn log_failure(&self) {
         match &self.kind {
-            LaunchEventKind::SpawnFailed { detail } => {
+            LaunchEventKind::SpawnFailed { detail, .. } => {
                 tracing::error!(
                     target: "tilo::app_launch",
                     package_id = %self.package_id,
@@ -1250,9 +1358,9 @@ pub(crate) struct SessionLaunches {
     /// Autostart entries with `X-GNOME-AutoRestart=true`: how to start each
     /// again, and when it last started.
     restartable_helpers: Mutex<HashMap<String, RestartableHelper>>,
-    /// The "Opening…" notification of each package still on its way, so the
-    /// frame thread can retire it when the app starts.
-    pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
+    /// Each package still on its way, so a repeated activation does not
+    /// start it twice; the frame thread settles it when its window appears.
+    pub(crate) opening_launches: Mutex<Vec<String>>,
     /// The documents open in this session, and the windows showing them.
     pub(crate) open_documents: Mutex<Vec<crate::shell::doc_open::OpenDocument>>,
     /// Launches held until the session's services are up.
@@ -1277,7 +1385,7 @@ impl Default for SessionLaunches {
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
             restartable_helpers: Mutex::default(),
-            opening_notices: Mutex::default(),
+            opening_launches: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
             gate: Mutex::new(Gate::open_with_capacity(
@@ -1405,9 +1513,7 @@ static PENDING_CONTINUATION_RESUME: LazyLock<
 /// could break, so continuing with whatever the poisoned thread left
 /// behind is safer than aborting the whole session over it.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 struct PendingPlacement {
@@ -1518,8 +1624,9 @@ fn trusted_identities_dir() -> PathBuf {
 /// Atomically stage a bounded governance projection for one room.
 ///
 /// The session owns both directory and file. A temporary 0600 inode is fully
-/// written and synced before rename, so Files sees either the previous whole
-/// snapshot or the next whole snapshot, never a prefix. This function accepts
+/// written before rename, so Files sees either the previous whole snapshot or
+/// the next whole snapshot, never a prefix. It is not synced: the runtime
+/// directory does not outlive the session (see [`write_runtime_private`]). This function accepts
 /// only the typed governance format; Contacts and presence payloads cannot be
 /// accidentally serialized through it.
 ///
@@ -1555,8 +1662,23 @@ pub fn write_trusted_identities_projection(
     let final_path = trusted_identities_dir()
         .join(room.to_string())
         .join(TRUSTED_IDENTITIES_FILE);
-    tilo_files::native::atomic::write_private(&final_path, &bytes)?;
+    write_runtime_private(&final_path, &bytes)?;
     Ok(final_path)
+}
+
+/// Atomically replace a private file under the runtime directory: the parent
+/// is created owner-only (`0700`, tightened when it exists) and the file lands
+/// with mode `0600` before it is visible at `path`.
+///
+/// Nothing is synced. These files live in `$XDG_RUNTIME_DIR`, a tmpfs a crash
+/// discards and the session regenerates, so a sync buys no durability; and
+/// they are written on the compositor's loop (on every peer sync and launch),
+/// where a sync under I/O pressure froze the desktop for seconds.
+pub(crate) fn write_runtime_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tilo_files::native::atomic::create_private_directory(parent)?;
+    }
+    tilo_files::native::atomic::write_regenerable_with_mode(path, bytes, 0o600)
 }
 
 /// Publish a complete accepted room-governance projection for later Files
@@ -1640,27 +1762,17 @@ fn write_capabilities_file(
         .prefix("launch-")
         .suffix(".json")
         .tempfile_in(capabilities_dir())?;
+    // Not synced: the launcher reads it through the page cache, and the
+    // runtime tmpfs does not outlive the session. This runs on the
+    // compositor's loop for synchronous launches, where a sync under I/O
+    // pressure froze the desktop.
     file.write_all(&json)?;
-    file.as_file().sync_all()?;
     Ok(Some(file))
 }
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
 pub fn runtime_dir() -> PathBuf {
-    if let Some(dir) = tilo_paths::xdg::runtime_dir() {
-        return dir;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Darwin supplies a per-user temporary directory through TMPDIR.
-        std::env::temp_dir()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // SAFETY: getuid always succeeds.
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/run/user/{uid}"))
-    }
+    tilo_paths::xdg::runtime_dir_or_default()
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.
@@ -1757,6 +1869,49 @@ fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
     Ok((generation, apps))
+}
+
+/// [`installed_apps`] for the compositor loop: the last enumeration, fresh
+/// or stale, and never a registry read, which scans the registry and parses
+/// every manifest. One past its TTL or invalidated by the registry watch is
+/// refreshed on a worker and served until the refresh lands; before the
+/// first enumeration there is none.
+pub(crate) fn installed_apps_without_waiting() -> Vec<InstalledApp> {
+    let (apps, fresh) = {
+        let cache = lock(&APP_CACHE);
+        cache.as_ref().map_or_else(
+            || (Vec::new(), false),
+            |(apps, at)| {
+                (
+                    apps.clone(),
+                    at.is_some_and(|at| at.elapsed() < APP_CACHE_TTL),
+                )
+            },
+        )
+    };
+    if !fresh {
+        refresh_installed_apps_in_background();
+    }
+    apps
+}
+
+/// Re-read the registry on a worker, one refresh at a time.
+fn refresh_installed_apps_in_background() {
+    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("tilo-apps-refresh".into())
+        .spawn(|| {
+            if let Err(error) = installed_apps_snapshot() {
+                tracing::debug!(%error, "installed apps refresh failed; the last list stays");
+            }
+            REFRESHING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        REFRESHING.store(false, Ordering::Release);
+    }
 }
 
 /// Store a registry read that started at `read_epoch` as the new baseline.
@@ -2311,6 +2466,9 @@ fn build_launch_command_for(
         uri,
     } = *extras;
     let application_creation = original_application_creation(app);
+    if application_creation.is_none() {
+        note_missing_creation_evidence(app);
+    }
     register_signed_surface(app);
     let mut args = vec![
         "run".to_string(),
@@ -2454,6 +2612,69 @@ fn original_application_creation(
     cached_creation_evidence(key, || {
         verify_original_application_creation(app, &installed, &manifest)
     })
+}
+
+/// Why `app`'s launch carries no creation evidence: the first link of
+/// [`original_application_creation`] that does not hold. Diagnostic only;
+/// it decides nothing.
+fn creation_evidence_gap(app: &InstalledApp) -> String {
+    let installed = match package_store::find_installed(&app.package_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => return "the package store holds no installed copy".into(),
+        Err(error) => return format!("the package store cannot be read: {error}"),
+    };
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return format!(
+            "the launched copy ({}, {}) is not the installed one ({}, {})",
+            app.manifest_path.display(),
+            app.payload_root.display(),
+            installed.manifest_path.display(),
+            installed.payload_root.display()
+        );
+    }
+    let Ok(manifest) = std::fs::read(&app.manifest_path) else {
+        return "the installed manifest cannot be read".into();
+    };
+    let dir = package_store::integrity::record_dir(&installed);
+    let record =
+        match package_store::integrity::read_record(&dir, &installed.id, &installed.package_id_hex)
+        {
+            Ok(record) => record,
+            Err(error) => return format!("the signed record in {} fails: {error}", dir.display()),
+        };
+    if manifest != record.manifest_bytes {
+        return "the installed manifest differs from the signed one".into();
+    }
+    let declared = std::str::from_utf8(&record.manifest_bytes)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(text).ok())
+        .and_then(|manifest| {
+            manifest
+                .get("resources")?
+                .get("kinds")?
+                .as_array()
+                .map(Vec::len)
+        });
+    match declared {
+        None => "the signed manifest declares no resource kinds".into(),
+        Some(kinds) => format!("the signed manifest's {kinds} resource kinds do not verify"),
+    }
+}
+
+/// Log once per package and session why its launches carry no creation
+/// evidence: such an app cannot create its record in a committed workspace.
+fn note_missing_creation_evidence(app: &InstalledApp) {
+    static NOTED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(Mutex::default);
+    if !lock(&NOTED).insert(app.package_id.clone()) {
+        return;
+    }
+    tracing::error!(
+        target: "tilo::app_launch",
+        package_id = %app.package_id,
+        reason = %creation_evidence_gap(app),
+        "launch carries no original-package creation evidence"
+    );
 }
 
 /// `verify`'s evidence for `key`, verified once while it holds.
@@ -2756,6 +2977,56 @@ pub fn launch_terminal_command(argv: &[String], room: RoomId) -> Result<Installe
             package_id: TERMINAL_PACKAGE_ID.to_string(),
         })?;
     execute_installed_with_context(app, room, context)
+}
+
+/// [`launch_terminal_command`] for the compositor thread: the argv is
+/// validated here, and everything that touches the registry or the disk runs
+/// on a preflight worker. A refusal after that point arrives as a launch
+/// event.
+///
+/// # Errors
+///
+/// Returns an error when `argv` is empty or too large for the launch context,
+/// or when the preflight worker cannot be started.
+pub(crate) fn queue_terminal_command(argv: &[String], room: RoomId) -> Result<(), LaunchError> {
+    let context = terminal_command_context(argv);
+    if argv.is_empty() || context.len() > 4 * 1024 {
+        return Err(LaunchError::HostAppRefused {
+            desktop_id: argv.first().cloned().unwrap_or_default(),
+            detail: "the command does not fit a terminal launch".to_string(),
+        });
+    }
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps().and_then(|apps| {
+                let app = apps
+                    .into_iter()
+                    .find(|a| a.package_id == TERMINAL_PACKAGE_ID)
+                    .ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: TERMINAL_PACKAGE_ID.to_string(),
+                    })?;
+                execute_installed_with_context(app, room, context)
+            });
+            if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
+                push_event(LaunchEvent {
+                    package_id: TERMINAL_PACKAGE_ID.to_string(),
+                    display_name: display_name_for_package_id(TERMINAL_PACKAGE_ID),
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                        reason: error.failure(),
+                    },
+                });
+            }
+        }),
+    )
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -3086,7 +3357,12 @@ pub fn queue_launch_target_in_workspace(
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let grants = workspace.launch_grants(tilo_clock::unix_now());
-    queue_prepared_launch(app, workspace.room, move || Ok(grants), uri)
+    queue_prepared_launch(
+        app,
+        workspace.room,
+        move || Ok(grants),
+        QueuedOpen::uri(uri),
+    )
 }
 
 /// A retained host notification resolves its verified package on the same
@@ -3096,6 +3372,28 @@ pub(crate) fn queue_package_target_in_workspace(
     package_id: String,
     workspace: &Workspace,
     uri: String,
+) -> Result<(), LaunchError> {
+    queue_package_open(package_id, None, workspace, None, Some(uri))
+}
+
+/// Open `document` or `uri` (or just the app) in the package `package_id`
+/// into `workspace`, resolving the package on the preflight worker. For
+/// callers on the compositor thread that hold an app id and not an
+/// [`InstalledApp`]; a refusal arrives as a launch event, named
+/// `display_name` when the caller knows what the person asked to open (a
+/// package that is no longer installed has no registry name to fall back
+/// on), else the package's own display name.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started.
+pub(crate) fn queue_package_open(
+    package_id: String,
+    display_name: Option<String>,
+    workspace: &Workspace,
+    document: Option<PathBuf>,
+    uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -3117,8 +3415,8 @@ pub(crate) fn queue_package_target_in_workspace(
                 execute_installed(
                     app,
                     workspace.room,
-                    None,
-                    Some(&uri),
+                    document.as_deref(),
+                    uri.as_deref(),
                     None,
                     None,
                     Some(grants),
@@ -3127,11 +3425,13 @@ pub(crate) fn queue_package_target_in_workspace(
             if let Err(error) = outcome {
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
-                    display_name: package_id.clone(),
+                    display_name: display_name
+                        .unwrap_or_else(|| display_name_for_package_id(&package_id)),
                     package_id,
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3225,7 +3525,7 @@ pub(crate) fn queue_native_authoring_launch(
             };
             prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        None,
+        QueuedOpen::default(),
     )
 }
 
@@ -3250,7 +3550,7 @@ pub(crate) fn queue_observed_native_launch(
             prepare_observed_native_launch(&tree, room, &package, &original)
                 .map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        None,
+        QueuedOpen::default(),
     )
 }
 
@@ -3333,6 +3633,7 @@ fn native_app_open_access(
             .permissions(certificate.device_public_key, now)?;
         let administrator = view
             .peer()
+            .workspace()
             .check_workspace_administration(certificate.device_public_key, now)
             .is_ok();
         let exists = view.peer().document(package, "").is_some();
@@ -3374,21 +3675,57 @@ fn native_launch_workspace(
         .ok_or_else(|| "native app launch room disappeared".into())
 }
 
+/// What a queued launch asks its app to open, and what to undo if the
+/// launch is refused before the process starts.
+#[derive(Default)]
+struct QueuedOpen {
+    document: Option<PathBuf>,
+    uri: Option<String>,
+    /// Runs on the preflight worker when the launch is refused, so state the
+    /// caller recorded optimistically (an "opening" note) does not outlive it.
+    refused: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl QueuedOpen {
+    fn uri(uri: Option<String>) -> Self {
+        Self {
+            uri,
+            ..Self::default()
+        }
+    }
+}
+
 fn queue_prepared_launch(
     app: InstalledApp,
     room: RoomId,
     prepare: impl FnOnce() -> Result<LaunchGrants, LaunchError> + Send + 'static,
-    uri: Option<String>,
+    open: QueuedOpen,
 ) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         super::launch_readiness::inherit(move || {
+            let QueuedOpen {
+                document,
+                uri,
+                refused,
+            } = open;
             let outcome = prepare().and_then(|grants| {
-                execute_installed(app, room, None, uri.as_deref(), None, None, Some(grants))
+                execute_installed(
+                    app,
+                    room,
+                    document.as_deref(),
+                    uri.as_deref(),
+                    None,
+                    None,
+                    Some(grants),
+                )
             });
             if let Err(error) = outcome {
+                if let Some(refused) = refused {
+                    refused();
+                }
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
@@ -3396,6 +3733,7 @@ fn queue_prepared_launch(
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3406,6 +3744,54 @@ fn queue_prepared_launch(
         detail: error.to_string(),
     })?;
     Ok(())
+}
+
+/// [`launch_document_in_workspace`] for the compositor thread: the launch's
+/// file work (the synced capability file, the identity registry, the
+/// authority binding) runs on a preflight worker, so a click that opens a
+/// document never waits on the disk. The workspace's capabilities are still
+/// published first, so a read grant added for this document reaches the
+/// sandbox. A refusal arrives as a launch event, after `refused` has run on
+/// the worker.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started; later failures arrive as launch events.
+pub(crate) fn queue_document_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+    document: PathBuf,
+    refused: impl FnOnce() + Send + 'static,
+) -> Result<(), LaunchError> {
+    let grants = workspace.launch_grants(tilo_clock::unix_now());
+    set_workspace_capabilities(grants.clone());
+    queue_prepared_launch(
+        app,
+        workspace.room,
+        move || Ok(grants),
+        QueuedOpen {
+            document: Some(document),
+            uri: None,
+            refused: Some(Box::new(refused)),
+        },
+    )
+}
+
+/// [`launch_uri_in_room`] for the compositor thread; see
+/// [`queue_document_in_workspace`].
+///
+/// # Errors
+///
+/// As [`queue_document_in_workspace`].
+pub(crate) fn queue_uri_in_room(
+    app: InstalledApp,
+    room: RoomId,
+    grants: LaunchGrants,
+    uri: String,
+) -> Result<(), LaunchError> {
+    set_workspace_capabilities(grants.clone());
+    queue_prepared_launch(app, room, move || Ok(grants), QueuedOpen::uri(Some(uri)))
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open
@@ -3622,6 +4008,7 @@ fn held_launch_failure(launch: HeldLaunch, detail: &str) -> LaunchEvent {
             .service_identity
             .map(|identity| identity.workspace_id),
         kind: LaunchEventKind::SpawnFailed {
+            reason: LaunchFailure::Other,
             detail: detail.to_string(),
         },
     }
@@ -3772,7 +4159,10 @@ fn start_launch(
                 display_name: app.display_name.clone(),
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
-                kind: LaunchEventKind::SpawnFailed { detail },
+                kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::PreviousInstanceBusy,
+                    detail,
+                },
             });
             return;
         }
@@ -3806,6 +4196,7 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: LaunchFailure::LauncherUnavailable,
                         detail: error.to_string(),
                     },
                 });
@@ -3824,6 +4215,7 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
+                        reason: LaunchFailure::LauncherUnavailable,
                         detail: e.to_string(),
                     },
                 });
@@ -3844,7 +4236,7 @@ fn start_launch(
                 .iter()
                 .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
                 .and_then(|(_, value)| value.parse::<u64>().ok());
-            register_trusted_window_launch(child.id(), identity, instance);
+            register_trusted_window_launch(child.id(), identity, instance, startup_token);
         }
         let workspace_id = command
             .service_identity
@@ -3877,6 +4269,7 @@ fn start_launch(
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
                 kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::of_authority_error(&error),
                     detail: error.to_string(),
                 },
             });
@@ -3930,6 +4323,9 @@ fn start_launch(
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {
                         eprintln!("[app {stderr_tag} stderr] {line}");
+                        // GPU health belongs to the Linux compositor; the
+                        // test-only launches elsewhere have none to report to.
+                        #[cfg(target_os = "linux")]
                         crate::compositor::gpu_health::observe_app_line(&stderr_tag, &line);
                         if tail.len() == STDERR_TAIL_LINES {
                             tail.pop_front();
@@ -3982,6 +4378,7 @@ fn start_launch(
                 stderr_tail: tail.iter().cloned().collect::<Vec<_>>().join("\n"),
             },
             Err(e) => LaunchEventKind::SpawnFailed {
+                reason: LaunchFailure::LauncherUnavailable,
                 detail: e.to_string(),
             },
         };
@@ -3990,7 +4387,7 @@ fn start_launch(
                 startup_token,
                 format!("the application launcher exited ({code:?}): {stderr_tail}"),
             ),
-            LaunchEventKind::SpawnFailed { detail } => {
+            LaunchEventKind::SpawnFailed { detail, .. } => {
                 events.startup.fail(startup_token, detail.clone());
             }
             LaunchEventKind::Started { .. }
@@ -4019,6 +4416,7 @@ fn start_launch(
                 managed_agent_id: identity.2,
                 managed_workspace_id: identity.3,
                 kind: LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::LauncherUnavailable,
                     detail: detail.clone(),
                 },
             });
@@ -4458,6 +4856,21 @@ pub(crate) fn clear_launched_for_test() {
 /// label — closing that gap needs the client correlated back to the
 /// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
+    display_name_among(app_id, || installed_apps().unwrap_or_default())
+}
+
+/// [`display_name_for_app_id`] for the compositor loop: the installed
+/// packages as last enumerated ([`installed_apps_without_waiting`]), never
+/// a registry read. An app installed since may show its id until the
+/// refresh lands.
+pub(crate) fn display_name_for_app_id_without_waiting(app_id: &str) -> Option<String> {
+    display_name_among(app_id, installed_apps_without_waiting)
+}
+
+fn display_name_among(
+    app_id: &str,
+    installed: impl FnOnce() -> Vec<InstalledApp>,
+) -> Option<String> {
     {
         let session = LaunchSession::current();
         let launched = lock(&session.launched);
@@ -4471,12 +4884,11 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     // Not launched by this session, but the machine still has it: a
     // package's manifest name is the app's name regardless of who
     // started the window.
-    if let Ok(apps) = installed_apps()
-        && let Some(app) = apps
-            .iter()
-            .find(|a| app_id_matches_package(app_id, &a.package_id))
+    if let Some(app) = installed()
+        .into_iter()
+        .find(|a| app_id_matches_package(app_id, &a.package_id))
     {
-        return Some(app.display_name.clone());
+        return Some(app.display_name);
     }
     // Nor a package launched this session — maybe a host app started
     // another way; its `.desktop` entry gives a nicer label than the raw id.
@@ -4780,6 +5192,23 @@ fn pending_placement_deadline(grace: Duration) -> Instant {
     now.checked_add(grace).unwrap_or(now)
 }
 
+/// Give `package_id`'s waiting launch `extra` before its window is due, on
+/// top of the usual start-up allowance, counted from now. An install that
+/// precedes the start holds it for as long as the install may take, then
+/// passes [`Duration::ZERO`] once the app can actually start.
+pub(crate) fn hold_presentation_for(package_id: &str, extra: Duration) {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    if let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == package_id && note.claimed_by.is_none())
+    {
+        note.present_before =
+            pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT.saturating_add(extra));
+    }
+}
+
 fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
@@ -4879,6 +5308,7 @@ pub fn spawn_launch(
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 mod tests {
@@ -5100,6 +5530,7 @@ mod tests {
             assert_eq!(
                 reported[0].kind,
                 LaunchEventKind::SpawnFailed {
+                    reason: LaunchFailure::Other,
                     detail: "peer sync could not start".into()
                 }
             );
@@ -5146,6 +5577,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         fn failed_launch_banner_never_contains_raw_stderr() {
             let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";
@@ -5164,8 +5596,63 @@ mod tests {
             assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
         }
 
+        fn spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher() {
+            let unavailable = crate::shell::i18n::t("launch-failed-launcher-unavailable");
+            let cases = [
+                (
+                    LaunchFailure::AuthorityChanged,
+                    "launch-failed-authority-changed",
+                ),
+                (
+                    LaunchFailure::AuthorityTimedOut,
+                    "launch-failed-authority-timeout",
+                ),
+                (
+                    LaunchFailure::SandboxSupervision,
+                    "launch-error-sandbox-supervision",
+                ),
+                (LaunchFailure::NotInstalled, "launch-error-not-installed"),
+                (LaunchFailure::NoWorkspace, "launch-error-no-workspace"),
+                (
+                    LaunchFailure::PreviousInstanceBusy,
+                    "launch-failed-previous-instance",
+                ),
+            ];
+            for (reason, key) in cases {
+                let notice = launch_event(LaunchEventKind::SpawnFailed {
+                    reason,
+                    detail: "raw detail stays in the log".into(),
+                })
+                .failure_notice()
+                .unwrap();
+                assert_eq!(notice.body, crate::shell::i18n::t(key));
+                assert_ne!(notice.body, unavailable);
+                assert!(!notice.body.contains("raw detail"));
+            }
+            let missing = launch_event(LaunchEventKind::SpawnFailed {
+                reason: LaunchError::LauncherBinaryMissing { searched: vec![] }.failure(),
+                detail: String::new(),
+            })
+            .failure_notice()
+            .unwrap();
+            assert_eq!(missing.body, unavailable);
+            let refused = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x");
+            assert_eq!(
+                LaunchFailure::of_authority_error(&refused),
+                LaunchFailure::AuthorityChanged
+            );
+            assert_eq!(
+                LaunchError::NotInstalled {
+                    package_id: "p".into()
+                }
+                .failure(),
+                LaunchFailure::NotInstalled
+            );
+        }
+
         fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
             let event = launch_event(LaunchEventKind::SpawnFailed {
+                reason: LaunchFailure::LauncherUnavailable,
                 detail: "No such file or directory (os error 2)".into(),
             });
             let notice = event.failure_notice().expect("failure has a notice");
@@ -5241,6 +5728,7 @@ mod tests {
 
         failed_launch_banner_never_contains_raw_stderr();
         spawn_failure_and_non_failure_events_have_sensible_banner_copy();
+        spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher();
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();
@@ -5951,6 +6439,47 @@ mod tests {
         payload
     }
 
+    /// The compositor loop asks for installed apps while building tiles and
+    /// naming apps in Activity. It is served the last enumeration, stale or
+    /// not, and never reads the registry itself: a stale list is refreshed
+    /// on a worker and the refresh lands for a later ask.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        assert_eq!(initial[0].version, "1.2.3");
+
+        let manifest = payload.join("manifest.toml");
+        let changed_manifest = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed_manifest).unwrap();
+        lock(&APP_CACHE).as_mut().unwrap().1 = None;
+
+        let served = installed_apps_without_waiting();
+        assert_eq!(
+            served, initial,
+            "the stale list is served; the registry was not read here"
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let refreshed = loop {
+            let served = installed_apps_without_waiting();
+            if served.first().is_some_and(|app| app.version == "1.2.4") {
+                break served;
+            }
+            assert!(Instant::now() < deadline, "the refresh never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
+        assert_eq!(refreshed.len(), 1);
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -6185,6 +6714,7 @@ mod tests {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -6233,6 +6763,7 @@ mod tests {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -6335,6 +6866,7 @@ mod tests {
                 package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
@@ -6628,6 +7160,7 @@ mod tests {
                 package_id: "so.tilo.matchfixture".into(),
                 display_name: "Match Fixture".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::new(),
@@ -6666,6 +7199,7 @@ mod tests {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
@@ -6679,6 +7213,70 @@ mod tests {
 
     fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+    }
+
+    /// A launch asked for on the compositor thread must not do its
+    /// preflight there: the capability file is synced, the identity registry
+    /// and authority binding are files too, and a click waits on none of them.
+    /// The preflight here blocks until released, so running it on the caller
+    /// would hang the call past the budget. A refusal (no display is
+    /// published) must still unwind the caller's state on the worker and
+    /// reach the session as a launch event.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn queued_open_runs_its_preflight_off_the_calling_thread() {
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+        const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+        set_wayland_socket_path(None);
+        let _ = drain_events();
+        let caller = std::thread::current().id();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (refusal, refused) = std::sync::mpsc::channel::<std::thread::ThreadId>();
+
+        let asked = Instant::now();
+        queue_prepared_launch(
+            test_app("so.tilo.queued-open"),
+            RoomId::new(),
+            move || {
+                let _ = released.recv_timeout(HANG_BOUND);
+                Ok(LaunchGrants::default())
+            },
+            QueuedOpen {
+                document: Some(PathBuf::from("/var/workspace/books/novel.epub")),
+                uri: None,
+                refused: Some(Box::new(move || {
+                    let _ = refusal.send(std::thread::current().id());
+                })),
+            },
+        )
+        .expect("the preflight worker starts");
+        let waited = asked.elapsed();
+        assert!(
+            waited < BUDGET,
+            "queueing a launch took {waited:?}: its preflight ran on the calling thread"
+        );
+        assert!(
+            refused.try_recv().is_err(),
+            "the launch was refused before its preflight finished"
+        );
+
+        release.send(()).expect("the preflight is waiting");
+        let worker = refused
+            .recv_timeout(HANG_BOUND)
+            .expect("a refused launch runs its unwind");
+        assert_ne!(worker, caller, "the unwind ran on the calling thread");
+        let deadline = Instant::now() + HANG_BOUND;
+        loop {
+            let failed = drain_events().into_iter().any(|event| {
+                event.package_id == "so.tilo.queued-open"
+                    && matches!(event.kind, LaunchEventKind::SpawnFailed { .. })
+            });
+            if failed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no SpawnFailed event arrived");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     fn sandbox(capabilities: Vec<CapOverride>) -> LaunchGrants {
@@ -7018,7 +7616,7 @@ mod tests {
             compat_entry_generation: 0,
             application_creation: None,
         };
-        register_trusted_window_launch(pid, identity, Some(42));
+        register_trusted_window_launch(pid, identity, Some(42), Some(9));
         assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
         assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
         assert!(
@@ -7032,6 +7630,7 @@ mod tests {
         let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
             .expect("original exact launcher record");
         assert_eq!(bound.continuation_instance, Some(42));
+        assert_eq!(bound.launch_ticket, Some(9), "the launch's own ticket");
         // Kernel start time is part of the retained record, not app-reported identity.
         lock(&TRUSTED_SERVICE_LAUNCHES)
             .get_mut(&pid)
@@ -7308,6 +7907,7 @@ mod tests {
             active_tab: tabs[0].0,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         tree.seed_doc_from_cache();
         tree
@@ -7544,6 +8144,7 @@ mod tests {
                 active_tab: 1_000_u64.saturating_add(i),
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         }
         for (group_id, tab_id, title, app_id, surface) in [
@@ -7563,6 +8164,7 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         }
         let strip = tree.desktop.workspaces[0].strips[0].id;
@@ -7846,7 +8448,61 @@ mod tests {
             );
         }
 
+        /// Peer syncs publish the projection and synchronous launches stage
+        /// the capability file from the compositor's loop. Both live in the
+        /// runtime tmpfs and must never wait for the disk there.
+        #[cfg(target_os = "linux")]
+        fn runtime_files_never_wait_for_the_disk() {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", tmp.path());
+            let room = RoomId::new();
+            let grants = sandbox(vec![fs_grant(
+                "so.tilo.hello",
+                "/var/workspace/books",
+                Access::Read,
+            )]);
+            let (projection, capabilities) =
+                crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+                    let projection = write_trusted_identities_projection(
+                        room,
+                        &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
+                    )
+                    .expect("staging the projection needs no disk sync");
+                    let capabilities = write_capabilities_file("so.tilo.hello", &grants)
+                        .expect("staging the capabilities needs no disk sync")
+                        .expect("grants need a file");
+                    (projection, capabilities)
+                });
+            assert_eq!(
+                serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
+                    &std::fs::read(&projection).unwrap(),
+                )
+                .unwrap(),
+                tilo_user_identity::TrustedIdentityProjectionV2::empty()
+            );
+            assert_eq!(
+                std::fs::metadata(&projection).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::read(capabilities.path()).unwrap(),
+                serde_json::to_vec(&grants).unwrap()
+            );
+            assert_eq!(
+                std::fs::metadata(capabilities.path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
         governance_projection_is_atomic_bounded_and_owner_only();
         files_launch_receives_only_the_staged_projection_path();
+        #[cfg(target_os = "linux")]
+        runtime_files_never_wait_for_the_disk();
     }
 }

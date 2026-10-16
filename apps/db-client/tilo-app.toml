@@ -26,6 +26,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.save", "files.paths", "threads", "secrets"]
 
+[resources]
+kinds = ["db-client.workspace"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

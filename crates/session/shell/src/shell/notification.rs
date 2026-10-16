@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tilo_desktop::notifications::{
     DEFAULT_DISMISS_AFTER, HistoryActivation, Notification, NotificationHost, NotificationLog,
-    NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,
+    NotificationPerson, NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,
 };
 
 use crate::notifications::{
@@ -151,6 +151,7 @@ fn snoozed_alarm_rows(
                 .find(|(key, _)| key == "dismiss")?
                 .1;
             Some(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),
@@ -219,6 +220,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
             let expected_room = request.target.room.clone();
             let action_id = id.clone();
             rows.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),
@@ -344,6 +346,16 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
     });
     notification.app_id = app_id;
     notification.source_workspace = inc.caller.as_ref().map(|c| c.workspace_id.0);
+    // A communications app that names who a message is from, by display
+    // name and contact handle, gets a banner led by that person. The name is
+    // what the person is called; the handle only picks their colour and is
+    // never shown. The bridge passes both on only from a launcher-verified
+    // Tilo app.
+    notification.from = inc
+        .sender_name
+        .clone()
+        .zip(inc.contact_endpoint.clone())
+        .map(|(name, identity)| NotificationPerson { name, identity });
     notification.actions = inc.actions;
     // Never from the wire: an app that could ask to pierce Do-Not-Disturb
     // would ask every time.
@@ -786,7 +798,7 @@ mod tests {
                     );
                     // The rendered pixels, not just the file: the first surface
                     // in the column (pill, locked card or toast card) is the
-                    // Panel ground at its plain bottom-right interior — the
+                    // card ground at its plain bottom-right interior — the
                     // toolkit toast and the two shell cards share one material.
                     let first = stack.rect();
                     let first_h = if state == "live" {
@@ -808,10 +820,10 @@ mod tests {
                             probe.x as u32,
                             probe.y as u32,
                         );
-                    let e = ui::chrome::panel_ground(&theme).to_rgba8();
+                    let e = ui::widget::toast::card_ground(&theme).0.to_rgba8();
                     assert!(
                         r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                        "{name}-{state}: surface interior ({r},{g},{b}) is the panel ground ({},{},{})",
+                        "{name}-{state}: surface interior ({r},{g},{b}) is the card ground ({},{},{})",
                         e.r,
                         e.g,
                         e.b
@@ -841,6 +853,7 @@ mod tests {
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
             badge_count: None,
             contact_endpoint: None,
+            sender_name: None,
             sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
         }
     }
@@ -858,6 +871,21 @@ mod tests {
             assert_eq!(n.severity, NotificationSeverity::Error);
             assert_eq!(n.dismiss_after, PERSISTENT_DISMISS);
             assert_eq!(n.default_action_key().as_deref(), Some("default"));
+            // An app's own notice is from no one in particular...
+            assert_eq!(n.from, None);
+            // ...a handle alone names no one: it is never shown as a name...
+            let mut message = incoming(4, 1, -1);
+            message.contact_endpoint = Some("mailto:ada@example.org".into());
+            assert_eq!(from_incoming(message.clone()).from, None);
+            // ...a message naming its sender is from that person.
+            message.sender_name = Some("Ada".into());
+            assert_eq!(
+                from_incoming(message).from,
+                Some(NotificationPerson {
+                    name: "Ada".into(),
+                    identity: "mailto:ada@example.org".into(),
+                })
+            );
         }
 
         fn from_incoming_expire_timeout_mapping() {

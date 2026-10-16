@@ -216,6 +216,7 @@ impl HostApplicationsProvider {
                         &app.window_identities,
                         &tree,
                         st.strip_viewport(),
+                        st.open_target,
                     );
                     let portal_workspace_id = tree
                         .desktop
@@ -269,14 +270,24 @@ fn index_apps(apps: &[HostApp], installed_ids: &HashSet<String>) -> SearchIndex 
         }
         let desktop_id = app.desktop_id.as_str();
         let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
-        Some(
-            Document::new(at as u64)
-                .field(app.name.as_str(), FieldWeight::TITLE)
-                .field(last_segment, FieldWeight::TITLE)
-                .field(desktop_id, super::applications::PACKAGE_ID_WEIGHT)
-                .field(app.keywords.join(" "), FieldWeight::METADATA)
-                .field(app.categories.join(" "), FieldWeight::METADATA),
-        )
+        let document = Document::new(at as u64)
+            .field(app.name.as_str(), FieldWeight::TITLE)
+            .field(last_segment, FieldWeight::TITLE)
+            .field(desktop_id, super::applications::PACKAGE_ID_WEIGHT)
+            .field(app.categories.join(" "), FieldWeight::METADATA);
+        // Each `Keywords=` entry is a word the app is known by; the initials
+        // of its name find it from two letters.
+        let document = app
+            .keywords
+            .iter()
+            .filter(|keyword| !keyword.trim().is_empty())
+            .fold(document, |document, keyword| {
+                document.field(keyword.as_str(), FieldWeight::KEYWORD)
+            });
+        Some(match tilo_search::initials(&app.name) {
+            Some(initials) => document.field(initials, FieldWeight::KEYWORD),
+            None => document,
+        })
     }));
     if let Err(error) = index.commit() {
         tracing::error!(%error, "could not index host applications");
@@ -923,6 +934,7 @@ mod tests {
                     package_id: "so.tilo.terminal".into(),
                     display_name: "Terminal".into(),
                     localized_names: BTreeMap::default(),
+                    keywords: Vec::new(),
                     category: None,
                     version: "1".into(),
                     manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
@@ -975,6 +987,7 @@ mod tests {
             package_id: package_id.into(),
             display_name: display_name.into(),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),

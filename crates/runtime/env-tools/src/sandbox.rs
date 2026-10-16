@@ -68,8 +68,7 @@ impl Identity {
     pub fn detect() -> Self {
         static DETECTED: std::sync::OnceLock<Identity> = std::sync::OnceLock::new();
         *DETECTED.get_or_init(|| {
-            // SAFETY: geteuid has no preconditions and cannot fail.
-            if unsafe { libc::geteuid() } == 0 {
+            if rustix::process::geteuid().as_raw() == 0 {
                 return Self::Root;
             }
             let mut probe = Command::new("unshare");

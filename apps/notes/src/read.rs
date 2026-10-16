@@ -43,16 +43,13 @@ pub fn validate(doc: &AutoCommit) -> Result<(), String> {
 /// Says why `doc` does not read as a notebook.
 pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
     let notebook = Notebook::read(doc).map_err(|error| error.to_string())?;
-    Ok(Workspace::of(
-        std::rc::Rc::new(notebook),
-        &Workspace::default(),
-    ))
+    Ok(Workspace::of(&notebook, &Workspace::default()))
 }
 
 /// The notebook `doc` holds, as the window shows it.
 #[must_use]
 pub fn workspace(doc: &AutoCommit) -> Workspace {
-    Workspace::of(std::rc::Rc::new(notebook(doc)), &Workspace::default())
+    Workspace::of(&notebook(doc), &Workspace::default())
 }
 
 /// Every note's title and place, in notebook order.
@@ -125,5 +122,5 @@ pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
 #[must_use]
 pub fn images(doc: &AutoCommit) -> std::collections::HashMap<String, Vec<u8>> {
     let content = crate::notebook::content();
-    crate::notebook::image_snapshot(&notebook(doc), |digest| content.read(digest))
+    crate::notebook::image_snapshot(&notebook(doc).images, |digest| content.read(digest))
 }

@@ -337,12 +337,28 @@ pub struct PresenceFrame {
     pub drag: Option<LiveDrag>,
     /// How the publisher asks to be drawn.
     pub participant: Option<LiveParticipant>,
+    /// Where within its focus the publisher is, in the focused
+    /// application's own terms: the strip a desktop shows, so members can
+    /// see who is in which part of a shared workspace even where nothing
+    /// is focused. 1..=[`MAX_PLACE_BYTES`] bytes.
+    #[serde(default)]
+    pub place: Option<String>,
 }
+
+/// Largest presence place.
+pub const MAX_PLACE_BYTES: usize = 64;
 
 impl PresenceFrame {
     fn validate(&self) -> Result<()> {
         if let Some(participant) = &self.participant {
             participant.validate()?;
+        }
+        if self
+            .place
+            .as_ref()
+            .is_some_and(|place| place.is_empty() || place.len() > MAX_PLACE_BYTES)
+        {
+            return Err(LiveWireError::Invalid);
         }
         if let Some(record) = &self.focus {
             record.validate()?;
@@ -922,6 +938,7 @@ mod tests {
 
     fn focused(seq: u64) -> LiveFrame {
         LiveFrame::Presence(PresenceFrame {
+            place: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -941,6 +958,7 @@ mod tests {
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
         let frame = LiveFrame::Presence(PresenceFrame {
+            place: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1036,6 +1054,7 @@ mod tests {
     #[test]
     fn a_live_frame_without_a_record_or_cipher_is_never_sealed() {
         let unfocused = PresenceFrame {
+            place: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1074,6 +1093,7 @@ mod tests {
     #[test]
     fn frames_round_trip_canonically() {
         let presence = LiveFrame::Presence(PresenceFrame {
+            place: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1102,8 +1122,19 @@ mod tests {
                 text: "hi".into(),
             }],
         });
+        let placed = LiveFrame::Presence(PresenceFrame {
+            seq: 2,
+            sent_at_ms: 0,
+            focus: Some(record()),
+            pointer: None,
+            selection: None,
+            drag: None,
+            participant: None,
+            place: Some("4242".into()),
+        });
         for frame in [
             presence,
+            placed,
             preview,
             LiveFrame::Ops(OpsFrame::End { record: record() }),
         ] {
@@ -1115,6 +1146,7 @@ mod tests {
     #[test]
     fn out_of_bounds_frames_are_refused() {
         let nan = LiveFrame::Presence(PresenceFrame {
+            place: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1125,6 +1157,7 @@ mod tests {
         });
         assert_eq!(nan.encode(), Err(LiveWireError::Invalid));
         let unnamed = LiveFrame::Presence(PresenceFrame {
+            place: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1139,6 +1172,19 @@ mod tests {
             }),
         });
         assert_eq!(unnamed.encode(), Err(LiveWireError::Invalid));
+        for place in [String::new(), "s".repeat(MAX_PLACE_BYTES + 1)] {
+            let placed = LiveFrame::Presence(PresenceFrame {
+                seq: 1,
+                sent_at_ms: 0,
+                focus: None,
+                pointer: None,
+                selection: None,
+                drag: None,
+                participant: None,
+                place: Some(place),
+            });
+            assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
+        }
         let empty = LiveFrame::Ops(OpsFrame::Preview {
             seq: 1,
             record: record(),

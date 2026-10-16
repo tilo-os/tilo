@@ -7,7 +7,7 @@ use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
 use std::collections::BTreeMap;
 use tilo_action_policy::{Authority, Bound, Grant, RoomPolicy, Subject};
-use tilo_relay_protocol::delegation::Delegate;
+use tilo_workspace_join::delegation::Delegate;
 mod policy;
 
 #[derive(Debug)]

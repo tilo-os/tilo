@@ -13,7 +13,7 @@
 //! `TILO_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
 //! other [`Theme::named`] preset); the PNGs land in `<dir>/<theme>/`.
 //!
-//! Every case here builds an **automerge document**, edits it through `qdoc` (or
+//! Every case here builds an **automerge document**, edits it through `tilo-doc` (or
 //! through plain automerge, for the room-shaped documents that carry no editor
 //! schema), names runs of it through the real
 //! [`tilo_ui::history_groups`] API, and then derives the rows and bands with
@@ -57,7 +57,7 @@ fn now_i64() -> i64 {
 // Documents
 // =====================================================================
 
-/// A `qdoc` document with three working sessions: two by the local author either
+/// A `tilo-doc` document with three working sessions: two by the local author either
 /// side of a long break, one by a peer in between. Returns the document and the
 /// ids of every change, oldest first.
 fn three_session_doc() -> AutoCommit {

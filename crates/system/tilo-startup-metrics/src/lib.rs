@@ -49,17 +49,9 @@
 //! constructors. (The app cannot read `/proc` under Landlock, so it cannot time its own
 //! exec.)
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use tilo_lock::MutexRecover as _;
 use web_time::Instant;
 
 /// One launch's process/surface timing. Placement remains the compositor's
@@ -104,7 +96,7 @@ pub fn log_directives(rust_log: Option<&str>) -> String {
 /// The pending-launch table. A panic while holding it leaves plain data, so a
 /// poisoned lock is recovered rather than disabling timing for the session.
 fn launch_table() -> std::sync::MutexGuard<'static, Vec<PendingLaunch>> {
-    LAUNCHES.lock().unwrap_or_else(PoisonError::into_inner)
+    LAUNCHES.lock_recover()
 }
 static NEXT_LAUNCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -411,17 +403,9 @@ impl Metrics {
     /// Replace the file with every event so far, unless it already holds
     /// them. Atomic: a reader sees the previous file or this one, whole.
     fn write_snapshot(&self) {
-        let mut on_disk = self.file.lock().unwrap_or_else(PoisonError::into_inner);
-        let events = self
-            .events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let admission = self
-            .native_admission
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let mut on_disk = self.file.lock_recover();
+        let events = self.events.lock_recover().clone();
+        let admission = self.native_admission.lock_recover().clone();
         let revision = (events.len(), admission.clone());
         if on_disk.as_ref() == Some(&revision) {
             return;
@@ -442,10 +426,7 @@ impl Metrics {
 
     fn checkpoint_admission(&self, snapshot: NativeAdmissionSnapshot) {
         {
-            let mut admission = self
-                .native_admission
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut admission = self.native_admission.lock_recover();
             if admission.as_ref() == Some(&snapshot) {
                 return;
             }
@@ -462,10 +443,7 @@ impl Metrics {
         let Some(Some(writer)) = self.writer.get() else {
             return false;
         };
-        *writer
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = true;
+        *writer.pending.lock_recover() = true;
         writer.wake.notify_one();
         true
     }
@@ -484,10 +462,7 @@ impl Metrics {
 /// next ones for [`WRITE_SPACING`].
 fn write_marks(metrics: &'static Metrics, writer: &'static Writer) -> ! {
     loop {
-        let mut pending = writer
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = writer.pending.lock_recover();
         while !*pending {
             pending = writer
                 .wake
@@ -572,7 +547,7 @@ pub fn handoff_mark(name: &'static str) {
         return;
     }
     let epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
-    let mut marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut marks = marks.lock_recover();
     if marks.len() < HANDOFF_MAX_MARKS {
         marks.push(HandoffEvent {
             name: name.to_owned(),
@@ -586,7 +561,7 @@ pub fn handoff_mark(name: &'static str) {
 #[must_use]
 pub fn handoff_env_value() -> Option<String> {
     let marks = HANDOFF.get()?.as_ref()?;
-    let marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    let marks = marks.lock_recover();
     (!marks.is_empty()).then(|| encode_handoff(&marks))
 }
 
@@ -661,13 +636,10 @@ pub fn start_writer() {
 impl Metrics {
     fn record(&self, name: &str) {
         let ns = self.origin.elapsed().as_nanos();
-        self.events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Event {
-                name: name.to_owned(),
-                ns,
-            });
+        self.events.lock_recover().push(Event {
+            name: name.to_owned(),
+            ns,
+        });
         if !self.wake_writer() {
             self.write_snapshot();
         }
@@ -707,8 +679,7 @@ pub fn summary_line(app: &str) -> Option<String> {
     };
     let events = m
         .events
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .map(|event| (event.name.clone(), event.ns))
         .collect::<Vec<_>>();

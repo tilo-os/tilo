@@ -226,7 +226,11 @@ impl DesktopChromeSource for NativeChrome {
                 overlay: activity.overlay,
             }),
             active_exposures: state.active_exposures().to_vec(),
+            // Native presence has no spectator role yet.
+            watching: 0,
             topbar_widgets: Some(self.widgets.borrow().clone()),
+            // The strip ribbon already places strips on this desktop.
+            strip_places: None,
         }
     }
 
@@ -256,6 +260,7 @@ impl DesktopChromeSource for NativeChrome {
                 return true;
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
+            ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
             ChromeIntent::ClockCommand {
                 command,
                 activity_id,
@@ -276,21 +281,25 @@ impl DesktopChromeSource for NativeChrome {
                 drop(state);
                 let request = match request {
                     AppTrayRequest::Activate { x, y } => {
-                        crate::tray::TrayRequest::Activate { x, y }
+                        tilo_tray_host::TrayRequest::Activate { x, y }
                     }
                     AppTrayRequest::SecondaryActivate { x, y } => {
-                        crate::tray::TrayRequest::SecondaryActivate { x, y }
+                        tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
                     }
                     AppTrayRequest::ContextMenu { x, y } => {
-                        crate::tray::TrayRequest::ContextMenu { x, y }
+                        tilo_tray_host::TrayRequest::ContextMenu { x, y }
                     }
                 };
-                if let Err(error) = crate::tray::Tray::global().request(&key, request) {
+                if let Err(error) = crate::tray::global().request(&key, request) {
                     tracing::debug!(target: "shell::tray", %key, %error, "tray click not delivered");
                     return false;
                 }
                 return true;
             }
+            // Strips are added from the ribbon and workspace settings here,
+            // and the native bar carries no Tilo mark: its About is in
+            // Settings.
+            ChromeIntent::AddStrip { .. } | ChromeIntent::ToggleTiloMenu => return false,
             ChromeIntent::SetTopBarWidgets(widgets) => {
                 let widgets = widgets.normalised();
                 save_widgets(&widgets);
@@ -313,23 +322,23 @@ impl DesktopChromeSource for NativeChrome {
     }
 
     fn app_tray_revision(&self) -> u64 {
-        crate::tray::Tray::global().revision()
+        crate::tray::global().revision()
     }
 
     fn app_tray(&self) -> Vec<AppTrayItem> {
-        crate::tray::Tray::global()
+        crate::tray::global()
             .snapshot()
             .into_iter()
             .map(|item| AppTrayItem {
                 key: item.key,
                 id: item.id,
                 status: match item.status {
-                    crate::tray::ItemStatus::Passive => AppTrayStatus::Passive,
-                    crate::tray::ItemStatus::Active => AppTrayStatus::Active,
-                    crate::tray::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
+                    tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
+                    tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
+                    tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
                 },
                 icon: match item.icon {
-                    crate::tray::TrayIcon::Pixels {
+                    tilo_tray_host::TrayIcon::Pixels {
                         width,
                         height,
                         rgba,
@@ -338,7 +347,7 @@ impl DesktopChromeSource for NativeChrome {
                         height,
                         rgba,
                     },
-                    crate::tray::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+                    tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
                 },
                 item_is_menu: item.item_is_menu,
             })

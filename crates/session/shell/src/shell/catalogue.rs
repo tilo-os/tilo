@@ -16,10 +16,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+pub use registry_types::catalogue::{CatalogueApp, CatalogueListing};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
 use crate::shell::state::RoomId;
+use tilo_lock::MutexRecover as _;
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
@@ -31,7 +32,7 @@ const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
 const LIST_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_OUTPUT_LIMIT: usize = 1024 * 1024;
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn safe_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
@@ -41,40 +42,6 @@ fn safe_diagnostic(bytes: &[u8]) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
-}
-
-/// **Wire contract.** These field names are what `app list
-/// --json` prints; the crate that prints them pins the same names in
-/// its own test, so changing one without the other fails loudly
-/// instead of silently producing an empty catalogue.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CatalogueApp {
-    pub package_id: String,
-    pub display_name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub category: Option<String>,
-    pub version: String,
-    /// Which configured registry offered it.
-    pub registry: String,
-    #[serde(default)]
-    pub trust: String,
-}
-
-/// The envelope `app list --json` prints.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct CatalogueListing {
-    #[serde(default)]
-    pub apps: Vec<CatalogueApp>,
-    #[serde(default)]
-    pub unreachable: Vec<UnreachableRegistry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct UnreachableRegistry {
-    pub name: String,
-    pub detail: String,
 }
 
 // ---------------------------------------------------------------------
@@ -93,20 +60,121 @@ static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// a panic while holding this lock doesn't corrupt the cached listing
 /// it protects, so a poisoned lock is treated the same as a healthy
 /// one rather than wedging every future caller in this process.
-fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>, Instant)>> {
-    CATALOGUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// What an install under way has done so far, as `app install
+/// --progress-lines` reports it, for the card standing in the place its
+/// window will open in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstallProgress {
+    Downloading { received: u64, total: Option<u64> },
+    Installing,
 }
 
-/// Run `f` on the session's pending "Opening…" notices, recovering from
+static INSTALL_PROGRESS: Mutex<Vec<(String, InstallProgress)>> = Mutex::new(Vec::new());
+
+/// How often the install worker looks for new progress lines.
+const INSTALL_PROGRESS_POLL: Duration = Duration::from_millis(100);
+
+fn with_install_progress<T>(f: impl FnOnce(&mut Vec<(String, InstallProgress)>) -> T) -> T {
+    f(&mut INSTALL_PROGRESS.lock_recover())
+}
+
+/// The latest progress `package_id`'s install reported, if it is under way
+/// and has reported any.
+pub(crate) fn install_progress(package_id: &str) -> Option<InstallProgress> {
+    with_install_progress(|all| {
+        all.iter()
+            .find(|(package, _)| package == package_id)
+            .map(|(_, progress)| *progress)
+    })
+}
+
+pub(crate) fn set_install_progress(package_id: &str, progress: Option<InstallProgress>) {
+    with_install_progress(|all| {
+        all.retain(|(package, _)| package != package_id);
+        if let Some(progress) = progress {
+            all.push((package_id.to_owned(), progress));
+        }
+    });
+}
+
+/// One `--progress-lines` line; anything else is not progress.
+fn parse_progress_line(line: &str) -> Option<InstallProgress> {
+    let mut words = line.trim().strip_prefix("progress ")?.split(' ');
+    match (words.next()?, words.next(), words.next(), words.next()) {
+        ("installing", None, None, None) => Some(InstallProgress::Installing),
+        ("downloading", Some(received), Some(total), None) => Some(InstallProgress::Downloading {
+            received: received.parse().ok()?,
+            total: match total {
+                "-" => None,
+                total => Some(total.parse().ok()?),
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// What a failed install says went wrong: its `app:` error lines, without
+/// the progress and the announcements it printed on the way.
+fn install_failure_detail(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let lines = || {
+        stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty() && parse_progress_line(line).is_none())
+    };
+    let errors: Vec<&str> = lines().filter(|line| line.starts_with("app:")).collect();
+    let detail = if errors.is_empty() {
+        lines().next_back().unwrap_or_default().to_owned()
+    } else {
+        errors.join(" ")
+    };
+    safe_diagnostic(detail.as_bytes())
+}
+
+/// Run `command` (an `app install --progress-lines`), recording its progress
+/// for `package_id` as the lines arrive.
+fn run_install_reporting(
+    command: std::process::Command,
+    package_id: &str,
+) -> Result<bounded_command::Output, bounded_command::Error> {
+    let mut child = bounded_command::spawn_prepared_observing_stderr(
+        command,
+        None,
+        INSTALL_OUTPUT_LIMIT,
+        INSTALL_TIMEOUT,
+    )?;
+    let mut partial = Vec::new();
+    let result = loop {
+        while let Some(observation) = child.try_stderr() {
+            let bounded_command::StderrObservation::Bytes(bytes) = observation else {
+                continue;
+            };
+            partial.extend(bytes);
+            while let Some(end) = partial.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = partial.drain(..=end).collect();
+                if let Some(progress) = parse_progress_line(&String::from_utf8_lossy(&line)) {
+                    set_install_progress(package_id, Some(progress));
+                }
+            }
+        }
+        if let Some(result) = child.try_wait() {
+            break result;
+        }
+        std::thread::sleep(INSTALL_PROGRESS_POLL);
+    };
+    set_install_progress(package_id, None);
+    result
+}
+
+fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>, Instant)>> {
+    CATALOGUE.lock_recover()
+}
+
+/// Run `f` on the session's launches still opening, recovering from
 /// poisoning as [`lock_catalogue`] does.
-fn with_pending_notices<T>(f: impl FnOnce(&mut Vec<(String, u64)>) -> T) -> T {
+fn with_pending_launches<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     let session = launcher::LaunchSession::current();
-    let mut pending = session
-        .opening_notices
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut pending = session.opening_launches.lock_recover();
     f(&mut pending)
 }
 
@@ -346,37 +414,38 @@ fn schedule_refresh() {
 // Opening something that isn't here yet.
 // ---------------------------------------------------------------------
 
-pub fn note_pending_notice(package_id: &str, notification_id: u64) {
-    with_pending_notices(|pending| {
-        pending.retain(|(id, _)| id != package_id);
-        pending.push((package_id.to_string(), notification_id));
+/// Note that `package_id` is opening. The window's own place (its
+/// placeholder card, then its first frame) is what the person sees; this
+/// only keeps a repeated activation from starting a second launch.
+pub fn note_pending_launch(package_id: &str) {
+    with_pending_launches(|pending| {
+        if !pending.iter().any(|id| id == package_id) {
+            pending.push(package_id.to_string());
+        }
     });
 }
 
 /// A peek, not a take — the frame thread walks this every frame.
-/// Retirement goes through [`take_pending_notice`].
-pub fn pending_notices() -> Vec<(String, u64)> {
-    with_pending_notices(|pending| pending.clone())
+/// Retirement goes through [`take_pending_launch`].
+pub fn pending_launches() -> Vec<String> {
+    with_pending_launches(|pending| pending.clone())
 }
 
-/// Return the active opening notice for `package_id`, if any. Launching the
-/// same app repeatedly while its first install/start is still in flight must
-/// not create a stack of indistinguishable "Opening…" cards or overwrite the
-/// only id that can retire the old cards.
-pub fn pending_notice(package_id: &str) -> Option<u64> {
-    with_pending_notices(|pending| {
-        pending
-            .iter()
-            .find(|(id, _)| id == package_id)
-            .map(|(_, notification_id)| *notification_id)
-    })
+/// Whether `package_id` is still opening. Launching the same app repeatedly
+/// while its first install/start is in flight must not start another one.
+pub fn pending_launch(package_id: &str) -> bool {
+    with_pending_launches(|pending| pending.iter().any(|id| id == package_id))
 }
 
-/// So the "opening" toast is retired by the app appearing, not a timer.
-pub fn take_pending_notice(package_id: &str) -> Option<u64> {
-    with_pending_notices(|pending| {
-        let idx = pending.iter().position(|(id, _)| id == package_id)?;
-        Some(pending.remove(idx).1)
+/// Settle the launch of `package_id`: its window appeared, or it failed.
+/// Returns whether it was still opening.
+pub fn take_pending_launch(package_id: &str) -> bool {
+    with_pending_launches(|pending| {
+        let Some(idx) = pending.iter().position(|id| id == package_id) else {
+            return false;
+        };
+        pending.remove(idx);
+        true
     })
 }
 
@@ -402,9 +471,8 @@ pub fn install_and_launch(
     let identity = (package_id.clone(), display_name.clone());
     let spawn_result = launcher::spawn_reporting(builder, move || {
         let mut command = std::process::Command::new(&bin);
-        command.args(["install", &package_id]);
-        let out =
-            bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, INSTALL_TIMEOUT);
+        command.args(["install", "--progress-lines", &package_id]);
+        let out = run_install_reporting(command, &package_id);
         match out {
             Err(e) => {
                 push_failure(
@@ -418,7 +486,7 @@ pub fn install_and_launch(
                 return;
             }
             Ok(o) if !o.status.success() => {
-                let detail = safe_diagnostic(&o.stderr);
+                let detail = install_failure_detail(&o.stderr);
                 let detail = if detail.is_empty() {
                     crate::shell::i18n::t_args(
                         "catalogue-error-exited",
@@ -435,6 +503,8 @@ pub fn install_and_launch(
 
         invalidate();
         launcher::invalidate_app_cache();
+        // The install is done; the window is now due as for any start.
+        launcher::hold_presentation_for(&package_id, Duration::ZERO);
 
         launcher::set_workspace_capabilities(capabilities);
         if let Err(e) = launcher::launch(&package_id, room) {
@@ -461,7 +531,10 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
         display_name: display_name.to_string(),
         managed_agent_id: None,
         managed_workspace_id: None,
-        kind: LaunchEventKind::SpawnFailed { detail },
+        kind: LaunchEventKind::SpawnFailed {
+            reason: launcher::LaunchFailure::Other,
+            detail,
+        },
     });
 }
 
@@ -470,9 +543,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_install_reports_its_bytes_while_it_runs_and_fails_with_its_error_alone() {
+        assert_eq!(
+            parse_progress_line("progress downloading 4200000 18000000\n"),
+            Some(InstallProgress::Downloading {
+                received: 4_200_000,
+                total: Some(18_000_000),
+            })
+        );
+        assert_eq!(
+            parse_progress_line("progress downloading 12 -"),
+            Some(InstallProgress::Downloading {
+                received: 12,
+                total: None,
+            })
+        );
+        assert_eq!(
+            parse_progress_line("progress installing"),
+            Some(InstallProgress::Installing)
+        );
+        assert_eq!(
+            parse_progress_line("Finding the app in the Tilo Store…"),
+            None
+        );
+        assert_eq!(parse_progress_line("progress downloading many -"), None);
+
+        let package = "so.tilo.test.progress-lines";
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "echo 'Finding the app' >&2; echo 'progress downloading 5 10' >&2; \
+             sleep 2; echo 'app: the store is unreachable' >&2; exit 1",
+        ]);
+        let worker = std::thread::spawn(move || run_install_reporting(command, package));
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let mut seen = None;
+        while seen.is_none() && Instant::now() < deadline {
+            seen = install_progress(package);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            seen,
+            Some(InstallProgress::Downloading {
+                received: 5,
+                total: Some(10),
+            }),
+            "the bytes are known while the install still runs"
+        );
+        let output = worker.join().unwrap().expect("the install ran");
+        assert_eq!(
+            install_progress(package),
+            None,
+            "a finished install has none"
+        );
+        assert_eq!(
+            install_failure_detail(&output.stderr),
+            "app: the store is unreachable"
+        );
+    }
+
+    #[test]
     fn catalogue_listing_parses_strictly_and_seeds_the_palette() {
-        /// Pinned against the exact JSON `app` prints;
-        /// `app-cli`'s own test pins the other half.
+        /// The exact JSON `app` prints.
         fn the_listing_envelope_parses_the_binarys_field_names() {
             let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
                 "description":"a spreadsheet","category":"Office","version":"2.0.0",
@@ -513,7 +645,8 @@ mod tests {
             std::fs::write(
                 &path,
                 r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
-                    "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
+                    "version":"1.0.0","registry":"team","download_url":"https://x/y.tapp",
+                    "trust":"verified"}]}"#,
             )
             .unwrap();
             let listing = read_cached_listing(&path).expect("cached listing should parse");
@@ -527,31 +660,25 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_open_notices_are_taken_once_and_replaced_by_newer_opens() {
-        /// A pending notice belongs to exactly one open, and taking it
-        /// consumes it — a second launch of the same app must not dismiss
-        /// a notification that no longer exists.
-        fn a_pending_notice_is_taken_once() {
-            note_pending_notice("so.tilo.noticefixture", 42);
-            assert_eq!(take_pending_notice("so.tilo.noticefixture"), Some(42));
-            assert_eq!(take_pending_notice("so.tilo.noticefixture"), None);
+    fn catalogue_opening_launches_are_taken_once() {
+        /// A pending launch belongs to exactly one open, and taking it
+        /// consumes it.
+        fn a_pending_launch_is_taken_once() {
+            note_pending_launch("so.tilo.noticefixture");
+            assert!(take_pending_launch("so.tilo.noticefixture"));
+            assert!(!take_pending_launch("so.tilo.noticefixture"));
         }
 
-        fn a_newer_open_replaces_the_notice_for_the_same_package() {
-            note_pending_notice("so.tilo.replacefixture", 1);
-            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(1));
-            note_pending_notice("so.tilo.replacefixture", 2);
-            assert_eq!(pending_notice("so.tilo.replacefixture"), Some(2));
-            assert_eq!(
-                take_pending_notice("so.tilo.replacefixture"),
-                Some(2),
-                "the live open's notification is the one to retire"
-            );
-            assert_eq!(take_pending_notice("so.tilo.replacefixture"), None);
+        fn a_second_open_of_the_same_package_is_one_launch() {
+            note_pending_launch("so.tilo.replacefixture");
+            note_pending_launch("so.tilo.replacefixture");
+            assert!(pending_launch("so.tilo.replacefixture"));
+            assert!(take_pending_launch("so.tilo.replacefixture"));
+            assert!(!pending_launch("so.tilo.replacefixture"));
         }
 
-        a_pending_notice_is_taken_once();
-        a_newer_open_replaces_the_notice_for_the_same_package();
+        a_pending_launch_is_taken_once();
+        a_second_open_of_the_same_package_is_one_launch();
     }
 
     #[test]

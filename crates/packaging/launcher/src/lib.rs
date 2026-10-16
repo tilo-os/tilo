@@ -26,15 +26,6 @@
 //! The launcher-facing manifest surface is kept in [`manifest`]; policy types
 //! are shared with `tilo-app-package`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod appdir;
 pub mod capabilities;
 pub mod capture;
@@ -60,6 +51,7 @@ pub mod netgate;
 #[cfg(target_os = "linux")]
 pub mod owned_service;
 pub mod performance;
+pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;

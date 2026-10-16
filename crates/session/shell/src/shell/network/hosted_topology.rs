@@ -89,10 +89,11 @@ impl ShellNetwork {
     /// The peers a headless session's viewers watch `room` through: its
     /// workspace hosts, and the device governing the room, which forwards
     /// a controlling viewer's input as its own. Each is shared every legacy
-    /// window of the room's workspace while the session is watched.
+    /// window of the room's workspace while the session is watched. Called
+    /// every tick, so it reads the governor only from an owner already open.
     pub fn viewer_hosts(&self, room: RoomId) -> std::collections::HashSet<u64> {
         let mut hosts = self.workspace_hosts(room_topic_id(room));
-        if let Ok(owner) = self.native_owner()
+        if let Some(owner) = self.opened_native_owner()
             && let Ok(governor) = owner.with_current(room, |view| {
                 Ok((
                     view.device().device_public_key,
@@ -133,7 +134,11 @@ impl ShellNetwork {
             }
             state.checked = Some(now);
         }
-        if !self.governed_elsewhere(room) {
+        // Only an owner already open: this runs on the frame loop.
+        let Some(owner) = self.opened_native_owner() else {
+            return;
+        };
+        if !self.governed_elsewhere_by(&owner, room) {
             return;
         }
         let (salt, windows) = {
@@ -152,9 +157,6 @@ impl ShellNetwork {
         if salt == 0 {
             return;
         }
-        let Ok(owner) = self.native_owner() else {
-            return;
-        };
         let mut settled = self
             .hosted_topology
             .rooms
@@ -418,8 +420,9 @@ mod tests {
         );
     }
 
-    /// A relay forwards a browser's input (wheel, a paste, a close among
-    /// it) in its wire vocabulary; each must be what this session decodes.
+    /// A relay forwards a browser's input (wheel, a paste, a close, text its
+    /// input method committed among it) in its wire vocabulary; each must be
+    /// what this session decodes.
     #[test]
     fn viewer_input_from_a_relay_decodes_as_remote_input() {
         use crate::network::streaming::InputEvent as Session;
@@ -452,6 +455,14 @@ mod tests {
                 },
             ),
             (Session::Close, Wire::Close),
+            (
+                Session::Text {
+                    text: "日本".into(),
+                },
+                Wire::Text {
+                    text: "日本".into(),
+                },
+            ),
         ];
         for (session, wire) in pairs {
             assert_eq!(
@@ -460,6 +471,11 @@ mod tests {
                 "{session:?}"
             );
         }
+        assert_eq!(
+            tilo_relay_protocol::legacy_window::MAX_TEXT_BYTES,
+            crate::network::input_firewall::MAX_REMOTE_TEXT_BYTES,
+            "a relay forwards no text this session's firewall refuses"
+        );
     }
 
     #[test]
@@ -485,6 +501,7 @@ mod tests {
                     active_tab: host(3),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 WindowGroup {
                     id: own(1),
@@ -492,6 +509,7 @@ mod tests {
                     active_tab: own(2),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
                 WindowGroup {
                     id: own(4),
@@ -499,6 +517,7 @@ mod tests {
                     active_tab: host(9),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             ],
         }];
@@ -538,6 +557,7 @@ mod tests {
                         active_tab: own(3),
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     }],
                 }],
                 salt,
@@ -614,16 +634,18 @@ mod tests {
         assert_eq!(projections(), 6, "a moved room document is looked at again");
     }
 
-    /// What one look at a settled room cost before (copying and projecting
-    /// the admitted document every time) against now, for a room document
-    /// with some history. Printed for the record.
+    /// A room in use carries thousands of edits of history, and copying it
+    /// to project into on every look is what a settled room must not cost.
+    /// Counted, not timed: without the memo of the last look every look
+    /// copies the room, and with it no look does while nothing moved.
     #[test]
     fn a_settled_room_is_looked_at_without_copying_it() {
         use automerge::transaction::Transactable as _;
-        const LOOKS: u32 = 50;
+        const LOOKS: u64 = 50;
         let salt = 0x0042;
         let device = [0x5a; 32];
         let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let copies = || PROJECTIONS.with(std::cell::Cell::get);
         let mut room = automerge::AutoCommit::new();
         let owners = room
             .put_object(
@@ -662,6 +684,7 @@ mod tests {
                     active_tab: own(3),
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }],
             salt,
@@ -675,7 +698,13 @@ mod tests {
             tilo_automerge::ApplyIncoming::load_incoming(&mut room, change).expect("admitted");
         }
 
-        let started = Instant::now();
+        assert!(
+            room.get_changes(&[]).len() > 500,
+            "the room carries a history"
+        );
+
+        // Without the memo, each look copies the room to find nothing to do.
+        let before = copies();
         for _ in 0..LOOKS {
             let mut fresh = None;
             assert!(matches!(
@@ -683,25 +712,25 @@ mod tests {
                 Ok(None)
             ));
         }
-        let copied = started.elapsed();
+        assert_eq!(
+            copies().saturating_sub(before),
+            LOOKS,
+            "every unmemoised look copies"
+        );
+
+        // One look records that the admitted room needs nothing; no look
+        // after it copies the room while neither side moved.
         assert!(matches!(
             plan(&room, device, &windows, salt, &mut settled),
             Ok(None)
         ));
-        let started = Instant::now();
+        let before = copies();
         for _ in 0..LOOKS {
             assert!(matches!(
                 plan(&room, device, &windows, salt, &mut settled),
                 Ok(None)
             ));
         }
-        let skipped = started.elapsed();
-        eprintln!(
-            "#3805 hosted topology look at a settled room ({} changes): copied and projected {:?}, settled {:?}",
-            room.get_changes(&[]).len(),
-            copied / LOOKS,
-            skipped / LOOKS,
-        );
-        assert!(skipped < copied, "settled {skipped:?} vs copied {copied:?}");
+        assert_eq!(copies(), before, "a settled room is not copied");
     }
 }

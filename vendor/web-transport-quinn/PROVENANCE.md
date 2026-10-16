@@ -7,7 +7,9 @@
 - Repository: `https://github.com/moq-dev/web-transport`
 - Upstream revision: `bba6900a3335ceef6f0715c5c206557a72b18058`
   (`.cargo_vcs_info.json`), package path `rs/web-transport-quinn`
-- License: MIT OR Apache-2.0
+- License: MIT OR Apache-2.0. The published archive carries no licence text;
+  `LICENSE-MIT` and `LICENSE-APACHE` are the repository root's files at the
+  upstream revision, byte for byte.
 
 Local patch (additive only, no behaviour change for existing callers):
 

@@ -61,6 +61,43 @@ mod tests {
     use std::time::{Duration, Instant};
     use ui::widget::Widget;
 
+    /// The persistent-control handshake that precedes every open: read the
+    /// client's hello and answer ready. Returns the reader holding any bytes
+    /// buffered past it, so the open request is read from the same stream.
+    fn accept_hello(server: &UnixStream) -> std::io::BufReader<&UnixStream> {
+        let mut reader = std::io::BufReader::new(server);
+        let mut hello = String::new();
+        reader.read_line(&mut hello).unwrap();
+        assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+        (&*server)
+            .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
+            .unwrap();
+        reader
+    }
+
+    /// Answer an open with a PTY and a private session lease; the returned
+    /// supervisor end of the lease reads end-of-file once the tab drops it.
+    fn grant_session(server: &UnixStream, session: &str) -> UnixStream {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .unwrap();
+        let (supervisor_lease, terminal_lease) = UnixStream::pair().unwrap();
+        let reply = format!(
+            "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{session}\",\"environment\":\"default\"}}\n"
+        );
+        runtime_portal::fd_transport::send_with_fds(
+            server,
+            reply.as_bytes(),
+            // SAFETY: `pair` owns the master and outlives this call.
+            &[
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
+                std::os::fd::AsFd::as_fd(&terminal_lease),
+            ],
+        )
+        .unwrap();
+        supervisor_lease
+    }
+
     fn tab(socket: UnixStream) -> crate::TerminalWidget {
         crate::TerminalWidget::spawn_hosted(HostedProcessServices { ush: Some(socket) }).unwrap()
     }
@@ -99,10 +136,9 @@ mod tests {
         let (received, request) = mpsc::channel();
         let (release, delayed) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let mut reader = accept_hello(&server);
             let mut line = String::new();
-            std::io::BufReader::new(&server)
-                .read_line(&mut line)
-                .unwrap();
+            reader.read_line(&mut line).unwrap();
             received.send(line).unwrap();
             delayed.recv_timeout(Duration::from_secs(5)).unwrap();
             (&server)
@@ -138,10 +174,9 @@ mod tests {
             .unwrap();
         let mut widget = tab(client);
         widget.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+        let mut reader = accept_hello(&server);
         let mut request = String::new();
-        std::io::BufReader::new(&server)
-            .read_line(&mut request)
-            .unwrap();
+        reader.read_line(&mut request).unwrap();
         assert!(request.contains("open-session"));
         drop(widget);
         assert_eq!(
@@ -166,10 +201,9 @@ mod tests {
                 .begin_open(&target, Requester::Person, None, Arc::clone(&waker))
                 .is_none()
         );
+        let mut reader = accept_hello(&server);
         let mut request = String::new();
-        std::io::BufReader::new(&server)
-            .read_line(&mut request)
-            .unwrap();
+        reader.read_line(&mut request).unwrap();
         // Agent host refusal is deterministic and starts no replacement child.
         assert!(matches!(
             sessions.begin_open(&SessionTarget::Host, Requester::Agent, None, waker),
@@ -184,26 +218,20 @@ mod tests {
 
     #[test]
     fn accepted_open_keeps_lifetime_until_tab_closes_even_with_reader_clone() {
-        let (client, mut server) = UnixStream::pair().unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let worker = std::thread::spawn(move || {
+            let mut reader = accept_hello(&server);
             let mut request = String::new();
-            std::io::BufReader::new(&server)
-                .read_line(&mut request)
+            reader.read_line(&mut request).unwrap();
+            let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            lease
+                .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let pair = portable_pty::native_pty_system()
-                .openpty(portable_pty::PtySize::default())
-                .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
-                &server,
-                b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                // SAFETY: `pair` owns the master and outlives this call.
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
-            ).unwrap();
             assert_eq!(
-                server.read(&mut [0]).unwrap(),
+                lease.read(&mut [0]).unwrap(),
                 0,
                 "closing the accepted tab must end the guest lifetime despite the PTY reader's socket clone"
             );
@@ -224,21 +252,20 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         let mut supervisors = Vec::new();
         for _ in 0..3 {
-            let (client, mut server) = UnixStream::pair().unwrap();
-            server
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
+            let (client, server) = UnixStream::pair().unwrap();
             supervisors.push(std::thread::spawn(move || {
+                let mut reader = accept_hello(&server);
                 let mut request = String::new();
-                std::io::BufReader::new(&server).read_line(&mut request).unwrap();
-                let pair = portable_pty::native_pty_system().openpty(portable_pty::PtySize::default()).unwrap();
-                runtime_portal::fd_transport::send_with_fd(
-                    &server,
-                    b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                    // SAFETY: `pair` owns the master and outlives this call.
-                    unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
-                ).unwrap();
-                assert_eq!(server.read(&mut [0]).unwrap(), 0, "every replaced or closed session must disconnect");
+                reader.read_line(&mut request).unwrap();
+                let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                lease
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                assert_eq!(
+                    lease.read(&mut [0]).unwrap(),
+                    0,
+                    "every replaced or closed session must disconnect"
+                );
             }));
             // Use the existing test seam to lend the next private connection,
             // without touching the process-global runtime directory.
@@ -260,27 +287,18 @@ mod tests {
 
     #[test]
     fn a_queued_success_is_discarded_when_the_attempt_is_cancelled() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
         let (sent, handed) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            let mut reader = accept_hello(&server);
             let mut request = String::new();
-            std::io::BufReader::new(&server)
-                .read_line(&mut request)
+            reader.read_line(&mut request).unwrap();
+            let mut lease = grant_session(&server, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            lease
+                .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let pair = portable_pty::native_pty_system()
-                .openpty(portable_pty::PtySize::default())
-                .unwrap();
-            runtime_portal::fd_transport::send_with_fd(
-                &server,
-                b"{\"result\":\"session\",\"session\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"environment\":\"default\"}\n",
-                // SAFETY: `pair` owns the master and outlives this call.
-                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
-            ).unwrap();
             sent.send(()).unwrap();
-            assert_eq!(server.read(&mut [0]).unwrap(), 0);
+            assert_eq!(lease.read(&mut [0]).unwrap(), 0);
         });
         let pending = PendingOpen::start(
             Some(HostedProcessServices { ush: Some(client) }),
@@ -311,10 +329,9 @@ mod tests {
             let (client, server) = UnixStream::pair().unwrap();
             let bytes = reply.to_vec();
             let worker = std::thread::spawn(move || {
+                let mut reader = accept_hello(&server);
                 let mut request = String::new();
-                std::io::BufReader::new(&server)
-                    .read_line(&mut request)
-                    .unwrap();
+                reader.read_line(&mut request).unwrap();
                 (&server).write_all(&bytes).unwrap();
             });
             let mut widget = tab(client);

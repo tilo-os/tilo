@@ -50,9 +50,6 @@ snippets-copy-title = { $title } (copy)
 ## Confirmations
 
 snippets-copied = Copied to clipboard
-snippets-created = New snippet created
-snippets-duplicated = Snippet duplicated
-snippets-deleted = Snippet deleted
 
 ## Fill in variables
 

@@ -118,7 +118,6 @@ icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
-inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
@@ -145,6 +144,7 @@ parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -165,7 +165,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -192,7 +193,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -206,6 +208,7 @@ strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
@@ -228,13 +231,12 @@ unicode-bidi = { version = "0.3" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
-uuid = { version = "1", features = ["js", "serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "unstable"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
@@ -355,7 +357,6 @@ icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
-inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
@@ -382,6 +383,7 @@ parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
+phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
@@ -402,7 +404,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -429,7 +432,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -444,6 +448,7 @@ subtle = { version = "2", features = ["const-generics"] }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
@@ -467,13 +472,12 @@ unicode-bidi = { version = "0.3" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
-uuid = { version = "1", features = ["js", "serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "unstable"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
@@ -494,7 +498,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -506,11 +510,10 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -518,9 +521,6 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
-wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -530,7 +530,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -542,11 +542,10 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -554,9 +553,6 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
-wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -566,7 +562,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -578,11 +574,10 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -590,9 +585,6 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
-wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -602,7 +594,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -614,11 +606,10 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
-phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -626,9 +617,6 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
-wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 

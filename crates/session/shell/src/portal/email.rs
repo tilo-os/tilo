@@ -4,6 +4,7 @@ use super::desktop_services::EmailRequest;
 use super::desktop_services::document_portal_path_from_uri;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::reply::{Ended, OrFail, Reply, Results, answer};
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
 #[cfg(target_os = "linux")]
@@ -11,8 +12,6 @@ use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewReque
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::OwnedValue;
@@ -35,15 +34,6 @@ impl EmailBackend {
             dialogs: PortalDialogQueue::global(),
         }
     }
-}
-#[cfg(target_os = "linux")]
-fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|v| v.len() <= max && !v.chars().any(char::is_control))
 }
 fn strings(
     options: &HashMap<String, OwnedValue>,
@@ -118,91 +108,77 @@ impl EmailBackend {
         app_id: String,
         parent_window: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        if lockdown::current_policy().disable_application_handlers {
-            return (1, HashMap::new());
-        }
-        let (Some(mut addresses), Some(cc), Some(bcc), Some(attachments)) = (
-            strings(&options, "addresses", 128),
-            strings(&options, "cc", 128),
-            strings(&options, "bcc", 128),
-            strings(&options, "attachments", 128),
-        ) else {
-            return (2, HashMap::new());
-        };
-        if let Some(address) = string(&options, "address", 4096) {
-            addresses.push(address);
-        }
-        let attachment_paths = attachments
-            .iter()
-            .map(|uri| document_portal_path_from_uri(uri))
-            .collect::<Result<Vec<_>, _>>();
-        if addresses.len() > 128 || attachment_paths.is_err() {
-            return (2, HashMap::new());
-        }
-        let request = EmailRequest {
-            app_id: auth.caller.app_id.clone(),
-            workspace_id: auth.caller.workspace_id,
-            addresses,
-            cc,
-            bcc,
-            subject: string(&options, "subject", 998),
-            body: string(&options, "body", 256 * 1024),
-            attachments,
-            attachment_paths: attachment_paths.unwrap_or_default(),
-            activation_token: string(&options, "activation_token", 4096),
-        };
-        let path = handle.to_string();
-        let dialogs = self.dialogs.clone();
-        let cancel_path = path.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id,
-            resource: LifecycleResource::Prompt,
-        };
-        if !matches!(
-            self.lifecycle
-                .register_request(connection, &path, entry, move |_| {
-                    let _ = dialogs.cancel(&cancel_path);
-                })
-                .await,
-            Ok(true)
-        ) {
-            return (2, HashMap::new());
-        }
-        let review = match self.dialogs.enqueue_review(ReviewRequest {
-            handle: path.clone(),
-            app_id: request.app_id.clone(),
-            title: crate::shell::i18n::t("portal-email-title"),
-            reason: crate::shell::i18n::t("portal-email-reason"),
-            resource: compose_detail(&request),
-            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
-        }) {
-            Ok(review) => review,
-            Err(_) => {
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return (2, HashMap::new());
+    ) -> Reply {
+        answer(async move {
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            if lockdown::current_policy().disable_application_handlers {
+                return Err(Ended::Cancelled);
             }
-        };
-        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+            let (Some(mut addresses), Some(cc), Some(bcc), Some(attachments)) = (
+                strings(&options, "addresses", 128),
+                strings(&options, "cc", 128),
+                strings(&options, "bcc", 128),
+                strings(&options, "attachments", 128),
+            ) else {
+                return Err(Ended::Failed);
+            };
+            if let Some(address) = crate::portal::text_option(&options, "address", 4096) {
+                addresses.push(address);
+            }
+            let attachment_paths = attachments
+                .iter()
+                .map(|uri| document_portal_path_from_uri(uri))
+                .collect::<Result<Vec<_>, _>>();
+            if addresses.len() > 128 || attachment_paths.is_err() {
+                return Err(Ended::Failed);
+            }
+            let request = EmailRequest {
+                app_id: auth.caller.app_id.clone(),
+                workspace_id: auth.caller.workspace_id,
+                addresses,
+                cc,
+                bcc,
+                subject: crate::portal::text_option(&options, "subject", 998),
+                body: crate::portal::text_option(&options, "body", 256 * 1024),
+                attachments,
+                attachment_paths: attachment_paths.unwrap_or_default(),
+                activation_token: crate::portal::text_option(&options, "activation_token", 4096),
+            };
+            let path = handle.to_string();
+            let dialogs = self.dialogs.clone();
+            let cancel_path = path.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id,
+                resource: LifecycleResource::Prompt,
+            };
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
+            };
             self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            return (1, HashMap::new());
-        }
-        let result = self.ctx.desktop_services.email.compose(&request);
-        self.lifecycle
-            .complete_request_object(connection, &path)
-            .await;
-        (result.response_code(), HashMap::new())
+                .with_request(connection, &path, entry, cancel, async {
+                    let review = self
+                        .dialogs
+                        .enqueue_review(ReviewRequest {
+                            handle: path.clone(),
+                            app_id: request.app_id.clone(),
+                            title: crate::shell::i18n::t("portal-email-title"),
+                            reason: crate::shell::i18n::t("portal-email-reason"),
+                            resource: compose_detail(&request),
+                            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
+                        })
+                        .or_fail()?;
+                    if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+                        return Err(Ended::Cancelled);
+                    }
+                    let result = self.ctx.desktop_services.email.compose(&request);
+                    result.into_result().map(|()| Results::new())
+                })
+                .await
+        })
+        .await
     }
 }
 #[cfg(test)]

@@ -1092,14 +1092,6 @@ impl Widget for Text {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool {
-        false
-    }
-    fn set_focus(&mut self, _focused: bool) {}
-    fn is_focused(&self) -> bool {
-        false
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         // The FTL-resolved text *is* the accessible name. Empty text carries no

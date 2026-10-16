@@ -7,6 +7,7 @@ pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
 #[cfg(test)]
 mod nearby_transfer_tests;
+pub(crate) mod room_governance;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,7 @@ use tokio::sync::mpsc;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
 use crate::network::reachability::{Need, Reachability};
 use neighbour_wire::{Retention, retention};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
@@ -354,15 +356,10 @@ pub enum NetCmd {
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
-    /// Ask the room authority of the relay at `relay`, as `certificate`, from
-    /// this device's own endpoint: the relay accepts only the certificate of
-    /// the endpoint it authenticated.
-    RoomAdmin {
-        relay: EndpointAddr,
-        certificate: DeviceCert,
-        command: Box<tilo_relay_session::rooms::RoomCommand>,
-        reply: std::sync::mpsc::SyncSender<Result<tilo_relay_session::rooms::RoomReply, String>>,
-    },
+    /// Invoke what a relay answers itself (a room's governance, a member's
+    /// own business in it, or the host's own operations) on a relay session,
+    /// and answer the relay's receipt.
+    RoomGovernance(Box<room_governance::Request>),
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -997,7 +994,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
-        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
+        NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1112,6 +1109,8 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
+    /// Governance invocations waiting for their room's relay to answer.
+    room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     gossip: Gossip,
@@ -1200,8 +1199,7 @@ pub struct WireTally {
 impl WireTally {
     fn note(&self, kind: &'static str) {
         self.counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .entry(kind)
             .and_modify(|count| *count = count.saturating_add(1))
             .or_insert(1);
@@ -1209,10 +1207,7 @@ impl WireTally {
 
     /// The counts so far, by message kind.
     pub fn snapshot(&self) -> std::collections::BTreeMap<&'static str, u64> {
-        self.counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.counts.lock_recover().clone()
     }
 }
 
@@ -1517,21 +1512,7 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
-            Some(NetCmd::RoomAdmin {
-                relay,
-                certificate,
-                command,
-                reply,
-            }) => {
-                let client = tilo_relay_session::rooms::RoomAdminClient::new(
-                    self.endpoint.clone(),
-                    certificate,
-                );
-                tokio::spawn(async move {
-                    let answer = client.send(relay, *command).await;
-                    let _ = reply.send(answer.map_err(|error| error.to_string()));
-                });
-            }
+            Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request).await,
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
@@ -2334,6 +2315,72 @@ impl ActorState {
         }
     }
 
+    /// Send `request` to whoever it is addressed to ([`room_governance`]): a
+    /// room's relay device on any session of the room, or a host on its own
+    /// session of the workspace once that session is subscribed.
+    async fn send_room_governance(&mut self, request: room_governance::Request) {
+        let (ws, to) = (request.ws, request.to);
+        match to {
+            room_governance::Addressee::Device(host) => {
+                if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
+                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
+                        .await;
+                }
+            }
+            room_governance::Addressee::Host(endpoint) => {
+                let subscribed = self
+                    .host_sessions
+                    .get(&(ws, endpoint))
+                    .is_some_and(|runtime| {
+                        !runtime.replaying.load(std::sync::atomic::Ordering::Acquire)
+                    });
+                if subscribed {
+                    self.send_to_host(request, endpoint);
+                } else {
+                    // Its session is dialled with every topic this device
+                    // joined; the request goes once it is subscribed.
+                    self.room_governance.hold(request, Instant::now());
+                }
+            }
+        }
+    }
+
+    /// The host at `peer` subscribed this device to `ws`: refresh what its
+    /// native session holds and send the requests that waited for it.
+    fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+        self.request_native_refresh(ws);
+        for request in self.room_governance.ready_for(ws, peer) {
+            self.send_to_host(request, peer);
+        }
+        NetEvent::HostReady { ws, peer }
+    }
+
+    /// Send `request` on the session of its workspace with the host at
+    /// `endpoint`, to the device that session's handshake authenticated.
+    fn send_to_host(&mut self, request: room_governance::Request, endpoint: EndpointId) {
+        let Some(session) = self
+            .host_sessions
+            .get(&(request.ws, endpoint))
+            .map(|runtime| Arc::clone(&runtime.session))
+        else {
+            let _ = request.reply.send(Err("the host's session closed".into()));
+            return;
+        };
+        let device = session.relay_device_public_key();
+        let Ok(host) = EndpointId::from_bytes(&device) else {
+            let _ = request
+                .reply
+                .send(Err("the host named an invalid device".into()));
+            return;
+        };
+        if let Some(frame) = self.room_governance.send(request, host, Instant::now())
+            && let Err(error) = session.publish_remote_action(device, frame)
+        {
+            // Its caller hears nothing and gives up in its own time.
+            tracing::warn!(%error, host = %endpoint, "a request to a host was not sent");
+        }
+    }
+
     async fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
         for frame in self
             .pending_remote_actions
@@ -2606,9 +2653,12 @@ impl ActorState {
                 session,
                 event,
             }) => {
+                // A room's governance answering this device is taken here:
+                // its caller waits off the thread other answers go to.
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
                     std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) {
+                }) && !self.room_governance.takes(ws, &event)
+                {
                     self.handle_host_event(ws, peer, event).await;
                 }
             }
@@ -3158,10 +3208,7 @@ impl ActorState {
         let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
-            HostEvent::Ready => {
-                self.request_native_refresh(ws);
-                Some(NetEvent::HostReady { ws, peer })
-            }
+            HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Voice(event) => {
                 let session = self
@@ -3995,6 +4042,7 @@ async fn run(
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
+        room_governance: room_governance::Waiting::default(),
         gossip,
         internal_tx,
         topics: HashMap::new(),
@@ -4321,6 +4369,7 @@ fn remember_governance(
         msg,
         NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
     ) {
         return;
@@ -4657,10 +4706,7 @@ async fn register_content_peer(
 /// Hydrator and the durable catalog, so the shell cannot leave one stale.
 async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
     #[cfg(test)]
-    noted_content_peer_removals()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(relay);
+    noted_content_peer_removals().lock_recover().push(relay);
     if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
@@ -5739,10 +5785,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the phases share one linked pair: quiet, an older neighbour, departure"
-    )]
     async fn linked_actors_keep_liveness_on_the_transport_and_say_nothing_while_idle() {
         // The upkeep tick runs every 50 ms here, a hundred times its pace in
         // a session, so a second of idling is a hundred ticks.
@@ -6755,8 +6797,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             assert!(
                 !noted_content_peer_removals()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .contains(&relay.node_addr().id),
                 "an address refresh must retain the enrolled peer's Files route"
             );
@@ -6772,8 +6813,7 @@ mod tests {
                 async {
                     loop {
                         if noted_content_peer_removals()
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lock_recover()
                             .contains(&relay.node_addr().id)
                         {
                             break;
@@ -7543,6 +7583,7 @@ mod tests {
         // A frame in the clear never leaves.
         let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
             tilo_relay_protocol::live::PresenceFrame {
+                place: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,
@@ -7777,7 +7818,18 @@ mod tests {
                         inbound.push(Inbound::Frame { room, frame });
                     }
                     NeighbourMsg::MlsAccessRequest { request, .. } => {
-                        inbound.push(Inbound::AccessRequest { room, request });
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: None,
+                        });
+                    }
+                    NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: Some(route),
+                        });
                     }
                     NeighbourMsg::MlsGovernanceAck { ack, .. } => {
                         inbound.push(Inbound::Ack { room, ack });

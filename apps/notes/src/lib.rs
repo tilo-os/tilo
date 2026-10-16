@@ -1,6 +1,5 @@
 #![allow(
     clippy::doc_markdown,
-    clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
 
@@ -19,22 +18,10 @@
 // full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod actions;
+pub mod adopt;
 pub mod app;
 #[cfg(test)]
 mod cpu_profile;
@@ -48,6 +35,9 @@ pub mod note_header;
 pub mod notebook;
 pub mod read;
 pub mod resource;
+mod save_notice;
+#[cfg(test)]
+mod surface_volume;
 pub use ui::num;
 pub mod scenario;
 pub mod search;

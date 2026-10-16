@@ -593,6 +593,8 @@ fn run_layout_pass(
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
+    // Bounds, and what the widgets lay out, may move.
+    app.mark_semantic_tree_stale();
     // A relayout that moves nothing leaves every pixel outside the dirty
     // widgets as it was, so their damage is the whole change. Typing into a
     // fixed-size field relayouts on every key; repainting the whole window
@@ -629,7 +631,16 @@ fn run_layout_pass(
         || viewport_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
-    let result = settle_widget_composition(viewport_changed, |rebuild| {
+    // A resize re-solves the retained tree; only a widget that composes from
+    // its allocation asks for the composition to be repeated against it.
+    // History's own chrome picks its presentation from the window's width.
+    let recompose_for_viewport = viewport_changed
+        && (app.history_chrome_enabled
+            || app.history.is_some()
+            || crate::widget::layout::tree_composition_follows_allocation(
+                app.root_widget.as_ref(),
+            ));
+    let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
         if rebuild || app.layout.structure_dirty {
             recomposed = true;
             // Capture before build replaces controls. Shared view hooks carry

@@ -50,8 +50,7 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         let root = PathBuf::from(profile);
         let case = root.file_name().unwrap().to_str().unwrap();
         assert_eq!(
-            // SAFETY: geteuid has no pointer arguments or preconditions.
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             1000,
             "fixture must observe an actual non-root owner"
         );
@@ -88,12 +87,8 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         drop(environment);
         return;
     }
-    assert_eq!(
-        // SAFETY: geteuid has no pointer arguments or preconditions.
-        unsafe { libc::geteuid() },
-        0,
-        "readonly owner projection fixture requires root parent"
-    );
+    // bwrap maps the child's uid 1000 onto whatever uid runs this test, root or
+    // not, so the profiles created here are the child's own either way.
     let root = tempfile::tempdir().unwrap();
     for case in ["owner", "missing", "foreign", "tampered"] {
         let profile = profile(root.path(), case).unwrap();

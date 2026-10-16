@@ -57,9 +57,46 @@ impl SemanticsGate {
     pub(crate) fn request(&mut self) {
         self.requested = true;
     }
+    /// Whether a frame that only moved laid-out content would leave its
+    /// tree unbuilt at `now` ([`Self::defer_unbuilt`], the IME line held),
+    /// without scheduling anything.
+    pub(crate) fn would_defer_unbuilt(&self, now: ui::time::Instant) -> bool {
+        !self.requested && self.delivered != 0 && self.schedule.would_defer(now)
+    }
+    /// Hold a moved frame's tree, whose window is over, for the frame after
+    /// (due `now`), unless something else asks for it now: a request, the
+    /// first tree, or the IME line moved. Returns whether it is held.
+    pub(crate) fn hold_for_next_frame(
+        &mut self,
+        ime: Option<&ImeWindowState>,
+        now: ui::time::Instant,
+    ) -> bool {
+        if self.requested || self.delivered == 0 || ime_signature(ime) != self.ime {
+            return false;
+        }
+        self.schedule.hold(now);
+        true
+    }
     /// Deadline of a deferred content change, if one is pending.
     pub(crate) fn due(&self) -> Option<ui::time::Instant> {
         self.schedule.due()
+    }
+    /// Leave a frame's tree unbuilt when it can only be a content-only
+    /// change: the caller knows the frame only moved laid-out content, so
+    /// its structure and focus are the last tree's, and here the IME line
+    /// is too. Inside the window such a change would be deferred anyway;
+    /// this defers it unseen, and the deadline delivers the tree as it
+    /// then is. False, deferring nothing, when the host asked for a tree,
+    /// none was delivered yet, the IME line moved or the window is over.
+    pub(crate) fn defer_unbuilt(
+        &mut self,
+        ime: Option<&ImeWindowState>,
+        now: ui::time::Instant,
+    ) -> bool {
+        if self.requested || self.delivered == 0 || ime_signature(ime) != self.ime {
+            return false;
+        }
+        self.schedule.defer(now).is_some()
     }
     /// Serialized JSON of the tree from the last [`Self::decide`] call.
     pub(crate) fn text(&self) -> &[u8] {
@@ -229,6 +266,32 @@ mod tests {
     }
     fn window() -> SemanticsGate {
         SemanticsGate::new(Duration::from_millis(100))
+    }
+
+    #[test]
+    fn a_moved_frame_waits_unbuilt_only_inside_the_window() {
+        let t0 = ui::time::Instant::now();
+        let mut gate = window();
+        // Nothing delivered yet: the first tree is always built.
+        assert!(!gate.defer_unbuilt(None, t0));
+        assert_eq!(
+            gate.decide(&tree(&["a"], 0), None, t0),
+            SemanticsDecision::Deliver { forced: true }
+        );
+        // Inside the window a moved frame waits, with the deadline set.
+        assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(10)));
+        assert_eq!(gate.due(), Some(t0 + Duration::from_millis(100)));
+        // An IME line that moved needs the tree at once.
+        assert!(!gate.defer_unbuilt(Some(&ime(0, 40)), t0 + Duration::from_millis(20)));
+        // So does a host request.
+        gate.request();
+        assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(30)));
+        assert_eq!(
+            gate.decide(&tree(&["b"], 0), None, t0 + Duration::from_millis(30)),
+            SemanticsDecision::Deliver { forced: true }
+        );
+        // Past the window the frame is looked at again.
+        assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(200)));
     }
 
     #[test]

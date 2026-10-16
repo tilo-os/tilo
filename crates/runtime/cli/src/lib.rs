@@ -1,8 +1,3 @@
-#![allow(
-    clippy::collapsible_if,
-    reason = "migration stack lint debt is scoped to this target"
-)]
-
 //! `cli` — SDK for Tilo CLI apps.
 //!
 //! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`
@@ -38,15 +33,6 @@
 //!
 //! [`output()`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 use std::fs;
 use std::io::{self, Write};

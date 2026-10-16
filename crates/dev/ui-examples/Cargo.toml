@@ -14,7 +14,6 @@ autotests = false
 default = ["tilo-ui/native", "tilo-ui/broker-transport"]
 # Forward host features the scenario binaries need from tilo-ui.
 portal = ["tilo-ui/portal"]
-notifications = ["tilo-ui/notifications"]
 presentation-feedback = ["tilo-ui/presentation-feedback"]
 
 [dependencies]
@@ -75,7 +74,6 @@ required-features = ["portal"]
 [[example]]
 name = "windows-host"
 path = "examples/windows_host.rs"
-required-features = ["notifications"]
 
 [[example]]
 name = "card-composition-shots"

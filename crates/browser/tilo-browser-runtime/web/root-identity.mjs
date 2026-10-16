@@ -718,10 +718,17 @@ export async function installNodeCertificate({origin, certificate, sessionCertif
   });
   const text = await response.text();
   if (response.status !== 200) {
-    throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
+    throw installRefusal(response.status, text);
   }
   return JSON.parse(text);
 }
+
+/** Why a node refused an install request: `install-token-refused` (403),
+ * `not-waiting` (a host already serving, which answers no install route), or
+ * `install-refused`. */
+const installRefusal = (status, text) => new IdentityError(
+  status === 403 ? 'install-token-refused' : [404, 405].includes(status) ? 'not-waiting' : 'install-refused',
+  text || `node answered ${status}`);
 
 const canonicalBase64 = certificate => typeof certificate === 'string' && /^[A-Za-z0-9+/]+=*$/.test(certificate);
 
@@ -743,7 +750,7 @@ export async function nodeInstallInfo({origin, devicePublicKey, installToken, cr
   });
   const text = await response.text();
   if (response.status !== 200) {
-    throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
+    throw installRefusal(response.status, text);
   }
   const info = JSON.parse(text);
   const node = devicePublicKey.toLowerCase();
@@ -762,12 +769,16 @@ export async function nodeInstallInfo({origin, devicePublicKey, installToken, cr
  * Certify the node waiting at `origin` (its key `devicePublicKey`, got out
  * of band) and the session beside it, and install both with the node's
  * `installToken`. Takes `identity`, `label` and `runtime` as `certifyDevice`
- * does. Resolves as `installNodeCertificate`.
+ * does; `onProgress({phase})` hears `checking`, `certifying` and
+ * `installing` as each step starts. Resolves as `installNodeCertificate`.
  */
-export async function installNode({origin, devicePublicKey, installToken, identity, label = 'Tilo node', runtime, fetch}) {
+export async function installNode({origin, devicePublicKey, installToken, identity, label = 'Tilo node', runtime, fetch, onProgress = () => {}}) {
+  onProgress({phase: 'checking'});
   const {sessionPublicKey} = await nodeInstallInfo({origin, devicePublicKey, installToken, fetch});
+  onProgress({phase: 'certifying'});
   const certify = (key, role, name) => certifyDevice({devicePublicKey: key, identity, runtime, label: name, role});
   const certificate = await certify(devicePublicKey, 'node', label);
   const sessionCertificate = sessionPublicKey ? await certify(sessionPublicKey, 'session', `Apps on ${label}`) : undefined;
+  onProgress({phase: 'installing'});
   return installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch});
 }

@@ -15,9 +15,10 @@ use std::fmt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
 use tilo_projector::CaptureProfile;
 use tilo_projector::control::{self, ConnectStage, Credential, ProjectorEvent, ProjectorRequest};
 pub use tilo_projector::{
@@ -96,17 +97,13 @@ static CAPTURE_PROFILES: Mutex<Vec<Sender<CaptureProfile>>> = Mutex::new(Vec::ne
 /// A channel of every capture profile the projection service sends from now on.
 pub fn subscribe_capture_profiles() -> Receiver<CaptureProfile> {
     let (tx, rx) = mpsc::channel();
-    CAPTURE_PROFILES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(tx);
+    CAPTURE_PROFILES.lock_recover().push(tx);
     rx
 }
 
 fn publish_capture_profile(profile: CaptureProfile) {
     CAPTURE_PROFILES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .retain(|tx| tx.send(profile).is_ok());
 }
 
