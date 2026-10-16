@@ -17048,13 +17048,12 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_policy(
-                        &mut chrome.borrow_mut(),
-                        move |ws, actor| {
-                            tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
-                        },
-                    );
+                if is_owner
+                    && let Some(chrome) = self.chrome.clone()
+                    && let Err(error) =
+                        crate::shell::membership::remove_agent(&mut chrome.borrow_mut(), &agent)
+                {
+                    tracing::debug!(%error, "agent removal refused");
                 }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
