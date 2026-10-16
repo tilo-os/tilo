@@ -6124,13 +6124,7 @@ fn dispatch_control_command(
             if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
                 crate::compositor::watchdog::deadlock_this_thread_for_test();
             }
-            (
-                test_control::Response::Err {
-                    code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
-                    message: "a main-loop deadlock is injected only by development builds".into(),
-                },
-                Vec::new(),
-            )
+            (test_control::deadlock_main_loop_refused(), Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
