@@ -5,10 +5,13 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
+import socket
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("compare_build_outputs.py")
 spec = importlib.util.spec_from_file_location("compare_build_outputs", SCRIPT)
@@ -43,6 +46,28 @@ class CompareBuildOutputs(unittest.TestCase):
         with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
             status = compare.main([str(self.first), str(self.second), "--ignore", "work", *extra])
         return status, stderr.getvalue()
+
+    def test_unreadable_subtree_is_an_error_not_identical_output(self) -> None:
+        scandir = os.scandir
+
+        def unreadable(path):
+            if Path(path).name == "lib":
+                raise PermissionError("unreadable runtime directory")
+            return scandir(path)
+
+        with patch.object(compare.os, "scandir", side_effect=unreadable):
+            status, report = self.run_main()
+        self.assertEqual(status, 2)
+        self.assertIn("unreadable runtime directory", report)
+
+    def test_different_special_file_types_are_not_equal(self) -> None:
+        os.mkfifo(self.first / "special", 0o600)
+        with socket.socket(socket.AF_UNIX) as stream:
+            stream.bind(str(self.second / "special"))
+            (self.second / "special").chmod(0o600)
+            status, report = self.run_main()
+        self.assertEqual(status, 1)
+        self.assertIn("special:", report)
 
     def test_identical_builds_pass(self) -> None:
         self.assertEqual(self.run_main(), (0, ""))

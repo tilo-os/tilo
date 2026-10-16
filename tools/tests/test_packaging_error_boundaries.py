@@ -1,5 +1,7 @@
 """Packaging failures must not become successful downloads or baseline reuse."""
 import io
+import tarfile
+import zipfile
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'apps'))
 import app_packaging_service as service
 import assemble_verified_apps as assembly
+import accept_app_artifacts as acceptance
 
 
 class Response(io.BytesIO):
@@ -104,6 +107,57 @@ class PackagingErrorBoundaries(unittest.TestCase):
                             client(output)
                     self.assertEqual(output.read_bytes(), b'1234')
                     output.unlink()
+
+    def test_standalone_slow_progress_cannot_extend_download_deadline(self):
+        api = assembly.ReadOnlyAPI('test-token')
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'artifact'
+            for destination in (None, output):
+                response = Response(b'{}')
+                response.headers = {}
+                response.read1 = Mock(side_effect=[b'{', b'}'])
+                with self.subTest(destination=destination), patch(
+                        'urllib.request.OpenerDirector.open', return_value=response), patch(
+                            'time.monotonic', side_effect=[0, 299, 301]):
+                    with self.assertRaisesRegex(ValueError, 'deadline'):
+                        api.get('/actions/runs/1', destination)
+                self.assertFalse(output.exists())
+
+    def test_rejected_extractions_are_retryable_and_preserve_existing_trees(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tar_path = root / 'collection.tar.gz'
+            with tarfile.open(tar_path, 'w:gz') as stream:
+                member = tarfile.TarInfo('tapp/good')
+                member.size = 4
+                stream.addfile(member, io.BytesIO(b'good'))
+                member = tarfile.TarInfo('runtime/link')
+                member.type = tarfile.SYMTYPE
+                member.linkname = '/outside'
+                stream.addfile(member)
+            zip_path = root / 'artifact.zip'
+            with zipfile.ZipFile(zip_path, 'w') as stream:
+                stream.writestr('tilo-apps-x86_64.tar.gz', b'archive')
+                stream.writestr('final-publication-receipt.json', b'{}')
+                stream.writestr('assembly-provenance.json', b'{}')
+            clients = (
+                lambda output: assembly.extract_tar(tar_path, output),
+                lambda output: acceptance.extract_artifact(
+                    zip_path, output, 'x86_64', ('0' * 64, '1' * 64, 7)),
+            )
+            for client in clients:
+                output = root / 'output'
+                for attempt in range(2):
+                    with self.subTest(client=client, attempt=attempt), self.assertRaises(ValueError):
+                        client(output)
+                    self.assertFalse(output.exists())
+                output.mkdir()
+                (output / 'existing').write_bytes(b'preserved')
+                with self.assertRaises(FileExistsError):
+                    client(output)
+                self.assertEqual((output / 'existing').read_bytes(), b'preserved')
+                (output / 'existing').unlink()
+                output.rmdir()
 
     def test_invalid_current_package_is_not_replaced_by_baseline(self):
         with tempfile.TemporaryDirectory() as temporary:
