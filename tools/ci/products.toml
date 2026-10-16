@@ -214,3 +214,62 @@ requires = ["disk-100g"]
 cpus = 16
 memory = "24G"
 timeout_secs = 14400
+
+# ---------------------------------------------------------------------------
+# Images the OS and its environments fetch: the relay and the Linux legacy VM guest.
+
+[[product]]
+family = "os-images"
+name = "relay"
+about = """
+The standalone relay image (os/containers/tilo-relay): built on every change from the
+mirrored base and the published frozen RPM snapshot, signed and released for version tags
+only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`."""
+repository = "registry.tilo.so/tilo/tilo-relay"
+release = ["{version}", "sha-{commit}"]
+release_on = ["tag:v*"]
+tlog = true
+
+[product.build]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
+needs = ["rpm-snapshot"]
+inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**"]
+cost = "heavy"
+cpus = 16
+memory = "24G"
+
+[[product]]
+family = "os-images"
+name = "legacy-guest"
+about = """
+The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
+the guest agent built here, the guest image built with it on a privileged x86_64 node,
+installed to a disk and booted once until the agent serves, then the whole path end to end
+(legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
+text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
+since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
+`legacy-guest` pointer; `legacy-guest.sh pin` commits it to os/legacy-guest-snapshot.env from
+a check that pushes, once build-legacy-guest.yml no longer proposes the pin."""
+repository = "registry.tilo.so/tilo/legacy-guest"
+out = "{dir}/image"
+release = ["x86_64-{commit}"]
+tlog = true
+gates = ["legacy-guest-e2e"]
+after_publish = "bash tools/ci/publish/legacy-guest.sh pins {out}"
+
+[product.build]
+run = "bash tools/ci/publish/legacy-guest.sh build {dir}/agent {out}"
+image = ""
+needs = ["legacy-guest-agent"]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
+requires = ["/dev/kvm", "disk-100g"]
+cpus = 8
+memory = "16G"
+privileged = true
+writable_sources = true
+timeout_secs = 9000
+
+[product.publish]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**"]
+outputs = ["{out}/pins.env"]
+pointers = { legacy-guest = "{out}/pins.env" }

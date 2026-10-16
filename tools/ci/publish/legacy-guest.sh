@@ -14,7 +14,8 @@
 #                                       boot GUEST's disk through tilo-legacy against a headless
 #                                       shell (os/dev/legacy-vm-e2e.sh) in the CI builder IMAGE,
 #                                       privileged with KVM (a privileged x86_64 node, as root)
-#   legacy-guest.sh release OUT         publish the signed OUT and write OUT/pins.env (skopeo)
+#   legacy-guest.sh pins OUT            after publish-legacy-guest published OUT, write
+#                                       OUT/pins.env: its reference and the inputs it was built from
 #   legacy-guest.sh pin                 write os/legacy-guest-snapshot.env from stable's pins
 #                                       (T_POINTER_LEGACY_GUEST) when main builds the same guest
 set -euo pipefail
@@ -111,9 +112,9 @@ case ${1:-} in
     podman run --rm --privileged --network host "${devices[@]}" -v "$work/src:/w" -w /w "$image" \
       bash os/dev/legacy-vm-e2e.sh
     ;;
-  release)
-    out=${2:?usage: legacy-guest.sh release OUT}
-    bash tools/ci/publish/oci-publish.sh release "$repository" "$out" 'x86_64-{commit}'
+  pins)
+    out=${2:?usage: legacy-guest.sh pins OUT}
+    [[ -s $out/receipt.json ]] || die "$out is not published"
     printf 'LEGACY_GUEST_X86_64_REF=%s@%s\nINPUTS_SHA256=%s\n' \
       "$repository" "$(cat "$out/digest")" "$(inputs_digest)" > "$out/pins.env"
     cat "$out/pins.env"
@@ -134,5 +135,5 @@ case ${1:-} in
     printf 'build(os): pin the Linux legacy VM guest image\n' > .t-commit-message
     cat "$pins"
     ;;
-  *) die 'usage: legacy-guest.sh agent|build|release|pin ...' ;;
+  *) die 'usage: legacy-guest.sh agent|build|binaries|e2e|pins|pin ...' ;;
 esac
