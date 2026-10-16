@@ -2336,9 +2336,10 @@ on = ["main"]
 # The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
 # and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
 # joined into one index. The canaries below run inside each candidate before anything is signed
-# or published. Everyone pushes to main, so main publishes only unsigned development tags
-# (`dev-<commit>`, and `dev-<commit>-<arch>` for each image); nothing a consumer resolves by a
-# moving tag or verifies against keys/cosign.pub comes from main. Stable signs the index and both
+# or published. Everyone pushes to main, so main publishes only development tags (`dev-<commit>`,
+# and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
+# by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
+# keys/cosign.pub comes from main. Stable signs the index and both
 # images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
 # resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
 # cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
@@ -2397,6 +2398,22 @@ requires = ["arch=any"]
 on = ["stable"]
 
 [[check]]
+name = "sign-dev-ci-builder"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+on = ["main"]
+
+[[check]]
 name = "publish-ci-builder"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
@@ -2406,7 +2423,7 @@ bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /tar
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "rust-toolchain.toml"]
 needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64"]
-optional_needs = ["sign-ci-builder"]
+optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
@@ -3070,7 +3087,7 @@ bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/r
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
 needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "provenance-rpms"]
-outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json"]
+outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json", "/target/publish/rpms/index/attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=any"]
@@ -3208,7 +3225,7 @@ bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/pu
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "provenance-kernel", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
-outputs = ["/target/publish/kernel/x86_64/payload.json", "/target/publish/kernel/x86_64/signature", "/target/publish/kernel/x86_64/dry-run.pub", "/target/publish/kernel/x86_64/bundle.json", "/target/publish/kernel/aarch64/payload.json", "/target/publish/kernel/aarch64/signature", "/target/publish/kernel/aarch64/dry-run.pub", "/target/publish/kernel/aarch64/bundle.json", "/target/publish/kernel/x86_64/attestation.json", "/target/publish/kernel/aarch64/attestation.json"]
+outputs = ["/target/publish/kernel/x86_64/payload.json", "/target/publish/kernel/x86_64/signature", "/target/publish/kernel/x86_64/dry-run.pub", "/target/publish/kernel/x86_64/bundle.json", "/target/publish/kernel/aarch64/payload.json", "/target/publish/kernel/aarch64/signature", "/target/publish/kernel/aarch64/dry-run.pub", "/target/publish/kernel/aarch64/bundle.json", "/target/publish/kernel/x86_64/attestation.json", "/target/publish/kernel/x86_64/attestation.bundle.json", "/target/publish/kernel/aarch64/attestation.json", "/target/publish/kernel/aarch64/attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=any"]
@@ -3688,12 +3705,24 @@ timeout_secs = 10800
 default = false
 
 [[check]]
+name = "provenance-fex-payload"
+run = "bash tools/ci/publish/fex-provenance.sh /target/publish/fex-payload /target/publish/fex-buildroot /target/publish/fex-x86-sdk"
+inputs = ["tools/ci/publish/fex-provenance.sh", "tools/ci/publish/lib.sh"]
+needs = ["image-fex-payload", "image-fex-buildroot", "image-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/provenance.json"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
 name = "sign-fex-payload"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
-needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
-outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub"]
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
+bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+needs = ["image-fex-payload", "provenance-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub", "/target/publish/fex-payload/attestation.json"]
 id_token = ["tilo-dev-signing"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 requires = ["arch=any"]

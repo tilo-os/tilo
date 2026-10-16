@@ -187,15 +187,16 @@ if [[ -s $out/attestation.json ]]; then
   [[ $statement == *"\"sha256\":\"${digest#sha256:}\""* && $statement == *"\"expectedReleaseDigest\":\"$digest\""* ]] \
     || die 'the attestation is not about this image'
   if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
-    key=$repo_root/keys/cosign.pub
+    key=$verify_key
     [[ -s $out/dry-run.pub ]] && key=$out/dry-run.pub
     cosign verify-blob-attestation --insecure-ignore-tlog=true --check-claims=false --key "$key" \
       --type slsaprovenance1 --signature "$out/attestation.json"
   else
     cosign attach attestation --attestation "$out/attestation.json" "$repository@$digest"
-    tlog=()
-    [[ ${TILO_SIGN_TLOG:-1} == 0 ]] && tlog=(--insecure-ignore-tlog=true)
-    cosign verify-attestation --key "$repo_root/keys/cosign.pub" --type slsaprovenance1 "${tlog[@]}" \
+    # Entered in the transparency log (oci-attest.sh kept the entry): verified requiring it.
+    tlog=(--insecure-ignore-tlog=true)
+    [[ -s $out/attestation.bundle.json ]] && tlog=()
+    cosign verify-attestation --key "$verify_key" --type slsaprovenance1 "${tlog[@]}" \
       "$repository@$digest" >/dev/null
   fi
 fi

@@ -266,8 +266,10 @@ class Product:
         if "provenance" in self.data:
             out.append(check(self.provenance()))
         # A product with no tags is built and tested only (its publication isn't on t yet).
-        if self.release or self.data.get("dev_signed"):
-            out.append(check(self.sign()))
+        if self.release:
+            out.append(check(self.sign(dev=False)))
+        if self.data.get("dev_signed"):
+            out.append(check(self.sign(dev=True)))
         if self.dev or self.release:
             out.append(check(self.publish()))
         return out
@@ -354,18 +356,18 @@ class Product:
         naming the image's digest (`expectedReleaseDigest`) and the commit as `{commit}`, which
         the signing check fills in. It reads only the builds' outputs and the tree."""
         spec = fill(self.data["provenance"], self.values(self.arches[0]))
-        if not self.release:
-            raise ProductError(f"{self.name}: provenance without release tags")
-        # Its consumers verify the attestation as they verify the signature, with a log entry.
-        if not self.data.get("tlog"):
-            raise ProductError(f"{self.name}: provenance is entered in the transparency log, so needs tlog")
-        if set(spec) - {"run", "inputs", "image", "outputs"}:
-            raise ProductError(f"{self.name}: provenance takes run, inputs, outputs and image")
+        if not (self.release or self.data.get("dev_signed")):
+            raise ProductError(f"{self.name}: provenance is attested by a signing check: release tags or dev_signed")
+        # Release consumers verify the attestation as they verify the signature, with a log entry.
+        if self.release and not self.data.get("tlog"):
+            raise ProductError(f"{self.name}: a release's provenance is entered in the transparency log, so needs tlog")
+        if set(spec) - {"run", "inputs", "image", "outputs", "needs"}:
+            raise ProductError(f"{self.name}: provenance takes run, inputs, outputs, needs and image")
         fields = {
             "name": f"provenance-{self.name}",
             "run": spec["run"],
             "inputs": spec.get("inputs", []),
-            "needs": self.builds,
+            "needs": dedupe([*self.builds, *spec.get("needs", [])]),
             "outputs": [*(f"{d}/provenance.json" for d in self.attested), *spec.get("outputs", [])],
             "requires": ["arch=any"],
             "default": False,
@@ -374,25 +376,31 @@ class Product:
             fields["image"] = spec["image"]
         return fields
 
-    def sign(self) -> dict[str, Any]:
-        # `dev_signed`: a product that publishes development candidates only signs them with the
-        # development key (alias/tilo-dev-signing, role TiloTDevSigner, main only), which no
-        # release verification accepts, so a candidate still says it is main's build.
-        dev = bool(self.data.get("dev_signed"))
-        if dev and (self.release or not self.dev):
-            raise ProductError(f"{self.name}: dev_signed is for products with development tags only")
+    @property
+    def dev_sign_name(self) -> str:
+        """The check signing development candidates (`dev_signed`): sign-<name> for a product
+        with development tags only, sign-dev-<name> beside a release's sign-<name>."""
+        return f"sign-dev-{self.name}" if self.release else f"sign-{self.name}"
+
+    def sign(self, dev: bool) -> dict[str, Any]:
+        # `dev_signed`: development candidates are signed with the development key
+        # (alias/tilo-dev-signing, role TiloTDevSigner, main only), which no release verification
+        # accepts, so a candidate says it is main's build without passing for a release.
+        if dev and not self.dev:
+            raise ProductError(f"{self.name}: dev_signed needs development tags")
         env = dict(self.defaults["dev_signing_env" if dev else "signing_env"])
         if dev:
             env["TILO_DEV_SIGNING"] = "1"
-        if self.data.get("tlog"):
+        # Releases enter the transparency log with `tlog`; development candidates never do.
+        if self.data.get("tlog") and not dev:
             env["TILO_SIGN_TLOG"] = "1"
         outputs = []
-        signed = self.signed
+        signed = self.published if dev else self.signed
         for d, _ in signed:
             # dry-run.pub exists only in a dry run (TILO_PUBLISH_DRY_RUN): the throwaway key's
             # public half, which the publishing check's dry run verifies the signature against.
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
-            if self.data.get("tlog"):
+            if "TILO_SIGN_TLOG" in env:
                 outputs.append(f"{d}/bundle.json")
         attest = "provenance" in self.data
         lines = []
@@ -401,12 +409,14 @@ class Product:
             if attest and d in self.attested:
                 lines.append(f"bash {PUBLISH}/oci-attest.sh {self.repository} {d}")
                 outputs.append(f"{d}/attestation.json")
+                if "TILO_SIGN_TLOG" in env:
+                    outputs.append(f"{d}/attestation.bundle.json")
         return {
-            "name": f"sign-{self.name}",
+            "name": self.dev_sign_name if dev else f"sign-{self.name}",
             "image": self.defaults["skopeo"],
             "run": "\n".join(lines) + ("\n" if len(lines) > 1 else ""),
             "inputs": [*SIGN_INPUTS, *([f"{PUBLISH}/oci-attest.sh"] if attest else [])],
-            "needs": [*([self.release_build["name"]] if self.release_build else self.builds),
+            "needs": [*([self.release_build["name"]] if self.release_build and not dev else self.builds),
                       *([f"provenance-{self.name}"] if attest else []), *self.gates],
             "outputs": outputs,
             "id_token": ["tilo-dev-signing" if dev else "sts.amazonaws.com"],
@@ -459,7 +469,8 @@ class Product:
             "run": lines[0] if len(lines) == 1 else "\n".join(lines) + "\n",
             "inputs": dedupe([*inputs, *spec.get("inputs", [])]),
             "needs": [*self.builds, *self.gates,
-                      *([f"sign-{self.name}"] if channel == "release" or self.data.get("dev_signed") else []),
+                      *([f"sign-{self.name}"] if channel == "release" else []),
+                      *([self.dev_sign_name] if channel == "dev" and self.data.get("dev_signed") else []),
                       *(derived if channel == "release" else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),
             "id_token": ["registry.tilo.so"],
@@ -467,7 +478,9 @@ class Product:
             "on": on,
         }
         if channel == "any":
-            fields["optional_needs"] = [f"sign-{self.name}", *derived]
+            fields["optional_needs"] = [f"sign-{self.name}",
+                                        *([self.dev_sign_name] if self.data.get("dev_signed") else []),
+                                        *derived]
         if derived:
             # oci-publish.sh publishes a release from here, and writes the receipt to OUT still.
             fields["env"] = {"TILO_RELEASE_OUT": self.release_dir}
