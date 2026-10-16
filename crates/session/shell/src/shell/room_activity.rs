@@ -1114,6 +1114,7 @@ impl RoomActivityPane {
     /// Derive history and load referenced records after releasing the shared
     /// workspace lock. Admission and output may read the current tree while
     /// expensive history reconstruction uses this coherent observation.
+    #[cfg(test)]
     pub(crate) fn refresh_observed(
         &mut self,
         tree: &WorkspaceTreeHandle,
@@ -1123,8 +1124,9 @@ impl RoomActivityPane {
         refresh_pane(&mut self.0, tree, records, local)
     }
 
-    /// [`Self::refresh_observed`] over the records `local` found on this
-    /// device, as a worker last read them: the refresh never reads the
+    /// Derive history from a coherent observation of `tree`, after the
+    /// workspace lock is released, over the records `local` found on this
+    /// device as a worker last read them: the refresh never reads the
     /// disk. A record not read yet is unavailable for now; what this
     /// refresh asked for is handed to the worker, and
     /// [`Self::take_persisted_reads`] says when Activity must refresh
@@ -1453,7 +1455,9 @@ mod tests {
 
         // That refresh handed the record to the worker again; nothing
         // moved, so the pass changes nothing.
-        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
         while pane.persisted_reads().reading() {
             assert!(
                 !pane.take_persisted_reads(),
@@ -1485,13 +1489,17 @@ mod tests {
         wait_for_reads(&mut pane);
         at = at.checked_add(interval).expect("a later frame");
         pane.refresh_observed_local(&handle, &records, &local, at);
-        assert!(pane.entries().len() > read, "the peer's edit is shown");
+        let edited = pane.entries().len();
+        drop(pane);
+        assert!(edited > read, "the peer's edit is shown");
     }
 
     /// Take the persisted reads in once the worker has them. Polls: tests
     /// only.
     fn wait_for_reads(pane: &mut RoomActivityPane) {
-        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
         while !pane.take_persisted_reads() {
             assert!(Instant::now() < deadline, "the read never came in");
             std::thread::sleep(std::time::Duration::from_millis(1));

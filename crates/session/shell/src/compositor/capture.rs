@@ -2942,18 +2942,20 @@ mod tests {
                 id: &str,
                 screenshot: crate::shell::device_fabric_runtime::PreparedNearbyDrop,
             ) -> Result<(), String> {
-                assert_eq!(id, "device-phone");
+                if id != "device-phone" {
+                    return Err(format!("offered to {id}"));
+                }
                 let crate::shell::device_fabric_runtime::PreparedNearbyDrop::Inline {
                     bytes, ..
                 } = screenshot
                 else {
-                    panic!("a small screenshot is offered inline");
+                    return Err("a small screenshot is offered inline".into());
                 };
                 self.offered.push(bytes);
                 Ok(())
             }
             fn save_to_workspace(&mut self, _path: &std::path::Path) -> Result<PathBuf, String> {
-                panic!("a device send never saves to the workspace")
+                Err("a device send never saves to the workspace".into())
             }
         }
 

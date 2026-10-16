@@ -51,7 +51,7 @@ enum Found {
     /// Read now, at `revision`.
     Read {
         revision: u64,
-        document: Option<AutoCommit>,
+        document: Option<Box<AutoCommit>>,
     },
     /// No longer at a readable location.
     Gone,
@@ -130,7 +130,7 @@ impl ColdRecordReads {
                         id,
                         Read {
                             revision,
-                            document,
+                            document: document.map(|document| *document),
                             asked,
                         },
                     );
@@ -255,7 +255,7 @@ fn read_pass(
                 Some(revision) if seen == Some(revision) => Found::Unchanged,
                 Some(revision) => Found::Read {
                     revision,
-                    document: reader.load(&id),
+                    document: reader.load(&id).map(Box::new),
                 },
             };
             (id, found)
