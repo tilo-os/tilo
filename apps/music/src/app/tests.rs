@@ -22,6 +22,57 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
 }
 
 #[test]
+fn play_next_of_current_song_does_not_restart_its_source() {
+    for playing in [false, true] {
+        let (mut app, mut doc) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        app.pb.current = Some("tk_g1".into());
+        app.pb.playing = playing;
+        app.pb.position_ms = 12_000;
+        app.playhead_ms = 12_000.0;
+        app.active_resolve_request = Some(7);
+        app.next_request_id = 7;
+        app.resolve_in_flight = 1;
+        let heads = doc.get_heads();
+
+        app.dispatch(
+            Action::PlayNext("tk_g1".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+
+        assert_eq!(app.pb.queue, ["tk_g1", "tk_g1", "tk_g2"]);
+        assert_eq!(app.pb.queue_index, 0);
+        assert_eq!(app.pb.playing, playing);
+        assert_eq!(app.pb.position_ms, 12_000);
+        assert_eq!(app.playhead_ms, 12_000.0);
+        assert_eq!(
+            app.next_request_id, 7,
+            "no replacement source was requested"
+        );
+        assert_eq!(app.active_resolve_request, Some(7));
+        assert_eq!(app.resolve_in_flight, 1);
+        assert_eq!(doc.get_heads(), heads);
+    }
+}
+
+#[test]
+fn play_next_still_starts_an_empty_queue() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.use_worker(crate::stream::StreamWorker::spawn_offline());
+    app.dispatch(
+        Action::PlayNext("tk_g1".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.pb.queue, ["tk_g1"]);
+    assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+    assert!(app.pb.playing);
+    assert!(app.active_resolve_request.is_some());
+    assert_eq!(app.resolve_in_flight, 1);
+}
+
+#[test]
 fn queue_reordering_preserves_the_current_duplicate_occurrence() {
     // The two copies of g1 are distinct queue occurrences even though their
     // metadata is identical. Moving any row must preserve the selected copy.

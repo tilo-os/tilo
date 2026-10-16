@@ -2677,9 +2677,10 @@ impl MusicApp {
     }
 
     fn on_play_next(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
+        let starts_queue = self.pb.queue.is_empty() || self.pb.current.is_none();
         self.queue_play_next(id.to_string());
         self.notify(ToastKind::Success, "Playing next");
-        if self.pb.current.as_deref() == Some(id) {
+        if starts_queue {
             self.start_stream(id);
         }
         self.persist_playback(state);
