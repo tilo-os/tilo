@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -136,6 +137,90 @@ class LocalRegistryChecksumTests(unittest.TestCase):
         with patch.object(registry, "fetch", return_value=self.data):
             self.place()
         self.assertEqual((self.out / self.filename).read_bytes(), self.data)
+
+
+class RegistryRebuildTests(unittest.TestCase):
+    def test_failed_rebuild_preserves_working_registry_and_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out, packages = root / "out", root / "packages"
+            out.mkdir()
+            packages.mkdir()
+            marker = out / "working.crate"
+            marker.write_bytes(b"known good")
+            argv = ["registry", str(out), "--packages", str(packages)]
+            with patch.object(sys, "argv", argv):
+                with self.assertRaisesRegex(SystemExit, "no .crate"):
+                    registry.main()
+            self.assertEqual(marker.read_bytes(), b"known good")
+            crate = packages / "example-1.0.0.crate"
+            crate.write_bytes(b"broken archive")
+            with patch.object(sys, "argv", argv), patch.object(
+                    registry, "packaged_entry", side_effect=ValueError("bad package")):
+                with self.assertRaisesRegex(ValueError, "bad package"):
+                    registry.main()
+            self.assertEqual(marker.read_bytes(), b"known good")
+            self.assertEqual(list(root.glob(".tilo-registry-*")), [])
+            with patch.object(sys, "argv", ["registry", str(packages), "--packages", str(packages)]):
+                with self.assertRaisesRegex(SystemExit, "must not contain"):
+                    registry.main()
+            self.assertEqual(crate.read_bytes(), b"broken archive")
+
+    def test_successful_rebuild_replaces_old_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            out, packages = root / "out", root / "packages"
+            out.mkdir()
+            (out / "obsolete").touch()
+            packages.mkdir()
+            (packages / "example-1.0.0.crate").write_bytes(b"package")
+            (root / "Cargo.lock").write_text("package = []")
+            (root / "Cargo.toml").write_text("")
+            with patch.object(sys, "argv", ["registry", str(out), "--packages", str(packages)]), \
+                    patch.object(registry, "REPO", root), \
+                    patch.object(registry, "packaged_entry", return_value={"name": "example", "vers": "1.0.0"}), \
+                    patch.object(registry, "probe_lock", return_value={"package": []}):
+                rename = Path.rename
+                def fail_publication(path, destination):
+                    if path.name == "new":
+                        raise OSError("publication failed")
+                    return rename(path, destination)
+                with patch.object(Path, "rename", fail_publication):
+                    with self.assertRaisesRegex(OSError, "publication failed"):
+                        registry.main()
+                self.assertTrue((out / "obsolete").exists(), "publication failure must roll back")
+                self.assertEqual(registry.main(), 0)
+            self.assertFalse((out / "obsolete").exists())
+            self.assertEqual((out / "example-1.0.0.crate").read_bytes(), b"package")
+            self.assertTrue((out / "index/ex/am/example").is_file())
+
+
+class ForkManifestRestorationTests(unittest.TestCase):
+    def test_partial_manifest_write_is_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, lock = root / "Cargo.toml", root / "Cargo.lock"
+            original = '[workspace]\nmembers = [\n]\nexclude = [\n    "vendor/fork",\n]\n'
+            manifest.write_text(original)
+            lock.write_text("locked")
+            write = Path.write_text
+            failed = False
+
+            def interrupted(path, text, *args, **kwargs):
+                nonlocal failed
+                if path == manifest and not failed:
+                    failed = True
+                    write(path, "partial")
+                    raise OSError("disk write interrupted")
+                return write(path, text, *args, **kwargs)
+
+            with patch.object(check, "REPO", root), patch.object(check, "FORKS", ("vendor/fork",)), \
+                    patch.object(Path, "write_text", interrupted):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    with check.forks_as_members():
+                        self.fail("must not enter after a failed write")
+            self.assertEqual(manifest.read_text(), original)
+            self.assertEqual(lock.read_text(), "locked")
 
 
 if __name__ == "__main__":

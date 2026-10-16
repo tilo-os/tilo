@@ -197,11 +197,6 @@ def main() -> int:
     )
     args = parser.parse_args()
     out = args.registry.resolve()
-    if out.exists():
-        shutil.rmtree(out)
-    (out / "index").mkdir(parents=True)
-
-    entries: dict[str, list[dict]] = {}
     packages = args.packages or next(
         (
             directory
@@ -213,6 +208,40 @@ def main() -> int:
     ours = sorted(packages.glob("*.crate"))
     if not ours:
         raise SystemExit(f"no .crate files in {packages}; run publish_check.py first")
+    if args.registry.is_symlink() or (out.exists() and not out.is_dir()):
+        raise SystemExit(f"registry must be a directory, not a link or file: {args.registry}")
+    if any(path.resolve().is_relative_to(out) for path in (packages, REPO, CARGO_HOME)):
+        raise SystemExit("registry must not contain its package inputs, repository or Cargo cache")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Failed resolution/downloads must leave the working registry intact.
+    # Staging beside it keeps the publication renames on one filesystem.
+    directory = pathlib.Path(tempfile.mkdtemp(prefix=".tilo-registry-", dir=out.parent))
+    backup = directory / "old"
+    try:
+        staged = directory / "new"
+        build_registry(staged, ours)
+        if out.exists():
+            out.rename(backup)
+        try:
+            staged.rename(out)
+        except OSError:
+            if backup.exists():
+                backup.rename(out)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    finally:
+        if backup.exists():
+            print(f"previous registry retained at {backup}", file=sys.stderr)
+        else:
+            shutil.rmtree(directory)
+    print(f"registry: {out}")
+    return 0
+
+
+def build_registry(out: pathlib.Path, ours: list[pathlib.Path]) -> None:
+    (out / "index").mkdir(parents=True)
+    entries: dict[str, list[dict]] = {}
     for crate in ours:
         entry = packaged_entry(crate)
         entries.setdefault(entry["name"], []).append(entry)
@@ -270,8 +299,6 @@ def main() -> int:
         path = out / "index" / index_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in versions))
-    print(f"registry: {out}")
-    return 0
 
 
 def fetch_versions(name: str) -> dict[str, dict]:
