@@ -2,13 +2,14 @@
 """Negative packaging tests; synthetic ELF headers do not test execution."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
 
 SPEC = importlib.util.spec_from_file_location(
     "fex_payload", Path(__file__).resolve().parents[1] / "dev/validate-fex-payload.py")
@@ -24,19 +25,51 @@ class UpstreamTestObservation(unittest.TestCase):
         spec.loader.exec_module(runner)
         with tempfile.TemporaryDirectory() as temporary:
             build = Path(temporary)
-            (build / 'CTestTestfile.cmake').write_text('')
-            result = runner.run_ctest(
-                ['ctest', '--test-dir', str(build), '--output-on-failure'],
-                dict(os.environ), Mock(poll=Mock(return_value=None)), build / 'server.log')
-            self.assertNotEqual(result, 0, 'CTest observed no upstream tests')
-            for status in (0, 23):
-                with self.subTest(status=status):
-                    (build / 'CTestTestfile.cmake').write_text(
-                        f'add_test(probe "{sys.executable}" "-c" "raise SystemExit({status})")\n')
-                    result = runner.run_ctest(
-                        ['ctest', '--test-dir', str(build), '--output-on-failure'],
-                        dict(os.environ), Mock(poll=Mock(return_value=None)), build / 'server.log')
-                    self.assertEqual(result == 0, status == 0)
+            # Model only CTest's CLI/status contract, not native CTest execution.
+            # An empty selection succeeds by default; --no-tests=error rejects it.
+            fixture = build / 'ctest.py'
+            fixture.write_text('''import argparse
+import json
+from pathlib import Path
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--test-dir', type=Path, required=True)
+parser.add_argument('--output-on-failure', action='store_true')
+parser.add_argument('--no-tests', choices=['error'])
+args = parser.parse_args()
+(args.test_dir / 'argv.json').write_text(json.dumps(sys.argv[1:]))
+selected = json.loads((args.test_dir / 'selected.json').read_text())
+if not selected:
+    sys.exit(8 if args.no_tests == 'error' else 0)
+sys.exit(selected[0])
+''')
+            command = [sys.executable, str(fixture), '--test-dir', str(build),
+                       '--output-on-failure']
+            selection = build / 'selected.json'
+            selection.write_text('[]')
+            # Verify the fixture's default so omitting the production flag really
+            # would reproduce CTest's false success rather than a fixture error.
+            self.assertEqual(subprocess.run(command, check=False).returncode, 0)
+            with subprocess.Popen(
+                    [sys.executable, '-c', 'import sys; sys.stdin.buffer.read()'],
+                    stdin=subprocess.PIPE) as server:
+                try:
+                    for selected, expected in (([], 8), ([0], 0), ([23], 23)):
+                        with self.subTest(selected=selected):
+                            selection.write_text(json.dumps(selected))
+                            result = runner.run_ctest(
+                                command, dict(os.environ), server, build / 'server.log')
+                            self.assertEqual(result, expected)
+                            self.assertEqual(
+                                json.loads((build / 'argv.json').read_text()),
+                                [*command[2:], '--no-tests=error'])
+                            self.assertIsNone(server.poll(), 'suite must not stop FEXServer')
+                finally:
+                    server.terminate()
+                    server.wait(timeout=10)
+            with self.assertRaisesRegex(RuntimeError, 'FEXServer exited during validation'):
+                runner.run_ctest(command, dict(os.environ), server, build / 'server.log')
 
 
 def elf(elf_class, machine, elf_type=3):
