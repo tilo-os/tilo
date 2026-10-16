@@ -18120,7 +18120,6 @@ dependencies = [
 name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "proptest",
  "serde",
  "serde_json",

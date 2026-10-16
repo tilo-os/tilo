@@ -147,18 +147,6 @@ pub fn calendar_query_body(props: &[PropName], component: Option<&str>) -> Strin
     )
 }
 
-/// A `CalDAV` `calendar-multiget` REPORT body for `hrefs`.
-pub fn calendar_multiget_body(props: &[PropName], hrefs: &[&str]) -> String {
-    let mut ns = Namespaces::new(&[CALDAV], props);
-    let prop = ns.prop_element(props);
-    let mut out = format!("{XML_DECL}<C:calendar-multiget{}>{prop}", ns.declarations());
-    for href in hrefs {
-        let _ = write!(out, "<D:href>{}</D:href>", quick_xml::escape::escape(*href));
-    }
-    out.push_str("</C:calendar-multiget>");
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,11 +178,8 @@ mod tests {
                     .contains("<C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VTODO\"/>")
             );
         }
-        // Phase `multiget_and_propfind_bodies_are_well_formed_xml`.
+        // Phase `propfind_bodies_are_well_formed_xml`.
         {
-            let multiget =
-                calendar_multiget_body(&[props::GETETAG], &["/cal/a&b.ics", "/cal/c.ics"]);
-            assert!(multiget.contains("<D:href>/cal/a&amp;b.ics</D:href>"));
             let propfind = propfind_body(&[
                 props::RESOURCETYPE,
                 PropName {
@@ -206,13 +191,11 @@ mod tests {
                 propfind.contains("xmlns:x1=\"http://owncloud.org/ns\""),
                 "{propfind}"
             );
-            for body in [multiget, propfind] {
-                let options = roxmltree::ParsingOptions::default();
-                assert!(
-                    roxmltree::Document::parse_with_options(&body, options).is_ok(),
-                    "{body}"
-                );
-            }
+            let options = roxmltree::ParsingOptions::default();
+            assert!(
+                roxmltree::Document::parse_with_options(&propfind, options).is_ok(),
+                "{propfind}"
+            );
             // The parser refuses request documents: they are not multistatus.
             assert!(
                 multistatus::parse(&propfind_body(&[]), &multistatus::Limits::default()).is_err()

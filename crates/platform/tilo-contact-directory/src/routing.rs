@@ -25,13 +25,6 @@ pub struct Route {
     pub revision: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AccountChoice {
-    Unavailable,
-    Ready(Route),
-    SelectionRequired(Vec<Route>),
-}
-
 /// A sender metadata record is not evidence that its credentials are present.
 /// Adapters supply only currently usable senders from the existing OS accounts.
 pub fn routes(
@@ -90,20 +83,4 @@ pub fn routes(
             .cmp(&(b.sender.as_str(), b.association.as_str()))
     });
     routes
-}
-
-/// A stale explicit choice refuses, even if another account is available.
-pub fn select_route(routes: &[Route], choice: Option<&Route>) -> AccountChoice {
-    if let Some(choice) = choice {
-        return if routes.contains(choice) {
-            AccountChoice::Ready(choice.clone())
-        } else {
-            AccountChoice::Unavailable
-        };
-    }
-    match routes {
-        [] => AccountChoice::Unavailable,
-        [only] => AccountChoice::Ready(only.clone()),
-        _ => AccountChoice::SelectionRequired(routes.to_vec()),
-    }
 }

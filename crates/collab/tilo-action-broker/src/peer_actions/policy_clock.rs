@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Instant;
+#[cfg(any(test, feature = "test-support"))]
 use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
