@@ -153,7 +153,11 @@ def merge(plan, built, baseline, output, architecture, selected_apps):
         channel.require(all(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*', value) for value in (name, version)), 'unsafe package identity')
         filename = f'{name}-{version}-{architecture}.tapp'
         path = built / 'tapp' / filename
-        if not path.is_file():
+        # Reuse is valid only for absent output, not a failed or malformed
+        # current build (including a dangling symlink).
+        if path.exists() or path.is_symlink():
+            channel.require(path.is_file() and not path.is_symlink(), 'invalid current build package')
+        else:
             channel.require(name not in selected, f'selected app missing from current build: {name}')
             channel.require(baseline is not None, 'missing package without verified baseline')
             path = baseline / 'tapp' / filename

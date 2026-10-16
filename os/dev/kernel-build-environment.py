@@ -66,8 +66,10 @@ def environment(text: str, digest: str, architecture: str) -> str | None:
         if not any(SOURCE.fullmatch(uri) for uri in uris):
             continue
         buildroots = {uri for uri in uris if BUILDROOT.fullmatch(uri)}
+        # A matching predicate must be usable on its own. Ignoring an ambiguous
+        # one lets a second, valid predicate hide the conflict.
         if len(buildroots) != 1:
-            continue
+            return None
         found |= buildroots
     return found.pop() if len(found) == 1 else None
 

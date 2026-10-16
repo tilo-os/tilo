@@ -81,6 +81,10 @@ def main() -> int:
         if JUNIT.exists():
             reports.append(JUNIT.with_name(f"junit-scoped-{index}.xml"))
             shutil.move(JUNIT, reports[-1])
+        elif result.returncode == 0:
+            print(f"::error::Scoped tests for {entry['package']}::{entry['test']} "
+                  f"succeeded without the required JUnit report at {JUNIT}", file=sys.stderr)
+            status = status or 1
         status = status or result.returncode
     merge(reports, JUNIT)
     return status
