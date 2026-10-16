@@ -44,7 +44,9 @@ def strengthen(root: Path) -> None:
                 raise ValueError('VM route parent is redirected')
         if item.is_dir():
             raise ValueError('VM route file unexpectedly names a directory')
-        item.unlink(missing_ok=True)
+    # A rejected later route must not remove earlier services from the image.
+    for name in VM_ONLY_PATHS:
+        (root / name).unlink(missing_ok=True)
     docker[REPOSITORY] = REQUIREMENT
     path.write_text(json.dumps(policy, indent=2) + '\n')
 
