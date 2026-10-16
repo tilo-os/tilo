@@ -174,8 +174,9 @@ impl Served {
 /// The returned [`Download`] carries no revision; the provider sets it.
 ///
 /// # Errors
-/// [`Error::InvalidResponse`] for a 206 that does not cover `wanted` and a
-/// 200 shorter than the skipped prefix, [`Error::Io`] while skipping.
+/// [`Error::InvalidResponse`] for an unsolicited 206, a 206 that does not
+/// cover `wanted`, or a 200 shorter than the skipped prefix; [`Error::Io`]
+/// while skipping.
 pub fn ranged_body(
     body: Box<dyn Read + Send>,
     wanted: Option<Range<u64>>,
@@ -183,6 +184,11 @@ pub fn ranged_body(
 ) -> Result<Download> {
     let total = served.total();
     let Some(wanted) = wanted else {
+        // A partial response cannot satisfy a whole-file request, even if
+        // its Content-Length accurately describes the truncated body.
+        if served.partial {
+            return Err(Error::InvalidResponse("unexpected partial body"));
+        }
         let body: Box<dyn Read + Send> = match served.declared {
             Some(len) => Box::new(Exact::new(body, len)),
             None => body,
@@ -465,6 +471,21 @@ mod tests {
         assert_eq!(read(cut).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
         let cut = ranged_body(body(b"01234"), Some(3..8), short).unwrap();
         assert_eq!(read(cut).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn whole_downloads_reject_partial_responses() {
+        for content_range in [Some((0..4, Some(10))), Some((6..10, Some(10))), None] {
+            let served = Served {
+                partial: true,
+                content_range,
+                declared: Some(4),
+            };
+            assert!(matches!(
+                ranged_body(body(b"part"), None, served),
+                Err(Error::InvalidResponse("unexpected partial body"))
+            ));
+        }
     }
 
     #[test]
