@@ -21,7 +21,7 @@ release = ["sha-{commit}"]
 
 [product.context]
 run = "bash tools/ci/publish/room-service-context.sh {dir}/context"
-inputs = ["Cargo.lock", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+inputs = ["Cargo.lock", "os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 outputs = ["{dir}/context/**"]
 # The release bundle records the commit it was built from (git rev-parse, git status).
 git = true
@@ -30,6 +30,7 @@ cost = "heavy"
 [product.build]
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
 cost = "minutes"
 
 # Stable's receipt is what cloud-promotion promotes.
