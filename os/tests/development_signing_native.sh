@@ -46,12 +46,17 @@ case ${1:-} in
   run)
     context=${2:?usage: development_signing_native.sh run CONTEXT [PROOF]}
     proof=${3:-full}
+    # t runs this as root in a micro-VM step whose userspace is the CI builder: it brings its
+    # own Podman, and with no systemd in the VM, cgroups and events are Podman's own.
+    command -v podman >/dev/null \
+      || dnf install -y --setopt=install_weak_deps=False podman >/dev/null
+    podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
     image="localhost/tilo-development-source-fixture:$$"
-    trap 'podman image rm "$image" >/dev/null 2>&1 || true' EXIT
-    podman build --file "$context/Containerfile" --tag "$image" "$context"
+    trap '"${podman[@]}" image rm "$image" >/dev/null 2>&1 || true' EXIT
+    "${podman[@]}" build --network host --file "$context/Containerfile" --tag "$image" "$context"
     # Nested Podman mounts only inside this disposable container; no host directory or
     # credential is mounted.
-    run=(podman run --rm --privileged --tmpfs /tmp --tmpfs /run)
+    run=("${podman[@]}" run --rm --privileged --network host --tmpfs /tmp --tmpfs /run)
     case $proof in
       full) "${run[@]}" "$image" ;;
       prediction)
