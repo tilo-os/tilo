@@ -598,6 +598,12 @@ pub struct AppearancePrefs {
     /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
+    /// The desktop's wallpaper: the id of a picture the system ships
+    /// ([`tilo_wallpapers::all`]), or [`tilo_wallpapers::CUSTOM`] for the
+    /// person's own picture, which the compositor keeps per device
+    /// (`settings_store::appearance::WALLPAPER`). Unset shows the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper: Option<String>,
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,6 +685,7 @@ impl Default for AppearancePrefs {
             sunset: default_sunset(),
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
+            wallpaper: None,
             distribution_defaults: None,
             forced_colors: false,
             distinct_letters: None,
@@ -1480,7 +1487,11 @@ impl AppearancePrefs {
             &self.wallpaper_target,
             &crate::panes::appearance::WALLPAPER_TARGETS.map(|(_, value)| value),
             "where a new wallpaper shows",
-        )
+        )?;
+        match &self.wallpaper {
+            Some(wallpaper) => one_of(wallpaper, &tilo_wallpapers::values(), "the wallpaper"),
+            None => Ok(()),
+        }
     }
 }
 

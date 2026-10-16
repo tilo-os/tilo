@@ -26,6 +26,7 @@ fields = [
   { path = "sunset", type = "String" },
   { path = "wallpaper_scope", type = "String" },
   { path = "wallpaper_target", type = "String" },
+  { path = "wallpaper", type = "Option<String>" },
   { path = "distribution_defaults", type = "Option<ui::theme::DistributionDefaults>", readonly = true },
   { path = "forced_colors", type = "bool" },
   { path = "distinct_letters", type = "Option<bool>" },

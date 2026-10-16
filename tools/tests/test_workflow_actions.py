@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -25,6 +26,21 @@ class WorkflowActionTests(unittest.TestCase):
         path = self.workflows / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+
+    def test_unobserved_workflow_trees_fail_the_audit_and_cli(self) -> None:
+        (self.workflows / "not-a-directory").write_text("text", encoding="utf-8")
+        for directory in (self.workflows / "missing", self.workflows,
+                          self.workflows / "not-a-directory"):
+            with self.subTest(directory=directory):
+                with self.assertRaises(ValueError):
+                    workflow_actions.audit(directory)
+                result = subprocess.run(
+                    [sys.executable, str(MODULE_PATH), "--workflows", str(directory)],
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("inspection failed", result.stderr)
+                self.assertNotIn("pins OK", result.stdout)
 
     def test_remote_actions_must_be_pinned_to_full_commits_everywhere(self) -> None:
         with self.subTest(phase='full commit remote action is accepted'):

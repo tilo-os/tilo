@@ -75,7 +75,8 @@ def archive_matches_tree(archive, tree):
             require(name in {'tapp', 'runtime', 'index.json', 'SHA256SUMS'}
                     or name.startswith(('tapp/', 'runtime/')), 'unexpected collection member')
             path = tree / name
-            require(not path.is_symlink() and all(not p.is_symlink() for p in path.parents if p != tree.parent), 'symlink in local collection')
+            require(not path.is_symlink() and all(not (tree / parent).is_symlink()
+                    for parent in path.relative_to(tree).parents), 'symlink in local collection')
             if member.isdir():
                 require(path.is_dir(), 'missing collection directory')
             else:

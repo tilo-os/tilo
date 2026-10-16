@@ -552,6 +552,8 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
                         resource: resource.clone(),
                         action: "open".into(),
                         need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+                        consequential: false,
+                        confirmed: false,
                     },
                 )
                 .expect("canonical starter/task authority alone would permit this activation");

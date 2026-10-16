@@ -41,15 +41,24 @@ def assemble(
     if not re.fullmatch(r"[0-9A-Za-z.-]+\+native\.[0-9a-f]{32}", runtime_version):
         raise ValueError(f"runtime {runtime_version!r} is not named by its ABI digest")
     runtime_id = f"tilo-runtime/{runtime_version}"
+    catalog = plan.get("catalog")
+    if not isinstance(catalog, list) or not catalog:
+        raise ValueError("collection requires a nonempty app catalog")
     entries = []
     expected = set()
-    for app in plan.get("catalog", []):
+    names, identities = set(), set()
+    for app in catalog:
         name = app["name"]
         version = app["version"]
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name):
             raise ValueError(f"unsafe app name: {name}")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
             raise ValueError(f"unsafe app version: {version}")
+        identity = app.get("id")
+        if name in names or (identity is not None and identity in identities):
+            raise ValueError("duplicate collection app name or identity")
+        names.add(name)
+        identities.add(identity)
         filename = f"{name}-{version}-{architecture}.tapp"
         path = tapp_dir / filename
         if not path.is_file() or path.is_symlink():

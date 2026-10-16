@@ -402,6 +402,18 @@ impl DesktopSurface {
             .and_then(Widget::as_any_mut)
             .and_then(|v| v.downcast_mut::<crate::topbar::TopBarChrome>())
     }
+    /// The backdrop under everything, when it is the shared
+    /// [`crate::backdrop::DesktopBackdrop`].
+    pub fn backdrop(&self) -> Option<&crate::backdrop::DesktopBackdrop> {
+        child(self.root.as_ref(), &[0, 0])
+            .and_then(Widget::as_any)
+            .and_then(|v| v.downcast_ref::<crate::backdrop::DesktopBackdrop>())
+    }
+    pub fn backdrop_mut(&mut self) -> Option<&mut crate::backdrop::DesktopBackdrop> {
+        child_mut(self.root.as_mut(), &[0, 0])
+            .and_then(Widget::as_any_mut)
+            .and_then(|v| v.downcast_mut::<crate::backdrop::DesktopBackdrop>())
+    }
     /// The layer [`SurfaceChrome::display_chrome`] installed.
     pub fn display_chrome(&self) -> Option<&dyn Widget> {
         child(self.root.as_ref(), &[0, 2])

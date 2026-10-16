@@ -136,3 +136,26 @@ fn slash_replacing_local_selection_strips_only_the_trigger() {
         }
     }
 }
+
+#[test]
+fn slash_warn_turns_the_paragraph_into_a_warning_callout_keeping_its_text() {
+    let (mut app, page) = fixture();
+    app.harness().type_text("Mind the gap");
+    app.harness().key("Home");
+    app.harness().type_text("/");
+    app.harness().type_text("warn");
+    app.harness().key("Enter");
+    let after = app.read_document(|doc| read::page_blocks(doc, page));
+    assert_eq!(
+        after[1].kind,
+        ui::widget::BlockKind::Callout(ui::widget::CalloutKind::Warning)
+    );
+    assert_eq!(after[1].text, "Mind the gap");
+    // Stored as a quote with its alert, it reads back as the callout and
+    // exports as a GitHub alert.
+    let markdown = app.read_document(|doc| actions::page_markdown(&read::workspace(doc), page));
+    assert!(
+        markdown.contains("> [!WARNING]\n> Mind the gap"),
+        "{markdown}"
+    );
+}

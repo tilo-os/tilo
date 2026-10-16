@@ -66,18 +66,20 @@ def exclusive_output(destination):
             raise ValueError('output directory must be root-owned and owner-only')
         descriptor = os.open(destination.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o644, dir_fd=parent)
-        with os.fdopen(descriptor, 'wb') as output:
-            created = os.fstat(output.fileno())
-            try:
+        created = os.fstat(descriptor)
+        try:
+            with os.fdopen(descriptor, 'wb') as output:
                 yield output
-            except BaseException:
-                try:
-                    current = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
-                        os.unlink(destination.name, dir_fd=parent)
-                except FileNotFoundError:
-                    pass
-                raise
+        except BaseException:
+            # Closing a buffered writer can be the first place ENOSPC/EIO is
+            # reported. It must have the same cleanup as a failed operation.
+            try:
+                current = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    os.unlink(destination.name, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            raise
     finally:
         os.close(parent)
 

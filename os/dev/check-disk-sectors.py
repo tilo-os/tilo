@@ -24,17 +24,28 @@ def esp_offset(image) -> int:
         if image.read(8) == b"EFI PART":
             raise ValueError("GPT uses 4096-byte sectors; the image must use 512-byte sectors")
         raise ValueError("no GPT header at LBA 1")
+    if len(header) != 92:
+        raise ValueError("short GPT header")
     entries_lba, count, entry_size = struct.unpack_from("<QII", header, 72)
-    if entry_size < 128 or count == 0 or count > 1024:
+    image_size = image.seek(0, 2)
+    table_size = count * entry_size
+    if (entry_size < 128 or entry_size & (entry_size - 1) or not 0 < count <= 1024
+            or table_size > 4 * 1024 * 1024 or entries_lba < 2
+            or entries_lba * SECTOR + table_size > image_size):
         raise ValueError("GPT header has an implausible partition entry array")
     image.seek(entries_lba * SECTOR)
-    table = image.read(count * entry_size)
-    esps = [struct.unpack_from("<Q", table, index * entry_size + 32)[0]
+    table = image.read(table_size)
+    if len(table) != table_size:
+        raise ValueError("short GPT partition entry array")
+    esps = [struct.unpack_from("<QQ", table, index * entry_size + 32)
             for index in range(count)
             if table[index * entry_size:index * entry_size + 16] == ESP_TYPE]
     if len(esps) != 1:
         raise ValueError(f"expected exactly one ESP in the GPT, found {len(esps)}")
-    return esps[0] * SECTOR
+    start, end = esps[0]
+    if not 2 <= start <= end or (end + 1) * SECTOR > image_size:
+        raise ValueError("ESP extent is empty or outside the disk image")
+    return start * SECTOR
 
 
 def check(path: str) -> str:

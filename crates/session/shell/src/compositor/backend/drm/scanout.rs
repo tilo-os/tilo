@@ -49,6 +49,7 @@ use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 use super::client_scanout::{
     ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus, OfferTarget,
 };
+use super::cursor_plane::{PlaneMoveWorker, PlaneMover};
 use super::kms_flip::{FlipTarget, KmsFlip};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{
@@ -1483,17 +1484,17 @@ fn mode_refresh_mhz(mode: &Mode) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
-/// Repositions the hardware cursor plane without touching the framebuffer. Lives in the
-/// runtime's dispatch state so the libinput motion handler can move the cursor at input rate,
-/// decoupled from the paint/flip cadence.
+/// Repositions the hardware cursor plane without touching the framebuffer, decoupled from the
+/// paint/flip cadence. Its ioctl runs on the output's cursor mover thread
+/// ([`super::cursor_plane`]), never on the compositor loop: a commit holding the CRTC blocks it.
 pub struct HwCursor {
     card: Card,
     crtc: crtc::Handle,
 }
 
-impl HwCursor {
+impl PlaneMover for HwCursor {
     /// Move the cursor so its top-left (hot-spot) sits at `(x, y)` in output pixels; a failing ioctl is logged and ignored — a missed move must never crash input.
-    pub fn move_to(&self, x: i32, y: i32) {
+    fn move_plane(&self, x: i32, y: i32) {
         #[allow(
             deprecated,
             reason = "The legacy KMS cursor ioctl moves this cursor plane at input rate independently of framebuffer page flips."
@@ -1501,16 +1502,6 @@ impl HwCursor {
         if let Err(e) = self.card.move_cursor(self.crtc, (x, y)) {
             tracing::trace!("DRM scanout: move_cursor failed: {e}");
         }
-    }
-
-    /// Park the cursor off this output's panel; the KMS plane is per-CRTC, so a plane on an output the pointer left must be hidden or it leaves a frozen arrow.
-    pub fn hide(&self) {
-        // Past the largest plane any driver gets; `try_from`/`saturating_neg`
-        // keep it defensive instead of relying on that.
-        let offset = i32::try_from(cursor::MAX_PIXEL_SIZE)
-            .unwrap_or(i32::MAX)
-            .saturating_neg();
-        self.move_to(offset, offset);
     }
 }
 
@@ -1524,7 +1515,21 @@ pub struct OutputCursor {
     /// The output's scale: the plane's image, and so its hotspot, is drawn
     /// at this density.
     scale: f64,
-    mover: HwCursor,
+    /// Carries moves to the plane off the compositor loop
+    /// ([`super::cursor_plane`]).
+    mover: PlaneMoveWorker,
+}
+
+/// Park a cursor plane off its output's panel; the KMS plane is per-CRTC, so
+/// a plane on an output the pointer left must be hidden or it leaves a frozen
+/// arrow.
+fn hide_plane(mover: &PlaneMoveWorker) {
+    // Past the largest plane any driver gets; `try_from`/`saturating_neg`
+    // keep it defensive instead of relying on that.
+    let offset = i32::try_from(cursor::MAX_PIXEL_SIZE)
+        .unwrap_or(i32::MAX)
+        .saturating_neg();
+    mover.move_to(offset, offset);
 }
 
 /// Client cursor bitmaps have already been resampled to output pixels;
@@ -1605,7 +1610,7 @@ impl CursorPlanes {
             rect,
             transform: settings_store::hardware::OutputTransform::Normal,
             scale: 1.0,
-            mover,
+            mover: PlaneMoveWorker::spawn(&id.0.to_string(), std::sync::Arc::new(mover)),
         }
     }
 
@@ -1683,7 +1688,7 @@ impl CursorPlanes {
             if let Some(prev) = self.active
                 && let Some(o) = self.outputs.iter().find(|o| o.id == prev)
             {
-                o.mover.hide();
+                hide_plane(&o.mover);
             }
             self.active = Some(id);
         }

@@ -128,6 +128,7 @@ pub mod content;
 pub mod context;
 pub mod contract;
 pub mod door;
+pub mod draft;
 pub mod entry;
 pub mod envelope;
 pub mod executor;
@@ -167,6 +168,7 @@ pub use contract::{
     PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
+pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{
     ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,
     Scalar, VerbCall,

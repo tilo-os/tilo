@@ -314,3 +314,72 @@ fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
     );
     notes::read::project(&peer).expect("the peer's notebook projects");
 }
+
+/// Ctrl+N, the name, Enter, the note: the new note's title takes the keyboard
+/// empty, typing names it, Enter goes on to the start of its body, and the
+/// rename leaves one note in the tree under its new name.
+#[test]
+fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
+    let mut app = fresh();
+    app.call("new-note", serde_json::json!({ "title": "Inbox" }))
+        .unwrap();
+    app.settle();
+    let before = page_count(&app);
+
+    app.harness().set_modifiers(&["ctrl".into()]);
+    app.harness().key("n");
+    app.harness().set_modifiers(&[]);
+    app.settle();
+    assert_eq!(page_count(&app), before + 1, "Ctrl+N makes one note");
+    let editing = app
+        .surface(|notes: &mut notes::NotesApp| {
+            let panel = notes.main_panel_mut();
+            (
+                panel.title_is_editing_for_test(),
+                panel.title_draft_for_test(),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        editing,
+        (true, String::new()),
+        "the new note's title is open for typing, empty with its placeholder"
+    );
+
+    app.harness().type_text("Groceries");
+    app.harness().key("Enter");
+    app.harness().type_text("milk");
+    app.settle();
+
+    let pages = app.read_document(read::list_pages);
+    assert_eq!(pages.len(), before + 1, "naming it made no other note");
+    let named = pages
+        .iter()
+        .find(|page| page.title == "Groceries")
+        .expect("the typed title names the note");
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.title != notes::notebook::UNTITLED),
+        "no Untitled note is left behind: {pages:?}"
+    );
+    let body = app.read_document(|doc| read::page_block_snapshots(doc, named.id));
+    let texts: Vec<_> = body.into_iter().map(|(_, text)| text).collect();
+    assert_eq!(
+        texts,
+        ["milk"],
+        "Enter moved on to the body, and typing filled it"
+    );
+    let rows = app
+        .surface(|notes: &mut notes::NotesApp| {
+            (0..)
+                .map_while(|index| notes.sidebar_row_title_for_test(index).map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert!(
+        rows.iter().any(|row| row == "Groceries")
+            && rows.iter().all(|row| row != notes::notebook::UNTITLED),
+        "the page tree shows the note under its name: {rows:?}"
+    );
+}

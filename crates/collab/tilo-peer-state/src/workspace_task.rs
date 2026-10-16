@@ -8,6 +8,8 @@ use automerge::{
     AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use serde::{Deserialize, Serialize};
+mod confirmation;
+
 use tilo_desktop_model::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceTask, WorkspaceTaskActiveRun,
@@ -212,6 +214,28 @@ pub enum WorkspaceTaskCommand {
         route: WorkspaceTaskRoute,
         subject: Box<tilo_actions::SelectionSubject>,
     },
+    /// The run's host pauses the run at an action its person is asked
+    /// about first. Appended to preserve existing postcard indices.
+    RequestConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation: Box<tilo_desktop_model::WorkspaceTaskConfirmation>,
+    },
+    /// The person the run acts for answers the action it paused at.
+    /// Appended to preserve existing postcard indices.
+    AnswerConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+        answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer,
+    },
+    /// The run's host took the answer to the run. Appended to preserve
+    /// existing postcard indices.
+    SettleConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -290,6 +314,7 @@ pub(crate) fn apply(
         now,
     };
     let (task_id, result) = dispatch(&mut tasks, &mut controls, &context, command)?;
+    confirmation::lapse(&mut controls);
     let control = controls
         .get_mut(&task_id)
         .ok_or("task command lost its execution control")?;
@@ -411,6 +436,11 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+        command @ (WorkspaceTaskCommand::RequestConfirmation { .. }
+        | WorkspaceTaskCommand::AnswerConfirmation { .. }
+        | WorkspaceTaskCommand::SettleConfirmation { .. }) => {
+            confirmation::dispatch((tasks, controls), context, command)
+        }
     }
 }
 

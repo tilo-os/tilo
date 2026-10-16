@@ -18,6 +18,7 @@ bypassed, and a bypassed scanner catches nothing. Each matches a credential
 from __future__ import annotations
 
 import argparse
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -119,14 +120,19 @@ def object_reader(root: Path):
             if len(header) != 3:
                 raise ValueError("cannot read " + name)
             size = int(header[2])
+            if size < 0:
+                raise ValueError("invalid object size: " + name)
             data = process.stdout.read(size)
-            process.stdout.read(1)
+            if len(data) != size or process.stdout.read(1) != b"\n":
+                raise ValueError("incomplete object: " + name)
             return data if header[1] == b"blob" else None
         try:
             yield read
         finally:
             process.stdin.close()
             process.stdout.close()
+        if process.wait() != 0:
+            raise ValueError("Git object reader failed")
 
 
 def staged_parents(root: Path) -> list[str]:
@@ -146,17 +152,36 @@ def scan_staged(root: Path, secrets_only: bool) -> list[str]:
     against = parents[0] if parents else git(root, "hash-object", "-t", "tree", "/dev/null").decode().strip()
     raw = git(root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev",
               "--diff-filter=ACMT", against).split(b"\0")
+    # Resolve parent paths through NUL-delimited trees, not cat-file's line
+    # protocol: Git filenames may contain newlines or non-UTF-8 bytes.
+    parent_blobs = []
+    for parent in parents:
+        blobs = {}
+        for record in git(root, "ls-tree", "-r", "-z", parent).split(b"\0"):
+            if record:
+                metadata, name = record.split(b"\t", 1)
+                mode, kind, oid = metadata.split()
+                if kind == b"blob":
+                    blobs[name] = oid.decode()
+        parent_blobs.append(blobs)
     issues = []
     with object_reader(root) as read:
         for index in range(0, len(raw) - 1, 2):
-            fields, path = raw[index].split(), raw[index + 1].decode(errors="replace")
-            if fields[1] == b"160000" or "\n" in path:
+            fields, name = raw[index].split(), raw[index + 1]
+            path = os.fsdecode(name)
+            if fields[1] == b"160000":
                 continue
             new = read(fields[3].decode())
             if new is None:
-                continue
-            olds = [read(parent + ":" + path) for parent in parents]
-            lines = added_lines(new, [old for old in olds if old is not None])
+                raise ValueError("cannot inspect staged blob: " + path)
+            olds = []
+            for blobs in parent_blobs:
+                if name in blobs:
+                    old = read(blobs[name])
+                    if old is None:
+                        raise ValueError("cannot inspect parent blob: " + path)
+                    olds.append(old)
+            lines = added_lines(new, olds)
             issues.extend(added_line_issues(path, lines, secrets_only))
     return issues
 
@@ -173,9 +198,10 @@ def scan_all(root: Path, secrets_only: bool) -> list[str]:
             if mode == b"160000":
                 continue
             data = read(oid.decode())
-            if data is not None:
-                issues.extend(added_line_issues(path.decode(errors="replace"),
-                                                added_lines(data, []), secrets_only))
+            if data is None:
+                raise ValueError("cannot inspect indexed blob: " + os.fsdecode(path))
+            issues.extend(added_line_issues(os.fsdecode(path),
+                                            added_lines(data, []), secrets_only))
     return issues
 
 

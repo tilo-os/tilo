@@ -470,6 +470,12 @@ block-editor-replace = Ersetzen
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
 
+block-callout-note = Hinweis
+block-callout-tip = Tipp
+block-callout-important = Wichtig
+block-callout-warning = Warnung
+block-callout-caution = Vorsicht
+
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
 

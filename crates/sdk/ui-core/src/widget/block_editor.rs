@@ -215,6 +215,9 @@ pub enum BlockKind {
     },
     /// Non-editable, non-focusable.
     Divider,
+    /// A paragraph set apart as a note, tip, warning, …: a GitHub-flavoured
+    /// alert (`> [!WARNING]`), stored as `callout:warning`.
+    Callout(CalloutKind),
 }
 
 impl BlockKind {
@@ -225,6 +228,7 @@ impl BlockKind {
         match self {
             BlockKind::Paragraph
             | BlockKind::Quote
+            | BlockKind::Callout(_)
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
@@ -316,69 +320,59 @@ impl Block {
         }
     }
 
+    /// A prose block of `kind` holding `text`, set in the kind's size: what
+    /// every text kind's constructor makes. One copy, not inlined: each
+    /// constructor building its own line put the whole line constructor
+    /// into the module once per kind.
+    #[inline(never)]
+    fn text_block(kind: BlockKind, text: &str) -> Self {
+        let line = RichTextLine::new()
+            .with_text(text)
+            .with_size(kind.font_size());
+        Self::with_id(kind, line)
+    }
+
     pub fn paragraph(text: &str) -> Self {
-        Self::with_id(
-            BlockKind::Paragraph,
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(BlockKind::Paragraph.font_size()),
-        )
+        Self::text_block(BlockKind::Paragraph, text)
     }
 
     pub fn quote(text: &str) -> Self {
-        let kind = BlockKind::Quote;
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
-        )
+        Self::text_block(BlockKind::Quote, text)
+    }
+
+    pub fn callout(kind: CalloutKind, text: &str) -> Self {
+        Self::text_block(BlockKind::Callout(kind), text)
     }
 
     pub fn heading(level: u8, text: &str) -> Self {
-        let kind = BlockKind::Heading(level.clamp(1, 3));
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
-        )
+        Self::text_block(BlockKind::Heading(level.clamp(1, 3)), text)
     }
 
     pub fn bullet(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Bullet {
-            indent: indent.min(MAX_LIST_INDENT),
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Bullet {
+                indent: indent.min(MAX_LIST_INDENT),
+            },
+            text,
         )
     }
 
     pub fn numbered(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Numbered {
-            indent: indent.min(MAX_LIST_INDENT),
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Numbered {
+                indent: indent.min(MAX_LIST_INDENT),
+            },
+            text,
         )
     }
 
     pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
-        let kind = BlockKind::Checklist {
-            indent: indent.min(MAX_LIST_INDENT),
-            done,
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Checklist {
+                indent: indent.min(MAX_LIST_INDENT),
+                done,
+            },
+            text,
         )
     }
 
@@ -589,6 +583,9 @@ pub struct BlockEditor {
     read_only: bool,
     /// Whether blocks show a drag handle beside them (off in a composer).
     block_handles: bool,
+    /// When the drag handles show: while the pointer moves, gone once it
+    /// rests or the person types.
+    handle_reveal: handle_reveal::HandleReveal,
     /// The colours mentions are painted in, from the owning model.
     mention_paint: Option<crate::widget::marks::MentionPaint>,
     /// How every line is aligned within the editor's width (a centred
@@ -597,6 +594,9 @@ pub struct BlockEditor {
     /// Every line's type size relative to its kind's: a slide's text box
     /// sets its own body size and headings grow with it.
     font_scale: f32,
+    /// The UI face's x-height in ems, which bullets centre on, for the text
+    /// renderer's shaping generation it was measured under.
+    marker_x_height: Option<(std::sync::Arc<()>, f64)>,
     #[cfg(test)]
     painted_blocks: usize,
     /// Code lines syntax-highlighted, for tests that a frame derives
@@ -639,6 +639,11 @@ pub struct BlockEditor {
     /// Structural text replacement must flush as one host undo boundary even
     /// when triggered by a character key (which ordinary `TextInput` debounces).
     commit_pending: bool,
+    /// The span last formatted from typed markdown, which an immediate
+    /// Backspace turns back into the markdown.
+    inline_conversion: Option<inline_markdown::InlineConversion>,
+    /// What the last keystroke left to do once it is written.
+    typing_to_settle: Option<inline_markdown::TypingToSettle>,
     last_mouse_pos: Point,
     /// `(block_idx, byte)` start of an in-flight cross-block selection
     /// drag. While set, `CursorMoved` paints selection bands across every
@@ -836,6 +841,7 @@ impl BlockEditor {
 
             wrap_lines: false,
             compact_paragraph_spacing: false,
+            marker_x_height: None,
             content_node: None,
             stack_leaf: Box::new(BlockStackLeaf {
                 editor: std::ptr::null_mut(),
@@ -848,6 +854,7 @@ impl BlockEditor {
             stack_measures: 0,
             read_only: false,
             block_handles: true,
+            handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: crate::richtext::TextAlign::Left,
             font_scale: 1.0,
@@ -869,6 +876,8 @@ impl BlockEditor {
             edit_pending: false,
             edit_scope: EditScope::Anywhere,
             commit_pending: false,
+            inline_conversion: None,
+            typing_to_settle: None,
             last_mouse_pos: Point::ZERO,
             cross_block_drag_start: None,
             cross_block_drag_touched: None,
@@ -1102,6 +1111,16 @@ impl BlockEditor {
                 editor.blocks.push(Block::divider());
                 continue;
             }
+            // A GitHub alert: `> [!WARNING]`, then its quoted lines.
+            if let Some(kind) = line.strip_prefix('>').and_then(CalloutKind::from_marker) {
+                let mut body: Vec<&str> = Vec::new();
+                while let Some(quoted) = lines.peek().and_then(|next| next.strip_prefix('>')) {
+                    body.push(quoted.strip_prefix(' ').unwrap_or(quoted));
+                    let _ = lines.next();
+                }
+                editor.blocks.push(Block::callout(kind, &body.join("\n")));
+                continue;
+            }
             // Checklist must be checked before bullet: `- [ ]` also
             // matches the bullet prefix `- `.
             let (indent, body) = parse_list_indent(line);
@@ -1163,6 +1182,16 @@ impl BlockEditor {
                 BlockKind::Quote => {
                     out.push_str("> ");
                     out.push_str(b.text());
+                }
+                BlockKind::Callout(kind) => {
+                    out.push_str("> ");
+                    out.push_str(&kind.marker());
+                    if !b.text().is_empty() {
+                        for line in b.text().split('\n') {
+                            out.push_str("\n> ");
+                            out.push_str(line);
+                        }
+                    }
                 }
                 BlockKind::Heading(1) => {
                     out.push_str("# ");
@@ -2896,14 +2925,13 @@ impl BlockEditor {
             if !matches!(b.kind, BlockKind::Checklist { .. }) {
                 continue;
             }
-            let line_rect = b.line.get_rect();
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
-            let r = checklist_box(
-                line_rect,
+            let prefix_x0 = content_edge(
+                b.line.get_rect(),
                 gutter,
                 b.line.text_inset(&self.layout_theme),
-                self.text_scale,
             );
+            let r = list_marker::checklist_box(&b.line, prefix_x0, self.text_scale);
             // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
             let slopped = Rect::new(r.x0 - slop, r.y0 - slop, r.x1 + slop, r.y1 + slop);
@@ -3095,11 +3123,11 @@ impl BlockEditor {
         let line = self.block_paint_rect(index)?;
         let leading_edge = line.x0;
         let source = block.line.get_rect();
-        let center_y = first_row_center(
-            if source.height() > 0.0 { source } else { line },
-            block.kind.font_size(),
-            self.text_scale,
-        );
+        let center_y = if source.height() > 0.0 {
+            list_marker::first_row_center(&block.line)
+        } else {
+            line.center().y
+        };
         let HandleMetrics {
             width,
             height,
@@ -3369,11 +3397,7 @@ impl BlockEditor {
             children.push(std::sync::Arc::new(menu));
         }
         Some(crate::a11y::SharedAccessNode {
-            node: AccessNode::new(Role::Document)
-                .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
-                )
-                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true)),
+            node: self.document_access_node(),
             children,
         })
     }
@@ -3403,6 +3427,7 @@ impl BlockEditor {
             revision: crate::i18n::I18nManager::revision(),
             control,
         };
+        let ordinals = numbered_ordinals(&self.blocks);
         let mut kept = self.access_rows.borrow_mut();
         kept.resize_with(total, || None);
         self.blocks
@@ -3413,7 +3438,9 @@ impl BlockEditor {
                 let selected = selected_blocks
                     .as_ref()
                     .is_some_and(|range| range.contains(&index));
-                let inputs = self.access_row_inputs(index, block, total, selected, &labels);
+                let ordinal = ordinals.get(index).copied().unwrap_or(0);
+                let inputs =
+                    self.access_row_inputs(index, block, total, selected, ordinal, &labels);
                 let plain = self.access_row_is_plain(block);
                 if plain
                     && let Some(row) = slot.as_ref().filter(|row| row.inputs == inputs)
@@ -3499,6 +3526,7 @@ impl BlockEditor {
         block: &'a Block,
         total: usize,
         selected: bool,
+        ordinal: u32,
         labels: &AccessRowContext<'_>,
     ) -> AccessRowInputs<'a> {
         let line = block.line.get_rect();
@@ -3509,6 +3537,7 @@ impl BlockEditor {
             marks: std::borrow::Cow::Borrowed(block.line.marks()),
             line_state: block.line.accessibility_state(),
             indent: block.indent(),
+            ordinal,
             line,
             controls: self.block_drag_handle_rect(index).unwrap_or(line),
             position: index.saturating_add(1),
@@ -3543,6 +3572,7 @@ impl BlockEditor {
         use crate::a11y::{AccessNode, AccessState, Role};
         let AccessRowInputs {
             indent,
+            ordinal,
             line,
             controls: bounds,
             position,
@@ -3779,7 +3809,7 @@ impl BlockEditor {
         let group = AccessNode::new(Role::Group)
             .with_name(format!(
                 "{} block {position}",
-                accessible_kind_name(&block.kind)
+                accessible_block_name(&block.kind, Some(ordinal))
             ))
             .with_semantic_key(format!("notes.block:{}", block.id))
             .with_state(AccessState::new().selected(selected))
@@ -3990,6 +4020,9 @@ impl BlockEditor {
     ) -> Vec<Rect> {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
+        // How visible the handles are this frame, from where the pointer last
+        // moved and whether the person has typed since.
+        let opacity = self.handle_reveal.drawn_opacity();
         let mut painted = Vec::new();
         // At most three blocks show a handle: the dragged one, the caret's and
         // the hovered one. Only those are measured.
@@ -4008,8 +4041,14 @@ impl BlockEditor {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
+            // The caret's and the hovered block's handles show only while the
+            // pointer has moved since the last keystroke; a dragged one always.
+            if !active && opacity <= 0.0 {
+                continue;
+            }
+            let shown = if active { 1.0 } else { opacity };
             painted.push(handle);
-            let color = tokens.colors.text_primary.with_alpha_factor(0.72);
+            let color = tokens.colors.text_primary.with_alpha_factor(0.72 * shown);
             let center = handle.center();
             let scale = self.text_scale;
             let dot_r = 1.25 * scale;
@@ -4019,10 +4058,11 @@ impl BlockEditor {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens
-                        .colors
-                        .text_primary
-                        .with_alpha_factor(if active { 0.22 } else { 0.12 }),
+                    tokens.colors.text_primary.with_alpha_factor(if active {
+                        0.22
+                    } else {
+                        0.12 * shown
+                    }),
                     None,
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
@@ -4462,6 +4502,36 @@ impl BlockEditor {
             self.structure_dirty = true;
             self.dirty = true;
         }
+    }
+
+    /// Offer the correction for the word that has rested under the caret
+    /// (a pause at the end of a word, the caret back on an earlier one).
+    /// Its line asked to be woken when the word settles, but the frame that
+    /// wake brings repaints only a dirty editor: without this the chip
+    /// showed only when something else happened to repaint the line.
+    fn settle_caret_suggestion_at(&mut self, now: crate::time::Instant) {
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return;
+        };
+        if block.line.inner_mut().settle_suggestion_at(now) {
+            self.dirty = true;
+        }
+    }
+
+    /// The editor's document node, which [`Widget::accessibility`] fills
+    /// with a node per block.
+    fn document_access_node(&self) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Document)
+            .with_description(
+                "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
+            )
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .multiline(true),
+            )
     }
 
     fn refresh_image_dimensions(&mut self) {
@@ -5211,7 +5281,8 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
         // and checkboxes mixed in a document line up: wide enough for a
         // two-digit ordinal ("12.") without colliding with the text.
         BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. } => 28.0,
-        BlockKind::CodeBlock { .. } => 12.0,
+        // A callout's text is inset from its wash as a code block's is.
+        BlockKind::CodeBlock { .. } | BlockKind::Callout(_) => 12.0,
         BlockKind::Quote => 16.0,
         _ => 0.0,
     }
@@ -5427,6 +5498,8 @@ struct AccessRowInputs<'a> {
     down_disabled: bool,
     indent_disabled: bool,
     indent: u8,
+    /// A numbered item's ordinal in its list, 0 for any other block.
+    ordinal: u32,
     /// The revision of the translations its labels were looked up in.
     labels: u64,
     /// The key of the control its host adds to it ([`RowControl`]).
@@ -5450,6 +5523,7 @@ impl AccessRowInputs<'_> {
             marks: Cow::Owned(self.marks.into_owned()),
             line_state: self.line_state,
             indent: self.indent,
+            ordinal: self.ordinal,
             line: self.line,
             controls: self.controls,
             position: self.position,
@@ -5483,6 +5557,7 @@ impl AccessRowInputs<'static> {
         }
         self.line_state = inputs.line_state;
         self.indent = inputs.indent;
+        self.ordinal = inputs.ordinal;
         self.line = inputs.line;
         self.controls = inputs.controls;
         self.position = inputs.position;
@@ -6321,6 +6396,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
         }
         BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
         BlockKind::Divider => "divider".to_string(),
+        BlockKind::Callout(kind) => format!("callout:{}", kind.name()),
     }
 }
 
@@ -6335,6 +6411,22 @@ fn accessible_kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::CodeBlock { .. } => "Code block",
         BlockKind::Table { .. } => "Table",
         BlockKind::Divider => "Divider",
+        BlockKind::Callout(_) => "Callout",
+    }
+}
+
+/// What a block is called to a screen reader: its kind, a numbered item
+/// with its ordinal as the page shows it (`Numbered item (a)`), a callout
+/// with its name (`Warning callout`).
+fn accessible_block_name(kind: &BlockKind, ordinal: Option<u32>) -> String {
+    match kind {
+        BlockKind::Numbered { indent } => format!(
+            "{} {}",
+            accessible_kind_name(kind),
+            list_marker::ordinal_label(ordinal.unwrap_or(1), *indent)
+        ),
+        BlockKind::Callout(callout) => format!("{} callout", callout.label()),
+        _ => accessible_kind_name(kind).to_string(),
     }
 }
 
@@ -6387,6 +6479,9 @@ fn kind_from_str(s: &str) -> BlockKind {
             visual: visual == "1",
         };
     }
+    if let Some(kind) = s.strip_prefix("callout:").and_then(CalloutKind::from_name) {
+        return BlockKind::Callout(kind);
+    }
     BlockKind::Paragraph
 }
 
@@ -6402,6 +6497,7 @@ fn block_for_kind(kind: &BlockKind) -> Block {
         BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), ""),
         BlockKind::Table { visual } => Block::table("", *visual),
         BlockKind::Divider => Block::divider(),
+        BlockKind::Callout(kind) => Block::callout(*kind, ""),
     }
 }
 
@@ -7165,6 +7261,8 @@ struct BlockDrawCtx<'a> {
     /// in that line damages the line, not the run.
     collect_code_ground: bool,
     code_ground: Option<(Rect, Scene)>,
+    /// The UI face's x-height in ems, which a bullet centres on.
+    x_height_em: f64,
 }
 
 impl BlockDrawCtx<'_> {
@@ -7470,7 +7568,6 @@ fn draw_block(
         return;
     }
     let scale = f64::from(ctx.theme.text_scale);
-    let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.indent()) * scale;
     let gutter = prefix_gutter_for(&b.kind) * scale;
     let pad = b.line.text_inset(ctx.theme);
     // Every block starts at the one content edge, where a paragraph's text
@@ -7520,17 +7617,48 @@ fn draw_block(
             return;
         }
 
-        BlockKind::Bullet { .. } => {
-            draw_bullet_prefix(line_rect, prefix_x0, ctx);
-            let _ = indent_px;
+        BlockKind::Callout(kind) => {
+            callout::draw_callout(b, *kind, prefix_x0, ctx);
+            return;
         }
-        BlockKind::Numbered { .. } => {
-            let text_rect = Rect::new(line_rect.x0 + pad, line_rect.y0, line_rect.x1, line_rect.y1);
-            draw_numbered_prefix(idx, text_rect, prefix_x0, b.kind.font_size(), ctx);
-            let _ = indent_px;
+        BlockKind::Bullet { .. } => {
+            let disc = list_marker::bullet_disc(
+                &b.line,
+                prefix_x0,
+                ctx.theme,
+                ctx.text_renderer,
+                ctx.x_height_em,
+            );
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.text_primary,
+                None,
+                &disc,
+            );
+        }
+        BlockKind::Numbered { indent } => {
+            let ordinal = ctx.ordinals.get(idx).copied().unwrap_or(1);
+            let label = list_marker::ordinal_label(ordinal, *indent);
+            let (origin, style) = list_marker::ordinal_placement(
+                &b.line,
+                prefix_x0,
+                &label,
+                ctx.theme,
+                ctx.text_renderer,
+            );
+            ctx.text_renderer.draw_style(
+                ctx.scene,
+                &label,
+                ctx.theme.tokens.colors.text_primary,
+                ctx.transform.pre_translate((origin.x, origin.y).into()),
+                None,
+                &style,
+            );
         }
         BlockKind::Checklist { done, .. } => {
-            draw_checklist_prefix(*done, checklist_box(line_rect, gutter, pad, scale), ctx);
+            let checkbox = list_marker::checklist_box(&b.line, prefix_x0, scale);
+            draw_checklist_prefix(*done, checkbox, ctx);
         }
         BlockKind::CodeBlock { .. } => {
             draw_code_block_prefix(idx, line_rect, line_rect.x0 - prefix_x0, ctx, formulas);
@@ -7602,6 +7730,7 @@ fn always_draws_its_line(kind: &BlockKind) -> bool {
         BlockKind::Paragraph
             | BlockKind::Heading(_)
             | BlockKind::Quote
+            | BlockKind::Callout(_)
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
@@ -7732,78 +7861,6 @@ fn draw_transclusion_card(
     );
 }
 
-/// Prefixes belong to the first visual row, even when a block wraps.
-fn first_row_center(rect: Rect, size: f32, scale: f64) -> f64 {
-    rect.y0 + (8.0 + f64::from(size) * scale * 0.625).min(rect.height() / 2.0)
-}
-
-/// A filled disc, not a "•" glyph, reads the same across fonts.
-fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, ctx: &mut BlockDrawCtx<'_>) {
-    let scale = f64::from(ctx.theme.text_scale);
-    let cy = first_row_center(line_rect, 16.0, scale);
-    // The disc sits in the same leading glyph box as a checklist's box.
-    let cx = prefix_x0 + CHECKBOX_SIZE_PX * scale / 2.0;
-    let radius = 3.0 * scale;
-    let circle = vello::kurbo::Circle::new((cx, cy), radius);
-    ctx.scene.fill(
-        vello::peniko::Fill::NonZero,
-        ctx.transform,
-        ctx.theme.tokens.colors.text_primary,
-        None,
-        &circle,
-    );
-}
-
-/// Right-aligned so single- and double-digit periods line up.
-fn draw_numbered_prefix(
-    idx: usize,
-    line_rect: Rect,
-    prefix_x0: f64,
-    font_size: f32,
-    ctx: &mut BlockDrawCtx<'_>,
-) {
-    let num = ctx.ordinals.get(idx).copied().unwrap_or(1).max(1);
-    let label = format!("{num}.");
-    let (label_w, _) = ctx.text_renderer.measure(&label, font_size, None);
-    let origin = numbered_prefix_origin(
-        line_rect,
-        prefix_x0,
-        f64::from(label_w),
-        font_size,
-        ctx.theme.text_scale,
-        ctx.theme.tokens.metrics.icon_label_gap,
-    );
-    ctx.text_renderer.draw_text(
-        ctx.scene,
-        &label,
-        font_size,
-        ctx.theme.tokens.colors.text_primary,
-        ctx.transform.pre_translate((origin.x, origin.y).into()),
-        None,
-    );
-}
-
-/// `icon_label_gap` is the theme's `metrics.icon_label_gap` — the ordinal
-/// keeps the glyph-to-label gap from the item text and, like the prefix
-/// gutter it sits in, that gap follows the text scale.
-fn numbered_prefix_origin(
-    line_rect: Rect,
-    prefix_x0: f64,
-    label_width: f64,
-    font_size: f32,
-    text_scale: f32,
-    icon_label_gap: f32,
-) -> Point {
-    // Matches RichTextLine's resolved shaped line height so the ordinal sits
-    // on the item text's baseline at every accessibility scale.
-    let line_height = f64::from(font_size * text_scale) * 1.25;
-    let gap = f64::from(icon_label_gap) * f64::from(text_scale);
-    Point::new(
-        (line_rect.x0 - gap - label_width).max(prefix_x0),
-        line_rect.y0 + (line_rect.height() - line_height) / 2.0,
-    )
-}
-
 fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
     // The toolkit's checkbox face: the inverted fill with its tick when
     // done, the raised box with its derived edge when not. A checklist item
@@ -7821,15 +7878,6 @@ fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>)
 /// glyphs, quote and code grounds, embeds, tables and images all start here.
 fn content_edge(line: Rect, gutter: f64, pad: f64) -> f64 {
     line.x0 - gutter + pad
-}
-
-/// A checklist item's box: the leading glyph box at the content edge, on
-/// the first row's centre line. Paint and hit-testing share it.
-fn checklist_box(line: Rect, gutter: f64, pad: f64, scale: f64) -> Rect {
-    let side = CHECKBOX_SIZE_PX * scale;
-    let x0 = content_edge(line, gutter, pad);
-    let cy = first_row_center(line, 16.0, scale);
-    Rect::new(x0, cy - side / 2.0, x0 + side, cy + side / 2.0)
 }
 
 /// Paint background + accent bar ONCE per contiguous run of code blocks,
@@ -8121,6 +8169,11 @@ impl BlockEditor {
         let code_headers: Vec<f64> = (0..self.blocks.len())
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
+        let is_list_item: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|block| block.kind.supports_indent())
+            .collect();
         self.stack_boxes.clear();
         let embeds: Vec<bool> = self
             .blocks
@@ -8172,8 +8225,11 @@ impl BlockEditor {
             // another 8 px above and below every line, making consecutive
             // prose read like separate form fields. Keep that padding for
             // richer controls and use the text line-height for compact prose.
+            // A list item is prose too: its rows sit as close as a
+            // paragraph's, and its marker follows its first row.
             b.line.set_compact_wrapped(
-                self.compact_paragraph_spacing && matches!(b.kind, BlockKind::Paragraph),
+                self.compact_paragraph_spacing
+                    && (matches!(b.kind, BlockKind::Paragraph) || b.kind.supports_indent()),
             );
             let header_height = code_headers[i] as f32;
             b.line.set_layout_header_height(header_height);
@@ -8209,10 +8265,23 @@ impl BlockEditor {
                 || i.checked_sub(1)
                     .and_then(|previous| embeds.get(previous).copied())
                     .unwrap_or(false);
+            // The items of one list are one unit: each sits half a paragraph
+            // gap from the one before, while the list as a whole keeps the
+            // paragraph gap from the prose around it.
+            let list_item_pair = is_list_item[i]
+                && i.checked_sub(1)
+                    .is_some_and(|previous| is_list_item[previous]);
+            let paragraph_gap = if self.compact_paragraph_spacing {
+                theme.tokens.spacing.s1
+            } else {
+                theme.tokens.spacing.s2
+            };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
             } else if adjacent_fences || around_embed {
                 theme.tokens.spacing.s4 * theme.text_scale
+            } else if list_item_pair {
+                paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {
                 theme.tokens.spacing.s1 * theme.text_scale
             } else {
@@ -8385,8 +8454,19 @@ impl BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
+    /// The frame after a keystroke makes what it left to do (formatting the
+    /// markdown it closed, the correction its word boundary asked for).
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        self.settle_typing();
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document_ref(state, path);
+        self.retire_finished_handle_fade();
+        self.settle_caret_suggestion_at(crate::time::now());
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.
@@ -8822,6 +8902,9 @@ impl Widget for BlockEditor {
             }
         }
 
+        self.handle_reveal.set_reduce_motion(theme.reduce_motion);
+        let shown = self.handle_opacity(crate::time::now());
+        self.handle_reveal.drawn(shown);
         let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
         // Syntax colours are derived per change, not per frame; an unchanged
@@ -8952,6 +9035,7 @@ impl Widget for BlockEditor {
             .retained_block_selection
             .as_ref()
             .and_then(|_| self.selected_block_range());
+        let x_height_em = list_marker::x_height_em(&mut self.marker_x_height, text_renderer, theme);
         let mut ctx = BlockDrawCtx {
             scene,
             text_renderer,
@@ -8968,6 +9052,7 @@ impl Widget for BlockEditor {
             table_source: None,
             collect_code_ground: false,
             code_ground: None,
+            x_height_em,
         };
         let mut formulas = FormulaDrawCtx {
             runs: formula_runs.as_slice(),
@@ -9582,6 +9667,7 @@ impl Widget for BlockEditor {
             return;
         }
         self.begin_edit();
+        self.reveal_handles_for(event, ctx);
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         let scope = match typing {
@@ -9656,6 +9742,8 @@ impl Widget for BlockEditor {
             .blocks
             .iter()
             .filter_map(|block| block.line.next_wake_deadline())
+            .chain(self.handle_fade_deadline())
+            .chain(self.handle_fade_end())
             .min();
         self.for_each_child(&mut |child| {
             if let Some(deadline) = child.next_wake_deadline() {
@@ -9668,6 +9756,7 @@ impl Widget for BlockEditor {
 
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
+            || self.handles_need_frame()
             || self
                 .image_store
                 .as_ref()
@@ -10002,6 +10091,12 @@ impl Widget for BlockEditor {
         self.accessibility_shared_with(None)
     }
 
+    /// The document's own node without its blocks: what focus capture and
+    /// focus order ask of the editor on every frame.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.document_access_node())
+    }
+
     /// The document node above is never hidden; answer without building
     /// every block's subtree.
     fn accessibility_hidden(&self) -> bool {
@@ -10302,7 +10397,7 @@ impl Widget for BlockEditor {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.visual_formula_focus.is_some()
+        self.dirty || self.visual_formula_focus.is_some() || self.handles_need_frame()
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -11244,13 +11339,20 @@ impl BlockEditor {
     }
 
     /// Routes the event into the focused block's own `TextInput`, drains
-    /// any structural signal it emitted, and promotes `# `/`## `/`### `
-    /// paragraphs to headings on the keystroke that completes the prefix.
+    /// any structural signal it emitted, promotes `# `/`## `/`### `
+    /// paragraphs to headings on the keystroke that completes the prefix,
+    /// and formats inline markdown on the keystroke that closes it.
     #[expect(
         clippy::indexing_slicing,
         reason = "the focused index is validated before it is used"
     )]
     fn route_event_to_focused_block(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        // Input that arrives before the host settled the last keystroke
+        // finds its formatting or correction made.
+        self.settle_typing();
+        if self.revert_inline_conversion(event, ctx) {
+            return;
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -11289,6 +11391,7 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return;
         };
+        let typed_markdown = self.typed_markdown_origin(event);
         // Snapshot the text to distinguish an actual content change
         // (typing) from a mere caret move (a click). Markdown shortcuts
         // fire only on content changes; bullets also accept task markers.
@@ -11353,6 +11456,7 @@ impl BlockEditor {
                 }
             }
         }
+        self.note_typing_to_settle(focused_idx, typed_markdown);
     }
 }
 
@@ -11386,10 +11490,15 @@ fn typed_list_prefix(kind: &BlockKind, text: &str, caret: usize) -> Option<(Bloc
     Some((new_kind, prefix.len()))
 }
 
+/// The band above a block's line that holds its header: a code run's
+/// language and copy button on its first line, a callout's icon and name.
 fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     let Some(block) = blocks.get(index) else {
         return 0.0;
     };
+    if matches!(block.kind, BlockKind::Callout(_)) {
+        return callout::callout_header_height() * scale;
+    }
     if !matches!(block.kind, BlockKind::CodeBlock { .. })
         || formula_descriptor(&block.kind).is_some()
     {
@@ -11405,9 +11514,24 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     CODE_HEADER_HEIGHT * scale
 }
 
+#[path = "block_editor_handle_reveal.rs"]
+mod handle_reveal;
+#[path = "block_editor_inline_markdown.rs"]
+mod inline_markdown;
 #[path = "block_editor_present.rs"]
 mod present;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
+
+#[path = "block_editor_callout.rs"]
+mod callout;
+pub use callout::CalloutKind;
+
+#[path = "block_editor_list_marker.rs"]
+mod list_marker;
+
+#[cfg(test)]
+#[path = "block_editor_list_callout_tests.rs"]
+mod list_callout_tests;
 
 #[cfg(test)]
 #[path = "block_editor_fence_tests.rs"]
@@ -12243,8 +12367,10 @@ impl BlockEditor {
                     return;
                 }
                 if self.blocks.get(idx).is_some_and(|block| {
-                    matches!(block.kind, BlockKind::Heading(_) | BlockKind::Quote)
-                        || block.kind.supports_indent()
+                    matches!(
+                        block.kind,
+                        BlockKind::Heading(_) | BlockKind::Quote | BlockKind::Callout(_)
+                    ) || block.kind.supports_indent()
                 }) {
                     self.try_convert_to(idx, BlockKind::Paragraph);
                     self.edit_pending = true;
@@ -12435,7 +12561,8 @@ impl BlockEditor {
             BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Quote => BlockKind::Paragraph,
+            | BlockKind::Quote
+            | BlockKind::Callout(_) => BlockKind::Paragraph,
             _ => return false,
         };
         self.try_convert_to(idx, next)

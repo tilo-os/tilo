@@ -37,8 +37,11 @@ def snapshot(source, destination, limit):
 
 
 def command(arguments):
-    result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
+    try:
+        result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=120, env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
+    except subprocess.TimeoutExpired:
+        raise ValueError('trusted loader verification tool timed out') from None
     if result.returncode:
         raise ValueError(f'{Path(arguments[0]).name} rejected loader verification')
     return result.stdout

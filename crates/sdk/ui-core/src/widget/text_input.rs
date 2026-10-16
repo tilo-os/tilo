@@ -378,6 +378,11 @@ pub struct TextInput {
     /// Where the last painted suggestion chip sits, for click-to-accept.
     suggestion_chip: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
+    /// Set by a host that records the correction a word boundary makes as
+    /// an edit of its own ([`Self::apply_pending_autocorrection`]), after
+    /// the boundary itself: undoing it then gives back the word as typed.
+    defer_autocorrection: bool,
+    pending_autocorrection: Option<AutocorrectionPreview>,
     text_actions: Vec<RegisteredTextAction>,
     pending_text_action: Option<TextActionRequest>,
     /// Reuses [`ContextMenu`]; rendered via the overlay pass so it floats above the field.
@@ -673,6 +678,8 @@ impl TextInput {
             caret_word: CaretWord::default(),
             suggestion_chip: None,
             last_autocorrection: None,
+            defer_autocorrection: false,
+            pending_autocorrection: None,
             text_actions: Vec::new(),
             pending_text_action: None,
             context_menu: ContextMenu::new(),
@@ -893,6 +900,62 @@ impl TextInput {
     pub fn with_autocorrect(mut self, on: bool) -> Self {
         self.autocorrect = Some(on);
         self
+    }
+
+    /// [`Self::with_autocorrect`] on a live field; `None` follows the
+    /// user-wide setting again.
+    pub fn set_autocorrect(&mut self, on: Option<bool>) {
+        self.autocorrect = on;
+    }
+
+    /// Leave the correction a typed word boundary makes pending instead of
+    /// making it in the same keystroke; the host applies it with
+    /// [`Self::apply_pending_autocorrection`] once the boundary is written,
+    /// so the boundary and the correction are two undo steps.
+    pub fn set_deferred_autocorrection(&mut self, on: bool) {
+        self.defer_autocorrection = on;
+        if !on {
+            self.pending_autocorrection = None;
+        }
+    }
+
+    /// Whether a typed word boundary left a correction to apply.
+    pub fn has_pending_autocorrection(&self) -> bool {
+        self.pending_autocorrection.is_some()
+    }
+
+    /// Make the correction the last typed word boundary left pending, while
+    /// the word and the one boundary after it are still as typed and the
+    /// caret right after them. Backspace right after reverts it, as it
+    /// reverts an immediate correction. `false` when there was nothing to
+    /// make.
+    pub fn apply_pending_autocorrection(&mut self) -> bool {
+        let Some(pending) = self.pending_autocorrection.take() else {
+            return false;
+        };
+        let caret = self.core.caret();
+        let boundary = self.text.get(pending.end..caret).unwrap_or_default();
+        if self.has_selection()
+            || self.text.get(pending.start..pending.end) != Some(pending.original.as_str())
+            || boundary.chars().count() != 1
+            || boundary.chars().any(char::is_alphanumeric)
+        {
+            return false;
+        }
+        let boundary_len = boundary.len();
+        self.core.set_selection(pending.start, pending.end);
+        self.insert_str(&pending.replacement);
+        let end = pending.start.saturating_add(pending.replacement.len());
+        let boundary_end = end.saturating_add(boundary_len);
+        self.set_cursor_pos(boundary_end);
+        self.last_autocorrection = Some(Autocorrection {
+            start: pending.start,
+            end,
+            boundary_end,
+            original: pending.original,
+            replacement: pending.replacement,
+        });
+        true
     }
 
     pub fn autocorrect_enabled(&self) -> bool {
@@ -1488,6 +1551,26 @@ impl TextInput {
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (text_y, line_height)
+    }
+
+    /// The first visual row's band, `(top, height)`: where a list marker
+    /// beside a wrapping line sits, whatever the rows below it hold.
+    pub(crate) fn first_row_band(&self) -> (f64, f64) {
+        if self.multiline {
+            (
+                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.line_height(),
+            )
+        } else {
+            self.text_band()
+        }
+    }
+
+    /// The style a wrapping line is shaped in at `scale`: its size, leading,
+    /// weight and family, so a mark set beside it (a list ordinal) shares
+    /// its baseline.
+    pub(crate) fn line_style(&self, scale: f32) -> TextStyle {
+        self.multiline_style(scale)
     }
 
     /// Requires a prior `draw` to have populated `char_x_positions`.
@@ -4144,6 +4227,10 @@ impl TextInput {
             .clone()
             .filter(|preview| preview.automatic)
             .or_else(|| self.autocorrection_candidate())?;
+        if self.defer_autocorrection {
+            self.pending_autocorrection = Some(preview);
+            return None;
+        }
         let (start, end) = (preview.start, preview.end);
         let (original, replacement) = (preview.original, preview.replacement);
         self.core.set_selection(start, end);
@@ -4169,6 +4256,16 @@ impl TextInput {
 
     fn refresh_autocorrection_preview(&mut self) {
         self.refresh_suggestion_at(crate::time::now());
+    }
+
+    /// Bring the correction offered for the word under the caret up to
+    /// `now`; whether the offer changed. A word settling under the caret
+    /// is a change no input announces, so a host that keeps the field's
+    /// last drawing (a block editor's line) repaints it when this says so.
+    pub(crate) fn settle_suggestion_at(&mut self, now: Instant) -> bool {
+        let before = self.autocorrection_preview.clone();
+        self.refresh_suggestion_at(now);
+        self.autocorrection_preview != before
     }
 
     fn clear_suggestion(&mut self) {

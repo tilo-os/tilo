@@ -89,6 +89,7 @@ fn welcome_body_contains_every_block_kind_and_round_trips() {
             let tag = match b {
                 BlockSpec::Paragraph(_) => "paragraph",
                 BlockSpec::Quote(_) => "quote",
+                BlockSpec::Callout { .. } => "callout",
                 BlockSpec::Heading { .. } => "heading",
                 BlockSpec::Bullet { .. } => "bullet",
                 BlockSpec::Numbered { .. } => "numbered",

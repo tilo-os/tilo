@@ -16,6 +16,7 @@ that enforcement from being switched off quietly:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -64,12 +65,14 @@ class Violation:
 def tracked(root: Path, pattern: str) -> list[Path]:
     """Files git tracks (or would add) under `root` matching `pattern`."""
     listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", pattern],
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard", pattern],
         check=True,
         capture_output=True,
-        text=True,
     ).stdout
-    return [Path(line) for line in listed.splitlines() if (root / line).is_file()]
+    # Without -z Git quotes tabs, newlines and non-ASCII names. Treating that
+    # display spelling as a path silently drops the source from the audit.
+    return [Path(os.fsdecode(name)) for name in listed.split(b"\0")
+            if name and (root / os.fsdecode(name)).is_file()]
 
 
 def banned_paths(config: dict) -> set[str]:

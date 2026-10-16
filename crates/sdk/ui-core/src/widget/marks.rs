@@ -209,6 +209,27 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
     *spans = out;
 }
 
+/// [`shift_after_edit`] the way the document carries marks over typing: a
+/// span ending where text is inserted grows over it, as a mark the document
+/// stores with `ExpandMark::After` does. Typing right after bold text goes
+/// on in bold, and an editor shows what its document will hold.
+pub fn carry_through_edit(
+    spans: &mut Vec<MarkSpan>,
+    at: usize,
+    inserted_len: usize,
+    removed_len: usize,
+) {
+    shift_after_edit(spans, at, inserted_len, removed_len);
+    if inserted_len == 0 {
+        return;
+    }
+    for span in spans.iter_mut() {
+        if span.range.end == at && span.range.start < at {
+            span.range.end = at.saturating_add(inserted_len);
+        }
+    }
+}
+
 /// Adjust every span's range by a splice at byte `at`, to keep marks
 /// aligned after a user edit. Insertion: spans at/after `at` shift right,
 /// straddling spans extend right. Deletion of `[at, at+removed_len)`: spans

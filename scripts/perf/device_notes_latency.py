@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Measure a running device through tilo-vm, using an isolated Notes page.
+"""Measure a running device through tilo-vm, in a Notes notebook of its own.
+
+Every Notes window in a workspace opens that workspace's notebook, so the
+capture first creates a workspace (a new room), opens Notes there and
+addresses every Notes action by that room and record (`scratch_notes`). It
+never reads from or writes to a notebook that existed before the run.
 
 Uses the normal semantic app actions and kernel input path. Missing state or
 presentation evidence is a failed measurement, never a passing latency result.
@@ -14,6 +19,7 @@ import time
 
 from input_latency import summarize_physical_notes_latency
 from device_notes_trace import collect_trace
+from scratch_notes import NOTES_APP, open_scratch_notes
 
 
 def require_scratch(state, page, count):
@@ -37,24 +43,24 @@ def require_scratch(state, page, count):
         raise RuntimeError("Scratch editor focus, body, caret or adoption is unverified")
 
 
-def require_keyboard_notes(state):
+def require_keyboard_notes(state, notes):
+    """Refuse input unless the keyboard goes to the one Notes surface of the scratch room."""
     focus = state["chrome"]["seat_focus"]
     keyboard = focus.get("keyboard") or {}
-    surfaces = [tab["tile"]["Foreign"]["surface_id"]
-                for workspace in state["workspace_tree"]["workspaces"]
-                for strip in workspace["strips"]
-                for group in strip["window_groups"] for tab in group["tabs"]
-                if tab.get("tile", {}).get("Foreign", {}).get("app_id") == "so.tilo.notes"]
-    if (len(surfaces) != 1 or keyboard.get("app_id") != "so.tilo.notes"
+    surfaces = notes.surfaces(state)
+    if (len(surfaces) != 1 or keyboard.get("app_id") != NOTES_APP
             or keyboard.get("root_surface") != surfaces[0]
             or focus.get("routed_keyboard_surface") != surfaces[0]):
-        raise RuntimeError("The compositor keyboard is not routed to the unique Notes surface")
+        raise RuntimeError("The compositor keyboard is not routed to the scratch room's Notes surface")
 
 
 class Device:
     def __init__(self, options):
         self.options = options
         self.env = dict(os.environ, TILO_VM=options.device)
+        # The scratch notebook every Notes action is pinned to; None until
+        # `open_scratch_notes` proved one, and nothing is addressed before.
+        self.notes = None
 
     def run(self, arguments):
         result = subprocess.run(
@@ -72,12 +78,46 @@ class Device:
         return self.run(["slot", "exec", "--slot", self.options.slot,
                          "--timeout", "30", "--", *arguments])
 
+    def invoke(self, provider, action_id, payload):
+        """Run one action to its end and return its output value."""
+        # The fixed benchmark operations carry only a generated scratch title
+        # or no parameters. They never accept secrets.
+        result = self.control(["actions", "invoke", provider, action_id,
+                               "--args-json", json.dumps(payload)])
+        receipt = result.get("receipt", {})
+        job = receipt.get("broker_invocation_id")
+        deadline = time.monotonic() + 20
+        while True:
+            update = receipt.get("update", {})
+            if update.get("state") == "succeeded":
+                return update.get("output", {}).get("value")
+            if update.get("state") not in ("accepted", "running"):
+                raise RuntimeError(
+                    f"{provider} {action_id} failed: " + json.dumps(update))
+            if job is None:
+                raise RuntimeError(f"{provider} {action_id} did not return a trackable job")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Job {job} still pending; no retry was dispatched")
+            time.sleep(.1)
+            receipt = self.control(["actions", "status", str(job)])["receipt"]
+
+    def open_scratch_notes(self, name):
+        """Create the run's own workspace, open Notes in it and pin every Notes action there."""
+        self.notes = open_scratch_notes(
+            lambda: self.control(["state-dump"]), self.invoke, self.notes_rows, name)
+        return self.notes
+
+    def notes_rows(self):
+        return self.control(["actions", "list", NOTES_APP, "--json"])["actions"]
+
     def action(self, operation, payload, resource=None):
+        """Invoke one Notes operation of the scratch notebook, never any other."""
+        if self.notes is None:
+            raise RuntimeError("No scratch Notes room is open; refusing to address any notebook")
         deadline = time.monotonic() + 15
         while True:
-            catalogue = self.control(["actions", "list", "so.tilo.notes", "--json"])
-            rows = [row for row in catalogue["actions"]
-                    if row.get("application") == "so.tilo.notes"
+            rows = [row for row in self.notes_rows()
+                    if self.notes.owns(row)
                     and row.get("operation") == operation
                     and (resource is None or row.get("resource") == resource
                          or str(row.get("resource", "")).endswith(
@@ -85,28 +125,13 @@ class Device:
             if len(rows) == 1:
                 break
             if len(rows) > 1 or time.monotonic() >= deadline:
-                raise RuntimeError("No unique live Notes operation: " + operation)
+                raise RuntimeError("No unique scratch Notes operation: " + operation)
             time.sleep(.25)
-        row = rows[0]
-        # The fixed benchmark operations carry only a generated scratch title
-        # or no parameters. They never accept secrets.
-        result = self.control(["actions", "invoke", row["provider"], row["id"],
-                               "--args-json", json.dumps(payload)])
-        job = result.get("receipt", {}).get("broker_invocation_id")
-        if job is None:
-            raise RuntimeError("Notes action did not return a trackable job")
-        deadline = time.monotonic() + 20
-        while True:
-            result = self.control(["actions", "status", str(job)])
-            update = result["receipt"]["update"]
-            if update["state"] == "succeeded":
-                return update.get("output", {}).get("value")
-            if update["state"] not in ("accepted", "running"):
-                raise RuntimeError(
-                    f"Notes {operation} job {job} failed: " + json.dumps(update))
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"Notes job {job} still pending; no retry was dispatched")
-            time.sleep(.1)
+        return self.invoke(rows[0]["provider"], rows[0]["id"], payload)
+
+    def read(self, item=None):
+        """The scratch notebook's `read`, or one item it lists."""
+        return self.action("read", {} if item is None else {"item": item})
 
 
 def private_write(path, text):
@@ -117,16 +142,16 @@ def private_write(path, text):
 def capture(device, options):
     if device.control(["state-dump"])["chrome"]["session_locked"]:
         raise RuntimeError("Device session is locked")
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    notes = device.open_scratch_notes("Notes latency scratch " + stamp)
     # Use the ordinary New note operation, then independently verify the new
     # identity and title. Never choose an existing page because it looks empty.
-    existing = {row["item"] for row in device.control(
-        ["read", "so.tilo.notes"])["pages"]}
-    title = "Device latency scratch " + datetime.datetime.now(
-        datetime.timezone.utc).isoformat()
+    existing = {row["item"] for row in device.read()["pages"]}
+    title = "Device latency scratch " + stamp
     device.action("new-page", {"value": title})
     deadline = time.monotonic() + 10
     while True:
-        pages = device.control(["read", "so.tilo.notes"])["pages"]
+        pages = device.read()["pages"]
         fresh = [row for row in pages if row["item"] not in existing and row["title"] == title]
         if len(fresh) == 1:
             break
@@ -138,7 +163,7 @@ def capture(device, options):
     page = state.get("selected_page")
     if not isinstance(page, str) or "notes.page:" + page in existing:
         raise RuntimeError("Notes did not adopt a new scratch page")
-    created = device.control(["read", "so.tilo.notes", "notes.page:" + page])
+    created = device.read("notes.page:" + page)
     if created.get("title") != title or created.get("text") != "":
         raise RuntimeError("New scratch title and empty body were not verified")
     require_scratch(state, page, 0)
@@ -150,7 +175,7 @@ def capture(device, options):
     try:
         for index in range(options.samples):
             require_scratch(device.action("inspect-editor", {}), page, index)
-            require_keyboard_notes(device.control(["state-dump"]))
+            require_keyboard_notes(device.control(["state-dump"]), notes)
             device.run(["input", "--slot", options.slot, "type", "a", "--json"])
             time.sleep(.5)
             state = device.action("inspect-editor", {})
@@ -167,7 +192,8 @@ def capture(device, options):
         private_write(options.out / "states.json", json.dumps(states, indent=2))
         private_write(options.out / "capture.json", json.dumps({
             "device": options.device, "slot": options.slot,
-            "scratch_page": page, "samples_requested": options.samples,
+            "scratch_workspace": notes.workspace, "scratch_room": notes.room,
+            "scratch_record": notes.record, "scratch_page": page, "samples_requested": options.samples,
             "samples_adopted": len(states), "log_path": log_path,
         }, indent=2))
         private_write(options.out / "timeline.log", "\n".join(records))
