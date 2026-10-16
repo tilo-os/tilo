@@ -50,6 +50,11 @@ pub struct Shared {
     pub spectator_stats: Arc<Stats>,
     pub started: Instant,
     pub stop: tokio::sync::watch::Receiver<bool>,
+    /// Set once the run winds down: guests post nothing more, so what they
+    /// posted can settle.
+    pub quiet: tokio::sync::watch::Receiver<bool>,
+    /// The change hash (hex) of every chat message a guest posted.
+    pub sent: std::sync::Mutex<Vec<String>>,
 }
 
 /// The chat record every guest writes, in the last room it joined.
@@ -61,24 +66,21 @@ const MESSAGE: &str = "message";
 /// chat record setting [`MESSAGE`] to the time it was sent (milliseconds
 /// since the run started, big-endian) and `padding` bytes, by an actor of
 /// its own, so it applies to the record whatever else the record holds.
-fn chat_message(sent_ms: u64, padding: usize) -> Vec<u8> {
+fn chat_message(sent_ms: u64, padding: usize) -> Option<(Vec<u8>, String)> {
     use automerge::transaction::Transactable as _;
     use collab_types::CommitNamed as _;
     let mut message = sent_ms.to_be_bytes().to_vec();
     message.extend((0..padding).map(|_| rand::random::<u8>()));
     let mut change = automerge::AutoCommit::new();
-    if change
+    change
         .put(
             automerge::ROOT,
             MESSAGE,
             automerge::ScalarValue::Bytes(message),
         )
-        .is_err()
-    {
-        return Vec::new();
-    }
-    change.commit_edit("chat", MESSAGE);
-    change.save_incremental()
+        .ok()?;
+    let hash = change.commit_edit("chat", MESSAGE)?;
+    Some((change.save_incremental(), hex::encode(hash.0)))
 }
 
 /// When the chat message `change` was sent, as [`chat_message`] wrote it.
@@ -304,13 +306,20 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
         }
         if let (Some(at), Some(route)) = (next_chat, chat.as_ref())
             && now >= at
+            && !*shared.quiet.borrow()
+            && let Some((message, hash)) =
+                chat_message(now_ms(shared.started), shared.args.chat_bytes)
         {
-            let message = chat_message(now_ms(shared.started), shared.args.chat_bytes);
             if peer
                 .publish(route.clone(), &DocumentMutation::Incremental(message))
                 .is_ok()
             {
                 stats.chat_tx.fetch_add(1, Ordering::Relaxed);
+                shared
+                    .sent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(hash);
             }
             next_chat = Some(now + exponential(shared.args.chat_every * 1000.0));
         }
