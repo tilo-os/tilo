@@ -616,8 +616,10 @@ default = false
 
 # ---------------------------------------------------------------------------
 # Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
-# apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF).
-# Building them takes hours, so main publishes them only when asked (`dispatch = true`).
+# apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF)
+# from the receipts, or from the `fex-payload-candidate` pointer. Building them takes long, so
+# main publishes them only when asked: `t dispatch publish-fex-payload --ref main` builds the
+# FEX chain and pushes it.
 
 [[product]]
 family = "windows-compat"
@@ -655,6 +657,41 @@ cost = "heavy"
 cpus = 4
 memory = "16G"
 timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "fex-payload"
+about = """
+The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
+verified with its submodules, compiled offline on aarch64 in the toolchain above against the
+x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
+them first. Unsigned: the release key signs for stable and v* tags only, and the payload is a
+development candidate."""
+repository = "registry.tilo.so/tilo/tilo-fex-payload-candidate"
+arches = ["aarch64"]
+dev = ["{commit}"]
+dispatch = true
+gates = ["publish-fex-buildroot", "publish-fex-x86-sdk"]
+after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.json > {dir}/reference"
+
+[product.publish]
+outputs = ["{dir}/reference"]
+pointers = { fex-payload-candidate = "{dir}/reference" }
+
+[product.context]
+run = "bash tools/ci/publish/windows-compat.sh fex-source {dir}/fex-source.tar"
+inputs = ["os/dev/fetch-fex-source.sh", "os/external-assets/fex-source.env"]
+outputs = ["{dir}/fex-source.tar"]
+cost = "minutes"
+
+[product.build]
+run = "bash tools/ci/publish/fex-payload.sh {out} /target/publish/fex-buildroot /target/publish/fex-x86-sdk {dir}/fex-source.tar"
+inputs = ["os/Containerfile.fex-payload", "os/base-snapshot.env", "os/external-assets/fex-source.env", "os/dev/fetch-fex-source.sh", "os/dev/build-fex-payload.sh", "os/dev/validate-fex-payload.py", "os/dev/apply-fex-patches.py", "os/external-assets/fex-patches/**", "os/dev/toolchains/**", ".containerignore"]
+needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
+cost = "heavy"
+cpus = 16
+memory = "48G"
+timeout_secs = 10800
 
 [[product]]
 family = "windows-compat"
