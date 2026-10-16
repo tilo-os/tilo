@@ -170,20 +170,15 @@ pub fn tokenize_json(pretty: &str) -> Vec<JsonLine> {
     lines
 }
 
-/// Whether a tokenized line's last structural char closes a container.
+/// A closing line starts with a closer, possibly followed by a comma.
+/// Inline empty containers must not close an enclosing multiline block.
 fn line_closes_block(line: &JsonLine) -> bool {
     line.tokens
         .iter()
-        .rev()
-        .find_map(|t| {
-            let trimmed = t.text.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.starts_with('}') || trimmed.starts_with(']'))
-            }
+        .find(|token| !token.text.trim().is_empty())
+        .is_some_and(|token| {
+            token.kind == TokenKind::Punctuation && matches!(token.text.as_str(), "}" | "]")
         })
-        .unwrap_or(false)
 }
 
 /// Tokenize a single physical line of pretty JSON.
@@ -308,15 +303,10 @@ fn line_opens_block(tokens: &[Token]) -> bool {
     tokens
         .iter()
         .rev()
-        .find_map(|t| {
-            let trimmed = t.text.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.ends_with('{') || trimmed.ends_with('['))
-            }
+        .find(|token| !token.text.trim().is_empty())
+        .is_some_and(|token| {
+            token.kind == TokenKind::Punctuation && matches!(token.text.as_str(), "{" | "[")
         })
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
