@@ -56,11 +56,15 @@ priority = 90
 # never starve the quiet one, and a hang bound of two minutes, since a healthy
 # run takes well under one. A frozen compositor is reported by the test itself
 # within half a second; this only bounds a test that cannot even do that.
+# Its idle reading (CPU by thread, and what woke the compositor's loop) is
+# printed on a pass too, so a drift toward the bound shows in every CI log
+# before a run crosses it.
 [[profile.default.overrides]]
 filter = 'binary(it) and test(desktop_smoke::)'
 test-group = "desktop-smoke"
 priority = 95
 slow-timeout = { period = "60s", terminate-after = 2 }
+success-output = "final"
 
 # Not started with the pool-wide and longest tests: each suite's first route
 # join runs under the SDK's 4.5 s primary-route deadline, which the opening
