@@ -2197,6 +2197,42 @@ impl Widget for GreeterApp {
         Some(request)
     }
 
+    /// The greeter answers its own published operations; without this the
+    /// host refuses to publish any of them.
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[console::OPERATION]
+    }
+
+    /// The host's action surface admits a greeter operation here, after its
+    /// own resolution, availability and argument binding. It runs exactly
+    /// what the console runs.
+    fn start_operation(
+        &mut self,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped().filter(|r| r.type_id == console::OPERATION) else {
+            return ui::host_operation::start_in_children(self, op, doc, path);
+        };
+        let mut encoded = ui::tilo_actions::EncodedAction {
+            type_id: request.type_id.to_owned(),
+            payload: request.payload.to_vec(),
+        };
+        let applied = self.apply_operation(&encoded);
+        encoded.payload.zeroize();
+        applied
+            .map(|value| {
+                Some(ui::host_operation::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                ))
+            })
+            .map_err(|(_, message)| message)
+    }
+
     fn on_external_event(
         &mut self,
         payload: &str,
