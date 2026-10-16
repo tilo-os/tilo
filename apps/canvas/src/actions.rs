@@ -1951,6 +1951,17 @@ fn crop_artwork(
         for mark in &art.marks {
             doc.put_mark(mark.moved(-x0, -y0));
         }
+        if let Some(selection) = &art.selection {
+            let mut moved = selection.clone();
+            let mut path = BezPath::from_svg(&selection.d).unwrap_or_default();
+            path.apply_affine(ui::vello::kurbo::Affine::translate((-x0, -y0)));
+            moved.d = crate::model::path_data(&path);
+            if let Some(matte) = &mut moved.matte {
+                matte.rect[0] -= x0;
+                matte.rect[1] -= y0;
+            }
+            doc.selection = Some(moved);
+        }
         if let Some(reference) = &art.reference
             && let Some([x, y, w, h]) = reference.frame
         {
@@ -2356,4 +2367,63 @@ pub(crate) fn set_reference(
     }
     doc.reference = Some(reference);
     Ok(())
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+    use crate::model::Matte;
+    use crate::selection::{Select, UseSelection};
+    use ui::prelude::Replica;
+    use ui::vello::kurbo::Rect;
+
+    #[test]
+    fn cropping_moves_the_active_selection_and_its_soft_edge() {
+        let mut art = Replica::<Artwork>::new();
+        art.apply(Artwork::SELECT.with(Select {
+            rect: Some([100.0, 80.0, 50.0, 40.0]),
+            feather: Some(3.0),
+            matte: Some(Matte {
+                src: "tilo.content:selection-matte".into(),
+                rect: [98.0, 78.0, 54.0, 44.0],
+            }),
+            ..Select::default()
+        }))
+        .unwrap();
+        art.apply(Artwork::SET_ARTWORK.with(SetArtwork {
+            crop: Some([90.0, 60.0, 200.0, 180.0]),
+            ..SetArtwork::default()
+        }))
+        .unwrap();
+        let state = art.state().unwrap();
+        let selection = state.selection.as_ref().unwrap();
+        let expected = Rect::new(10.0, 20.0, 60.0, 60.0);
+        assert_eq!(selection.region().bounds(), Some(expected));
+        assert!((selection.feather - 3.0).abs() < f64::EPSILON);
+        assert_eq!(
+            selection.matte.as_ref().unwrap().rect,
+            [8.0, 18.0, 54.0, 44.0]
+        );
+
+        art.apply(Artwork::USE_SELECTION.with(UseSelection {
+            what: "fill".into(),
+            id: Some("fill".into()),
+            ..UseSelection::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            art.state().unwrap().mark("fill").unwrap().bounds(),
+            expected
+        );
+        art.apply(Artwork::USE_SELECTION.with(UseSelection {
+            what: "mask".into(),
+            id: Some("mask".into()),
+            ..UseSelection::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            art.state().unwrap().mark("mask").unwrap().bounds(),
+            Rect::new(8.0, 18.0, 62.0, 62.0)
+        );
+    }
 }
