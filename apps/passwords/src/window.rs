@@ -138,8 +138,10 @@ impl PasswordsSurface {
         };
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         let title = core.borrow().filter.label().to_owned();
+        // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
             .with_id("passwords.shell")
+            .with_header_in_window_bar()
             .sidebar(Box::new(sidebar(&core, &requests)))
             .overview(Box::new(ListPane::new(&core, &requests)))
             .overview_header(
