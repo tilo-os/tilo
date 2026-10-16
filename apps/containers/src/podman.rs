@@ -353,7 +353,11 @@ fn list_images() -> Option<Vec<Image>> {
     if !out.status.success() {
         return None;
     }
-    let entries: Vec<ImageEntry> = serde_json::from_slice(&out.stdout).ok()?;
+    parse_images(&out.stdout)
+}
+
+fn parse_images(output: &[u8]) -> Option<Vec<Image>> {
+    let entries: Vec<ImageEntry> = serde_json::from_slice(output).ok()?;
     let mut images: Vec<Image> = entries
         .into_iter()
         .map(|e| {
@@ -367,7 +371,7 @@ fn list_images() -> Option<Vec<Image>> {
                 tag,
                 size_bytes: e.size,
                 created: e.created_at,
-                in_use_by: e.containers.saturating_sub(1),
+                in_use_by: e.containers,
             }
         })
         .collect();
@@ -850,6 +854,22 @@ mod tests {
         assert_eq!(mapped[0].host_port, 8080);
         assert_eq!(mapped[0].container_port, 80);
         assert_eq!(mapped[0].protocol, "tcp");
+    }
+
+    #[test]
+    fn image_usage_preserves_the_engine_container_count() {
+        let images = parse_images(
+            br#"[
+                {"Id":"unused", "Names":["example/unused:latest"], "Containers":0},
+                {"Id":"single", "Names":["example/single:latest"], "Containers":1},
+                {"Id":"shared", "Names":["example/shared:latest"], "Containers":3}
+            ]"#,
+        )
+        .unwrap();
+        for (id, expected) in [("unused", 0), ("single", 1), ("shared", 3)] {
+            let image = images.iter().find(|image| image.id == id).unwrap();
+            assert_eq!(image.in_use_by, expected, "usage of {id}");
+        }
     }
 
     #[test]
