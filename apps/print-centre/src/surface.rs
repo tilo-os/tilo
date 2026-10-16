@@ -218,6 +218,7 @@ enum UiCommand {
     PrintDocument,
     CancelPrintSetup,
     ScanSetup,
+    NewScannedDocument,
     SelectScanner(String),
     ScanPage,
     SaveScannedPage,
@@ -265,6 +266,7 @@ impl Door {
             UiCommand::PrintDocument => E::SendToPrinter,
             UiCommand::CancelPrintSetup => E::ClosePrintSetup,
             UiCommand::ScanSetup => E::ScanDocument,
+            UiCommand::NewScannedDocument => E::NewScannedDocument,
             UiCommand::SelectScanner(scanner) => E::ScanWith { scanner },
             UiCommand::ScanPage => E::ScanPage,
             UiCommand::SaveScannedPage => E::SaveScannedPage,
@@ -839,6 +841,7 @@ impl PrintCentre {
             PrintCentreEffect::RunDiagnostics => self.open_diagnostics(),
             PrintCentreEffect::PrintDocument => self.request_document(),
             PrintCentreEffect::ScanDocument => self.open_scan(),
+            PrintCentreEffect::NewScannedDocument => self.new_scanned_document()?,
             PrintCentreEffect::OpenPrinter { printer } => {
                 let printer = self.known_printer(printer)?;
                 self.open_device(&printer);
@@ -963,6 +966,13 @@ impl PrintCentre {
         const NO_DOCUMENT: &str = "Choose a document to print first.";
         const NO_PAGE: &str = "Scan a page first.";
         let mut statuses = Vec::new();
+        if let Some(reason) = self.scan_reset_blocked() {
+            statuses.push(EffectStatus::unavailable(
+                PrintCentreEffect::NEW_SCANNED_DOCUMENT,
+                "scan-busy",
+                reason,
+            ));
+        }
         if self.pending_document.is_none() {
             statuses.push(EffectStatus::unavailable(
                 PrintCentreEffect::CHOOSE_PRINTER,
@@ -1466,6 +1476,30 @@ impl PrintCentre {
             });
         }
         self.rebuild_scan_setup();
+    }
+
+    fn scan_reset_blocked(&self) -> Option<&'static str> {
+        if self.scan.in_progress {
+            Some("Wait for the page to finish scanning before starting a new document.")
+        } else if self.scan_saving {
+            Some("Wait for the scan to finish saving before starting a new document.")
+        } else {
+            None
+        }
+    }
+
+    /// The host confirms this destructive action before delivering it.
+    /// Navigation and Scan another page never take this path.
+    fn new_scanned_document(&mut self) -> Result<(), String> {
+        if let Some(reason) = self.scan_reset_blocked() {
+            return Err(reason.into());
+        }
+        self.scan.pages.clear();
+        self.scan.result = None;
+        self.scan.selected = 0;
+        self.scan.crop.set(CropSelection::default());
+        self.open_scan();
+        Ok(())
     }
 
     /// Scan a page with the chosen scanner and settings, recognizing its
@@ -2595,6 +2629,119 @@ mod tests {
             ocr_needs_refresh: false,
             ocr_in_progress: false,
         }
+    }
+
+    #[test]
+    fn new_scanned_document_requires_consent_and_resets_only_the_document() {
+        let mut app = live_with_studio();
+        for edit in [
+            PrintDefaults::paths().scan_resolution.set(600),
+            PrintDefaults::paths().ocr_language.set(Atom("deu".into())),
+        ] {
+            app.invoke(ui::tilo_resource::Invoke::edit(&edit).unwrap())
+                .unwrap();
+        }
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            centre.open_scan();
+            centre.scan_finished(Ok(scanned_page(10)));
+            centre.scan_finished(Ok(scanned_page(20)));
+            centre.rotate_scan_page();
+            centre.scan.crop.set(CropSelection {
+                left: 0.25,
+                ..CropSelection::default()
+            });
+        }
+        app.settle();
+        let (edited, scanner) = {
+            let centre = app.surface_mut::<PrintCentre>();
+            (
+                centre.scan.pages[1].png.clone(),
+                centre.selected_scanner.clone(),
+            )
+        };
+        assert!(matches!(
+            app.effect(&PrintCentreEffect::NewScannedDocument),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert_eq!(app.surface_mut::<PrintCentre>().scan.pages.len(), 2);
+
+        // The visible button goes through the same shared host confirmation.
+        app.harness()
+            .click_named("print-centre.scan.new-document")
+            .unwrap();
+        assert!(app.asking().is_some());
+        app.harness().key("Escape");
+        app.settle();
+        assert!(app.asking().is_none());
+        // Cancelling confirmation returns to the palette; dismiss it too.
+        app.harness().key("Escape");
+        app.settle();
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            assert_eq!(centre.scan.pages.len(), 2);
+            assert_eq!(centre.scan.selected, 1);
+            assert_eq!(centre.scan.result.as_ref().unwrap().png, edited);
+        }
+        app.harness()
+            .click_named("print-centre.scan.new-document")
+            .unwrap();
+        assert!(app.confirm_asked().is_some());
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            assert!(centre.scan.pages.is_empty());
+            assert!(centre.scan.result.is_none());
+            assert_eq!(centre.scan.selected, 0);
+            assert_eq!(centre.scan.crop.get(), CropSelection::default());
+            assert_eq!(centre.selected_scanner, scanner);
+            assert_eq!(centre.scan.resolution.get(), 2);
+            assert_eq!(centre.scan.language.get(), 1);
+            assert!(centre.notice.is_none());
+            assert!(centre.page == Page::Scan);
+            centre.scan_finished(Ok(scanned_page(30)));
+            assert_eq!(centre.scan.pages.len(), 1);
+            assert_eq!(centre.scan.selected, 0);
+        }
+    }
+
+    #[test]
+    fn new_scanned_document_refuses_pending_scan_and_save() {
+        let mut app = live_with_studio();
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            centre.open_scan();
+            centre.scan_finished(Ok(scanned_page(10)));
+            centre.scan_another();
+            centre.scan.in_progress = true;
+            centre.open_dashboard();
+        }
+        app.settle();
+        assert!(
+            app.effect_confirmed(&PrintCentreEffect::NewScannedDocument)
+                .is_err()
+        );
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            assert!(centre.scan.in_progress);
+            assert_eq!(centre.scan.pages.len(), 1);
+            centre.scan_finished(Ok(scanned_page(20)));
+            centre.scan_saving = true;
+        }
+        app.settle();
+        assert!(
+            app.effect_confirmed(&PrintCentreEffect::NewScannedDocument)
+                .is_err()
+        );
+        {
+            let centre = app.surface_mut::<PrintCentre>();
+            assert_eq!(centre.scan.pages.len(), 2);
+            assert!(centre.scan_saving);
+            centre.scan_saving = false;
+        }
+        app.settle();
+        app.effect_confirmed(&PrintCentreEffect::NewScannedDocument)
+            .unwrap();
+        assert!(app.surface_mut::<PrintCentre>().scan.pages.is_empty());
     }
 
     #[test]
