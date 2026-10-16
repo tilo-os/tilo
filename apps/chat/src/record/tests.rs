@@ -230,6 +230,28 @@ fn post_to(channel: &str, text: &str) -> Invoke<Chat> {
 }
 
 #[test]
+fn a_reply_to_a_missing_or_deleted_message_is_refused() {
+    let mut ada = room();
+    assert!(
+        ada.apply(reply(&id("missing"), "Where did it go?"))
+            .is_err()
+    );
+    assert!(ada.state().unwrap().messages.is_empty());
+
+    ada.apply(post("The plan")).unwrap();
+    let parent = said(&ada, "The plan");
+    ada.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+        message: parent.clone(),
+    }))
+    .unwrap();
+    assert!(ada.apply(reply(&parent, "My answer")).is_err());
+    assert!(
+        ada.state().unwrap().messages.is_empty(),
+        "a reply must not be accepted into a thread nobody can open"
+    );
+}
+
+#[test]
 fn an_attachment_is_posted_by_its_content_address() {
     let mut ada = room();
     let blob = "ab".repeat(32);
