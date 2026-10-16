@@ -117,13 +117,15 @@ impl App {
                             .is_some_and(|sync| sync.published_through(before))
                     });
                     let mut applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
-                    if applied.is_none() {
-                        // A merge is an action boundary, as an undo or a save
-                        // is: the word still being typed becomes its own step.
-                        // Waiting for the person's next boundary instead held
-                        // this history, and every action queued behind its
-                        // delivery turn, for as long as the window sat idle.
-                        owner.close_open_step(&mut self.state.doc);
+                    // A merge is an action boundary, as an undo or a save
+                    // is: the word still being typed becomes its own step,
+                    // named by the action typing it. Waiting for the
+                    // person's next boundary instead held this history, and
+                    // every action queued behind its delivery turn, for as
+                    // long as the window sat idle. A step no action names
+                    // stays open: committed unnamed, the identity service
+                    // would refuse it.
+                    if applied.is_none() && owner.close_named_step(&mut self.state.doc) {
                         applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
                     }
                     // Committed history is already held by the owner that
