@@ -2486,7 +2486,7 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
             )
             .unwrap();
         viewer.apply_layout(&taffy, node, Point::ORIGIN);
-        viewer.set_zoom(2.0);
+        app.set_zoom(2.0);
         let expected = if quarters == 0 {
             Rect01 {
                 x: 0.0,
@@ -2503,7 +2503,7 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
             }
         };
         assert_eq!(app.visible_rect(), expected);
-        app.pending = Some(Hit::CropToView);
+        app.pending.set(Some(Hit::CropToView));
         app.drain_pending();
         settle(&mut app, &mut doc);
         assert_eq!(
