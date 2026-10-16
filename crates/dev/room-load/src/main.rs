@@ -390,7 +390,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         sent: std::sync::Mutex::default(),
     });
 
-    let history_s = write_history(&shared).await?;
+    let history_s = write_history(&shared, pid).await?;
     let cpu0 = procfs::Sample::of(pid).unwrap_or_default().cpu_s;
     let begun = Instant::now();
     let begun_unix_s = std::time::SystemTime::now()
@@ -559,7 +559,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
 /// Have `--historians` guests write `--history` chat posts between them,
 /// wait until every one is committed and the host's upkeep of the chat has
 /// had its quiet moment, and return how long it took.
-async fn write_history(shared: &Arc<guest::Shared>) -> anyhow::Result<f64> {
+async fn write_history(shared: &Arc<guest::Shared>, host: u32) -> anyhow::Result<f64> {
     let args = &shared.args;
     if args.history == 0 {
         return Ok(0.0);
@@ -571,8 +571,28 @@ async fn write_history(shared: &Arc<guest::Shared>) -> anyhow::Result<f64> {
         let count = args.history / historians + usize::from(index < args.history % historians);
         writing.spawn(guest::historian(shared.clone(), index, count));
     }
-    while let Some(written) = writing.join_next().await {
-        written?.map_err(|error| anyhow::anyhow!("history: {error}"))?;
+    // Progress, and whose CPU it costs, so a run stopped while writing
+    // still says how far it got and which side was the bottleneck.
+    let mut progress = tokio::time::interval(Duration::from_secs(30));
+    progress.tick().await;
+    loop {
+        tokio::select! {
+            written = writing.join_next() => match written {
+                Some(written) => written?.map_err(|error| anyhow::anyhow!("history: {error}"))?,
+                None => break,
+            },
+            _ = progress.tick() => {
+                let sent = shared.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
+                let cpu = |pid| procfs::Sample::of(pid).map_or(0.0, |sample| sample.cpu_s);
+                eprintln!(
+                    "history: {sent} of {} sent after {:.0}s; cpu so far: host {:.0}s, guests {:.0}s",
+                    args.history,
+                    begun.elapsed().as_secs_f64(),
+                    cpu(host),
+                    cpu(std::process::id()) - cpu(host),
+                );
+            }
+        }
     }
     eprintln!(
         "history: {} posts in {:.1}s",

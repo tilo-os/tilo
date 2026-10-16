@@ -101,6 +101,11 @@ def plan(which: str) -> list[Run]:
                     # The flag last: `run_seconds` reads the options in pairs.
                     ("--guests", "100", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
                      "--history", "50000", "--historians", "200", "--seeded-chat")))
+    # The same at a size that writes in a minute: what each history post
+    # costs the host and the guests.
+    runs.append(Run("history2k-g20", "history",
+                    ("--guests", "20", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
+                     "--history", "2000", "--historians", "20", "--seeded-chat")))
     if which != "full":
         pattern = re.compile(which)
         runs = [run for run in runs if pattern.search(run.name)]
