@@ -866,6 +866,28 @@ fn app_opens_unicode_repository_and_commits_exact_unicode_file() {
     assert_eq!(fs::read_to_string(path.join(file)).unwrap(), contents);
 }
 
+#[test]
+fn untracked_files_preview_their_contents_before_staging() {
+    use git_client::model::DiffKey;
+
+    let (_dir, path) = init_repo();
+    fs::create_dir(path.join("nested")).unwrap();
+    fs::write(path.join("nested/new.rs"), "fn main() {}\n// new file\n").unwrap();
+
+    let (model, diffs) = repo::load(&path).unwrap();
+    let change = model
+        .untracked
+        .iter()
+        .find(|change| change.path == "nested/new.rs")
+        .unwrap();
+    assert_eq!((change.additions, change.deletions), (2, 0));
+    let diff = &diffs[&DiffKey::worktree("nested/new.rs")];
+    assert!(diff.is_new);
+    assert!(diff.lines.iter().any(|line| line.content == "fn main() {}"));
+    assert!(diff.lines.iter().any(|line| line.content == "// new file"));
+    assert!(!is_staged(&path, "nested/new.rs"));
+}
+
 // --- helpers ---------------------------------------------------------
 
 /// Render a git2 diff to its full patch text for substring assertions.

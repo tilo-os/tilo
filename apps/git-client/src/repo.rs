@@ -179,6 +179,7 @@ fn collect_worktree_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut 
     let mut opts = DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
         .context_lines(3);
     let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) else {
         return;
