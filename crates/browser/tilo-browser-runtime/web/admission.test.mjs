@@ -106,7 +106,7 @@ test('no access says the same thing for a missing and a private room', async () 
   }).deps}).catch(error => error);
   const revoked = await admit({scope: room, deps: doors({
     readAccounts: async () => [{userPublicKey: 'ab'}],
-    connectMember: async () => ({whenReady: async () => { throw new Error('The host no longer accepts this browser'); }}),
+    connectMember: async () => ({whenReady: async () => { throw new Error('This workspace’s host no longer has you as a member.'); }}),
   }).deps}).catch(error => error);
   for (const error of [noAccount, unknown, forbidden, revoked]) {
     assert.ok(error instanceof AdmissionError);

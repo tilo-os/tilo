@@ -77,16 +77,38 @@ pub async fn start_host_plain(
     web_listen: SocketAddr,
     plain_listen: Option<SocketAddr>,
 ) -> TestHost {
+    start_host_admitting(root, host, state, web_listen, plain_listen, &[]).await
+}
+
+/// [`start_host_plain`], whose workspace also admits the people `guests`
+/// (user roots), as a room admits its guests.
+pub async fn start_host_admitting(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    plain_listen: Option<SocketAddr>,
+    guests: &[[u8; 32]],
+) -> TestHost {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
         ..Default::default()
     };
+    if !guests.is_empty() {
+        // The host's handshake admits them, as it admits a room's members.
+        cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
+            users: guests.iter().map(hex::encode).collect(),
+        };
+    }
     cfg.workspaces.push(tilo_relay::WorkspaceBinding {
         id: workspace(),
         pin: true,
         replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
+        admitted_users: std::iter::once(&user)
+            .chain(guests)
+            .map(hex::encode)
+            .collect(),
         checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         shell_authority: None,
     });
