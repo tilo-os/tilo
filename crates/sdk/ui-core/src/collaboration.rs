@@ -45,6 +45,8 @@ pub(crate) mod approved_checks;
 #[cfg(feature = "broker-transport")]
 mod broker;
 pub mod browser_service_sessions;
+#[cfg(feature = "broker-transport")]
+pub(crate) use broker::{person_chat_command, subscribe_person_chat};
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub(crate) mod channel_settings;

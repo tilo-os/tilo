@@ -110,6 +110,18 @@ pub enum ChatEffect {
     /// Open person
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
+    /// Open a private conversation with a certified person public key.
+    #[effect(view, device_only)]
+    OpenDirectConversation { public_key: String },
+    /// Expand an unsent private editor using its ephemeral native handoff token.
+    #[effect(view, device_only, returns)]
+    AdoptPrivateDraft { token: String },
+    /// Send privately through the native person-only host door.
+    #[effect(device_only, returns)]
+    SendDirectMessage { public_key: String, text: String },
+    /// Read a private conversation on this device.
+    #[effect(device_only, returns)]
+    ReadDirectConversation { public_key: String },
     /// Open a direct conversation with an Agent authenticated by this room.
     #[effect(view, row)]
     OpenAgentConversation { workspace: String, agent: String },
@@ -271,6 +283,18 @@ impl ChatApp {
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
+            ChatEffect::OpenDirectConversation { public_key } => {
+                self.open_person_conversation(&public_key)?;
+            }
+            ChatEffect::AdoptPrivateDraft { .. } => {
+                return Err("private draft adoption requires its original effect context".into());
+            }
+            ChatEffect::SendDirectMessage { public_key, text } => {
+                return self.send_person_message(&public_key, &text);
+            }
+            ChatEffect::ReadDirectConversation { public_key } => {
+                return self.read_person_conversation(&public_key);
+            }
             ChatEffect::OpenTaskConversation {
                 workspace,
                 agent,
@@ -294,11 +318,8 @@ impl ChatApp {
                 return self.read_message(&message).map(Effected::value);
             }
             ChatEffect::AttachFile { channel, path } => self.attach_file_effect(&channel, &path)?,
-            ChatEffect::ShareLiveContext => self.share_live_context_effect()?,
-            ChatEffect::StopSharingLiveContext => {
-                self.sharing_context = false;
-                self.request_relayout();
-            }
+            ChatEffect::ShareLiveContext => self.set_live_context_sharing(true)?,
+            ChatEffect::StopSharingLiveContext => self.set_live_context_sharing(false)?,
             ChatEffect::LiveContextStatus => {
                 return Ok(Effected::value(serde_json::json!({
                     "sharing": self.sharing_context,
@@ -336,15 +357,17 @@ impl ChatApp {
         Ok(Effected::done())
     }
 
-    fn share_live_context_effect(&mut self) -> Result<(), String> {
-        if !self.channels.iter().any(|channel| {
-            channel.id == self.active_channel
-                && channel.kind == ChannelKind::Text
-                && !channel.archived
-        }) {
+    fn set_live_context_sharing(&mut self, sharing: bool) -> Result<(), String> {
+        if sharing
+            && !self.channels.iter().any(|channel| {
+                channel.id == self.active_channel
+                    && channel.kind == ChannelKind::Text
+                    && !channel.archived
+            })
+        {
             return Err("Open a conversation before sharing its context".into());
         }
-        self.sharing_context = true;
+        self.sharing_context = sharing;
         self.request_relayout();
         Ok(())
     }
@@ -539,6 +562,7 @@ impl ChatApp {
             .find(|item| item.id == channel)
             .map(|item| item.workspace.clone())
             .ok_or("conversation no longer exists")?;
+        self.close_person_conversation();
         self.active_ws = workspace;
         channel.clone_into(&mut self.active_channel);
         self.inbox_open = false;
@@ -861,13 +885,14 @@ impl ChatApp {
             .chain(people)
             .chain(reports)
             .chain(agents)
+            .chain(Self::person_conversation_rows())
             .chain(tasks)
             .collect()
     }
 
     /// The row `id`, when [`Self::published_rows`] leaves it out.
     pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
-        if id.starts_with("chat.task:") {
+        if id.starts_with("chat.person:") || id.starts_with("chat.task:") {
             return self.published_rows().into_iter().find(|row| row.id() == id);
         }
         if let Some(agent) = id.strip_prefix("chat.agent:") {

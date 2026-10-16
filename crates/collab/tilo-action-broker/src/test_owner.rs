@@ -92,6 +92,15 @@ impl SessionOwner {
         dir: &Path,
         documents: impl FnOnce(&str) -> Result<Vec<SeedDocument>, String>,
     ) -> Result<Self, String> {
+        Self::initialize_in_room(dir, &uuid::Uuid::new_v4().to_string(), documents)
+    }
+
+    /// Keep multiple real owners in the same authenticated fixture room.
+    pub fn initialize_in_room(
+        dir: &Path,
+        room: &str,
+        documents: impl FnOnce(&str) -> Result<Vec<SeedDocument>, String>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let seed: Vec<u8> = (0..4)
             .flat_map(|_| *uuid::Uuid::new_v4().as_bytes())
@@ -108,7 +117,7 @@ impl SessionOwner {
             signature: [0; 64],
         };
         sign_device_cert(&mut authority, &person).map_err(|e| e.to_string())?;
-        let room = uuid::Uuid::new_v4().to_string();
+        let room = room.to_owned();
         let now = SystemTime::now();
         let mut peer = StatePeer::new(
             &room,

@@ -12,6 +12,7 @@ use crate::app::ChatApp;
 
 pub(crate) struct AgentConversationSurface {
     pub(crate) id: String,
+    pub(crate) conversation: crate::composer::ConversationKey,
     pub(crate) view: Box<ChatApp>,
     pub(crate) placement: FloatingPlacement,
     pub(crate) source: Rect,
@@ -45,6 +46,15 @@ impl AgentConversationSurface {
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
+            conversation: parent.direct_person.as_ref().map_or_else(
+                || crate::composer::ConversationKey::Agent {
+                    workspace: parent.active_ws.clone(),
+                    route: parent
+                        .agent_draft_route()
+                        .unwrap_or_else(|| agent.to_owned()),
+                },
+                |public_key| parent.person_conversation_key(public_key),
+            ),
             view: Box::new(view),
             placement,
             source,
@@ -84,6 +94,7 @@ impl AgentConversationSurface {
     }
 
     pub(crate) fn close(&mut self) {
+        self.view.close_person_conversation();
         self.closed = true;
     }
 
@@ -94,31 +105,39 @@ impl AgentConversationSurface {
     pub(crate) fn request(&self) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
-            title: self
-                .view
-                .direct_agent
-                .as_deref()
-                .map_or_else(String::new, |agent| {
-                    self.view
-                        .direct_agent_tasks()
-                        .and_then(crate::agent_tasks::AgentTaskView::current)
-                        .map_or_else(
-                            || self.view.agent_display_name(agent),
-                            |task| {
-                                crate::i18n::t_args(
-                                    "chat-agent-task-window",
-                                    &[
-                                        ("title", task.title.clone().into()),
-                                        (
-                                            "run",
-                                            task.run_epoch.unwrap_or_default().to_string().into(),
-                                        ),
-                                        ("name", self.view.agent_display_name(agent).into()),
-                                    ],
-                                )
-                            },
-                        )
-                }),
+            title: if let crate::composer::ConversationKey::Person { public_key, .. } =
+                &self.conversation
+            {
+                self.view.person_display_name(public_key)
+            } else {
+                self.view
+                    .direct_agent
+                    .as_deref()
+                    .map_or_else(String::new, |agent| {
+                        self.view
+                            .direct_agent_tasks()
+                            .and_then(crate::agent_tasks::AgentTaskView::current)
+                            .map_or_else(
+                                || self.view.agent_display_name(agent),
+                                |task| {
+                                    crate::i18n::t_args(
+                                        "chat-agent-task-window",
+                                        &[
+                                            ("title", task.title.clone().into()),
+                                            (
+                                                "run",
+                                                task.run_epoch
+                                                    .unwrap_or_default()
+                                                    .to_string()
+                                                    .into(),
+                                            ),
+                                            ("name", self.view.agent_display_name(agent).into()),
+                                        ],
+                                    )
+                                },
+                            )
+                    })
+            },
             role: FloatingRole::Conversation,
             source: FloatingSource::AppElement {
                 app_id: "so.tilo.chat".into(),

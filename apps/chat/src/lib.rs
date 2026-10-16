@@ -72,8 +72,12 @@ mod moderation;
 pub mod paint;
 pub mod parts;
 pub mod permissions;
+mod person_conversation;
+#[cfg(test)]
+mod person_conversation_tests;
 pub mod picker;
 pub mod preferences;
+mod private_draft;
 pub mod projection;
 pub mod record;
 pub mod render_call;

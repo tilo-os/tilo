@@ -125,6 +125,7 @@ pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
+pub(crate) mod person_quick_composer;
 pub mod personal_continuity;
 pub mod personal_continuity_registry;
 pub mod personal_tethering;

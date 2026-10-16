@@ -46,8 +46,10 @@ mod native_media;
 mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
+mod person_chat;
 #[cfg(test)]
 mod policy_turn_tests;
+mod private_draft;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published_invocation;
@@ -3446,6 +3448,7 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    private_drafts: Mutex<private_draft::Drafts>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
@@ -3689,6 +3692,7 @@ impl CapnpBrokerState {
         clear!(self.invocation_subscribers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
+        clear!(self.private_drafts);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
         clear!(self.confirmation_grants);
@@ -3839,12 +3843,20 @@ impl CapnpBrokerState {
             Self::CANCELLATION_GRACE,
         );
         self.expire_workspace_opens(now);
+        if let Ok(mut drafts) = self.private_drafts.lock() {
+            drafts.retain(|_, entry| entry.expires > now);
+        }
     }
 
     /// When the next pending invocation can expire. `None` while nothing is
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
         let opens = self.workspace_opens.next_deadline();
+        let drafts = self
+            .private_drafts
+            .lock()
+            .ok()
+            .and_then(|drafts| drafts.values().map(|entry| entry.expires).min());
         let pending = self.pending_invocations.lock().ok()?;
         pending
             .values()
@@ -3861,6 +3873,7 @@ impl CapnpBrokerState {
                 })
             })
             .chain(opens)
+            .chain(drafts)
             .min()
     }
 
@@ -4199,6 +4212,17 @@ impl CapnpBrokerState {
         )
     }
 
+    fn configured_journal(
+        config: Option<&super::peer_actions::NativePeerBrokerConfig>,
+        membership: Option<&WorkspaceTreeHandle>,
+    ) -> Result<Option<InvocationJournal>, String> {
+        config
+            .map(|config| config.journal_root.clone())
+            .or_else(|| membership.and_then(|authority| authority.legacy_journal_root()))
+            .map(|path| InvocationJournal::open(&path))
+            .transpose()
+    }
+
     fn new_configured(
         fanout: &Arc<FanoutState>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
@@ -4215,16 +4239,7 @@ impl CapnpBrokerState {
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
         let local_turn = std::sync::Arc::new(tokio::sync::Notify::new());
         let (peer_action_queue, peer_action_rx) = super::peer_actions::PeerActionQueue::channel();
-        let journal_root = config
-            .map(|config| config.journal_root.clone())
-            .or_else(|| {
-                membership
-                    .as_ref()
-                    .and_then(|authority| authority.legacy_journal_root())
-            });
-        let journal = journal_root
-            .map(|path| InvocationJournal::open(&path))
-            .transpose();
+        let journal = Self::configured_journal(config, membership.as_ref());
         let next_invocation = journal
             .as_ref()
             .ok()
@@ -4269,6 +4284,7 @@ impl CapnpBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                private_drafts: Mutex::new(HashMap::default()),
                 approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 shortcut_runs: crate::automation::ShortcutRuns::default(),
@@ -8355,6 +8371,7 @@ impl collab_service::Server for CapnpCollabService {
                 .local_route(&crate::route::CrdtRoute::from_channel_key(&channel_id));
 
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: state.clone(),
                 directories: Rc::clone(&self.directories),
@@ -8390,6 +8407,7 @@ fn joined_record_kind(kind: capnp::text::Reader<'_>) -> Result<Option<String>, c
 /// Per-channel handle established by `join_channel`; every subsequent
 /// method call inherits its (`channel_id`, `peer_id`, identity) context.
 struct CapnpChannelHandle {
+    person_chat_views: RefCell<person_chat::SelectedViews>,
     committed_read: Rc<RefCell<committed_document::Slot>>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
@@ -9165,6 +9183,29 @@ impl channel_handle::Server for CapnpChannelHandle {
             results.get().set_frame(&bytes);
             Ok(())
         })
+    }
+
+    fn subscribe_person_chat(
+        self: Rc<Self>,
+        params: channel_handle::SubscribePersonChatParams,
+        results: channel_handle::SubscribePersonChatResults,
+    ) -> Promise<(), capnp::Error> {
+        self.subscribe_person_chat_dispatch(&params, results)
+    }
+
+    fn person_chat(
+        self: Rc<Self>,
+        params: channel_handle::PersonChatParams,
+        mut results: channel_handle::PersonChatResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from((|| {
+            let params = params.get()?;
+            let reply = self
+                .person_chat_dispatch(params.get_command()?, params.get_on_behalf_of()?)
+                .map_err(capnp::Error::failed)?;
+            results.get().set_reply(&reply);
+            Ok(())
+        })())
     }
 
     fn committed_document(
@@ -15522,6 +15563,7 @@ pub mod tests {
 
         fn invocation_channel(&self) -> channel_handle::Client {
             capnp_rpc::new_client(CapnpChannelHandle {
+                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
                 directories: Rc::clone(&self.directories),
@@ -19801,6 +19843,7 @@ pub mod tests {
                     let (fixture, caller, request) = durable_fixture(root.path(), None);
                     let client: channel_handle::Client =
                         capnp_rpc::new_client(CapnpChannelHandle {
+                            person_chat_views: RefCell::default(),
                             committed_read: Rc::new(RefCell::new(
                                 committed_document::Slot::default(),
                             )),
@@ -19853,6 +19896,7 @@ pub mod tests {
                 let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
                 fixture.invocation_rx.try_recv().unwrap();
                 let foreign: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                    person_chat_views: RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: fixture.state.clone(), directories: fixture.directories.clone(),
                     channel_id: fixture.route.channel_key(), peer_id: 999,

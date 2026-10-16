@@ -54,6 +54,7 @@ mod owner_commit_tests {
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
@@ -156,6 +157,7 @@ mod owner_commit_tests {
                     );
                     let client: channel_handle::Client =
                         capnp_rpc::new_client(CapnpChannelHandle {
+                            person_chat_views: RefCell::default(),
                             committed_read: Rc::new(RefCell::new(
                                 committed_document::Slot::default(),
                             )),
@@ -571,6 +573,7 @@ mod owner_commit_tests {
         fanout.attach_capnp(state.clone());
         state.ensure_channel(&route.channel_key());
         let client = capnp_rpc::new_client(CapnpChannelHandle {
+            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: state.clone(),
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),

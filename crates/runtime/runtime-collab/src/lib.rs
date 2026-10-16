@@ -38,6 +38,7 @@
               redesigning around the RPC library"
 )]
 
+pub mod private_draft;
 pub mod task_control;
 pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
 
@@ -881,6 +882,78 @@ fn decode_bounded_reply<R: serde::de::DeserializeOwned>(
 
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Open a body-free private change lane, authorized as the original person.
+    /// # Errors
+    /// Returns unavailable if certification or the private subscription fails.
+    pub async fn subscribe_person_chat(
+        &self,
+        peer: &str,
+        original: &[u8],
+    ) -> Result<PersonChatStream, NotAvailable> {
+        if peer.len() != 64 || !matches!(original.len(), 0 | 16) {
+            return Err(wire_failure("invalid private subscription".into()));
+        }
+        let mut request = self.inner.subscribe_person_chat_request();
+        request.get().set_public_key(peer);
+        request.get().set_on_behalf_of(original);
+        let reply = request.send().promise.await?;
+        Ok(PersonChatStream {
+            inner: reply.get()?.get_stream()?,
+        })
+    }
+
+    /// Fetch or acknowledge an ephemeral editor on the certified native channel.
+    /// The existing private command lane carries this separate closed envelope;
+    /// no editor body enters the action protocol or person-message persistence.
+    /// # Errors
+    /// Refuses a missing original invocation, denied transport or oversized reply.
+    pub async fn private_draft(
+        &self,
+        request: &private_draft::Request,
+        original: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        if original.len() != 16 {
+            return Err(wire_failure(
+                "private draft requires original invocation".into(),
+            ));
+        }
+        let command = serde_json::to_vec(request)
+            .map_err(|_| wire_failure("invalid private draft request".into()))?;
+        let mut request = self.inner.person_chat_request();
+        request.get().set_command(&command);
+        request.get().set_on_behalf_of(original);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > 128 * 1024 {
+            return Err(wire_failure("private draft reply exceeds bound".into()));
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// Invoke the person-only private host door; unsupported hosts fail closed.
+    /// # Errors
+    /// Returns unavailable if certification or the private owner command fails.
+    pub async fn person_chat(
+        &self,
+        command: &[u8],
+        original: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
+            return Err(wire_failure("invalid private conversation request".into()));
+        }
+        let mut request = self.inner.person_chat_request();
+        request.get().set_command(command);
+        request.get().set_on_behalf_of(original);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(wire_failure(
+                "private conversation reply exceeds bound".into(),
+            ));
+        }
+        Ok(bytes.to_vec())
+    }
+
     /// Send PCM or controls to this launched application's output-only service.
     ///
     /// # Errors
@@ -2801,6 +2874,38 @@ pub enum TaskRunUpdate {
     Cancelled {
         message: String,
     },
+}
+
+/// Private selected-pair capability: counts plus explicitly fetched snapshots.
+#[cfg(feature = "client")]
+pub struct PersonChatStream {
+    inner: raw::person_chat_stream::Client,
+}
+#[cfg(feature = "client")]
+impl PersonChatStream {
+    /// Wait without polling until this pair changes; the first next is immediate.
+    ///
+    /// # Errors
+    /// Returns unavailable when the private change stream is disconnected.
+    pub async fn next(&self) -> Result<u64, NotAvailable> {
+        let reply = self.inner.next_request().send().promise.await?;
+        Ok(reply.get()?.get_generation())
+    }
+
+    /// Fetch this exact pair using the selected view's retained person authority.
+    ///
+    /// # Errors
+    /// Returns unavailable when the private conversation cannot be read.
+    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        let bytes = reply.get()?.get_reply()?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(wire_failure(
+                "private conversation reply exceeds bound".into(),
+            ));
+        }
+        Ok(bytes.to_vec())
+    }
 }
 
 /// Client-pulled stream of broker-addressed task leases.

@@ -21,6 +21,7 @@ mod enrollment;
 mod file_store;
 mod history_content;
 mod limits;
+mod private_direct_conversations;
 mod publication;
 mod record;
 pub mod session;
@@ -44,6 +45,10 @@ pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, Documen
 pub use file_store::open_file;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
+pub use private_direct_conversations::{
+    DirectContact, DirectConversation, DirectConversationPage, DirectMessage, DirectMessageReceipt,
+    DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore,
+};
 pub use publication::{
     NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
     validate_file_layout,
@@ -126,6 +131,8 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
+    /// Process-local private pair notifications, never serialized or replicated.
+    direct_changes: Mutex<BTreeMap<String, tokio::sync::watch::Sender<u64>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -325,6 +332,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
+            direct_changes: Mutex::new(BTreeMap::new()),
         })))
     }
     #[must_use]

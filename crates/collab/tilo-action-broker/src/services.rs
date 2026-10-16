@@ -1,5 +1,6 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
+pub mod person_chat;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
@@ -1408,6 +1409,7 @@ pub struct HostServices {
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
+    pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
