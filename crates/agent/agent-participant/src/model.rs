@@ -1100,6 +1100,17 @@ fn answer_steps(
         // before it run, then the task is planned again over what they
         // published (an app opened, say).
         if *id == tilo_agent::plan::NOTHING_FITS {
+            // A first answer of "nothing fits" that says what to do is a
+            // plan the model did not map onto the operations: it is asked
+            // once to, rather than ending the task.
+            if steps.is_empty()
+                && !task.starts_with(PLAN_WHAT_IT_SAID)
+                && let Some(then) = answer.then.as_deref().filter(|then| concrete(then))
+            {
+                rest = Some(format!("{PLAN_WHAT_IT_SAID} {}", then.trim()));
+                wait = None;
+                break;
+            }
             if steps.is_empty() {
                 let because = [Some(answer.why.trim()), answer.then.as_deref()]
                     .into_iter()
@@ -1152,6 +1163,23 @@ fn answer_steps(
         }
     }
     Ok((steps, rest, wait))
+}
+
+/// What a plan that answered "nothing offered fits" while saying what to
+/// do is planned again with, before that.
+pub(crate) const PLAN_WHAT_IT_SAID: &str = "You answered that nothing offered fits, but said what to do. \
+     Plan those steps now with the operations listed (an open first, by its listed open, when \
+     they act in a document not open yet); answer that nothing fits only if no listed operation \
+     can do them. What you said to do:";
+
+/// The fewest words a "nothing fits" answer's `then` must have to be a
+/// plan of its own rather than a remark.
+const FEWEST_PLAN_WORDS: usize = 4;
+
+/// Whether `then`, what a "nothing fits" answer says is left, is a plan
+/// ([`FEWEST_PLAN_WORDS`] or more).
+fn concrete(then: &str) -> bool {
+    then.split_whitespace().count() >= FEWEST_PLAN_WORDS
 }
 
 /// Operations that answer with a picture of their record (a canvas look, a
@@ -4152,6 +4180,29 @@ pub(crate) mod tests {
         let error = canned(&[none], "", None)
             .plan("draw a cat", &context())
             .unwrap_err();
+        assert!(error.starts_with("nothing offered fits"), "{error}");
+    }
+
+    /// "Nothing fits" that goes on to say what to do is planned once more,
+    /// asked to plan what it said with the listed operations; saying it
+    /// again then ends the task with the model's reason.
+    #[test]
+    fn nothing_fits_with_a_plan_of_its_own_is_planned_again_once() {
+        let none = tilo_agent::plan::NOTHING_FITS;
+        let said = "Open the Word Processor document, read its text, then fill section A";
+        let mut planner = canned(&[none], "", Some(said));
+        let steps = planner.plan("fill the form", &context()).unwrap();
+        let [step] = steps.as_slice() else {
+            panic!("only the plan again: {steps:?}");
+        };
+        let StepAction::Continue(rest) = &step.action else {
+            panic!("{step:?}");
+        };
+        assert!(
+            rest.starts_with(PLAN_WHAT_IT_SAID) && rest.ends_with(said),
+            "{rest}"
+        );
+        let error = planner.plan(rest, &context()).unwrap_err();
         assert!(error.starts_with("nothing offered fits"), "{error}");
     }
 

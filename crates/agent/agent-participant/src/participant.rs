@@ -2129,6 +2129,21 @@ impl AgentParticipant {
                 if !continues && error.starts_with(NOTHING_LEFT) && self.reopen_for(&task, &text) {
                     return;
                 }
+                // A first plan's "nothing fits" that said what to do was
+                // planned again with that (crate::model::PLAN_WHAT_IT_SAID);
+                // found nothing again, it gets the re-open a first plan gets.
+                if continues
+                    && error.starts_with(NOTHING_LEFT)
+                    && text.starts_with(crate::model::PLAN_WHAT_IT_SAID)
+                    && let Some(request) = self
+                        .running
+                        .as_ref()
+                        .filter(|running| running.id == task && running.acted == 0)
+                        .map(|running| running.request.clone())
+                    && self.reopen_for(&task, &request)
+                {
+                    return;
+                }
                 if continues
                     && running_it
                     && error.starts_with(NOTHING_LEFT)
