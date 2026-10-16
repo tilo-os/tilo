@@ -242,6 +242,8 @@ inputs = ["t.toml", "tools/ci/**", ".config/**", "Cargo.toml", "**/Cargo.toml", 
 name = "fmt"
 requires = ["arch=any"]
 run = "cargo fmt --check"
+# t applies this on main by itself when fmt fails there; `t fix fmt` applies it here.
+fix = "cargo fmt"
 inputs = ["**/*.rs", "rustfmt.toml", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 
 # cargo-hakari ships in ci-fast, the image lint.yml runs in, not in the builder.
