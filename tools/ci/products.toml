@@ -637,9 +637,9 @@ family = "windows-compat"
 about = """
 The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
 (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
-resolves its build dependencies with the network, then rebuilds Wine from that bundle alone,
-offline. Every image is an archive named by the digest it is published with, so the contracts
-the steps write name what is published."""
+resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
+that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
+by the digest it is published with, so the contracts the steps write name what is published."""
 each = [{ arch = "x86_64", target = "x86_64" }, { arch = "x86_64", target = "i686" }]
 fields = { image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }, isolation = "vm", requires = ["arch=x86_64"], default = false }
 
@@ -663,3 +663,15 @@ cost = "heavy"
 cpus = 4
 memory = "8G"
 timeout_secs = 3600
+
+[[matrix.check]]
+name = "wine-build-{target}"
+run = "bash tools/ci/publish/wine.sh build {target} /target/windows-compat/wine-build-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-{target}"]
+outputs = ["/target/windows-compat/wine-build-{target}/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
