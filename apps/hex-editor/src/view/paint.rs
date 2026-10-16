@@ -268,7 +268,7 @@ impl HexView {
         for vr in 0..g.visible_rows {
             let row = self.model.top_row() + vr;
             let row_off = row * bpr;
-            if row_off >= self.model.len() && row_off > 0 {
+            if row >= self.model.row_count() {
                 break;
             }
             let y = g.grid.y0 + vr as f64 * g.row_h;
@@ -449,10 +449,10 @@ impl HexView {
     /// Byte range the inspector reads: up to eight bytes from the cursor.
     pub(super) fn inspector_span(&self) -> Option<(usize, usize)> {
         let cur = self.model.cursor();
-        if self.model.is_empty() {
+        if cur >= self.model.len() {
             return None;
         }
-        let width = (self.model.len() - cur).clamp(1, 8);
+        let width = (self.model.len() - cur).min(8);
         Some((cur, cur + width - 1))
     }
 
