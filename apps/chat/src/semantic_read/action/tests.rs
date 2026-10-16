@@ -105,16 +105,29 @@ fn semantic_read_action_rejects_ambiguous_or_oversized_request_before_projection
         validate_request(&resource, &vec![b' '; MAX_REQUEST_BYTES + 1]).unwrap_err(),
         SemanticReadError::Limit
     );
-    for page_size in [0, 33] {
-        assert!(
-            resource.actions[0]
-                .build_json(
-                    serde_json::json!({"pageSize":page_size})
-                        .as_object()
-                        .unwrap()
-                )
-                .is_err()
-        );
+    assert!(
+        resource.actions[0]
+            .build_json(serde_json::json!({"pageSize":0}).as_object().unwrap())
+            .is_err()
+    );
+}
+
+/// Asking for more than a page holds reads a full page (with the cursor to
+/// the rest) instead of refusing, so a model asking for 50 still reads.
+#[test]
+fn semantic_read_action_clamps_a_page_size_over_32_to_32() {
+    let resource = resource();
+    for page_size in [33, 50, 10_000] {
+        let encoded = resource.actions[0]
+            .build_json(
+                serde_json::json!({"pageSize":page_size})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        validate_request(&resource, &encoded.payload).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(decoded["pageSize"], 32, "{page_size}");
     }
 }
 

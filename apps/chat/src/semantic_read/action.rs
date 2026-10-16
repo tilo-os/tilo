@@ -18,6 +18,9 @@ pub static READERS: [RegisteredSemanticReader; 4] = [
     crate::feedback::destination_read::READER,
 ];
 
+/// The most messages one page reads.
+const MAX_PAGE_SIZE: u8 = 32;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request {
@@ -41,7 +44,7 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
             .is_some_and(|channel| {
                 !channel.is_empty() && channel.len() <= 128 && channel == request.channel
             }))
-        || !(1..=32).contains(&request.page_size)
+        || !(1..=MAX_PAGE_SIZE).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);
     }
@@ -67,8 +70,12 @@ pub fn spec(channel: &str) -> ActionSpec {
         OperationKind::Effect,
         OPERATION_TYPE,
         vec![
-            ActionParam::required("pageSize", ParamType::Integer, "Maximum items in this page")
-                .with_schema(serde_json::json!({"type":"integer","minimum":1,"maximum":32})),
+            ActionParam::required(
+                "pageSize",
+                ParamType::Integer,
+                "Maximum items in this page, at most 32 (a larger number reads 32)",
+            )
+            .with_schema(serde_json::json!({"type":"integer","minimum":1})),
             ActionParam::optional(
                 "cursor",
                 ParamType::Text,
@@ -79,8 +86,11 @@ pub fn spec(channel: &str) -> ActionSpec {
         move |args| {
             let request = Request {
                 channel: channel.clone(),
+                // A caller asking for more than a page holds gets a full
+                // page and the cursor to the rest, not a refusal to retry.
                 page_size: args
                     .integer("pageSize")
+                    .map(|n| n.min(MAX_PAGE_SIZE.into()))
                     .and_then(|n| u8::try_from(n).ok())
                     .unwrap_or(0),
                 cursor: args.text("cursor").map(str::to_owned),
