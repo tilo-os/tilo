@@ -257,6 +257,43 @@ impl StatePeer {
         })
     }
 
+    /// [`Self::publish_sealed_incremental`] for `changes` a device this
+    /// state's authority signs for made, such as a bot it installed
+    /// (`delegate`): the room decides them as `delegate`'s own sealed write
+    /// (its grants over the claims they name, and the name they show), and
+    /// the authority's `key` publishes them, as the authority's checkpoint
+    /// carries such a device's changes to a record written in the clear.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::publish_sealed_incremental`], and when the room would
+    /// refuse `delegate`'s own write of `changes`; this peer is unchanged
+    /// then.
+    pub fn publish_sealed_incremental_for(
+        &mut self,
+        delegate: &SigningKey,
+        (app, record): (&str, &str),
+        changes: Vec<u8>,
+        seal: &mut SealDelta<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let author = delegate.verifying_key().to_bytes();
+        let parsed = collab_types::parse_changes(&changes).map_err(err)?;
+        let shows = self.appearance_author(&author, now);
+        collab_types::check_appearances(&parsed, shows.as_deref())
+            .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+        self.clone().publish_sealed_incremental(
+            app,
+            record,
+            changes.clone(),
+            seal,
+            delegate,
+            now,
+        )?;
+        self.publish_sealed_incremental(app, record, changes, seal, key, now)
+    }
+
     /// Every encrypted record whose sealed history has used three quarters
     /// of its bound, as `(app, record)`: its key holder compacts it before
     /// new writes are refused.

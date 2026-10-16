@@ -1,5 +1,6 @@
 #![allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
     reason = "the member's helpers are part of the test's assertions"
 )]
@@ -24,9 +25,29 @@ fn title(bytes: &[u8]) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-struct Member {
+/// Another device of the person whose root (`[1; 32]`) certified the
+/// fixture's governor `cert`, admitted to `room`.
+pub(crate) async fn member_device(
+    rooms: &Rooms,
+    room: &str,
+    (key, cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+) -> SigningKey {
+    let member_key = SigningKey::from_bytes(&[seed; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(rooms, room, key, &member).await;
+    member_key
+}
+
+/// A member device that holds one record's channel keys and writes the
+/// record sealed, as a page does once the room's steward admitted it.
+pub(crate) struct SealingMember {
     key: SigningKey,
     keys: ChannelContentKeys,
+    route: (String, String),
     /// The app surface the member's writes name, as its page names it.
     surface: Option<[u8; 32]>,
     seq: std::sync::atomic::AtomicU64,
@@ -34,11 +55,64 @@ struct Member {
     document: std::sync::Mutex<automerge::AutoCommit>,
 }
 
-impl Member {
+impl SealingMember {
+    /// `key`'s device, a member of `room`, takes part in the channel of the
+    /// record `(app, record)` the governor holds in the clear so far.
+    pub(crate) async fn join(
+        rooms: &Rooms,
+        room: &str,
+        (app, record): (&str, &str),
+        key: SigningKey,
+    ) -> Self {
+        let route = tilo_browser_peer::DocumentRoute {
+            app_id: app.into(),
+            cluster_id: room.into(),
+            record: record.into(),
+        };
+        let keys = rooms
+            .steward_endpoint_keys(&route, true)
+            .await
+            .unwrap()
+            .unwrap();
+        // The surface a member's write names: the one its replica signs with.
+        let surface = {
+            let state = rooms.room(room).await.unwrap();
+            let mut scratch = state.lock().await.peer().clone();
+            let mut document =
+                automerge::AutoCommit::load(&scratch.document(app, record).unwrap()).unwrap();
+            let heads = document.get_heads();
+            document.put(ROOT, "probe", true).unwrap();
+            document.commit_edit("fixture", "probe");
+            let NeighbourMsg::AppDocument { envelope, .. } = scratch
+                .publish_incremental(
+                    app,
+                    record,
+                    document.save_after(&heads),
+                    &key,
+                    SystemTime::now(),
+                )
+                .unwrap()
+            else {
+                panic!("a document write")
+            };
+            envelope.surface
+        };
+        let member = Self {
+            key,
+            keys,
+            route: (app.into(), record.into()),
+            surface,
+            seq: std::sync::atomic::AtomicU64::new(0),
+            document: std::sync::Mutex::new(automerge::AutoCommit::new()),
+        };
+        member.catch_up(rooms, room).await;
+        member
+    }
+
     /// Take in the record as the room reads it now.
-    async fn catch_up(&self, rooms: &Rooms, room: &str) {
+    pub(crate) async fn catch_up(&self, rooms: &Rooms, room: &str) {
         let bytes = rooms
-            .record_document(room, APP, RECORD)
+            .record_document(room, &self.route.0, &self.route.1)
             .await
             .unwrap()
             .unwrap();
@@ -49,19 +123,52 @@ impl Member {
             .unwrap();
     }
 
-    /// The member's next write setting `title`, sealed with the record's
-    /// channel keys as its page seals it, and handed to the room the way the
-    /// relay hands it every member write.
-    async fn writes(&self, rooms: &Rooms, room: &str, value: &str) {
-        let mut document = self.document.lock().unwrap().clone();
+    /// The member's replica of the record.
+    pub(crate) fn document(&self) -> automerge::AutoCommit {
+        self.document.lock().unwrap().clone()
+    }
+
+    /// Open `op`, a sealed write of the record, and take in its changes.
+    pub(crate) fn take_in(&self, op: &SignedOp) {
+        let metadata = op.encryption.expect("a sealed write");
+        let plaintext = self
+            .keys
+            .open_content(
+                op.artifact,
+                &metadata,
+                &collab_types::sealed_ciphertext(op).unwrap(),
+            )
+            .unwrap();
+        let collab_types::DocumentMutation::Incremental(changes) =
+            collab_types::DocumentMutation::decode(&plaintext).unwrap()
+        else {
+            panic!("a sealed change")
+        };
+        self.document
+            .lock()
+            .unwrap()
+            .load_incoming(&changes)
+            .unwrap();
+    }
+
+    /// The member's next write of the record, `change` made to its replica,
+    /// sealed with the record's channel keys as its page seals it, and
+    /// handed to the room the way the relay hands it every member write.
+    pub(crate) async fn writes<R>(
+        &self,
+        rooms: &Rooms,
+        room: &str,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
+    ) -> R {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
+        let mut document = self.document();
         let heads = document.get_heads();
-        document.put(ROOT, "title", value).unwrap();
-        document.commit_edit("fixture", "title");
+        let result = change(&mut document);
         let plaintext = collab_types::DocumentMutation::Incremental(document.save_after(&heads))
             .encode()
             .unwrap();
         *self.document.lock().unwrap() = document;
-        let artifact = collab_types::document_artifact_id(APP, room, RECORD);
+        let artifact = collab_types::document_artifact_id(app, room, record);
         let (metadata, payload) = self
             .keys
             .seal_content(artifact, ContentRetention::Delta, &plaintext)
@@ -76,7 +183,7 @@ impl Member {
             payload,
             artifact,
             author,
-            collab_types::document_attestation_id(APP, room, RECORD),
+            collab_types::document_attestation_id(app, room, record),
             collab_types::OpKind::Change,
             SystemTime::now(),
             seq,
@@ -86,9 +193,9 @@ impl Member {
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
         let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
-            app_id: APP.into(),
+            app_id: app.into(),
             cluster_id: room.into(),
-            record_id: RECORD.into(),
+            record_id: record.into(),
             envelope: Box::new(envelope),
         })
         .unwrap();
@@ -96,7 +203,52 @@ impl Member {
             .absorb(room, self.key.verifying_key().to_bytes(), &body)
             .await
             .unwrap();
+        result
     }
+}
+
+/// The newest write of `record` the governor `governor` published to
+/// `room`'s members.
+pub(crate) async fn governor_published(
+    rooms: &Rooms,
+    room: &str,
+    record: &str,
+    governor: &DeviceCert,
+) -> Option<SignedOp> {
+    let state = rooms.room(room).await.unwrap();
+    let published: Vec<Vec<u8>> = state
+        .lock()
+        .await
+        .record
+        .outgoing
+        .iter()
+        .map(|publication| publication.bytes.clone())
+        .collect();
+    published
+        .iter()
+        .rev()
+        .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
+        .find_map(|message| match message {
+            NeighbourMsg::AppDocument {
+                record_id,
+                envelope,
+                ..
+            } if record_id == record
+                && envelope.author.as_bytes() == &governor.device_public_key =>
+            {
+                Some(*envelope)
+            }
+            _ => None,
+        })
+}
+
+async fn set_title(member: &SealingMember, rooms: &Rooms, room: &str, value: &str) {
+    member
+        .writes(rooms, room, |document| {
+            document.put(ROOT, "title", value).unwrap();
+            document.commit_edit("fixture", "title");
+        })
+        .await;
 }
 
 async fn readable(rooms: &Rooms, room: &str) -> Option<String> {
@@ -111,7 +263,7 @@ struct Lounge {
     rooms: Rooms,
     room: String,
     governor: DeviceCert,
-    member: Member,
+    member: SealingMember,
 }
 
 async fn lounge() -> Lounge {
@@ -120,59 +272,14 @@ async fn lounge() -> Lounge {
     let relay = view_read_relay(dir.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
-    let member_key = SigningKey::from_bytes(&[3; 32]);
-    let mut member = cert.clone();
-    member.device_public_key = member_key.verifying_key().to_bytes();
-    member.capabilities = DeviceCapabilities::member();
-    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(&rooms, &room, &key, &member).await;
+    let member_key = member_device(&rooms, &room, (&key, &cert), 3).await;
     rooms
         .author_room_record(&room, &cert, (APP, RECORD), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
         .unwrap();
-    let route = tilo_browser_peer::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: room.clone(),
-        record: RECORD.into(),
-    };
-    let keys = rooms
-        .steward_endpoint_keys(&route, true)
-        .await
-        .unwrap()
-        .unwrap();
-    // The surface a member's write names: the one its replica signs with.
-    let surface = {
-        let state = rooms.room(&room).await.unwrap();
-        let mut scratch = state.lock().await.peer().clone();
-        let mut document =
-            automerge::AutoCommit::load(&scratch.document(APP, RECORD).unwrap()).unwrap();
-        let heads = document.get_heads();
-        document.put(ROOT, "probe", true).unwrap();
-        document.commit_edit("fixture", "title");
-        let NeighbourMsg::AppDocument { envelope, .. } = scratch
-            .publish_incremental(
-                APP,
-                RECORD,
-                document.save_after(&heads),
-                &member_key,
-                SystemTime::now(),
-            )
-            .unwrap()
-        else {
-            panic!("a document write")
-        };
-        envelope.surface
-    };
-    let member = Member {
-        key: member_key,
-        keys,
-        surface,
-        seq: std::sync::atomic::AtomicU64::new(0),
-        document: std::sync::Mutex::new(automerge::AutoCommit::new()),
-    };
-    member.catch_up(&rooms, &room).await;
+    let member = SealingMember::join(&rooms, &room, (APP, RECORD), member_key).await;
     Lounge {
         _dir: dir,
         relay,
@@ -196,7 +303,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         governor,
         member,
     } = lounge().await;
-    member.writes(&rooms, &room, "graffiti").await;
+    set_title(&member, &rooms, &room, "graffiti").await;
     assert_eq!(readable(&rooms, &room).await.as_deref(), Some("graffiti"));
 
     rooms
@@ -206,45 +313,17 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         .await
         .expect("the governor writes a sealed record sealed");
     assert_eq!(readable(&rooms, &room).await.as_deref(), Some("Welcome"));
-    let state = rooms.room(&room).await.unwrap();
-    let published: Vec<Vec<u8>> = state
-        .lock()
+    let own = governor_published(&rooms, &room, RECORD, &governor)
         .await
-        .record
-        .outgoing
-        .iter()
-        .map(|publication| publication.bytes.clone())
-        .collect();
-    let own = published
-        .iter()
-        .rev()
-        .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
-        .find_map(|message| match message {
-            NeighbourMsg::AppDocument {
-                record_id,
-                envelope,
-                ..
-            } if record_id == RECORD
-                && envelope.author.as_bytes() == &governor.device_public_key =>
-            {
-                Some(envelope)
-            }
-            _ => None,
-        })
         .expect("the governor published its write");
-    let metadata = own.encryption.expect("never in the clear");
-    assert!(
-        member
-            .keys
-            .open_content(
-                own.artifact,
-                &metadata,
-                &collab_types::sealed_ciphertext(&own).unwrap(),
-            )
-            .is_ok(),
+    assert!(own.encryption.is_some(), "never in the clear");
+    member.take_in(&own);
+    assert_eq!(
+        title(&member.document().save()).as_deref(),
+        Some("Welcome"),
         "a member opens the governor's write"
     );
-    drop((state, rooms));
+    drop(rooms);
     relay.shutdown().await;
 }
 
@@ -263,7 +342,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     } = lounge().await;
     // More writes than the history's bound (4096) holds.
     for index in 0..4200 {
-        member.writes(&rooms, &room, &format!("line {index}")).await;
+        set_title(&member, &rooms, &room, &format!("line {index}")).await;
     }
     assert_eq!(readable(&rooms, &room).await.as_deref(), Some("line 4199"));
     let state = rooms.room(&room).await.unwrap();

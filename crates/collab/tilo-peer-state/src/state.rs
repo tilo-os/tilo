@@ -1739,6 +1739,17 @@ impl StatePeer {
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect()
     }
+    /// The `(app, record)` of every encrypted record this state holds: only
+    /// its channel's key holders read it.
+    #[must_use]
+    pub fn sealed_routes(&self) -> Vec<(String, String)> {
+        self.core
+            .documents
+            .iter()
+            .filter(|(_, entry)| entry.encryption_required)
+            .map(|(route, _)| (route.app.clone(), route.record.clone()))
+            .collect()
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents
