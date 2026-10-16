@@ -27,12 +27,25 @@ def write(root: Path, rel: str, text: str) -> None:
 
 
 class MediaStackPolicyTests(unittest.TestCase):
+    def test_missing_resolved_graph_is_an_error_not_a_codec_free_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Cargo.toml", '[workspace]\nmembers = []\n')
+            found = check_media_stack.check(root)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].path, "Cargo.lock")
+            self.assertIn("cannot inspect", found[0].reason)
+            # A real, codec-free resolved graph remains a valid observation.
+            write(root, "Cargo.lock", 'version = 4\n[[package]]\nname = "safe"\nversion = "1.0.0"\n')
+            self.assertEqual(check_media_stack.check(root), [])
+
     def test_codec_crates_are_reported_in_every_dependency_form(self) -> None:
         with self.subTest(phase='the repository carries no in tree codec crate'):
             self.assertEqual(check_media_stack.check(ROOT), [])
         with self.subTest(phase='a direct dependency is reported'):
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
+                write(root, "Cargo.lock", 'version = 4\n')
                 write(root, "Cargo.toml", '[workspace]\nmembers = ["a"]\n')
                 write(
                     root,
@@ -49,6 +62,7 @@ class MediaStackPolicyTests(unittest.TestCase):
         with self.subTest(phase='renamed optional and target dependencies are reported'):
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
+                write(root, "Cargo.lock", 'version = 4\n')
                 write(
                     root,
                     "Cargo.toml",

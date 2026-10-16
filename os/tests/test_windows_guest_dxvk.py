@@ -102,6 +102,27 @@ class ImportTests(unittest.TestCase):
                     path.write_bytes(original)
             self.assertFalse((self.root / "usr").exists())
 
+    def test_invalid_pe_does_not_leave_a_partial_provider(self):
+        name = sorted(self.contents)[-1]
+        self.contents[name] = b'not a PE file'
+        self.bundle()
+        with self.assertRaises(ValueError):
+            self.install()
+        self.assertFalse((self.root / 'usr/share/tilo/dxvk').exists())
+        self.assertFalse((self.root / 'usr/share/licenses/tilo-dxvk').exists())
+        self.contents[name] = pe(DXVK.EXPECTED[name][2])
+        self.bundle()
+        self.assertEqual(len(self.install()['files']), 10)
+
+    def test_existing_license_is_preserved_without_leaving_provider(self):
+        license_dir = self.root / 'usr/share/licenses/tilo-dxvk'
+        license_dir.mkdir(parents=True)
+        (license_dir / 'LICENSE').write_text('existing')
+        with self.assertRaises(FileExistsError):
+            self.install()
+        self.assertEqual((license_dir / 'LICENSE').read_text(), 'existing')
+        self.assertFalse((self.root / 'usr/share/tilo/dxvk').exists())
+
     def test_archive_path_safety(self):
         with self.subTest(phase="duplicate_and_traversal_members_rejected"):
             for name in (next(iter(self.contents)), "../../escape"):

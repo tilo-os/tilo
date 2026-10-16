@@ -300,6 +300,25 @@ class BrowserRuntimeRelease(unittest.TestCase):
                                 release.verify_package(out, architecture, source, '9', key)
                         proof.pop('cef_source_patch_sha256')
                         (package / 'provenance.json').write_text(json.dumps(proof))
+                    for kind in ('linked-tapp', 'extra-directory'):
+                        with self.subTest(kind=kind):
+                            if kind == 'linked-tapp':
+                                saved = out / 'saved.tapp'
+                                tapp.rename(saved)
+                                tapp.symlink_to(saved)
+                                invalid = tapp
+                            else:
+                                invalid = package / 'unrecorded'
+                                invalid.mkdir()
+                            try:
+                                with self.assertRaisesRegex(ValueError, 'nonregular member'):
+                                    release.verify_package(out, architecture, source, '9', key)
+                            finally:
+                                if kind == 'linked-tapp':
+                                    invalid.unlink()
+                                    saved.rename(tapp)
+                                else:
+                                    invalid.rmdir()
                     baseline = tapp.read_text()
                     for invalid_host in ('bin = \"missing-host\"', 'bin = \"../host\"', ''):
                         tapp.write_text(baseline.replace('bin = \"lib/chromium/tilo-chromium-host\"', invalid_host))

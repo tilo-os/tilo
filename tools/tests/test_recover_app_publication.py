@@ -127,6 +127,7 @@ if '--request' in args:
  print('409 ', end='')
 else:
  Path(args[args.index('--output')+1]).write_bytes(os.environ['COLLISION_BYTES'].encode())
+ print('200', end='')
 ''')
             fake.chmod(0o755)
             payload = root / 'package'

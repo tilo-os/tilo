@@ -105,10 +105,10 @@ class Violation:
 
 
 def lock_violations(lock: Path, root: Path = ROOT) -> list[Violation]:
-    if not lock.is_file():
-        return []
-    data = tomllib.loads(lock.read_text(encoding="utf-8"))
     shown = str(lock.relative_to(root)) if lock.is_relative_to(root) else str(lock)
+    if not lock.is_file():
+        return [Violation(shown, "", "cannot inspect the resolved media dependencies: lockfile is missing or not a file")]
+    data = tomllib.loads(lock.read_text(encoding="utf-8"))
     return [
         Violation(shown, package["name"])
         for package in data.get("package", [])

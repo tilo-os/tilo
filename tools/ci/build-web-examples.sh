@@ -28,12 +28,16 @@ if [[ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $pinned" ]]; then
 fi
 
 selected=" $* "
-mapfile -t apps < <("$tilo_app" examples --json | node -e '
+apps_text=$("$tilo_app" examples --json | node -e '
 const {examples} = JSON.parse(require("fs").readFileSync(0, "utf8")).result;
 const selected = process.argv[1];
 for (const example of examples) {
   if (example.web && selected.includes(` example-${example.name} `)) console.log(example.name);
 }' "$selected")
+apps=()
+if [[ -n $apps_text ]]; then
+  mapfile -t apps <<<"$apps_text"
+fi
 if [[ ${#apps[@]} -eq 0 ]]; then
   echo "no web-capable example selected"
   exit 0

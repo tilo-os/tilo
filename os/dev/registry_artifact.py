@@ -33,7 +33,7 @@ def sha(data):
 
 
 def read_bounded(path, limit):
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(descriptor)
         require(stat.S_ISREG(before.st_mode) and before.st_size <= limit, 'bounded regular input required')
@@ -60,7 +60,7 @@ def strict_json(data):
 
 
 def file_hash(path, limit):
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(descriptor)
         require(stat.S_ISREG(info.st_mode) and info.st_size <= limit, 'bounded regular input required')
@@ -126,13 +126,18 @@ def inspect_local(reference, architecture, expected_id=None):
 
 @contextmanager
 def mounted(identity):
-    path = Path(command('podman', '--remote=false', 'image', 'mount', identity).decode().strip())
+    raw = command('podman', '--remote=false', 'image', 'mount', identity)
     try:
+        path = Path(raw.decode().strip())
         require(path.is_absolute() and path.is_dir(), 'invalid image mount')
         yield path
-    except BaseException:
-        subprocess.run(['podman', '--remote=false', 'image', 'unmount', identity], check=False,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except BaseException as error:
+        try:
+            command('podman', '--remote=false', 'image', 'unmount', identity)
+        except BaseException:
+            # Keep the original failure (including cancellation), but never
+            # silently lose the fact that an image may still be mounted.
+            error.add_note('image unmount failed during error cleanup')
         raise
     else:
         command('podman', '--remote=false', 'image', 'unmount', identity)

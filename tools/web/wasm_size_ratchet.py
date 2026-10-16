@@ -74,18 +74,33 @@ def load(root: pathlib.Path = REPO) -> Budget:
 
 def load_at(revision: str, root: pathlib.Path = REPO) -> Budget | None:
     def git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=False)
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
 
-    shown = git("show", f"{revision}:{DIRECTORY}/budget.toml")
-    if shown.returncode != 0:
-        legacy = git("show", f"{revision}:{LEGACY}")
-        return Budget(legacy.stdout) if legacy.returncode == 0 else None
-    budget = Budget(shown.stdout)
-    listed = git("ls-tree", "-r", "--name-only", revision, f"{DIRECTORY}/raises/")
-    for path in listed.stdout.split():
+    resolved = git("rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}")
+    if resolved.returncode:
+        raise RuntimeError(f"cannot resolve budget base {revision}: {resolved.stderr.strip()}")
+    revision = resolved.stdout.strip()
+    listed = git("ls-tree", "-r", "--name-only", revision, "--", DIRECTORY, LEGACY)
+    if listed.returncode:
+        raise RuntimeError(f"cannot list budget base: {listed.stderr.strip()}")
+    paths = set(listed.stdout.splitlines())
+
+    def read(path: str) -> str:
+        result = git("show", f"{revision}:{path}")
+        if result.returncode:
+            raise RuntimeError(f"cannot read budget base {path}: {result.stderr.strip()}")
+        return result.stdout
+
+    shown_path = f"{DIRECTORY}/budget.toml"
+    if shown_path not in paths:
+        return Budget(read(LEGACY)) if LEGACY in paths else None
+    budget = Budget(read(shown_path))
+    for path in sorted(paths):
+        if not path.startswith(f"{DIRECTORY}/raises/"):
+            continue
         parts = pathlib.PurePosixPath(path)
         if parts.suffix == ".toml":
-            text = git("show", f"{revision}:{path}").stdout
+            text = read(path)
             budget.raises.setdefault(parts.parent.name, {})[parts.name] = text
     return budget
 
@@ -163,7 +178,11 @@ def main() -> int:
         status, message = measure(args.name, args.bundle, current)
         print(message, file=sys.stderr if status else sys.stdout)
         return status
-    base = load_at(args.base)
+    try:
+        base = load_at(args.base)
+    except RuntimeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     if base is None:
         print("no budget at the base revision; nothing to compare")
         return 0
