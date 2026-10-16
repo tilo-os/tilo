@@ -3352,12 +3352,20 @@ impl BooksApp {
         }
         let span = (piece.end.saturating_sub(piece.start)).clamp(1, tb.char_len);
         let excerpt: String = tb.text.chars().take(span.min(120)).collect();
-        let at = Ebook::paths().annotations.item(&piece.key());
-        self.edit(doc, at.chapter.set(self.chapter));
-        self.edit(doc, at.block.set(tb.index));
-        self.edit(doc, at.start.set(0));
-        self.edit(doc, at.end.set(span));
-        self.edit(doc, at.excerpt.replace(excerpt));
+        // Comments are also passage destinations in the notes drawer and
+        // search. Move their anchors with the highlight, keeping their text
+        // and identity rather than leaving links to the old paragraph.
+        for annotation in self.annotations.iter().filter(|annotation| {
+            annotation.group == group
+                && (annotation.id == piece.id || annotation.kind == AnnoKind::Note)
+        }) {
+            let at = Ebook::paths().annotations.item(&annotation.key());
+            self.edit(doc, at.chapter.set(self.chapter));
+            self.edit(doc, at.block.set(tb.index));
+            self.edit(doc, at.start.set(0));
+            self.edit(doc, at.end.set(span));
+            self.edit(doc, at.excerpt.replace(excerpt.clone()));
+        }
         true
     }
 

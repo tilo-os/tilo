@@ -2519,7 +2519,7 @@ fn highlight_markers_reanchor_and_open_comments() {
     // --- phase: dragging_a_highlight_marker_reanchors_it_and_keeps_its_comments ---
     // A highlight's margin marker is a draggable handle: grabbing it and dropping
     // it on another paragraph re-anchors the highlight there through the
-    // annotation action model (one row moves, its comments are untouched). A
+    // annotation action model (the highlight and its comments move together). A
     // plain tap on the same marker opens the highlight's comments.
     {
         let mut app = app_with_sample();
@@ -2626,13 +2626,22 @@ fn highlight_markers_reanchor_and_open_comments() {
             "the highlight re-anchored to the dropped paragraph"
         );
         assert_ne!(moved.block, src_block, "it actually moved off its origin");
-        // Its comment survived the move.
-        assert!(
-            TestLibrary::list_annotations(&doc)
-                .into_iter()
-                .any(|a| a.kind == AnnoKind::Note && a.group == group && a.note == "keep me"),
-            "the highlight's comment survived the re-anchor",
-        );
+        // The comment survives with its identity and text, but follows the
+        // passage so clicking its drawer/search result opens the new anchor.
+        let moved_comment = TestLibrary::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.id == comment.id)
+            .expect("the highlight's comment survived the re-anchor");
+        assert_eq!(moved_comment.note, "keep me");
+        assert_eq!(moved_comment.group, group);
+        assert_eq!(moved_comment.kind, AnnoKind::Note);
+        assert_eq!(moved_comment.chapter, moved.chapter);
+        assert_eq!(moved_comment.block, target_block);
+        assert_eq!(moved_comment.start, moved.start);
+        assert_eq!(moved_comment.end, moved.end);
+        assert_eq!(moved_comment.excerpt, moved.excerpt);
+        app.dispatch(Action::JumpTo(comment.id), &mut Edits::lend(&mut doc));
+        assert_eq!(app.pending_jump_block, Some(target_block));
     }
 
     // --- phase: tapping_a_highlight_marker_opens_its_comments ---
