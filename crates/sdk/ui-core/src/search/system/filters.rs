@@ -561,7 +561,7 @@ impl SearchFilters {
         // Dynamic: one chip per kind any registered provider exposes, so
         // a new provider gets a chip for free. Empty selection means
         // "everything shows", stated by the leading "All" chip. Every
-        // chip is painted regardless of width; see [`lay_out_chip_strip`].
+        // chip stays reachable, past the first row through More.
         let labels: Vec<String> = std::iter::once(self.text.all_label.clone())
             .chain(self.kinds.iter().map(|chip| chip.label.clone()))
             .collect();
@@ -790,17 +790,6 @@ pub const SELECTOR_HEIGHT_PX: f64 = crate::tokens::Metrics::BASE.selector_height
 /// (S1-29); see [`SearchFilters::scope_switch_has_own_row`].
 pub const SCOPE_TRACK_SHARE: f64 = 0.55;
 
-/// Where each chip of the filter strip goes.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChipStrip {
-    /// One rect per chip, in the order handed in. Every chip gets one —
-    /// see [`lay_out_chip_strip`].
-    pub rects: Vec<Rect>,
-    /// Rows the chips want at their natural width; the host reserves
-    /// this many from the palette.
-    pub rows_needed: usize,
-}
-
 /// One row of filter chips, with kinds that did not fit sitting behind More.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChipRow {
@@ -901,133 +890,6 @@ pub fn lay_out_more_menu(
         y += control_h + gap;
     }
     out
-}
-
-/// Lays the filter chips out across a band that may be too narrow.
-///
-/// Invariant: every chip gets a rect — an unpainted chip could never be
-/// clicked. Three behaviours in preference order: natural width while it
-/// fits; wrap to a new row (over eliding — `Applications` → `Ap…` stops
-/// saying what it filters); only once rows run out do leftovers share and
-/// narrow the last row, a transient case the next layout fixes.
-///
-/// `first_row_x1` bounds the first row, since the scope switch anchors to
-/// its right; later rows have the whole band. `gap` is the space between
-/// two chips — the caller's live `spacing.s2`, passed in because this is a
-/// pure geometry function without a theme in hand.
-pub fn lay_out_chip_strip(
-    natural: &[f64],
-    band: Rect,
-    first_row_x1: f64,
-    rows_available: usize,
-    row_h: f64,
-    control_h: f64,
-    gap: f64,
-) -> ChipStrip {
-    if natural.is_empty() || band.width() <= 0.0 {
-        return ChipStrip {
-            rects: Vec::new(),
-            rows_needed: 1,
-        };
-    }
-    let rows_available = rows_available.max(1);
-    let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
-
-    // Greedy wrap at natural width; `per_row` caps chips per row, used
-    // by the balancing pass below.
-    let wrap = |per_row: usize| -> Vec<Vec<usize>> {
-        let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
-        let mut x = band.x0;
-        for (i, w) in natural.iter().enumerate() {
-            let w = w.max(CHIP_MIN_W_PX);
-            // `plan` always starts with one row and is only ever pushed
-            // to, never cleared, so `len() - 1` cannot underflow — spelled
-            // with saturating_sub so the invariant doesn't need re-proving
-            // at every call site.
-            let row = plan.len().saturating_sub(1);
-            let row_full = plan
-                .get(row)
-                .is_some_and(|r| !r.is_empty() && (x + w > row_x1(row) || r.len() >= per_row));
-            if row_full {
-                plan.push(Vec::new());
-                x = band.x0;
-            }
-            let row = plan.len().saturating_sub(1);
-            if let Some(r) = plan.get_mut(row) {
-                r.push(i);
-            }
-            x += w + gap;
-        }
-        plan
-    };
-    let plan = wrap(usize::MAX);
-    let rows_needed = plan.len();
-
-    // Spread chips evenly over the rows used, rather than filling each
-    // to the brim and leaving a lone chip on the last row. Only adopted
-    // if it still fits in the same row count, so evenness never costs a
-    // chip.
-    let plan = if rows_needed > 1 {
-        let per_row = natural.len().div_ceil(rows_needed);
-        let balanced = wrap(per_row);
-        if balanced.len() == rows_needed {
-            balanced
-        } else {
-            plan
-        }
-    } else {
-        plan
-    };
-
-    let mut rects = vec![Rect::ZERO; natural.len()];
-    let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        let cy = band.y0 + f64_of_usize(row) * row_h + row_h / 2.0;
-        let mut x = band.x0;
-        for (slot, &id) in ids.iter().enumerate() {
-            // `widths` is built alongside `ids` by every caller below, so
-            // it always has one entry per id — `.get()` keeps a shape
-            // mismatch from panicking instead of proving it can't happen.
-            let Some(&w) = widths.get(slot) else {
-                continue;
-            };
-            let Some(rect) = rects.get_mut(id) else {
-                continue;
-            };
-            *rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
-            x += w + gap;
-        }
-    };
-
-    let kept_rows = rows_needed.min(rows_available);
-    for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
-        let widths: Vec<f64> = ids
-            .iter()
-            .map(|&i| {
-                natural
-                    .get(i)
-                    .copied()
-                    .unwrap_or(CHIP_MIN_W_PX)
-                    .max(CHIP_MIN_W_PX)
-            })
-            .collect();
-        place(row, ids, &widths, &mut rects);
-    }
-    let last = kept_rows.saturating_sub(1);
-    let leftover: Vec<usize> = plan
-        .get(last..)
-        .map(|rows| rows.iter().flatten().copied().collect())
-        .unwrap_or_default();
-    let widths = share_row(
-        &leftover
-            .iter()
-            .map(|&i| natural.get(i).copied().unwrap_or(CHIP_MIN_W_PX))
-            .collect::<Vec<_>>(),
-        row_x1(last) - band.x0,
-        gap,
-    );
-    place(last, &leftover, &widths, &mut rects);
-
-    ChipStrip { rects, rows_needed }
 }
 
 /// Widths for one row of chips that must all fit inside `available`.
