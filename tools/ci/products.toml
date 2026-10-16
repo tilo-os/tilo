@@ -509,6 +509,10 @@ writable_sources = true
 git = true
 timeout_secs = 14400
 cost = "heavy"
+# The lanes build one after another, TILO_CARGO_JOBS (6) compilers at a time; fat-LTO links
+# peak at several GiB each, and the guest is OOM-killed beyond what it reserves.
+cpus = 8
+memory = "32G"
 default = false
 
 [[matrix.check]]
@@ -520,6 +524,8 @@ needs = ["desktop-package-amd64", "desktop-package-arm64"]
 outputs = ["/target/publish/desktop/payload.json"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 secrets = ["REGISTRY_TOKEN"]
+# A check holding a secret runs as a micro-VM step, which t boots on x86_64 only for now.
+requires = ["arch=x86_64"]
 on = ["stable"]
 comment = """
 The OS desktop payload from stable: the Fedora lanes' payloads as immutable generic packages,
