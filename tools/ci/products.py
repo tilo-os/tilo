@@ -41,7 +41,7 @@ CREDENTIAL_REQUIRES = ["arch=any"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out", "dispatch", "dev_signed", "release_build"}
+                "dir", "out", "dispatch", "dev_signed", "release_build", "children"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -159,6 +159,11 @@ class Product:
         # someone asks (`t dispatch publish-<name> --ref main`): for builds too costly to run
         # on every change of their inputs.
         self.dev_on: list[str] = ["dispatch"] if data.get("dispatch") else ["main"]
+        # Sign and publish each architecture's image too, not only the index naming them, for
+        # consumers that verify every image they run (the CI builder's).
+        self.children: bool = data.get("children", False)
+        if self.children and not self.index:
+            raise ProductError(f"{self.name}: children are an index's")
         for field in ("anonymous", "after_publish", "publish", "tlog"):
             if field in data and not (self.dev or self.release):
                 raise ProductError(f"{self.name}: {field} without tags to publish (dev, release)")
@@ -196,9 +201,11 @@ class Product:
     @property
     def published(self) -> list[tuple[str, str]]:
         """(directory, architecture or '') of each archive this product publishes."""
+        arches = [(self.out(arch), arch if self.multi else "") for arch in self.arches]
         if self.index:
-            return [(f"{self.dir}/index", "")]
-        return [(self.out(arch), arch if self.multi else "") for arch in self.arches]
+            # Children first, so the index is pushed once the images it names are signed.
+            return [*(arches if self.children else []), (f"{self.dir}/index", "")]
+        return arches
 
     @property
     def release_dir(self) -> str:
@@ -328,6 +335,11 @@ class Product:
             result["isolation"] = "vm"
         return result
 
+    @property
+    def builds(self) -> list[str]:
+        """The checks whose outputs the trusted half reads."""
+        return [*self.last, *([self.build_name(a) for a in self.arches] if self.children else [])]
+
     def sign(self) -> dict[str, Any]:
         # `dev_signed`: a product that publishes development candidates only signs them with the
         # development key (alias/tilo-dev-signing, role TiloTDevSigner, main only), which no
@@ -348,13 +360,13 @@ class Product:
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
+        lines = [f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in signed]
         return {
             "name": f"sign-{self.name}",
             "image": self.defaults["skopeo"],
-            "run": "\n".join(f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in signed)
-                   + ("\n" if len(signed) > 1 else ""),
+            "run": "\n".join(lines) + ("\n" if len(lines) > 1 else ""),
             "inputs": SIGN_INPUTS,
-            "needs": [*([self.release_build["name"]] if self.release_build else self.last), *self.gates],
+            "needs": [*([self.release_build["name"]] if self.release_build else self.builds), *self.gates],
             "outputs": outputs,
             "id_token": ["tilo-dev-signing" if dev else "sts.amazonaws.com"],
             "env": env,
@@ -376,10 +388,15 @@ class Product:
             channel, on = "release", self.release_on
         lines, outputs = [], []
         for d, arch in self.published:
+            dev, release = self.dev, self.release
+            if self.children and arch:
+                # An index's image is tagged once per channel, by its first tag and architecture;
+                # the moving tags name the index alone.
+                dev, release = ([f"{t[0]}-{arch}"] if t else [] for t in (self.dev, self.release))
             if channel == "any":
-                tags = [f"dev:{t}" for t in self.dev] + [f"release:{t}" for t in self.release]
+                tags = [f"dev:{t}" for t in dev] + [f"release:{t}" for t in release]
             else:
-                tags = self.dev or self.release
+                tags = dev or release
             tags = [t.replace("{arch}", arch) for t in tags]
             if "run" not in spec:
                 lines.append(f"bash {PUBLISH}/oci-publish.sh {channel} {self.repository} {d} "
@@ -400,7 +417,7 @@ class Product:
             "image": self.defaults["skopeo"],
             "run": lines[0] if len(lines) == 1 else "\n".join(lines) + "\n",
             "inputs": dedupe([*inputs, *spec.get("inputs", [])]),
-            "needs": [*self.last, *self.gates,
+            "needs": [*self.builds, *self.gates,
                       *([f"sign-{self.name}"] if channel == "release" or self.data.get("dev_signed") else []),
                       *(derived if channel == "release" else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),

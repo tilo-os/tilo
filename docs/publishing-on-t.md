@@ -121,6 +121,8 @@ release = ["sha-{commit}"]               # tags a signed release pushes; {versio
 # anonymous = true                       # prove the publication pulls without credentials
 # dev_signed = true                      # sign development candidates with the development key
 # dispatch = true                        # publish development tags only when dispatched
+# children = true                        # with index: sign and publish each image too, tagged
+#                                        # <first tag>-<arch> (consumers that verify each one)
 
 [product.context]                        # optional: a step that prepares the build context
 run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
@@ -136,6 +138,9 @@ containerfile = "{dir}/context/Containerfile"
 # name = "carry-web-entry"               # from the build's on the release references only
 # run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
 ```
+
+Tags may name `{commit}`, `{version}` (on `v<version>` tags) and `{rust}` (the channel
+`rust-toolchain.toml` pins).
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
@@ -244,7 +249,7 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
 | kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
-| CI builder | `image-ci-builder-x86_64`, `-aarch64` | | | (canaries and promotion stay with build-ci-builder.yml) |
+| CI builder | `image-ci-builder-x86_64`, `-aarch64`, `image-ci-builder` (their index); in each candidate `canary-ci-builder-cache-cold-<arch>`, `-cache-warm-<arch>` (t's compiler cache, written by one job and read back by another) | `sign-ci-builder`: the index and both images | `publish-ci-builder`: unsigned `dev-<commit>`, `dev-<commit>-<arch>` | `publish-ci-builder`: `<commit>`, `<rust channel>`, signed; `latest` stays with build-ci-builder.yml until the cutover |
 | release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
 | local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
 | cloud promotion | `cloud-drift` (Mondays or dispatch, reports only) | | | `cloud-promotion` (dispatch on stable): the infra pull request moving production to stable's images, from the `room-service` and `web-entry` pointers `publish-room-service` and `publish-web-entry` set to their receipts |

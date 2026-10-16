@@ -13,7 +13,8 @@
 # `release:sha-{commit}`; only the run's channel's tags are pushed, so one check, with its
 # signature as an optional need, pushes development tags from main and the signed release from
 # stable.
-# Tags may contain {commit}, replaced by T_COMMIT, and on a release tag v<version> {version}.
+# Tags may contain {commit}, replaced by T_COMMIT, on a release tag v<version> {version}, and
+# {rust}, the toolchain channel rust-toolchain.toml pins (the CI builder's).
 #
 # With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
 # of OUT's: a product whose release is derived from its build (products.toml's `release_build`)
@@ -114,6 +115,12 @@ fill() {
   if [[ $tag == *'{version}'* ]]; then
     [[ ${T_REF:-} =~ ^tag:v([0-9][0-9A-Za-z.+-]*)$ ]] || die "{version} needs a v<version> tag, not ${T_REF:-}"
     tag=${tag//\{version\}/${BASH_REMATCH[1]}}
+  fi
+  if [[ $tag == *'{rust}'* ]]; then
+    local rust
+    rust=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$repo_root/rust-toolchain.toml")
+    [[ -n $rust ]] || die 'no channel in rust-toolchain.toml for {rust}'
+    tag=${tag//\{rust\}/$rust}
   fi
   printf '%s' "$tag"
 }

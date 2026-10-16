@@ -115,6 +115,24 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["publish-m"]["needs"], ["image-m"])
         self.assertIn("/target/publish/m/index 'sha-{commit}'", c["publish-m"]["run"])
 
+    def test_an_index_with_children_signs_and_publishes_each_image(self):
+        c = checks({"family": "f", "name": "b", "repository": "r/b", "dev": ["dev-{commit}"],
+                    "release": ["{commit}", "{rust}"], "arches": ["x86_64", "aarch64"], "index": True,
+                    "children": True, "gates": ["canary"], "build": {"run": "b {arch} {out}"}})
+        sign = c["sign-b"]["run"].splitlines()
+        self.assertEqual([line.rsplit(" ", 1)[1] for line in sign],
+                         ["/target/publish/b/x86_64", "/target/publish/b/aarch64", "/target/publish/b/index"])
+        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary"])
+        publish = c["publish-b"]["run"].splitlines()
+        self.assertEqual(publish[0], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/x86_64 "
+                                     "'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'")
+        self.assertEqual(publish[2], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/index "
+                                     "'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'")
+        self.assertIn("/target/publish/b/aarch64/receipt.json", c["publish-b"]["outputs"])
+        with self.assertRaisesRegex(products.ProductError, "children are an index's"):
+            checks({"family": "f", "name": "x", "repository": "r", "dev": ["t"], "children": True,
+                    "arches": ["x86_64", "aarch64"], "build": {"run": "b"}})
+
     def test_per_architecture_publications_without_an_index(self):
         c = checks({"family": "f", "name": "p", "repository": "r/p", "release": ["sha-{commit}-{arch}"],
                     "arches": ["x86_64", "aarch64"], "build": {"run": "b {arch} {out}"}})
@@ -405,6 +423,13 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("release:{version}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["1.2.3"])
+
+    def test_rust_tags_name_the_pinned_toolchain(self):
+        self.signed()
+        channel = re.search(r'^channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(), re.M)[1]
+        result = self.publish("release:{commit}", "release:{rust}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], [COMMIT, channel])
 
     def test_an_archive_that_is_not_the_build_is_refused(self):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")
