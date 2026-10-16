@@ -536,9 +536,9 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs on a privileged node. Run when asked for until privileged
-checks have nodes again; T_INPUT_PROOF=prediction|retention|prediction-retention selects one
-proof once it can also be dispatched."""
+whose tests nest Podman, so it runs as root in a micro-VM step. Run when asked for;
+T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
+be dispatched."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -556,7 +556,9 @@ run = 'bash os/tests/development_signing_native.sh run /target/development-signi
 inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 4
+memory = "16G"
 timeout_secs = 2700
 
 [[matrix]]
