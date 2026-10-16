@@ -1,0 +1,25 @@
+[package]
+name = "tilo-wallpapers"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The wallpapers Tilo ships: their catalog and credits, where the OS image installs them, and decoding them."
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+tilo-image-codec = { version = "0.1.0", path = "../tilo-image-codec" }
+tilo-paths.workspace = true
+
+[dev-dependencies]
+image = { workspace = true, features = ["png"] }
+tempfile.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

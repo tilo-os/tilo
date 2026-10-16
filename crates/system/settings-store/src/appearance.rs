@@ -14,6 +14,11 @@ pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);
 /// High contrast in the current mode's polarity. Choosing a mode leaves it.
 pub const HIGH_CONTRAST: Key<bool> = Key::new(SECTION, "high_contrast", || false);
 
+/// The desktop's wallpaper: the id of a picture the image ships
+/// (`tilo-wallpapers`' catalog), or `"custom"` for the person's own picture,
+/// which the compositor keeps per device. Unset shows the default picture.
+pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || None);
+
 /// The interface language as a BCP 47 tag (`de-DE`). Unset follows the
 /// system locale.
 pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
@@ -33,13 +38,18 @@ mod tests {
     #[test]
     fn appearance_keys_read_the_leaves_the_theme_reads() {
         let document = object(json!({
-            "appearance": {"mode": "dark", "high_contrast": true, "language": "de-DE"},
+            "appearance": {"mode": "dark", "high_contrast": true, "language": "de-DE", "wallpaper": "custom"},
         }));
         assert_eq!(MODE.from_document(&document).as_deref(), Some("dark"));
         assert!(HIGH_CONTRAST.from_document(&document));
         assert_eq!(LANGUAGE.from_document(&document).as_deref(), Some("de-DE"));
+        assert_eq!(
+            WALLPAPER.from_document(&document).as_deref(),
+            Some("custom")
+        );
         let empty = Map::new();
         assert_eq!(MODE.from_document(&empty), None);
         assert!(!HIGH_CONTRAST.from_document(&empty));
+        assert_eq!(WALLPAPER.from_document(&empty), None);
     }
 }

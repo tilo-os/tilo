@@ -81,6 +81,9 @@ policies! {
         "tilo.appearance.sunset",
         "tilo.appearance.wallpaper_scope",
         "tilo.appearance.wallpaper_target",
+        // A shipped picture by id roams; "custom" names the device's own
+        // private copy, which stays on it.
+        "tilo.appearance.wallpaper",
         "tilo.appearance.high_contrast",
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
