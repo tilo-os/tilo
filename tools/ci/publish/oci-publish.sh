@@ -15,6 +15,13 @@
 # stable.
 # Tags may contain {commit}, replaced by T_COMMIT, and on a release tag v<version> {version}.
 #
+# With TILO_RELEASE_OUT=DIR a release publishes the archive, digest and signature in DIR instead
+# of OUT's: a product whose release is derived from its build (products.toml's `release_build`)
+# publishes that image from stable and the build's from main. The receipt goes to OUT either way,
+# where the check's pointer reads it. A receipt-extra.json beside the archive, one JSON object on
+# one line, adds its members to the receipt (the web entry: the image it replaces, the version
+# it carries).
+#
 # With TILO_PUBLISH_DRY_RUN=DIR nothing reaches a registry: the image goes to the OCI layout
 # DIR/REPOSITORY instead, without logging in, a signature is verified against the key the
 # dry-run signer wrote (OUT/dry-run.pub) or keys/cosign.pub, and the receipt is written as for
@@ -46,6 +53,11 @@ case $wanted in
     set -- "${tags[@]}" ;;
   *) die "unknown channel $wanted" ;;
 esac
+receipt=$out/receipt.json
+if [[ $run_channel == release && -n ${TILO_RELEASE_OUT:-} ]]; then
+  out=$TILO_RELEASE_OUT
+  [[ -s $out/image.oci.tar ]] || die "no release image in $out: the step deriving it did not run"
+fi
 [[ $run_channel == dev || -s $out/signature ]] || die 'a release is published signed only'
 (($#)) || die 'no tags'
 require_commit
@@ -139,6 +151,12 @@ for tag in "${@:2}"; do
 done
 signed=false
 [[ -s $out/signature ]] && signed=true
-printf '{"schemaVersion":3,"repository":"%s","digest":"%s","image":"%s@%s","tags":[%s],"sourceRevision":"%s","reference":"%s","signed":%s}\n' \
-  "$repository" "$digest" "$repository" "$digest" "$tags" "$T_COMMIT" "$T_REF" "$signed" > "$out/receipt.json"
+extra=
+if [[ -s $out/receipt-extra.json ]]; then
+  extra=$(cat "$out/receipt-extra.json")
+  [[ $extra != *$'\n'* && $extra =~ ^\{(\"[A-Za-z]+\":.+)\}$ ]] || die "receipt-extra.json is not one JSON object on one line: $extra"
+  extra=,${BASH_REMATCH[1]}
+fi
+printf '{"schemaVersion":3,"repository":"%s","digest":"%s","image":"%s@%s","tags":[%s],"sourceRevision":"%s","reference":"%s","signed":%s%s}\n' \
+  "$repository" "$digest" "$repository" "$digest" "$tags" "$T_COMMIT" "$T_REF" "$signed" "$extra" > "$receipt"
 printf 'published %s@%s\n' "$repository" "$digest"

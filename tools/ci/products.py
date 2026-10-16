@@ -7,6 +7,8 @@ architecture where it is built natively (docs/publishing-on-t.md, "Products"):
   image-<name>-context  prepares the build context (optional), no secrets
   image-<name>[-<arch>] builds the image into an OCI archive and tests it, no secrets
   image-<name>          joins the architectures into one image index (`index = true`)
+  <release_build.name>  derives the image a release publishes from the build's, on the release
+                        references only, no secrets (`release_build`)
   sign-<name>           signs the digest the build produced, on the release references only
   publish-<name>        pushes it: development tags from main, the signed release from stable
                         or release tags, in one check whose signature is an optional need
@@ -39,7 +41,7 @@ CREDENTIAL_REQUIRES = ["arch=any"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out", "dispatch", "dev_signed"}
+                "dir", "out", "dispatch", "dev_signed", "release_build"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -160,6 +162,20 @@ class Product:
         for field in ("anonymous", "after_publish", "publish", "tlog"):
             if field in data and not (self.dev or self.release):
                 raise ProductError(f"{self.name}: {field} without tags to publish (dev, release)")
+        # `release_build`: a step on the release references that derives the image a release
+        # publishes from the one the build tested (the web entry carries the version of the
+        # image it replaces), writing it to {dir}/release. The release is signed and published
+        # from there; development tags stay the build's.
+        self.release_build: dict[str, Any] | None = data.get("release_build")
+        if self.release_build is not None:
+            if not self.release:
+                raise ProductError(f"{self.name}: release_build without release tags")
+            if self.multi or self.index:
+                raise ProductError(f"{self.name}: release_build derives one architecture's image")
+            if not {"name", "run"} <= set(self.release_build):
+                raise ProductError(f"{self.name}: release_build needs a name and a run")
+            if data.get("anonymous"):
+                raise ProductError(f"{self.name}: oci-anonymous.sh checks the build's archive, not a derived release")
 
     @property
     def multi(self) -> bool:
@@ -183,6 +199,15 @@ class Product:
         if self.index:
             return [(f"{self.dir}/index", "")]
         return [(self.out(arch), arch if self.multi else "") for arch in self.arches]
+
+    @property
+    def release_dir(self) -> str:
+        return f"{self.dir}/release"
+
+    @property
+    def signed(self) -> list[tuple[str, str]]:
+        """(directory, architecture or '') of each archive a release signs and publishes."""
+        return [(self.release_dir, "")] if self.release_build else self.published
 
     @property
     def last(self) -> list[str]:
@@ -227,6 +252,8 @@ class Product:
                 "requires": ["arch=any"],
                 "default": False,
             }))
+        if self.release_build:
+            out.append(check(self.derive_release()))
         # A product with no tags is built and tested only (its publication isn't on t yet).
         if self.release or self.data.get("dev_signed"):
             out.append(check(self.sign()))
@@ -278,6 +305,29 @@ class Product:
             result["isolation"] = "vm"
         return result
 
+    def derive_release(self) -> dict[str, Any]:
+        spec = self.release_build or {}
+        arch = self.arches[0]
+        values = self.values(arch)
+        fields = fill({k: v for k, v in spec.items() if k not in STEP_KEYS}, values)
+        self.own(fields, "release_build")
+        result = {
+            "name": spec["name"],
+            "image": fields.pop("image", self.defaults["buildah"]),
+            "run": fill(spec["run"], values),
+            **fields,
+            "inputs": dedupe([*BUILD_INPUTS, *fields.get("inputs", [])]),
+            "needs": [*self.last, *fields.pop("needs", [])],
+            "outputs": [f"{self.release_dir}/image.oci.tar", f"{self.release_dir}/digest",
+                        *fields.get("outputs", [])],
+            "requires": self.requires(arch, dict(fields)),
+            "on": self.release_on,
+            "default": False,
+        }
+        if result["image"] == self.defaults["buildah"] and not result.get("privileged"):
+            result["isolation"] = "vm"
+        return result
+
     def sign(self) -> dict[str, Any]:
         # `dev_signed`: a product that publishes development candidates only signs them with the
         # development key (alias/tilo-dev-signing, role TiloTDevSigner, main only), which no
@@ -291,25 +341,32 @@ class Product:
         if self.data.get("tlog"):
             env["TILO_SIGN_TLOG"] = "1"
         outputs = []
-        for d, _ in self.published:
+        signed = self.signed
+        for d, _ in signed:
             # dry-run.pub exists only in a dry run (TILO_PUBLISH_DRY_RUN): the throwaway key's
             # public half, which the publishing check's dry run verifies the signature against.
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
-        return {
+        fields = {
             "name": f"sign-{self.name}",
             "image": self.defaults["skopeo"],
-            "run": "\n".join(f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in self.published)
-                   + ("\n" if len(self.published) > 1 else ""),
+            "run": "\n".join(f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in signed)
+                   + ("\n" if len(signed) > 1 else ""),
             "inputs": SIGN_INPUTS,
-            "needs": [*self.last, *self.gates],
+            "needs": [*([self.release_build["name"]] if self.release_build else self.last), *self.gates],
             "outputs": outputs,
             "id_token": ["tilo-dev-signing" if dev else "sts.amazonaws.com"],
             "env": env,
             "requires": CREDENTIAL_REQUIRES,
             "on": self.dev_on if dev else self.release_on,
         }
+        if self.release_build:
+            # t keys a check by its needs' keys, not their outputs, so a derived release that
+            # observes the outside world (cache = false) can produce another image under the same
+            # key: a signature served from the cache would then be over the last one.
+            fields["cache"] = False
+        return fields
 
     def publish(self) -> dict[str, Any]:
         spec = fill(self.data.get("publish", {}), self.values(self.arches[0]))
@@ -342,20 +399,25 @@ class Product:
         if self.data.get("after_publish"):
             lines.append(fill(self.data["after_publish"], self.values(self.arches[0])))
         inputs = [*PUBLISH_INPUTS, *([f"{PUBLISH}/oci-anonymous.sh"] if self.data.get("anonymous") else [])]
+        derived = [self.release_build["name"]] if self.release_build else []
         fields = {
             "name": f"publish-{self.name}",
             "image": self.defaults["skopeo"],
             "run": lines[0] if len(lines) == 1 else "\n".join(lines) + "\n",
             "inputs": dedupe([*inputs, *spec.get("inputs", [])]),
             "needs": [*self.last, *self.gates,
-                      *([f"sign-{self.name}"] if channel == "release" or self.data.get("dev_signed") else [])],
+                      *([f"sign-{self.name}"] if channel == "release" or self.data.get("dev_signed") else []),
+                      *(derived if channel == "release" else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),
             "id_token": ["registry.tilo.so"],
             "requires": CREDENTIAL_REQUIRES,
             "on": on,
         }
         if channel == "any":
-            fields["optional_needs"] = [f"sign-{self.name}"]
+            fields["optional_needs"] = [f"sign-{self.name}", *derived]
+        if derived:
+            # oci-publish.sh publishes a release from here, and writes the receipt to OUT still.
+            fields["env"] = {"TILO_RELEASE_OUT": self.release_dir}
         if "pointers" in spec:
             fields["pointers"] = spec["pointers"]
         return fields

@@ -90,6 +90,7 @@ the policy tests fail while `t.toml` is out of date. The chain:
 | `image-<name>-context` | prepares the build context (`[product.context]`) | asked for, and before every build |
 | `image-<name>`, or `image-<name>-<arch>` per architecture | builds the image into `image.oci.tar` and `digest` and runs its tests | asked for, and before every publication |
 | `image-<name>` with `index = true` | joins the architectures' archives into one image index (`oci-index.py`) | |
+| `[product.release_build]`'s `name` | derives the image a release publishes from the build's, into `<dir>/release` | `release_on` (stable) |
 | `sign-<name>` | signs the digest the build produced with the release key in KMS (`oci-sign.sh`) | `release_on` (stable) |
 | `publish-<name>` | pushes the archive with its digest unchanged and writes `receipt.json` (`oci-publish.sh`) | main for `dev` tags, `release_on` for `release` tags |
 
@@ -108,7 +109,7 @@ A product:
 [[product]]
 family = "services"                      # one generated block per family
 name = "web-entry"                       # check names: image-web-entry, publish-web-entry, …
-about = "The web entry (web-entry.yml)." # the comment above its checks
+about = "The web entry."                # the comment above its checks
 repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]                   # tags main pushes; leave out to publish no development builds
 release = ["sha-{commit}"]               # tags a signed release pushes; {version} on v* tags
@@ -130,6 +131,10 @@ outputs = ["{dir}/context/**"]
 context = "{dir}/context"                # or `run = "…"` for a build script of its own
 containerfile = "{dir}/context/Containerfile"
 # test = ["bash <dir>/test-image.sh {out}/image.oci.tar"]  # commands that test the archive
+
+# [product.release_build]                # optional: the image a release publishes, derived
+# name = "carry-web-entry"               # from the build's on the release references only
+# run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
 ```
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
@@ -139,6 +144,16 @@ field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `cpus`
 generator adds the publishing scripts to `inputs`, `arch=<arch>` to `requires` and `default =
 false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
 publish from a working tree by mistake.
+
+A release whose image differs from the one the build tested names a step that derives it,
+`[product.release_build]`: the web entry's release carries the version of the image production
+serves (`carry-web-entry`), which only stable, the reference production deploys, needs. The step
+runs on `release_on` without secrets, `needs` the build and writes `<dir>/release/image.oci.tar`
+and `digest` (and a `receipt-extra.json`, one JSON object whose members `oci-publish.sh` adds to
+the receipt). `sign-<name>` signs that archive, and `publish-<name>` names the step in
+`optional_needs` and publishes it on the release channel (`TILO_RELEASE_OUT`), still writing the
+receipt to `<dir>`; main's development tags are the build. Other fields go to the check as for a
+build (`cache = false` for a step that observes the outside world).
 
 To add a product: add its table, run `python3 tools/ci/t_toml.py write`, then `t test
 image-<name>` to build and test it from your tree. The trusted halves run only on main,
