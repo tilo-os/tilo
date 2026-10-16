@@ -1158,6 +1158,23 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
 }
 
+/// Start the input and display session state a new session starts with:
+/// no input leases issued or received, declines read again from the
+/// session's own storage, no cached person layout.
+///
+/// That state belongs to the one session a shell process runs, so it lives
+/// in statics. A test fixture is a new session in the same process: without
+/// this it inherited the leases the previous test's session issued, and
+/// automatic display input, seeing the controller's lease still current,
+/// granted nothing. The caller holds the test-environment lock, as every
+/// test session using this state does.
+#[cfg(test)]
+pub(crate) fn start_session_for_test() {
+    *spatial_input_state().lock_recover() = SpatialInputState::default();
+    display_auto_leases::forget_for_test();
+    person_layout::forget_for_test();
+}
+
 /// This device's power source and whether energy saver is on.
 type LocalPower = (crate::shell::spatial_calibration::DevicePower, bool);
 
