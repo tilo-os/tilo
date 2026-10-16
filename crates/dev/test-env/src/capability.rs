@@ -31,6 +31,10 @@ pub enum Capability {
     /// with the `verity` feature): `TILO_FSVERITY_DIR`, else the test's
     /// temporary directory.
     FsVerity,
+    /// Giving a file in the temporary directory to another user ([`chown_to`]):
+    /// root with `CAP_CHOWN` on a filesystem that can hold that user. Root in a
+    /// job sandbox without capabilities is uid 0 and still cannot.
+    Chown,
 }
 
 impl Capability {
@@ -44,6 +48,7 @@ impl Capability {
             Self::Fuse => "TILO_REQUIRE_FUSE",
             Self::Fanotify => "TILO_REQUIRE_FANOTIFY",
             Self::FsVerity => "TILO_REQUIRE_FSVERITY",
+            Self::Chown => "TILO_REQUIRE_CHOWN",
         }
     }
 
@@ -64,8 +69,23 @@ impl fmt::Display for Capability {
             Self::Fuse => "FUSE",
             Self::Fanotify => "fanotify",
             Self::FsVerity => "fs-verity",
+            Self::Chown => "giving files to another user",
         })
     }
+}
+
+/// Whether this process can give a file in the temporary directory to `uid`,
+/// tried on a scratch file there: being uid 0 is not enough without
+/// `CAP_CHOWN`, nor is `CAP_CHOWN` where the filesystem cannot represent `uid`
+/// (an idmapped mount maps only some users).
+///
+/// # Errors
+///
+/// Returns why the scratch file could not be made or given away.
+#[cfg(unix)]
+pub fn chown_to(uid: u32) -> std::io::Result<()> {
+    let file = tempfile::NamedTempFile::new()?;
+    std::os::unix::fs::chown(file.path(), Some(uid), None)
 }
 
 /// Report that `capability` is unavailable: print why the calling test is
