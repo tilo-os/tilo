@@ -162,7 +162,7 @@ cat target/publish/web-entry/receipt.json
 |---|---|---|---|---|
 | room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
-| ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
+| ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`, `publish-ci-control`: `sha-<commit>` | (CI tooling, not a product) |
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `release-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
@@ -192,7 +192,7 @@ and privileged pools (rpm's database can't be written on their storage).
 
 | workflow | checks on t | built with `t test` | still blocked |
 |---|---|---|---|
-| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast` | all three, smoke included | trusted half: release nodes |
+| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | all three, smoke included | trusted half: release nodes |
 | `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | both architectures, their test and the index | trusted half: release nodes |
 | `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | build and the image test, server answering `/health` | trusted half: release nodes |
 | `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `release-relay` (`v*` tags) | `rpm-snapshot`, `image-relay` (its Compose contract, then the build) | trusted half: release nodes |
