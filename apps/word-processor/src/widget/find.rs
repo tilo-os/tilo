@@ -251,3 +251,39 @@ impl FindHost for EditorFind<'_, '_> {
         matches.len()
     }
 }
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    use ui::widget::Widget;
+
+    #[test]
+    fn literal_replace_preserves_text_after_expanding_unicode_case() {
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
+        wp.sync(&state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut ui::widget::Edits::lend(&mut state.doc), "İ cat cat!");
+        wp.sync(&state.doc, &state.root);
+        let blocks = wp.search_blocks(&state.doc);
+        wp.find.open(Some("cat"), &mut Blocks(&blocks));
+        assert_eq!(
+            wp.find
+                .matches()
+                .iter()
+                .map(|(_, s, e)| (*s, *e))
+                .collect::<Vec<_>>(),
+            vec![(2, 5), (6, 9)]
+        );
+        assert_eq!(
+            wp.replace_all_matches(&mut ui::widget::Edits::lend(&mut state.doc), "dog"),
+            2
+        );
+        assert_eq!(wp.search_blocks(&state.doc)[0].text, "İ dog dog!");
+
+        // Literal search must not treat punctuation as a regular expression.
+        let blocks = wp.search_blocks(&state.doc);
+        wp.find.open(Some("dog!"), &mut Blocks(&blocks));
+        assert_eq!(wp.find.matches().len(), 1);
+    }
+}
