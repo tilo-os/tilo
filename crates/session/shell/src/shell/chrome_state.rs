@@ -801,6 +801,10 @@ pub struct ChromeState {
     /// wiped on the next tick. Once the retained row exists, both can feed
     /// [`Self::is_fullscreen`] through `fullscreen_presentation`.
     maximized_group: Option<u64>,
+    /// Whether the full top bar is docked, or hidden by the person and
+    /// shown over the windows while reached for. The overlay host decides;
+    /// the bar and the input policy read it.
+    top_bar: tilo_desktop::chrome::TopBarPresence,
     /// Whether the retained widget tree currently owns the requested
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
@@ -1020,6 +1024,7 @@ impl ChromeState {
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
+            top_bar: tilo_desktop::chrome::TopBarPresence::Docked,
             fullscreen_presentation: false,
             fullscreen_display: None,
             single_strip: false,
@@ -1353,6 +1358,21 @@ impl ChromeState {
     #[must_use]
     pub fn single_strip(&self) -> bool {
         self.single_strip
+    }
+
+    /// Docked, hidden, or shown over the windows.
+    #[must_use]
+    pub fn top_bar_presence(&self) -> tilo_desktop::chrome::TopBarPresence {
+        self.top_bar
+    }
+
+    /// Set by the overlay host's top-edge reveal; a change repaints the bar
+    /// (and, between docked and not, re-lays the column out).
+    pub fn set_top_bar_presence(&mut self, presence: tilo_desktop::chrome::TopBarPresence) {
+        if self.top_bar != presence {
+            self.top_bar = presence;
+            self.bump();
+        }
     }
 
     pub fn set_single_strip(&mut self, single: bool) {

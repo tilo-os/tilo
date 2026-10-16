@@ -739,7 +739,9 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 /// client. That bar takes only the pointer — the client keeps the keyboard,
 /// so typing never stops because the pointer rests near the window's top.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_captures_input(fb) || fb.host().maximized_chrome_captures_pointer()
+    chrome_captures_input(fb)
+        || fb.host().maximized_chrome_captures_pointer()
+        || fb.host().top_bar_captures_pointer()
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.

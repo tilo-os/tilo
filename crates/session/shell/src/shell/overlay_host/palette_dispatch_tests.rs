@@ -27,7 +27,10 @@ fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::
 
 #[test]
 fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
-    let enabled = settings_store::hardware::DesktopControlsConfig { vim_mode: true };
+    let enabled = settings_store::hardware::DesktopControlsConfig {
+        vim_mode: true,
+        ..Default::default()
+    };
     let (mut persisted, _chrome) = host_with_launch_polling();
     persisted.set_desktop_controls_config(enabled);
     assert!(persisted.desktop_controls.config().vim_mode);

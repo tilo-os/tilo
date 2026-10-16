@@ -19,7 +19,7 @@ use winit::event::WindowEvent;
 
 use crate::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent, ClockActivity,
-    ClockSnapshot, TelemetrySnapshot, TopBarWidget, TopBarWidgets,
+    ClockSnapshot, TelemetrySnapshot, TopBarPresence, TopBarWidget, TopBarWidgets,
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
@@ -61,6 +61,24 @@ fn editor_text_width(width: f64) -> f32 {
 mod responsive;
 use responsive::ResponsiveBar;
 mod strips;
+
+/// Where a layout stood the bar: in the column above the windows, or over
+/// it, hidden by the person and shown while reached for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarStanding {
+    InColumn,
+    OverColumn,
+}
+
+impl BarStanding {
+    fn of(overlays: bool) -> Self {
+        if overlays {
+            Self::OverColumn
+        } else {
+            Self::InColumn
+        }
+    }
+}
 
 /// A thin strip: every bar control is [`BAR_CONTROL_PX`] (20) with half an
 /// `s1` of air above and below, so the bar is 24 logical pixels (48 at scale
@@ -283,6 +301,7 @@ struct CacheFingerprint {
     /// rects from `self.rect`'s corners, so a hit must imply those are
     /// still valid.
     rect_px: (i64, i64, u64, u64),
+    presence: TopBarPresence,
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
@@ -569,6 +588,8 @@ pub struct TopBarChrome {
     responsive: ResponsiveBar,
     explicit_local_user: Option<String>,
     rect: Rect,
+    /// Where the last layout stood the bar.
+    laid_out: BarStanding,
     /// The compact bar a display other than the primary carries: workspace
     /// navigation and the centre widget only. Session controls, the tray
     /// and collaborators live on the primary display's full bar.
@@ -961,6 +982,7 @@ impl TopBarChrome {
             responsive: ResponsiveBar::new(),
             explicit_local_user,
             rect: Rect::ZERO,
+            laid_out: BarStanding::InColumn,
             variant: BarVariant::Full,
             placement: None,
             workspace_name: String::new(),
@@ -1051,6 +1073,7 @@ impl TopBarChrome {
             .unwrap_or_default();
         CacheFingerprint {
             rect_px: (x0, y0, w, h),
+            presence: self.presence(),
             workspace_name: self.workspace_name.clone(),
             workspace_index: self.workspace_index,
             workspace_total: self.workspace_total,
@@ -2020,6 +2043,54 @@ impl TopBarChrome {
 
     pub fn overview_btn_rect(&self) -> Rect {
         self.overview_btn_rect
+    }
+
+    /// Whether the last layout stood the bar in or over the column other
+    /// than it stands now.
+    fn overlay_layout_stale(&self) -> bool {
+        let fullscreen = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.snapshot().fullscreen);
+        self.laid_out != BarStanding::of(!fullscreen && self.presence().overlays())
+    }
+
+    /// Whether the bar, hidden by the person, must stay shown for its own
+    /// sake: its widget editor is open, or the keyboard is in it.
+    pub fn holds_itself_shown(&self) -> bool {
+        self.widget_editing || (self.focused && self.focus_origin == FocusOrigin::Keyboard)
+    }
+
+    /// Docked, hidden or shown over the windows, as the host says. A
+    /// compact bar on another display always stays docked.
+    pub fn presence(&self) -> TopBarPresence {
+        if self.is_compact() {
+            return TopBarPresence::Docked;
+        }
+        self.chrome
+            .as_ref()
+            .map_or(TopBarPresence::Docked, |chrome| chrome.snapshot().top_bar)
+    }
+
+    /// The bar shown over the windows stands on a surface of its own, the
+    /// width of the display with the bar's hairline under it, so its
+    /// controls read over whatever the windows show there.
+    fn draw_overlay_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        let rule = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &rule,
+        );
     }
 
     pub fn tray_pill_rect(&self) -> Rect {
@@ -5634,11 +5705,30 @@ impl Widget for TopBarChrome {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().fullscreen);
+        // A bar the person hides stands over the column rather than in it:
+        // the windows take its strip, and showing it later moves nothing.
+        let overlays = !fullscreen && self.presence().overlays();
+        self.laid_out = BarStanding::of(overlays);
         let style = Style {
             display: if fullscreen {
                 Display::None
             } else {
                 Display::Flex
+            },
+            position: if overlays {
+                taffy::style::Position::Absolute
+            } else {
+                taffy::style::Position::Relative
+            },
+            inset: if overlays {
+                taffy::Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                }
+            } else {
+                taffy::Rect::auto()
             },
             size: Size {
                 width: Dimension::percent(1.0),
@@ -5712,6 +5802,11 @@ impl Widget for TopBarChrome {
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
         }
+        // A hidden bar paints nothing until it is reached for.
+        if self.presence() == TopBarPresence::Hidden {
+            self.cache_fp.presence = TopBarPresence::Hidden;
+            return;
+        }
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.refresh_status_and_media_state();
@@ -5744,6 +5839,9 @@ impl Widget for TopBarChrome {
         let scene = &mut local;
         let transform = Affine::IDENTITY;
         let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+        if self.presence() == TopBarPresence::Shown {
+            self.draw_overlay_surface(scene, transform, theme);
+        }
 
         if self.use_responsive(theme) {
             self.draw_responsive(scene, text_renderer, theme, presence);
@@ -5813,6 +5911,11 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // A hidden bar is not there: whatever is under its strip gets the
+        // input. The host shows it first when it is reached for.
+        if self.presence() == TopBarPresence::Hidden {
+            return;
+        }
         match event {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
@@ -6275,6 +6378,9 @@ impl Widget for TopBarChrome {
         if self.responsive.active && self.responsive.dirty {
             return true;
         }
+        if self.presence() != self.cache_fp.presence {
+            return true;
+        }
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
@@ -6319,7 +6425,18 @@ impl Widget for TopBarChrome {
     /// Fixed intrinsic size, so the taffy node never needs recomputing
     /// after the first pass.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.overlay_layout_stale()
+    }
+
+    /// Docking or hiding the bar moves the windows, so the tree it was laid
+    /// out in is rebuilt; showing a hidden bar over them does not.
+    fn take_structure_dirty(&mut self) -> bool {
+        let stale = self.overlay_layout_stale();
+        let mut children = false;
+        for child in self.children_mut() {
+            children |= child.take_structure_dirty();
+        }
+        stale || children
     }
 }
 
@@ -6632,6 +6749,124 @@ mod tests {
 
     fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
         lay_out_and_draw_with_theme(bar, width, &Theme::default());
+    }
+
+    /// Lay `bar` out at the top of a 1280x800 column whose other child
+    /// stands for the windows, as the desktop surface stacks them; returns
+    /// where the windows start.
+    fn lay_out_over_windows(bar: &mut TopBarChrome) -> f32 {
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let windows = taffy
+            .new_leaf(Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .expect("windows");
+        let column = taffy
+            .new_with_children(
+                Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size::from_lengths(1280.0, 800.0),
+                    ..Default::default()
+                },
+                &[node, windows],
+            )
+            .expect("column");
+        taffy
+            .compute_layout_with_measure(
+                column,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("layout");
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        taffy.layout(windows).expect("windows laid out").location.y
+    }
+
+    fn painted(bar: &mut TopBarChrome) -> bool {
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        !scene.encoding().is_empty()
+    }
+
+    fn click(bar: &mut TopBarChrome, at: Point) -> bool {
+        dispatch_topbar_event(bar, &ui::synthetic_input::cursor_moved(at.x, at.y));
+        let pressed = dispatch_topbar_event(bar, &ui::synthetic_input::mouse_press());
+        let released = dispatch_topbar_event(bar, &ui::synthetic_input::mouse_release());
+        pressed || released
+    }
+
+    /// The person's "hide the top bar": the windows take its strip at once;
+    /// hidden, it paints nothing and every press under it goes to what is
+    /// below; shown, it stands over the windows in its docked place,
+    /// painted and pressable, and nothing under it moves either way.
+    #[test]
+    fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+
+        assert_eq!(lay_out_over_windows(&mut bar), TOPBAR_HEIGHT_PX, "docked");
+        assert!(painted(&mut bar));
+        let docked = bar.rect;
+        let overview = bar.overview_btn_rect.center();
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+        assert!(bar.is_layout_dirty(), "hiding re-lays the column out");
+        assert!(
+            bar.take_structure_dirty(),
+            "and rebuilds the tree the bar stands in"
+        );
+        assert_eq!(
+            lay_out_over_windows(&mut bar),
+            0.0,
+            "the windows take the strip"
+        );
+        assert!(!bar.is_layout_dirty());
+        assert_eq!(bar.rect, docked, "it keeps its place for when it shows");
+        assert!(!painted(&mut bar), "hidden paints nothing");
+        assert!(!click(&mut bar, overview), "hidden takes no press");
+        assert!(chrome.borrow().intents.is_empty());
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Shown;
+        assert!(bar.needs_redraw(), "showing repaints the bar");
+        assert!(
+            !bar.is_layout_dirty() && !bar.take_structure_dirty(),
+            "showing over the windows changes no layout: nothing moves"
+        );
+        assert_eq!(lay_out_over_windows(&mut bar), 0.0);
+        assert!(painted(&mut bar));
+        assert_eq!(
+            bar.overview_btn_rect.center(),
+            overview,
+            "same place as docked"
+        );
+        assert!(click(&mut bar, overview), "shown, its controls work");
+        assert_eq!(
+            chrome.borrow().intents.as_slice(),
+            &[ChromeIntent::ToggleOverview]
+        );
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+        assert!(bar.needs_redraw(), "hiding again clears it from the screen");
+        assert!(!painted(&mut bar));
     }
 
     #[test]
@@ -8837,6 +9072,7 @@ mod fixture {
         pub active_exposures: Vec<ActiveExposure>,
         pub watching: u32,
         pub intents: Vec<ChromeIntent>,
+        pub top_bar: TopBarPresence,
     }
     impl State {
         pub fn tree(&self) -> &DesktopTree {
@@ -8873,6 +9109,7 @@ mod fixture {
                 active_exposures: Vec::new(),
                 watching: 0,
                 intents: Vec::new(),
+                top_bar: TopBarPresence::Docked,
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -8898,6 +9135,7 @@ mod fixture {
                 clock_activity: state.clock_activity.clone(),
                 active_exposures: state.active_exposures.clone(),
                 watching: state.watching,
+                top_bar: state.top_bar,
                 ..Default::default()
             }
         }
