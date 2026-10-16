@@ -4,6 +4,7 @@ use crate::resource::{CalendarEffect, RemoteAt, calendar, fingerprint, notes_pat
 use tilo_actions::{ActionRegistry, EncodedAction, Resource};
 use tilo_document::RichTextAction;
 use ui::tilo_resource::{Invoke, Replica, Resource as _};
+use uuid::Uuid;
 
 /// The sample calendar, written through its own verbs.
 fn seeded() -> Replica<Calendar> {
@@ -367,6 +368,45 @@ fn importing_a_duration_through_the_autumn_fold_keeps_actual_instants() {
             (event.start, event.end, &event.timezone)
         );
     }
+}
+
+#[test]
+fn reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut calendar = Replica::<Calendar>::new();
+    calendar
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let imported = calendar.state().unwrap().events[0].clone();
+    assert_eq!(imported.recurrence, Recurrence::Weekly);
+    assert_eq!(imported.occurrence_overrides.len(), 1);
+    assert!(imported.occurrence_overrides[0].cancelled);
+    let fields = Calendar::paths().events.item(&key(imported.id));
+    calendar
+        .apply(Invoke::from(fields.title.set("Local title".into())))
+        .unwrap();
+    calendar
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let state = calendar.state().unwrap();
+    assert_eq!(state.events.len(), 1);
+    let held = state.event(imported.id).unwrap();
+    assert_eq!(held.title, "Local title");
+    assert_eq!(held.occurrence_overrides, imported.occurrence_overrides);
+    let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+    let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+    assert_eq!(held.occurrences_in(from, to).len(), 2);
+
+    // Deliberate copies use the new-event action with a fresh identity;
+    // retaining import UIDs must not turn that operation into deduplication.
+    let mut copy = EventData::from_event(held);
+    copy.id.clear();
+    calendar
+        .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: copy }))
+        .unwrap();
+    let state = calendar.state().unwrap();
+    assert_eq!(state.events.len(), 2);
+    assert_ne!(state.events[0].id, state.events[1].id);
 }
 
 /// One import is one action, and its payload replays to the same calendar
