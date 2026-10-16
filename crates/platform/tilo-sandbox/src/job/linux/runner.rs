@@ -661,6 +661,7 @@ pub struct Job {
     /// The init writes the command's wait status here before it exits.
     status: std::fs::File,
     exit: Option<ExitStatus>,
+    unmapped: Vec<std::path::PathBuf>,
 }
 
 /// `P_PIDFD` for `waitid`.
@@ -670,6 +671,13 @@ const P_PIDFD: libc::idtype_t = 3;
 pub type SetupFn<'a> = &'a mut dyn FnMut(&Started) -> Result<(), String>;
 
 impl Job {
+    /// Writable host paths bound without an idmap because their filesystem
+    /// can't take one, for a job with a block of host ids: it runs anyway, but
+    /// may not write their owner's files. Empty without a block.
+    pub fn unmapped(&self) -> &[std::path::PathBuf] {
+        &self.unmapped
+    }
+
     /// The init's pid, in the caller's PID namespace.
     pub fn pid(&self) -> libc::pid_t {
         self.pid
@@ -1261,6 +1269,7 @@ pub fn spawn(
         pidfd,
         status: status_r.into(),
         exit: None,
+        unmapped: plan.unmapped.clone(),
     };
     // From here on, an error drops `job`, which kills and reaps the init.
     finish(&job, plan, ids, sync_w, report_r, setup)?;

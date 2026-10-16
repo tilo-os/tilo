@@ -145,8 +145,11 @@ directory as its own. The worker makes these mounts before the job starts
 (idmapping takes `CAP_SYS_ADMIN` over the filesystem) and the job's init
 attaches them (`move_mount`); overlays get idmapped layers (Linux 5.19). The
 init takes on its ids in the namespace and drops the worker's supplementary
-groups. A writable path whose filesystem can't be idmapped fails the job; a
-read-only one, or a device on devtmpfs, is bound as it is. t hands the blocks out
+groups. A path whose filesystem can't be idmapped (a device on devtmpfs, a
+container's `/tmp`) is bound as it is, and a writable one is reported to the
+caller (`Job::unmapped`) rather than failing the job. A socket (a VM step's
+passt) is never idmapped: the worker makes it for the job, so it becomes the
+job's user's. t hands the blocks out
 from `0x70000000` up and falls back to the shared uid, loudly, where a trial job
 shows it can't.
 
