@@ -100,6 +100,27 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("no longer builds the dev image with os/dev/build-dev-image.sh",
                           "\n".join(self.findings(root)))
 
+    def test_missing_package_generator_cannot_skip_parity_verification(self):
+        root = self.fixture()
+        (root / "os/scripts/builder-packages.py").unlink()
+        errors = self.findings(root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("os/scripts/builder-packages.py: package generator is missing", errors[0])
+
+    def test_unreadable_package_list_reports_the_input_error_not_package_drift(self):
+        for state in ("missing", "directory"):
+            with self.subTest(state=state):
+                root = self.fixture()
+                listing = root / "os/scripts/builder-packages.txt"
+                listing.unlink()
+                if state == "directory":
+                    listing.mkdir()
+                errors = self.findings(root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("os/scripts/builder-packages.txt: cannot read package list:", errors[0])
+                self.assertIn("No such file" if state == "missing" else "Is a directory", errors[0])
+                self.assertNotIn("missing: ", errors[0])
+
     def test_dev_layers_features_and_images_never_reach_production(self):
         with self.subTest(phase='production copy of a dev layer names line why and fix'):
             root = self.fixture()
