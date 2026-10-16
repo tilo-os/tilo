@@ -77,6 +77,8 @@ mod tab_nesting;
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typed_markdown.rs"]
+mod typed_markdown;
 #[path = "typing_damage.rs"]
 mod typing_damage;
 #[path = "typing_order.rs"]

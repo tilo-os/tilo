@@ -30,7 +30,13 @@ DIFFOSCOPE_LINES = 200
 def entries(root: Path, ignore: set[str]) -> dict[str, tuple[str, int, str]]:
     """Path → (kind, permission bits, symlink target or content digest)."""
     found = {}
-    for directory, names, files in os.walk(root):
+    if not root.is_dir():
+        raise ValueError(f"{root}: expected a build directory")
+
+    def walk_error(error):
+        raise error
+
+    for directory, names, files in os.walk(root, onerror=walk_error):
         names[:] = sorted(name for name in names if name not in ignore)
         for name in names + sorted(name for name in files if name not in ignore):
             path = Path(directory) / name
@@ -43,7 +49,8 @@ def entries(root: Path, ignore: set[str]) -> dict[str, tuple[str, int, str]]:
             elif stat.S_ISREG(info.st_mode):
                 found[relative] = ("file", stat.S_IMODE(info.st_mode), digest(path))
             else:
-                found[relative] = ("special", stat.S_IMODE(info.st_mode), "")
+                found[relative] = (f"special:{stat.S_IFMT(info.st_mode):o}",
+                                   stat.S_IMODE(info.st_mode), str(info.st_rdev))
     return found
 
 
@@ -124,7 +131,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("second", type=Path)
     parser.add_argument("--ignore", action="append", default=[], help="a file or directory name to skip anywhere")
     args = parser.parse_args(argv)
-    problems = compare(args.first, args.second, set(args.ignore))
+    try:
+        problems = compare(args.first, args.second, set(args.ignore))
+    except (OSError, ValueError) as error:
+        print(f"build comparison failed: {error}", file=sys.stderr)
+        return 2
     if problems:
         print(f"{args.first} and {args.second} differ:", file=sys.stderr)
         for line in problems:

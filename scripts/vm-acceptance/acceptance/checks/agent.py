@@ -65,7 +65,8 @@ def tool_names(transcript: dict) -> list[str]:
 
 def is_error(reply) -> bool | None:
     try:
-        return bool(reply["result"].get("isError"))
+        value = reply["result"].get("isError", False)
+        return value if isinstance(value, bool) else None
     except (KeyError, TypeError, AttributeError):
         return None
 
@@ -208,5 +209,5 @@ def refusals(ctx, res):
     expect(isinstance(init, dict) and "error" in init and "result" not in init,
            f"a denied client did not get a JSON-RPC error on initialize: {str(init)[:300]}")
     expect(init["error"].get("message"), f"the denial names no reason: {init}")
-    expect(denied.get("after_refusal") is None,
+    expect("after_refusal" in denied and denied["after_refusal"] is None,
            f"the door stayed open after refusing: {str(denied.get('after_refusal'))[:200]}")

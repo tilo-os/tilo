@@ -223,6 +223,109 @@ class ErrorPaths(unittest.TestCase):
         self.assertEqual(opened, list(apps))
         self.ctx.open_app.assert_called_once_with(apps[0])
 
+    def test_partial_relay_setup_removes_the_already_certified_peer(self):
+        device = "ab" * 32
+        self.ctx.vm.exec.side_effect = [json.dumps({"device_public_key": device,
+                                                  "relay_service_node_id": "cd" * 32}),
+                                        "Failed to start transient unit"]
+        self.ctx.vm.slot_uid.return_value = 1001
+        with patch.object(resources, "stop_home_relay") as stop:
+            with self.assertRaisesRegex(core.Unobservable, "did not start"):
+                resources.start_home_relay(self.ctx)
+        stop.assert_called_once_with(self.ctx, device)
+
+    def test_partial_setup_preserves_original_failure_when_cleanup_also_fails(self):
+        self.ctx.vm.exec.side_effect = [json.dumps({"device_public_key": "ab" * 32,
+                                                  "relay_service_node_id": "cd" * 32}),
+                                        VmError("setup connection lost")]
+        self.ctx.vm.slot_uid.return_value = 1001
+        with patch.object(resources, "stop_home_relay", side_effect=VmError("stop refused")):
+            with self.assertRaisesRegex(VmError, "setup connection lost") as raised:
+                resources.start_home_relay(self.ctx)
+        self.assertIn("stop refused", " ".join(raised.exception.__notes__))
+
+    def relay_tools(self, stop=False, rewrite=False):
+        tools = self.out / "bin"
+        tools.mkdir()
+        for name, body in {
+                "journalctl": "exit 1",  # Optional journal failure must not prevent cleanup.
+                "systemctl": ('case "$*" in *show*) echo loaded;; *stop*) echo stop-refused >&2; exit 7;; esac'
+                              if stop else 'echo not-found'),
+                "mv": "echo rewrite-refused >&2; exit 8" if rewrite else 'exec /usr/bin/mv "$@"',
+        }.items():
+            path = tools / name
+            path.write_text("#!/bin/sh\n" + body + "\n")
+            path.chmod(0o755)
+        identity = self.out / "identity"
+        (identity / "peers").mkdir(parents=True)
+        runtime = self.out / "runtime"
+        runtime.mkdir()
+        relay = runtime / resources.HOME_RELAY_DIR
+        relay.mkdir()
+        (relay / "state").write_text("keep if stop fails")
+        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                   XDG_RUNTIME_DIR=str(runtime), TILO_IDENTITY_ROOT=str(identity))
+
+        def execute(script, **kwargs):
+            proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, env=env)
+            if kwargs.get("check", True) and proc.returncode:
+                raise VmError(proc.stderr.strip())
+            return proc.stdout
+
+        self.ctx.vm.exec.side_effect = execute
+        return relay, identity / "peers" / "home-peers.json"
+
+    def test_relay_setup_cannot_delete_state_when_previous_relay_refuses_stop(self):
+        relay, _ = self.relay_tools(stop=True)
+        with self.assertRaisesRegex(core.Unobservable, "stop-refused"):
+            resources.start_home_relay(self.ctx)
+        self.assertEqual((relay / "state").read_text(), "keep if stop fails")
+
+    def test_relay_stop_failure_is_not_hidden_by_rm(self):
+        relay, _ = self.relay_tools(stop=True)
+        with self.assertRaisesRegex(VmError, "stop-refused"):
+            resources.stop_home_relay(self.ctx, None)
+        self.assertTrue((relay / "state").exists())
+
+    def test_relay_peer_rewrite_failure_is_not_accepted(self):
+        relay, peers = self.relay_tools(rewrite=True)
+        device = "ab" * 32
+        original = json.dumps([{"device_node_id": device}])
+        peers.write_text(original)
+        with self.assertRaisesRegex(VmError, "rewrite-refused"):
+            resources.stop_home_relay(self.ctx, device)
+        self.assertEqual(peers.read_text(), original)
+        self.assertFalse(relay.exists())
+
+    def test_absent_relay_and_unavailable_journal_still_allow_cleanup(self):
+        relay, peers = self.relay_tools()
+        device = "ab" * 32
+        other = {"device_node_id": "cd" * 32}
+        peers.write_text(json.dumps([{"device_node_id": device}, other]))
+        resources.stop_home_relay(self.ctx, device)
+        self.assertFalse(relay.exists())
+        self.assertEqual(json.loads(peers.read_text()), [other])
+
+    def test_shared_cleanup_cannot_pass_but_does_not_mask_original_failure(self):
+        self.ctx.reset = Mock(side_effect=VmError("reset refused"))
+        for original in (None, "measurement failed"):
+            with self.subTest(original=original):
+                def check(ctx, res):
+                    try:
+                        if original:
+                            raise core.CheckFailed(original)
+                    finally:
+                        resources._leave_shared(ctx, res, 1, "ab" * 32)
+
+                with (patch.object(resources, "_select_workspace", side_effect=VmError("select refused")) as select,
+                      patch.object(resources, "stop_home_relay", side_effect=VmError("stop refused")) as stop):
+                    result = core.run_check(self.ctx, core.Check("R09", "resources", "cleanup", check))
+                self.assertEqual(result.status, "fail", result.detail)
+                self.assertIn(original or "shared workspace cleanup failed", result.detail)
+                self.assertEqual(len(result.metrics["cleanup_errors"]), 3)
+                select.assert_called_once()
+                stop.assert_called_once()
+
     def configure_memory(self):
         self.ctx.write = Mock()
         self.ctx.config["budgets"] = {"shell_anon_mb": 700, "process_anon_mb": 300,

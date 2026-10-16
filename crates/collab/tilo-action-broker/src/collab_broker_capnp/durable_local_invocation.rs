@@ -127,13 +127,28 @@ impl LocalCaller {
             .ok_or("retained task resource kind absent")?;
         let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
         let need = contract.need();
-        state.authorize_invocation_permission(
-            &self.route.cluster_id,
-            (app, resource_kind, resource, action),
-            &need,
-            &current.broker_actor(),
-            now,
-        )?;
+        // A task's child was admitted for an agent, which an answer asking
+        // first admits only on its person's confirmation: observing what was
+        // admitted needs the action not to be refused since.
+        let actor = current.broker_actor();
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(&self.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                if actor.action_answer_in(
+                    workspace,
+                    app,
+                    (resource_kind, resource, action),
+                    &need,
+                    now,
+                ) == tilo_action_policy::Answer::Deny
+                {
+                    return Err("caller no longer authorized for invocation".to_string());
+                }
+                Ok(())
+            })??;
         Ok(crate::services::NativeTaskActionRequirement {
             binding: match &record.key.owner {
                 InvocationOwner::NativeTask { task, agent, epoch } => {
@@ -151,6 +166,10 @@ impl LocalCaller {
             resource: resource.into(),
             action: action.into(),
             need,
+            // Observing what was admitted: an admission that asked first
+            // was answered by the person.
+            consequential: false,
+            confirmed: true,
         })
     }
     pub(super) fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
@@ -298,18 +317,46 @@ impl<'a> DurableContext<'a> {
         };
         state.require_current_stable_sender(peer, sender)?;
         let now = state.checked_policy_time(self.time())?.1 / 1_000_000_000;
-        state.authorize_invocation_permission(
-            &offered.0.route.cluster_id,
-            (
-                &offered.0.app_id,
-                &offered.1.resource_kind,
-                &offered.1.resource,
-                &offered.1.action,
-            ),
-            &offered.1.contract.need(),
-            &current.broker_actor(),
-            now,
-        )?;
+        let target = (
+            offered.0.app_id.as_str(),
+            offered.1.resource_kind.as_str(),
+            offered.1.resource.as_str(),
+            offered.1.action.as_str(),
+        );
+        let need = offered.1.contract.need();
+        let actor = current.broker_actor();
+        if matches!(self, Self::Task { .. }) {
+            // A task's child was admitted in its run's serialized turn, which
+            // pauses an action asking first until its person answers; the
+            // dispatch then takes a token bound to exactly what they
+            // confirmed. Here it is only refused when no longer allowed at all.
+            state
+                .membership
+                .as_ref()
+                .ok_or("workspace authority unavailable")?
+                .decide_in_room(&offered.0.route.cluster_id, |workspace| {
+                    let workspace = workspace.ok_or("workspace no longer hosted")?;
+                    if actor.action_answer_in(
+                        workspace,
+                        target.0,
+                        (target.1, target.2, target.3),
+                        &need,
+                        now,
+                    ) == tilo_action_policy::Answer::Deny
+                    {
+                        return Err("caller no longer authorized for invocation".to_string());
+                    }
+                    Ok(())
+                })??;
+        } else {
+            state.authorize_invocation_permission(
+                &offered.0.route.cluster_id,
+                target,
+                &need,
+                &actor,
+                now,
+            )?;
+        }
         state.checked_policy_time(self.time())?;
         Ok(())
     }

@@ -68,9 +68,11 @@ def normalize(path: Path, mode: int) -> None:
 def layer(repo: Path, slots: Path, name_of=package_name) -> dict[str, list[str]]:
     placed: dict[str, list[str]] = {slot: [] for slot in slot_names()}
     for source in sorted(repo.rglob("*")):
+        if source.is_symlink():
+            raise ValueError(f"{source}: the snapshot may hold only regular files")
         if source.is_dir():
             continue
-        if source.is_symlink() or not source.is_file():
+        if not source.is_file():
             raise ValueError(f"{source}: the snapshot may hold only regular files")
         relative = source.relative_to(repo)
         if source.suffix == ".rpm" and len(relative.parts) == 1:

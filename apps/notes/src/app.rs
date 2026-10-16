@@ -224,6 +224,23 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The line after the picture a paste just put in a note: the block that
+/// follows the first block showing `picture` that did not already show it
+/// (`before` and `after` are the page's blocks around the paste).
+fn line_after_new_picture(
+    before: &[(String, String)],
+    after: &[(String, String)],
+    picture: &str,
+) -> Option<String> {
+    let new = after.iter().position(|(id, text)| {
+        text == picture
+            && !before
+                .iter()
+                .any(|(was, shown)| was == id && shown == picture)
+    })?;
+    after.get(new + 1).map(|(id, _)| id.clone())
+}
+
 /// `bytes` as an image the notebook keeps: as given when it fits an asset,
 /// else re-encoded (JPEG, or PNG to keep transparency) and scaled down until
 /// it does. A screenshot is often larger than an asset may be, and pasting it
@@ -353,6 +370,11 @@ pub struct NotesApp {
     /// The page the `MainPanel` editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
+    /// A note just made from the keyboard or the header's New note: its
+    /// title takes the keyboard once its body is bound, so typing names it.
+    naming_page: Option<PageId>,
+    /// The next page created is named first ([`Self::naming_page`]).
+    name_next_created: bool,
     /// The tree has been laid out once, so the shell's columns are known.
     laid_out: bool,
     /// Forces a redraw when our own chrome changes without any child widget
@@ -689,6 +711,8 @@ impl NotesApp {
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
+            naming_page: None,
+            name_next_created: false,
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
@@ -1086,23 +1110,28 @@ impl NotesApp {
             };
             let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
                 let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                let picture = format!("![Pasted image]({source})");
+                let before = crate::read::page_block_snapshots(edits.doc(), page);
                 // The pasted picture is drawn from here at once, whatever the
                 // content store does with the notebook's copy.
                 if let Ok(mut assets) = self.canonical_assets.write() {
-                    assets.insert(source.clone(), bytes.clone());
+                    assets.insert(source, bytes.clone());
                 }
                 // Replaces the selection the paste was made over, or goes
                 // after the block the caret was in, as one action.
                 let edit = self
                     .main
                     .body_editor_mut()
-                    .image_paste_action(
-                        edits.doc(),
-                        &request.target,
-                        format!("![Pasted image]({source})"),
-                    )
+                    .image_paste_action(edits.doc(), &request.target, picture.clone())
                     .map_err(|error| error.to_string())?;
-                self.submit_now(edits, actions::show_image(page, bytes, edit))
+                self.submit_now(edits, actions::show_image(page, bytes, edit))?;
+                // Typing goes on under the picture, on the line the paste left
+                // after it, and the next paste goes after that line.
+                let after = crate::read::page_block_snapshots(edits.doc(), page);
+                if let Some(line) = line_after_new_picture(&before, &after, &picture) {
+                    self.main.put_caret_on_rebind(line);
+                }
+                Ok(())
             });
             match result {
                 Ok(()) => {
@@ -1231,6 +1260,9 @@ impl NotesApp {
             return;
         };
         if self.bound_page != Some(sel) {
+            if self.naming_page.is_some_and(|page| page == sel) {
+                self.sidebar.set_focus(false);
+            }
             self.bind_selected_page(state, sel);
             if self.sidebar.is_focused() {
                 // Opening a page from the page tree (a row, New note) keeps
@@ -1240,6 +1272,9 @@ impl NotesApp {
                 // Ctrl+Z and browser text input would reach nothing.
                 self.main.editor_mut().set_focus(false);
             }
+        }
+        if self.bound_page == Some(sel) && self.naming_page.take_if(|page| *page == sel).is_some() {
+            self.main.begin_new_title_edit();
         }
     }
 
@@ -1691,6 +1726,9 @@ impl NotesApp {
                 )?;
                 self.reconcile_canonical(edits.doc())?;
                 self.workspace.set_selected(Some(id));
+                if std::mem::take(&mut self.name_next_created) {
+                    self.naming_page = Some(id);
+                }
             }
             OutEvent::Rename { id, new_title } => {
                 if gone(self, id) {
@@ -1848,6 +1886,10 @@ impl NotesApp {
         self.main.focus_note_body();
         if let Some(new_title) = self.main.take_title_rename()
             && let Some(id) = outgoing_page
+            && self
+                .workspace
+                .get(id)
+                .is_some_and(|page| page.title != new_title.trim())
         {
             self.pending_events.push(OutEvent::Rename { id, new_title });
         }
@@ -2777,6 +2819,7 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.main.block_drag_scrolling()
+            || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }
 
@@ -2823,7 +2866,7 @@ impl Widget for NotesApp {
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, *ctx.modifiers, &mut ctx.state, ctx.handled) {
+        if self.handle_new_child_shortcut(event, ctx) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
@@ -2900,7 +2943,9 @@ impl Widget for NotesApp {
                 } else {
                     self.status.right_text()
                 })
-                .with_live(ui::a11y::Politeness::Polite)
+                // Readable on request, never announced: autosave is silent.
+                // The save surface announces a failure and the save that
+                // ends it, as it shows them.
                 .with_hashed_key("notes.save-status"),
         ];
         children.extend(self.save_surface.accessibility(SAVE_STATUS_TARGET));
@@ -3168,9 +3213,7 @@ impl NotesApp {
     fn handle_new_child_shortcut(
         &mut self,
         event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        edits: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -3184,14 +3227,22 @@ impl NotesApp {
         else {
             return false;
         };
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         if !(mods.control_key() || mods.super_key()) || c.to_lowercase().as_str() != "n" {
             return false;
         }
         let parent = self.workspace.selected();
-        self.apply_and_dispatch(edits, OutEvent::CreateChild { parent });
+        // The new note opens with its title taking the keyboard: Ctrl+N,
+        // the name, Enter, the note.
+        self.name_next_created = true;
+        self.apply_and_dispatch(&mut ctx.state, OutEvent::CreateChild { parent });
+        self.name_next_created = false;
         self.sidebar.sync_from_workspace(&self.workspace);
-        *handled = true;
+        self.ensure_editor_bound(ctx.state.doc());
+        if self.main.title_focused() {
+            *ctx.focus_target = self.main.title_node();
+        }
+        *ctx.handled = true;
         true
     }
 

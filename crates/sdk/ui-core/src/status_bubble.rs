@@ -416,6 +416,9 @@ pub struct SaveStatusSurface {
     /// A save failed and none has succeeded since: the next "Saved" is
     /// news.
     recovering: bool,
+    /// The current state is the save that ended a failure: assistive
+    /// technology hears it until the state changes again.
+    recovered: bool,
     dismissed: bool,
     hit: crate::widget::toast::ToastCardHit,
     /// "Try again" in the bubble of a save that gave up.
@@ -445,6 +448,7 @@ impl Default for SaveStatusSurface {
                 .with_linger(crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD),
             state: None,
             recovering: false,
+            recovered: false,
             dismissed: false,
             hit: crate::widget::toast::ToastCardHit::default(),
             retry_rect: Rect::ZERO,
@@ -501,6 +505,7 @@ impl SaveStatusSurface {
         self.notified = false;
         self.retry_rect = Rect::ZERO;
         let recovered = self.recovering && state == SaveState::Saved;
+        self.recovered = recovered;
         // A retry passes through "Saving…" before it lands.
         self.recovering = match state {
             SaveState::Failed(_) => true,
@@ -649,10 +654,13 @@ impl SaveStatusSurface {
         self.bubble.pointer_moved(corner, p, tr, theme, now)
     }
 
-    /// The surface for assistive technology while a failure or a save that
-    /// gave up shows: what happened, announced, with "Try again" (and for a
-    /// failure "Dismiss") whose action targets are `{target}.retry` and
-    /// `{target}.dismiss`.
+    /// The surface for assistive technology, announcing what it shows and
+    /// nothing else: a failure's reason, with "Try again" and "Dismiss"
+    /// buttons whose action targets are `{target}.retry` and
+    /// `{target}.dismiss`; a save that gave up, with "Try again"; and the
+    /// save that ends a failure, until the state changes again (a state
+    /// change, unlike the bubble's timed hold, is something a host's
+    /// accessibility tree follows). Autosave, slow or not, is silent.
     #[must_use]
     pub fn accessibility(&self, target: &str) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
@@ -672,7 +680,14 @@ impl SaveStatusSurface {
                     .with_children(vec![retry(self.retry_rect)]),
             );
         }
-        let (title, reason) = self.failure_text()?;
+        let Some((title, reason)) = self.failure_text() else {
+            return self.recovered.then(|| {
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::i18n!("save-status-saved"))
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key(format!("{target}.recovered"))
+            });
+        };
         Some(
             AccessNode::new(Role::Group)
                 .with_name(title)
@@ -1671,6 +1686,42 @@ mod tests {
         surface.set(SaveState::Saving, later);
         assert!(!surface.is_visible(later), "typing on retires it at once");
         assert_eq!(surface.state(), Some(&SaveState::Saving), "but it is known");
+    }
+
+    /// Assistive technology hears what the screen shows: nothing while
+    /// autosave cycles, the failure, and the save that ends it.
+    #[test]
+    fn announcements_follow_what_shows() {
+        crate::i18n::I18nManager::init("en-US");
+        let now = crate::time::now();
+        let mut surface = SaveStatusSurface::new();
+        for state in std::iter::repeat_n([SaveState::Saving, SaveState::Saved], 3).flatten() {
+            surface.set(state, now);
+            assert!(
+                surface.accessibility("doc.save").is_none(),
+                "autosave is silent"
+            );
+        }
+        surface.set(SaveState::Failed("Disk full".into()), now);
+        let failed = surface.accessibility("doc.save").expect("the failure");
+        assert_eq!(failed.live, Some(crate::a11y::Politeness::Assertive));
+        surface.set(SaveState::Saving, now);
+        assert!(
+            surface.accessibility("doc.save").is_none(),
+            "the retry is quiet"
+        );
+        surface.set(SaveState::Saved, now);
+        let recovered = surface.accessibility("doc.save").expect("the recovery");
+        assert_eq!(recovered.live, Some(crate::a11y::Politeness::Polite));
+        assert_eq!(
+            recovered.name.as_deref(),
+            Some(crate::i18n!("save-status-saved").as_str())
+        );
+        surface.set(SaveState::Saving, now);
+        assert!(
+            surface.accessibility("doc.save").is_none(),
+            "and quiet after"
+        );
     }
 
     #[test]

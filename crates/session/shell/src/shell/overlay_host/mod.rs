@@ -5358,6 +5358,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Capture Studio covers the focused display: its picker bars sit along
+    /// that display's top and bottom edges and "Screen" is that display.
+    /// Across the whole desktop of a docked laptop the bars were centred on
+    /// the combined width and hung from its tallest edge, which put them on
+    /// the other display, partly below the panel's bottom, while the panel
+    /// only greyed: Print looked broken until Escape.
+    fn place_capture_studio(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
+        let Some(display) = self.focused_output() else {
+            return;
+        };
+        let area = display.rect();
+        let Ok(style) = taffy.style(node) else {
+            return;
+        };
+        let mut style = style.clone();
+        style.position = Position::Absolute;
+        style.inset = TaffyRect {
+            left: LengthPercentageAuto::length(f32_of_f64(area.x0 - self.rect.x0)),
+            right: LengthPercentageAuto::auto(),
+            top: LengthPercentageAuto::length(f32_of_f64(area.y0 - self.rect.y0)),
+            bottom: LengthPercentageAuto::auto(),
+        };
+        style.size = Size {
+            width: Dimension::length(f32_of_f64(area.width())),
+            height: Dimension::length(f32_of_f64(area.height())),
+        };
+        let _ = taffy.set_style(node, style);
+    }
+
     /// An expanded (maximized) window owns the left edge: the workspace
     /// switcher disc is tucked away rather than drawn over it. The top bar
     /// stays, and a wheel summon (edge gesture) shows the disc again.
@@ -18586,6 +18615,7 @@ impl Widget for ShellOverlayHost {
             // dedicated tree so the chooser has both geometry and an input
             // target while OOBE is active.
             let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+            self.place_capture_studio(taffy, capture_node);
             self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
@@ -18650,6 +18680,7 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+        self.place_capture_studio(taffy, capture_node);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
             .screenshot_markup

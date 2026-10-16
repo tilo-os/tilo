@@ -4,6 +4,8 @@
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 import re
 import subprocess
@@ -37,17 +39,29 @@ def apply(source, directory):
     source, directory = Path(source).resolve(), Path(directory).resolve()
     record = patch_record(directory)
 
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(source), *args], text=True).strip()
+    def git(*args, env=None):
+        return subprocess.check_output(["git", "-C", str(source), *args], text=True, env=env).strip()
 
     if git("rev-parse", "HEAD") != record["base_revision"]:
         raise ValueError("FEX patch base differs from checkout")
     if git("status", "--porcelain", "--untracked-files=all"):
         raise ValueError("FEX patch input must be a clean disposable checkout")
-    for patch in record["patches"]:
-        path = str(directory / patch["file"])
-        git("apply", "--check", "--index", "--whitespace=error-all", path)
-        git("apply", "--index", "--whitespace=error-all", path)
+    # Apply in order to a private index: later patches may depend on earlier
+    # ones. Only the complete result may mutate the caller's checkout/index.
+    with tempfile.TemporaryDirectory(prefix="fex-patch-check-") as temporary:
+        temporary = Path(temporary)
+        env = dict(os.environ, GIT_INDEX_FILE=str(temporary / "index"))
+        git("read-tree", "HEAD", env=env)
+        for patch in record["patches"]:
+            git("apply", "--cached", "--whitespace=error-all",
+                str(directory / patch["file"]), env=env)
+        tree = git("write-tree", env=env)
+        combined = subprocess.check_output([
+            "git", "-C", str(source), "diff", "--binary", "HEAD", tree, "--"])
+        if combined:
+            path = temporary / "combined.patch"
+            path.write_bytes(combined)
+            git("apply", "--index", "--whitespace=error-all", str(path))
     return record
 
 

@@ -74,7 +74,8 @@ impl StatePeer {
     ) -> Result<(), String> {
         let (WorkspaceTaskCommand::Direction { task_id, .. }
         | WorkspaceTaskCommand::DirectionForRun { task_id, .. }
-        | WorkspaceTaskCommand::CancelForRun { task_id, .. }) = command
+        | WorkspaceTaskCommand::CancelForRun { task_id, .. }
+        | WorkspaceTaskCommand::AnswerConfirmation { task_id, .. }) = command
         else {
             return Ok(());
         };
@@ -144,7 +145,9 @@ impl StatePeer {
                 WorkspaceTaskCommand::AppliedAck { task_id, .. }
                 | WorkspaceTaskCommand::Finish { task_id, .. }
                 | WorkspaceTaskCommand::ExecutionPhase { task_id, .. }
-                | WorkspaceTaskCommand::PublicProgress { task_id, .. } => Some(task_id),
+                | WorkspaceTaskCommand::PublicProgress { task_id, .. }
+                | WorkspaceTaskCommand::RequestConfirmation { task_id, .. }
+                | WorkspaceTaskCommand::SettleConfirmation { task_id, .. } => Some(task_id),
                 _ => None,
             };
             let state = crate::workspace_task::snapshot(room)?;

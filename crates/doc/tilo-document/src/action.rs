@@ -758,6 +758,10 @@ impl<'a> ActionValidator<'a> {
             "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
             "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
             "alt" => matches!(value, AttrVal::Str(v) if Self::valid_alt(v)),
+            // A callout: the GitHub alert a quote is set apart as.
+            "alert" => {
+                matches!(value, AttrVal::Str(v) if crate::block_markdown::CALLOUTS.contains(&v.as_str()))
+            }
             _ => false,
         }
     }
@@ -806,7 +810,14 @@ impl<'a> ActionValidator<'a> {
     fn clearable_attr(key: &str) -> bool {
         matches!(
             key,
-            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source" | "alt"
+            "checked"
+                | "code"
+                | "lang"
+                | "code_group"
+                | "nesting"
+                | "table_source"
+                | "alt"
+                | "alert"
         )
     }
 

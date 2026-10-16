@@ -49,6 +49,22 @@ class SpeechArtifactPublication(unittest.TestCase):
             calls = build.return_value.open.call_args_list
             self.assertIsInstance(calls[-1].args[0], str)
 
+    def test_concurrent_identical_publication_is_verified_after_conflict(self):
+        for remote, accepted in ((b"public-object", True), (b"wrong", False)):
+            with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory, patch.object(
+                    publisher.urllib.request, "build_opener") as build:
+                build.return_value.open.side_effect = [
+                    urllib.error.HTTPError("", 404, "", {}, None), io.BytesIO(remote)]
+                conflict = subprocess.CompletedProcess([], 22, stdout="409", stderr="")
+                with patch.object(publisher.subprocess, "run", return_value=conflict) as run:
+                    if accepted:
+                        publisher.publish(*self.fixture(directory), "test-token")
+                    else:
+                        with self.assertRaisesRegex(ValueError, "receipt mismatch"):
+                            publisher.publish(*self.fixture(directory), "test-token")
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(build.return_value.open.call_count, 2)
+
     def test_redirects_and_foreign_destinations_are_rejected(self):
         with self.assertRaises(ValueError):
             publisher.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.invalid")
@@ -72,7 +88,7 @@ class UploadTransport(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["input"], 'header = "Authorization: token private-token"\n')
 
     def test_redirect_or_http_error_never_count_as_publication(self):
-        for code, status in [(0, "302"), (22, "413"), (56, "000")]:
+        for code, status in [(0, "302"), (22, "413"), (56, "000"), (56, "409")]:
             with self.subTest(code=code, status=status):
                 result = subprocess.CompletedProcess([], code, stdout=status, stderr="")
                 with patch.object(publisher.subprocess, "run", return_value=result):

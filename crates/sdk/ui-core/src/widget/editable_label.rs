@@ -138,10 +138,13 @@ impl EditableLabel {
         self
     }
 
-    /// What the idle label reads, dimmed, while its value is empty.
+    /// What the label reads, dimmed, while its value is empty: idle, and in
+    /// its field while an edit is open with nothing typed yet.
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.placeholder = Some(placeholder.into());
+        let placeholder = placeholder.into();
+        self.input.set_placeholder(&placeholder);
+        self.placeholder = Some(placeholder);
         self
     }
 
@@ -268,6 +271,16 @@ impl EditableLabel {
         self.input.set_text(&self.value);
         self.input.set_focus(true);
         self.input.select_all();
+        self.editing = true;
+        self.outcome = EditOutcome::None;
+    }
+
+    /// Begin an edit with an empty field, its placeholder showing, the way a
+    /// name not given yet is entered: what is typed becomes the value, and a
+    /// blank commit keeps the value it had.
+    pub fn begin_blank_edit(&mut self) {
+        self.input.set_text("");
+        self.input.set_focus(true);
         self.editing = true;
         self.outcome = EditOutcome::None;
     }
@@ -874,5 +887,27 @@ mod tests {
             Dimension::length(style.line_height_px().max(28.0)),
             "the band is the role's scaled line"
         );
+    }
+
+    #[test]
+    fn a_blank_edit_shows_the_placeholder_and_a_blank_commit_keeps_the_value() {
+        let mut doc = AutoCommit::new();
+        let mut el = EditableLabel::new("Untitled").with_placeholder("Untitled");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        el.begin_blank_edit();
+        assert!(el.is_editing());
+        assert_eq!(el.current_text(), "", "the field opens empty");
+        assert!(el.input.shows_placeholder(), "with the placeholder in it");
+        drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+        assert_eq!(el.take_outcome(), EditOutcome::Committed("Untitled".into()));
+
+        el.begin_blank_edit();
+        for key in ["G", "o"] {
+            drive(&mut el, &mut doc, &char_key(key), no_mods());
+        }
+        assert!(!el.input.shows_placeholder());
+        drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+        assert_eq!(el.take_outcome(), EditOutcome::Committed("Go".into()));
+        assert_eq!(el.value(), "Go");
     }
 }

@@ -140,7 +140,8 @@ other running job has): the job's namespace maps `0..65536` onto it, so the job
 is a host user of its own. Its files stay the worker's: every host path bound in
 is an idmapped mount (`mount_setattr` with `MOUNT_ATTR_IDMAP`, Linux 5.12) on
 which the worker's files show as the job's and what the job creates belongs to
-the worker on the host, so the next job, with another block, finds a warm build
+the worker on the host; every other id below 65536 keeps its number there, so
+ACL entries naming any of the job's users work on its directories too, so the next job, with another block, finds a warm build
 directory as its own. The worker makes these mounts before the job starts
 (idmapping takes `CAP_SYS_ADMIN` over the filesystem) and the job's init
 attaches them (`move_mount`); overlays get idmapped layers (Linux 5.19). The

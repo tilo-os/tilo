@@ -338,6 +338,9 @@ pub struct MainPanel {
     /// Rising-edge: a committed title edit that should rename the page. The
     /// host drains it via [`take_title_rename`](Self::take_title_rename).
     pending_rename: Option<String>,
+    /// The open title edit names a note just made: leaving it from the
+    /// keyboard puts the caret at the start of the body.
+    naming_new: bool,
     /// Durable tags assigned to the open page, rendered as quiet chips. The
     /// selection/filter around them belongs to the app and is intentionally
     /// local; this view only receives the document-derived labels.
@@ -405,6 +408,10 @@ pub struct MainPanel {
     body_presented: Option<BodyShown>,
     /// Follow an explicit reveal or keyboard edit once layout has fresh caret geometry.
     follow_caret: bool,
+    /// The block the caret goes to (at its start) when the open page binds
+    /// again, instead of where it was: the line an edit applied as an action
+    /// (a pasted picture) left for typing to go on.
+    caret_on_rebind: Option<String>,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
@@ -436,11 +443,13 @@ impl MainPanel {
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
                 .with_text_role(TextRole::LargeTitle)
+                .with_placeholder(ui::i18n!("notes-title-placeholder"))
                 .with_id("note_title")
                 .with_accessible_name("Page title"),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
+            naming_new: false,
             pending_tag_open: None,
             header: NoteHeader::default(),
             header_node: None,
@@ -470,6 +479,7 @@ impl MainPanel {
             body_drawing: None,
             body_presented: None,
             follow_caret: false,
+            caret_on_rebind: None,
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
@@ -492,7 +502,20 @@ impl MainPanel {
         self.title_label
             .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
         self.pending_rename = None;
+        self.naming_new = false;
         self.dirty = true;
+    }
+
+    /// End naming a new note: Enter or Escape goes on to the start of its
+    /// body; a click away leaves the caret where the click puts it.
+    fn finish_naming(&mut self, event: &WindowEvent) {
+        if std::mem::take(&mut self.naming_new)
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+        {
+            self.editor
+                .editor_mut()
+                .focus_block(0, ui::widget::CursorPlacement::Start);
+        }
     }
 
     /// Rising-edge: a committed title edit that renames the current page. The
@@ -557,8 +580,12 @@ impl MainPanel {
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
         let same_page = self.page_id == Some(page);
+        let moved = self.caret_on_rebind.take().filter(|_| same_page);
         let caret = same_page
             .then(|| {
+                if let Some(id) = moved {
+                    return Some((id, 0));
+                }
                 let editor = self.editor.editor();
                 let block = editor.blocks().get(editor.focused_index()?)?;
                 Some((block.id.clone(), block.line.cursor_pos()))
@@ -631,6 +658,10 @@ impl MainPanel {
     }
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
+    }
+    /// The title's layout node, the keyboard's target while it is edited.
+    pub(crate) fn title_node(&self) -> Option<NodeId> {
+        self.title_node
     }
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
@@ -1039,6 +1070,18 @@ impl MainPanel {
         if self.page_id.is_some() {
             self.editor.set_focus(false);
             self.title_label.begin_edit();
+            self.naming_new = false;
+            self.dirty = true;
+        }
+    }
+
+    /// Name a note just made: its title opens empty, the placeholder showing,
+    /// so what is typed names it, and Enter goes on to the start of its body.
+    pub fn begin_new_title_edit(&mut self) {
+        if self.page_id.is_some() {
+            self.editor.set_focus(false);
+            self.title_label.begin_blank_edit();
+            self.naming_new = true;
             self.dirty = true;
         }
     }
@@ -1227,6 +1270,13 @@ impl MainPanel {
             .set_tooltip_viewport(Some(viewport));
     }
 
+    /// Put the caret at the start of block `id` when the open page binds
+    /// again after an edit applied as an action, and keep it in view.
+    pub fn put_caret_on_rebind(&mut self, id: String) {
+        self.caret_on_rebind = Some(id);
+        self.follow_caret = true;
+    }
+
     /// Reveal a block without mutating the collaborative document.
     pub fn reveal_block(&mut self, index: usize) -> bool {
         if index >= self.editor.editor().blocks().len() {
@@ -1325,6 +1375,12 @@ impl MainPanel {
     #[doc(hidden)]
     pub fn title_is_editing_for_test(&self) -> bool {
         self.title_label.is_editing()
+    }
+
+    /// Test hook: what the title's field holds while it is edited.
+    #[doc(hidden)]
+    pub fn title_draft_for_test(&self) -> String {
+        self.title_label.current_text().to_owned()
     }
 
     /// Test hook: centre of the first-note call to action after a layout pass.
@@ -1644,12 +1700,20 @@ impl Widget for MainPanel {
                             .blocks()
                             .first()
                             .is_some_and(|block| block.line.cursor_pos() == 0);
+                    // A caret revealed downward keeps the page's own bottom
+                    // padding under it, the room the last line has at the
+                    // end of the note: a new line never lands flush against
+                    // the window's edge or under what floats over it. A
+                    // viewport too short for that keeps the caret itself.
+                    let margin = self
+                        .body_bottom_inset()
+                        .min((viewport_h - caret.height()).max(0.0));
                     if at_document_start {
                         self.scroll_y = 0.0;
                     } else if caret.y0 - self.scroll_y < viewport_top {
                         self.scroll_y = caret.y0 - viewport_top;
-                    } else if caret.y1 - self.scroll_y > viewport_bottom {
-                        self.scroll_y = caret.y1 - viewport_bottom;
+                    } else if caret.y1 + margin - self.scroll_y > viewport_bottom {
+                        self.scroll_y = caret.y1 + margin - viewport_bottom;
                     }
                     self.follow_caret = false;
                 }
@@ -1976,10 +2040,12 @@ impl Widget for MainPanel {
                 EditOutcome::Committed(new) => {
                     self.pending_rename = Some(new);
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::Cancelled => {
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::None => {}
@@ -2336,6 +2402,13 @@ impl MainPanel {
             .map_or(self.rect, |overhang| self.rect.union(overhang))
     }
 
+    /// Whether `event` is a wheel notch that only moves the body: the panel
+    /// takes every vertical wheel over the body before the editor sees it
+    /// (`handle_event`), so what the note holds (pictures, lists, code,
+    /// tables) cannot change what a notch does. Asking the block kinds here
+    /// sent every note with anything but prose down the host's full path,
+    /// which syncs the whole tree and re-projects every block's resources on
+    /// each notch.
     pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let delta = match event {
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -2353,12 +2426,6 @@ impl MainPanel {
             && self.pending_rename.is_none()
             && self.pending_tag_open.is_none()
             && self.pending_backlink_open.is_none()
-            && self.editor.blocks().iter().all(|block| {
-                matches!(
-                    block.kind,
-                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
-                )
-            })
     }
 
     pub(crate) fn has_editor_popup(&self) -> bool {

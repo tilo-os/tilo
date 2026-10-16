@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hashlib
 from pathlib import Path
 import sys
 import subprocess
@@ -25,6 +26,29 @@ class DevCheckTests(unittest.TestCase):
 
     def receipt(self):
         return json.loads((self.out / "run.json").read_text())
+
+    def test_source_drift_before_execution_cannot_claim_planned_coverage(self):
+        script = self.root / "contract.py"
+        script.write_text("raise SystemExit(0)")
+        selection = self.selection([0])
+        selection["steps"][0].update(test_source="contract.py",
+            test_source_sha256=hashlib.sha256(script.read_bytes()).hexdigest())
+        script.write_text("raise SystemExit(7)")
+        with patch.object(dev.subprocess, "Popen", wraps=dev.subprocess.Popen) as spawn:
+            self.assertEqual(dev.run_plan(selection, self.out, root=self.root), 2)
+            spawn.assert_not_called()
+        self.assertEqual(self.receipt()["status"], "failure")
+        self.assertIn("source changed", self.receipt()["error"])
+
+    def test_source_drift_during_execution_cannot_attest_the_old_digest(self):
+        script = self.root / "contract.py"
+        script.write_text("from pathlib import Path\nPath(__file__).write_text('changed')\n")
+        selection = self.selection([0])
+        selection["steps"][0].update(argv=[sys.executable, str(script)], test_source="contract.py",
+            test_source_sha256=hashlib.sha256(script.read_bytes()).hexdigest())
+        self.assertEqual(dev.run_plan(selection, self.out, root=self.root), 2)
+        self.assertEqual(self.receipt()["steps"][0]["status"], "failure")
+        self.assertIn("during execution", self.receipt()["error"])
 
     def test_dev_check_records_every_failure_and_never_overwrites_evidence(self):
         with self.subTest(phase='failure is recorded and later steps do not look successful'):

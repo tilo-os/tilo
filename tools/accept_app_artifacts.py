@@ -15,7 +15,7 @@ import zipfile
 
 import app_channel_manifest as channel
 from app_packaging_product import dispatch_inputs, run_inputs_match, validate_evidence
-from assemble_verified_apps import MAX_BYTES, extract_tar
+from assemble_verified_apps import MAX_BYTES, extract_tar, extraction_destination
 import canonical_verifier_bundle as bundle
 import final_app_receipt as final
 
@@ -62,27 +62,27 @@ def markers(raw, intent, attempt, architectures):
 def extract_artifact(archive, output, architecture, marker):
     expected = {f'tilo-apps-{architecture}.tar.gz', 'final-publication-receipt.json', 'assembly-provenance.json'}
     channel.require(archive.stat().st_size <= MAX_BYTES, 'final artifact download exceeds bound')
-    output.mkdir()
-    with zipfile.ZipFile(archive) as zipper:
-        entries = zipper.infolist()
-        channel.require(len(entries) == 3 and {entry.filename for entry in entries} == expected
-                        and sum(entry.file_size for entry in entries) <= MAX_BYTES,
-                        'unexpected final artifact inventory/size')
-        for entry in entries:
-            mode = entry.external_attr >> 16
-            channel.require(not mode or (mode & 0o170000) in (0, 0o100000), 'nonregular final artifact member')
-            if entry.filename.endswith('.json'):
-                channel.require(entry.file_size <= 2 * 1024**2, 'oversized receipt metadata')
-            with zipper.open(entry) as source, (output / entry.filename).open('xb') as target:
-                import shutil
-                shutil.copyfileobj(source, target)
-    receipt_path = output / 'final-publication-receipt.json'
-    receipt = channel.pinned_json(receipt_path.read_bytes(), marker[0])
-    tar = output / f'tilo-apps-{architecture}.tar.gz'
-    channel.require(tar.stat().st_size == marker[2] and channel.sha(tar) == marker[1]
-                    and receipt['collection']['sha256'] == marker[1] and receipt['collection']['bytes'] == marker[2],
-                    'artifact bytes differ from trusted qualifier marker')
-    return receipt, tar
+    with extraction_destination(output):
+        with zipfile.ZipFile(archive) as zipper:
+            entries = zipper.infolist()
+            channel.require(len(entries) == 3 and {entry.filename for entry in entries} == expected
+                            and sum(entry.file_size for entry in entries) <= MAX_BYTES,
+                            'unexpected final artifact inventory/size')
+            for entry in entries:
+                mode = entry.external_attr >> 16
+                channel.require(not mode or (mode & 0o170000) in (0, 0o100000), 'nonregular final artifact member')
+                if entry.filename.endswith('.json'):
+                    channel.require(entry.file_size <= 2 * 1024**2, 'oversized receipt metadata')
+                with zipper.open(entry) as source, (output / entry.filename).open('xb') as target:
+                    import shutil
+                    shutil.copyfileobj(source, target)
+        receipt_path = output / 'final-publication-receipt.json'
+        receipt = channel.pinned_json(receipt_path.read_bytes(), marker[0])
+        tar = output / f'tilo-apps-{architecture}.tar.gz'
+        channel.require(tar.stat().st_size == marker[2] and channel.sha(tar) == marker[1]
+                        and receipt['collection']['sha256'] == marker[1] and receipt['collection']['bytes'] == marker[2],
+                        'artifact bytes differ from trusted qualifier marker')
+        return receipt, tar
 
 
 class FinalArtifactAcceptance:

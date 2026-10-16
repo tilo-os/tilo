@@ -3923,6 +3923,15 @@ impl FrameBuilder {
     /// choice, or the one their identity derives) again, and dress the
     /// chrome in them.
     fn apply_configured_theme(&mut self) {
+        // The wallpaper is part of the look: a choice in Settings lands with
+        // the same settings change that would retheme the desktop.
+        super::desktop_backdrop::follow_wallpaper_choice(
+            &self
+                .live_settings
+                .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+                .snapshot()
+                .document,
+        );
         self.configured_theme = Theme::configured();
         self.windows
             .set_your_colour(crate::shell::state::read_local_presence_hue());
@@ -7610,6 +7619,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The desktop's wallpaper is fitted to each display the compositor
+    /// reports, the laptop panel and the monitor beside it, and follows a
+    /// display that goes away.
+    #[test]
+    fn the_wallpaper_is_fitted_to_each_display() {
+        use crate::shell::overlay_host::OutputGeometry;
+        let (tree, _, _, _) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (3392, 1080));
+        let mut panel = OutputGeometry::unscaled(0.0, 0.0, 1472.0, 920.0).with_id(1);
+        panel.scale = 2.0;
+        panel.scene = Rect::new(0.0, 0.0, 2944.0, 1840.0);
+        let mut monitor = OutputGeometry::unscaled(1472.0, 0.0, 1920.0, 1080.0).with_id(2);
+        monitor.scene = Rect::new(2944.0, 0.0, 4864.0, 1080.0);
+        fb.set_output_geometry(vec![panel.clone(), monitor.clone()]);
+        let mut doc = AutoCommit::new();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.paint_settled();
+        assert_eq!(
+            fb.host().wallpaper_displays(),
+            vec![panel.rect(), monitor.rect()]
+        );
+        fb.set_output_geometry(vec![panel.clone()]);
+        fb.paint_settled();
+        assert_eq!(fb.host().wallpaper_displays(), vec![panel.rect()]);
     }
 
     #[test]
