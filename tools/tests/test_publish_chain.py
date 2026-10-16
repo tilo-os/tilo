@@ -57,7 +57,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(sign["requires"], products.CREDENTIAL_REQUIRES)
         self.assertNotIn("isolation", sign)
         publish = c["publish-svc"]
-        self.assertEqual(publish["on"], ["main", "stable"])
+        self.assertEqual(publish["on"], ["main", "dispatch", "stable"])
         self.assertEqual(publish["needs"], ["image-svc"])
         self.assertEqual(publish["optional_needs"], ["sign-svc"])
         self.assertIn("oci-publish.sh any r.example/svc /target/publish/svc 'dev:dev-{commit}' "
@@ -69,7 +69,7 @@ class GeneratorTests(unittest.TestCase):
         c = checks({"family": "f", "name": "tool", "repository": "r/tool", "dev": ["sha-{commit}"],
                     "anonymous": True, "build": {"run": "build {out}"}})
         self.assertEqual(sorted(c), ["image-tool", "publish-tool"])
-        self.assertEqual(c["publish-tool"]["on"], ["main"])
+        self.assertEqual(c["publish-tool"]["on"], ["main", "dispatch"])
         self.assertNotIn("optional_needs", c["publish-tool"])
         self.assertIn("oci-anonymous.sh r/tool /target/publish/tool", c["publish-tool"]["run"])
 
@@ -85,7 +85,7 @@ class GeneratorTests(unittest.TestCase):
     def test_development_candidates_sign_with_the_development_key_only(self):
         c = checks({"family": "f", "name": "cand", "repository": "r/cand", "dev": ["{commit}"],
                     "dev_signed": True, "build": {"run": "build {out}"}})
-        self.assertEqual(c["sign-cand"]["on"], ["main"])
+        self.assertEqual(c["sign-cand"]["on"], ["main", "dispatch"])
         self.assertEqual(c["sign-cand"]["id_token"], ["tilo-dev-signing"])
         self.assertEqual(c["sign-cand"]["env"], {"K": "dev", "TILO_DEV_SIGNING": "1"})
         self.assertIn("sign-cand", c["publish-cand"]["needs"])
@@ -93,7 +93,7 @@ class GeneratorTests(unittest.TestCase):
         c = checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
                     "release": ["sha-{commit}"], "dev_signed": True, "tlog": True,
                     "build": {"run": "build {out}"}})
-        self.assertEqual(c["sign-dev-both"]["on"], ["main"])
+        self.assertEqual(c["sign-dev-both"]["on"], ["main", "dispatch"])
         self.assertEqual(c["sign-dev-both"]["id_token"], ["tilo-dev-signing"])
         self.assertNotIn("TILO_SIGN_TLOG", c["sign-dev-both"]["env"])
         self.assertEqual(c["sign-both"]["on"], ["stable"])
