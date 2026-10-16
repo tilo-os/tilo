@@ -510,8 +510,11 @@ fn linked_actions_refuse_to_change_a_locked_partner() {
     ];
     for action in actions {
         let mut replica = holding(&project);
+        // Persisted map entries have a canonical order, unlike insertion-order
+        // fixture collections. Compare the complete state before and after.
+        let before = replica.state().unwrap();
         assert!(replica.apply_confirmed(action).is_err());
-        assert_eq!(replica.state().unwrap(), project);
+        assert_eq!(replica.state().unwrap(), before);
     }
 
     // Unlinking stops edits following the sound, so its locked lane no
