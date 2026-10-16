@@ -1308,12 +1308,15 @@ mod tests {
             .call_on(
                 &crate::actions::sheet_resource_id(&sheet),
                 "set-records",
-                serde_json::json!({"row": 1, "records": [{"Item": "Hall"}]}),
+                serde_json::json!({"row": 1, "records": [{"Item": "Venue", "Per person": 150}]}),
             )
             .unwrap()
             .expect("answers");
-        assert_eq!(own["range"], "A2");
-        assert_eq!(own["rows"], serde_json::json!([["Hall"]]));
+        assert_eq!(
+            own["range"], "B2",
+            "the same key is kept, only the price changed"
+        );
+        assert_eq!(own["rows"], serde_json::json!([[150.0]]));
 
         // A sheet with data but no header row is refused; an empty one
         // takes its headers from the records (see the test below).
@@ -1332,6 +1335,56 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no headers in row 1"), "{error}");
+    }
+
+    /// A record sent to an explicit row that another collaborator's row now
+    /// fills, its key column holding something else, is refused rather than
+    /// overwriting that row; an empty row or the same key is written.
+    #[test]
+    fn set_records_refuses_a_row_whose_key_changed_since_it_was_read() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Ledger", "rows": [
+                ["Ref", "Amount"],
+                ["S-1", 10],
+            ]}),
+        )
+        .unwrap();
+        // Someone else appends a row where this caller meant to write.
+        app.call(
+            "set-records",
+            serde_json::json!({"sheet": "Ledger", "records": [{"Ref": "S-2", "Amount": 20}]}),
+        )
+        .unwrap();
+        let error = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Ledger", "row": 2,
+                    "records": [{"Ref": "S-3", "Amount": 30}]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("data row 2 of `Ledger` holds `S-2` under `Ref`, not `S-3`"),
+            "{error}"
+        );
+        let raw = |at: (u32, u32)| app.state().sheets[0].snapshot.raw.get(&at).cloned();
+        assert_eq!(raw((0, 2)).as_deref(), Some("S-2"), "their row is kept");
+        assert_eq!(raw((1, 2)).as_deref(), Some("20"));
+
+        // The same key updates its row, and an empty row takes the record.
+        for (row, reference) in [(2, "s-2"), (3, "S-3")] {
+            app.call(
+                "set-records",
+                serde_json::json!({"sheet": "Ledger", "row": row,
+                    "records": [{"Ref": reference, "Amount": 30}]}),
+            )
+            .unwrap();
+        }
+        let raw = |at: (u32, u32)| app.state().sheets[0].snapshot.raw.get(&at).cloned();
+        assert_eq!(raw((1, 2)).as_deref(), Some("30"));
+        assert_eq!(raw((0, 3)).as_deref(), Some("S-3"));
     }
 
     /// Reading a sheet the workbook does not have is refused naming the

@@ -253,6 +253,50 @@ fn first_record_row(sheet: &SheetInfo, data_row: Option<i64>) -> Result<u32, Str
     }
 }
 
+/// Why `records`, written from sheet row `first` by an explicit `row`, would
+/// overwrite a row that is no longer the one the caller read: a record that
+/// names the key column (the leftmost header, which identifies a row) with a
+/// value other than the one its target row already holds there. Another
+/// collaborator may have appended or sorted rows since the caller read the
+/// sheet, and a stale row number would then silently replace their row. An
+/// empty target row, a matching key, or a record leaving the key out (an
+/// update of that row's other cells) is written.
+fn stale_row(
+    sheet: &SheetInfo,
+    columns: &Columns,
+    first: u32,
+    records: &[serde_json::Value],
+) -> Option<String> {
+    let (key, key_col) = columns.0.iter().min_by_key(|(_, col)| *col)?;
+    for (row, record) in (first..).zip(records) {
+        let Some(wanted) = record
+            .as_object()
+            .and_then(|record| record.iter().find(|(name, _)| fold(name) == fold(key)))
+            .map(|(_, value)| value)
+        else {
+            continue;
+        };
+        let Ok(Some(written)) = cell_write((*key_col, row), wanted) else {
+            continue;
+        };
+        let held = sheet
+            .snapshot
+            .raw
+            .get(&(*key_col, row))
+            .map_or("", |raw| raw.trim());
+        if held.is_empty() || fold(held) == fold(&written.raw) {
+            continue;
+        }
+        return Some(format!(
+            "data row {} of `{}` holds `{held}` under `{key}`, not `{}`: the sheet changed \
+             since it was read. Read it again and write to the row that holds `{}`, or leave \
+             `row` out to append (to rename the row's `{key}`, write that cell with set-cells)",
+            row, sheet.name, written.raw, written.raw
+        ));
+    }
+    None
+}
+
 /// Records written into a sheet by the headers of its first row.
 pub(crate) fn set_records_spec(sheet: usize, sheet_id: &str, info: Arc<SheetInfo>) -> ActionSpec {
     let sheet_id = sheet_id.to_owned();
@@ -274,7 +318,9 @@ pub(crate) fn set_records_spec(sheet: usize, sheet_id: &str, info: Arc<SheetInfo
                 "row",
                 ParamType::Integer,
                 "Data row the first record goes to, 1 = the row under the headers (sheet row 2), \
-                 the rest below it; omit to append after the last used row",
+                 the rest below it; omit to append after the last used row. A record whose \
+                 first-column value differs from the one its filled row holds is refused: the \
+                 rows moved since they were read",
             ),
             ActionParam::optional(
                 "columns",
@@ -287,18 +333,24 @@ pub(crate) fn set_records_spec(sheet: usize, sheet_id: &str, info: Arc<SheetInfo
             let Some(records) = args.array("records") else {
                 return invalid("records must be an array of objects keyed by header");
             };
-            let cells = match Columns::of_sheet(&info) {
-                Ok(columns) => first_record_row(&info, args.integer("row"))
-                    .and_then(|first| cells_from_records(&columns, first, records)),
-                // An empty sheet takes its header row from the records.
-                Err(_) if info.snapshot.raw.is_empty() => {
-                    let names = args
-                        .array("columns")
-                        .map_or_else(|| keys_in_order(records), <[_]>::to_vec);
-                    new_sheet_cells(&names, records)
-                }
-                Err(message) => Err(message),
-            };
+            let explicit = args.integer("row").is_some();
+            let cells =
+                match Columns::of_sheet(&info) {
+                    Ok(columns) => first_record_row(&info, args.integer("row")).and_then(|first| {
+                        match stale_row(&info, &columns, first, records).filter(|_| explicit) {
+                            Some(refusal) => Err(refusal),
+                            None => cells_from_records(&columns, first, records),
+                        }
+                    }),
+                    // An empty sheet takes its header row from the records.
+                    Err(_) if info.snapshot.raw.is_empty() => {
+                        let names = args
+                            .array("columns")
+                            .map_or_else(|| keys_in_order(records), <[_]>::to_vec);
+                        new_sheet_cells(&names, records)
+                    }
+                    Err(message) => Err(message),
+                };
             match cells {
                 Ok(cells) if cells.is_empty() => invalid("records hold no values to write"),
                 Ok(cells) => encode(&SheetsAction::SetCells {
