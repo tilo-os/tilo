@@ -71,11 +71,27 @@ if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
 else
   export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
   mkdir -p "$DOCKER_CONFIG"
-  password=$(id_token "$registry")
-  printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-stdin "$registry"
-  unset password
-  cp "$auth" "$DOCKER_CONFIG/config.json"
 fi
+# Log in with a fresh identity token. It is the registry password and lasts minutes, so a push
+# that outlives it (a multi-GB image) fails to authenticate its next blob; copy() logs in again
+# and retries, and the blobs already pushed are not sent twice.
+login() {
+  [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]] && return
+  local password
+  password=$(id_token "$registry")
+  printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-stdin "$registry" >/dev/null
+  cp "$auth" "$DOCKER_CONFIG/config.json"
+}
+copy() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    login
+    skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" "$@" && return
+    printf 'publish: copy attempt %s failed; logging in again\n' "$attempt" >&2
+  done
+  die "could not copy $1 to $2"
+}
+login
 # A tag with its placeholders filled in.
 fill() {
   local tag=${1//\{commit\}/$T_COMMIT}
@@ -86,7 +102,7 @@ fill() {
   printf '%s' "$tag"
 }
 first=$(fill "$1")
-skopeo copy --all --preserve-digests --authfile "$auth" "oci-archive:$out/image.oci.tar" "$(target "$first")"
+copy "oci-archive:$out/image.oci.tar" "$(target "$first")"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
@@ -99,6 +115,7 @@ if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
   cosign verify-blob --insecure-ignore-tlog=true --key "$key" --signature "$out/signature" "$out/payload.json"
 elif [[ -s $out/signature ]]; then
   use_cosign
+  login
   if [[ -s $out/bundle.json ]]; then
     # Signed with a transparency log entry (oci-sign.sh, TILO_SIGN_TLOG=1): attach it, and
     # verify the way release builds do, requiring it.
@@ -113,7 +130,7 @@ fi
 tags="\"$first\""
 for tag in "${@:2}"; do
   tag=$(fill "$tag")
-  skopeo copy --all --preserve-digests --authfile "$auth" "$(pushed)" "$(target "$tag")"
+  copy "$(pushed)" "$(target "$tag")"
   tags+=",\"$tag\""
 done
 signed=false
