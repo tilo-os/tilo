@@ -14,6 +14,26 @@ fn import(app: &mut TestApp<ChipDesignShell>, value: &Value) -> String {
     VerificationRecord::import(&raw).unwrap().0
 }
 #[test]
+fn flow_receipts_can_be_removed_from_the_list_and_detail_and_undone() {
+    for detail in [false, true] {
+        let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+        let id = import(&mut app, &fixture());
+        if detail {
+            app.call("inspect", json!({"report": id})).unwrap();
+        }
+        app.harness().resize((1600, 1400)).unwrap();
+        app.settle();
+        app.harness()
+            .click_named(&format!("chip-remove-verification-{id}"))
+            .expect("flow receipt must offer the same removal action as other receipts");
+        app.settle();
+        assert!(app.parsed().verifications.is_empty());
+        assert!(app.undo());
+        assert!(app.parsed().verifications.contains_key(&id));
+    }
+}
+
+#[test]
 fn public_flow_stage_artifact_search_and_view_preserve_scope() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     assert!(app.parsed().verifications.is_empty());
