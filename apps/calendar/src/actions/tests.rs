@@ -322,6 +322,53 @@ fn replicated_edits_of_one_event_converge() {
     );
 }
 
+#[test]
+fn importing_a_duration_through_the_autumn_fold_keeps_actual_instants() {
+    // Both a reversed wall interval and a later-fold endpoint after the
+    // start need an unambiguous representation, not just a local-order fix.
+    for (duration, expected_end) in [("PT30M", "01:15"), ("PT65M", "01:50")] {
+        let source = format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-visit@example.com\r\nSUMMARY:Visit\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:{duration}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:other-visit@example.com\r\nSUMMARY:Other\r\nDTSTART:20261026T090000\r\nDTEND:20261026T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let mut calendar = Replica::<Calendar>::new();
+        calendar
+            .apply(crate::resource::import(&source).unwrap())
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert_eq!(state.events.len(), 2);
+        let event = state
+            .events
+            .iter()
+            .find(|event| event.title == "Visit")
+            .unwrap();
+        let start = crate::timezone::wall_to_utc(&event.timezone, event.start)
+            .unwrap()
+            .0;
+        let end = crate::timezone::wall_to_utc(&event.timezone, event.end)
+            .unwrap()
+            .0;
+        assert_eq!(start.to_rfc3339(), "2026-10-25T00:45:00+00:00");
+        assert_eq!(
+            end.to_rfc3339(),
+            format!("2026-10-25T{expected_end}:00+00:00")
+        );
+        let exported = crate::ics::export(&state);
+        let mut copy = Replica::<Calendar>::new();
+        copy.apply(crate::resource::import(&exported).unwrap())
+            .unwrap();
+        let copy_state = copy.state().unwrap();
+        let copied = copy_state
+            .events
+            .iter()
+            .find(|event| event.title == "Visit")
+            .unwrap();
+        assert_eq!(
+            (copied.start, copied.end, &copied.timezone),
+            (event.start, event.end, &event.timezone)
+        );
+    }
+}
+
 /// One import is one action, and its payload replays to the same calendar
 /// on every replica.
 #[test]
