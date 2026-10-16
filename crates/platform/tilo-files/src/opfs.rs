@@ -157,6 +157,39 @@ impl Scope {
         write_file(&file, bytes).await
     }
 
+    /// Reload and replace while holding the same lock as every profile writer.
+    pub(crate) async fn update_atomic<F, Fut>(&self, path: &VPath, update: F) -> Result<(), FsError>
+    where
+        F: FnOnce(Option<Vec<u8>>) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<u8>, FsError>>,
+    {
+        let _names = self.names().await?;
+        let previous = match self.read(path).await {
+            Ok(bytes) => Some(bytes),
+            Err(FsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let existed = previous.is_some();
+        let bytes = update(previous).await?;
+        let full = self.full(path);
+        let parts: Vec<&str> = full.components().collect();
+        let Some((name, parents)) = parts.split_last() else {
+            return Err(FsError::InvalidPath(crate::BELOW_ROOT));
+        };
+        let dir = self.dir(parents, true).await?;
+        let file = file_handle(&dir, name, true).await?;
+        if let Err(error) = write_file(&file, &bytes).await {
+            // Creating a new handle exposes an empty file before close(). It
+            // must not masquerade as a damaged existing vault on retry.
+            if !existed {
+                await_js(dir.remove_entry(name), FsError::NotADirectory).await?;
+            }
+            return Err(error);
+        }
+        crate::web::committed_directly(self, &crate::web::Direct::Write(path, &bytes));
+        Ok(())
+    }
+
     pub(crate) async fn create_new(&self, path: &VPath, bytes: &[u8]) -> Result<bool, FsError> {
         let full = self.full(path);
         let parts: Vec<&str> = full.components().collect();

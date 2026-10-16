@@ -100,6 +100,24 @@ export async function putSecret(app,key,bytes,env={}){
   });
 }
 
+/** Read or durably create a key under the app lock. Never replace custody.
+ * `bytes` null forbids creation when ciphertext already exists.
+ */
+export async function getOrCreateSecret(app,key,bytes,env={}){
+  const e=environment(env);
+  if(!e.subtle)throw Error('WebCrypto is unavailable in this browser');
+  return exclusive(e.locks,app,async()=>{
+    const existing=await getSecret(app,key,e);
+    if(existing)return existing;
+    if(bytes===null)throw Error('existing vault key is missing; recovery is required');
+    const cryptoKey=await appKey(e,app,true);
+    const iv=e.random(new Uint8Array(12));
+    const data=await e.subtle.encrypt({name:'AES-GCM',iv,additionalData:bound(app,key)},cryptoKey,bytes);
+    await e.storage.put(ITEMS,[app,key],{iv,data:new Uint8Array(data)});
+    return bytes.slice();
+  });
+}
+
 /** Delete the secret `key` of `app`; a missing one is fine. */
 export async function deleteSecret(app,key,env={}){
   const e=environment(env);

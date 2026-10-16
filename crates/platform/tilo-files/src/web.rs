@@ -46,6 +46,78 @@ use web_sys::{BroadcastChannel, MessageEvent};
 use crate::watch::{ChangeKind, Watch, Watchers};
 use crate::{Entry, FsError, Kind, Meta, VPath, memory, opfs};
 
+type UpdateId = (String, VPath, String);
+type UpdateResult = Rc<RefCell<UpdateState>>;
+
+#[derive(Default)]
+struct UpdateState {
+    result: Option<Result<(), FsError>>,
+    waiters: Vec<Waker>,
+}
+
+thread_local! {
+    static UPDATES: RefCell<HashMap<UpdateId, UpdateResult>> = RefCell::default();
+}
+
+/// Start a locked, durable read/modify/write against a browser Dir capability.
+/// `operation` identifies the caller's immutable edits, not a storage namespace.
+/// Returns false while pending. Retry with the same arguments to consume the
+/// committed result or error exactly once. Reads bypass the synchronous mirror;
+/// the mirror changes only after commit. The closure must not reenter file writes
+/// in this profile, whose writer lock it holds across awaits.
+///
+/// # Errors
+/// Returns backend or closure failures; non-OPFS directories are unsupported.
+pub fn update_atomic_blocking<F, Fut>(
+    dir: &crate::Dir,
+    path: &VPath,
+    operation: &str,
+    update: F,
+) -> Result<bool, FsError>
+where
+    F: FnOnce(Option<Vec<u8>>) -> Fut + 'static,
+    Fut: Future<Output = Result<Vec<u8>, FsError>> + 'static,
+{
+    let crate::Root::Opfs(scope) = &dir.root else {
+        return Err(FsError::Unsupported {
+            feature: crate::Feature::Files,
+            reason: "acknowledged browser updates require an OPFS directory",
+        });
+    };
+    crate::below_root(path)?;
+    let id = (
+        scope.profile().to_owned(),
+        scope.prefix().join(path),
+        operation.to_owned(),
+    );
+    UPDATES.with_borrow_mut(|updates| {
+        if let Some(result) = updates.get(&id) {
+            let completed = result.borrow().result.clone();
+            if let Some(result) = completed {
+                updates.remove(&id);
+                return result.map(|()| true);
+            }
+            return Ok(false);
+        }
+        let result = Rc::new(RefCell::new(UpdateState::default()));
+        updates.insert(id, Rc::clone(&result));
+        let scope = scope.clone();
+        let path = path.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let completed = scope.update_atomic(&path, update).await;
+            let waiters = {
+                let mut state = result.borrow_mut();
+                state.result = Some(completed);
+                std::mem::take(&mut state.waiters)
+            };
+            for waiter in waiters {
+                waiter.wake();
+            }
+        });
+        Ok(false)
+    })
+}
+
 /// The per-app slots the mirror holds, as named by `tilo-paths`.
 const MIRRORED: [&str; 3] = ["data", "config", "state"];
 
@@ -90,16 +162,22 @@ pub fn is_mirrored(profile: &str) -> bool {
 }
 
 /// Changes to `profile`'s mirror not yet committed to OPFS, including one
-/// being written.
+/// being written, plus explicit updates awaiting a consume-once acknowledgement.
 #[must_use]
 pub fn pending(profile: &str) -> usize {
-    mirror_of(profile).map_or(0, |mirror| {
+    let updates = UPDATES.with_borrow(|updates| {
+        updates
+            .keys()
+            .filter(|(owner, _, _)| owner == profile)
+            .count()
+    });
+    updates.saturating_add(mirror_of(profile).map_or(0, |mirror| {
         mirror
             .queue
             .borrow()
             .len()
             .saturating_add(usize::from(mirror.in_flight.get()))
-    })
+    }))
 }
 
 /// The latest change to `profile`'s mirror that OPFS refused, clearing it.
@@ -114,8 +192,28 @@ pub fn take_failure(profile: &str) -> Option<FsError> {
 ///
 /// # Errors
 ///
-/// The latest refused change since the last [`take_failure`], cleared.
+/// Explicit update failures remain visible until the matching synchronous
+/// retry consumes them. Queued mirror failures since [`take_failure`] are cleared.
 pub async fn flush(profile: &str) -> Result<(), FsError> {
+    let updates: Vec<_> = UPDATES.with_borrow(|updates| {
+        updates
+            .iter()
+            .filter(|((owner, _, _), _)| owner == profile)
+            .map(|(_, state)| Rc::clone(state))
+            .collect()
+    });
+    for state in updates {
+        std::future::poll_fn(|cx| {
+            let mut state = state.borrow_mut();
+            if let Some(result) = &state.result {
+                Poll::Ready(result.clone())
+            } else {
+                state.waiters.push(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await?;
+    }
     let Some(mirror) = mirror_of(profile) else {
         return Ok(());
     };

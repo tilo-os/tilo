@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {acknowledgedMerge,acknowledgedSeal,acknowledgedSecret,deleteSecret,flushAcknowledgements,flushSecrets,getSecret,indexedDbStorage,loadSecrets,pendingAcknowledgements,putSecret,queueSecret} from './secrets.mjs';
+import {acknowledgedMerge,acknowledgedSeal,acknowledgedSecret,deleteSecret,flushAcknowledgements,flushSecrets,getOrCreateSecret,getSecret,indexedDbStorage,loadSecrets,pendingAcknowledgements,putSecret,queueSecret} from './secrets.mjs';
 
 // These tests are single-writer unless they supply a competing lock manager.
 const locks={request:async(_name,fn)=>fn()};
@@ -17,6 +17,35 @@ function memory(){
     entries:async store=>[...stores[store]].map(([key,value])=>[JSON.parse(key),value]),
   };
 }
+
+test('concurrent vault key initialization returns one durable winner',async()=>{
+  let tail=Promise.resolve();
+  const serialized={request:(_name,fn)=>{
+    const result=tail.then(fn);tail=result.catch(()=>{});return result;
+  }};
+  const storage=memory(),env={storage,locks:serialized};
+  const [a,b]=await Promise.all([
+    getOrCreateSecret('Tilo','account-vault',new Uint8Array([1,2,3]),env),
+    getOrCreateSecret('Tilo','account-vault',new Uint8Array([4,5,6]),env),
+  ]);
+  assert.deepEqual(a,b);
+  assert.deepEqual(await getSecret('Tilo','account-vault',env),a);
+  assert.deepEqual(await getOrCreateSecret('Tilo','account-vault',null,env),a);
+});
+
+test('missing existing custody and failed key writes never acknowledge creation',async()=>{
+  const storage=memory(),env={storage,locks};
+  await assert.rejects(getOrCreateSecret('Tilo','account-vault',null,env),/recovery is required/);
+  const original=storage.put;
+  storage.put=async(store,...args)=>{
+    if(store==='items')throw Error('key commit refused');
+    return original(store,...args);
+  };
+  await assert.rejects(getOrCreateSecret('Tilo','account-vault',new Uint8Array([7]),env),/key commit refused/);
+  assert.equal(await getSecret('Tilo','account-vault',env),null);
+  storage.put=original;
+  assert.deepEqual(await getOrCreateSecret('Tilo','account-vault',new Uint8Array([8]),env),new Uint8Array([8]));
+});
 
 test('secrets round-trip, replace and delete under a non-extractable key',async()=>{
   const storage=memory(),env={storage,locks};

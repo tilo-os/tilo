@@ -12,6 +12,11 @@ when using cookies. Settings identity alone is insufficient for credential
 status/set/remove: the session must explicitly grant credential management.
 There is no credential-read operation.
 
+The service is single-user: caller roles are capabilities, not tenant identities.
+Run separate processes with isolated configuration, storage and credential custody
+for different users, and route each authenticated session only to its user's
+instance. Do not put grants for unrelated users in one session directory.
+
 ## Build features
 
 Defaults are empty: native and browser UI consumers get only the protocol and

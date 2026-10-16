@@ -20,6 +20,8 @@ extern "C" {
     fn get_secret(app: &str, key: &str) -> Promise;
     #[wasm_bindgen(js_name = putSecret)]
     fn put_secret(app: &str, key: &str, bytes: &[u8]) -> Promise;
+    #[wasm_bindgen(js_name = getOrCreateSecret)]
+    fn get_or_create_secret(app: &str, key: &str, bytes: Option<Uint8Array>) -> Promise;
     #[wasm_bindgen(js_name = deleteSecret)]
     fn delete_secret(app: &str, key: &str) -> Promise;
     #[wasm_bindgen(js_name = loadSecrets)]
@@ -41,6 +43,29 @@ extern "C" {
     ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = pendingAcknowledgements)]
     fn pending_acknowledgements() -> bool;
+}
+
+/// Read or durably initialize custody under the browser's app lock.
+/// `None` forbids creation (for an existing encrypted vault). Concurrent
+/// creators receive the same committed value, never their losing candidate.
+///
+/// # Errors
+/// Returns storage, crypto, or missing-custody errors.
+pub async fn get_or_create(
+    app: &str,
+    key: &str,
+    candidate: Option<&[u8]>,
+) -> Result<Secret, SecretError> {
+    let value = JsFuture::from(get_or_create_secret(
+        app,
+        key,
+        candidate.map(Uint8Array::from),
+    ))
+    .await
+    .map_err(|e| failed(&e))?;
+    let bytes = Uint8Array::new(&value).to_vec();
+    remember(app, key, Some(&bytes))?;
+    Ok(Secret::new(bytes))
 }
 
 /// Whether a synchronous consumer must retry a durable operation.
