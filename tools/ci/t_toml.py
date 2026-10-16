@@ -251,6 +251,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh",
                    "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
     },
+    # The relay's privileged personal-device test, built here for the micro-VM
+    # check that runs it as real root (real-fuse-privileged).
+    "real-fuse-privileged-build": {
+        "packages": lambda packages, root: {"tilo-relay"},
+        "inputs": [],
+    },
 }
 
 
