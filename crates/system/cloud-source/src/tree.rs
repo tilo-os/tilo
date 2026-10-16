@@ -80,20 +80,43 @@ impl Tree {
 
     /// Remove an item and everything reachable only through it.
     pub fn remove_recursive(&mut self, id: &ItemId) -> Vec<Item> {
-        let mut removed = Vec::new();
+        // Discover the whole subtree before deciding which other parents
+        // survive. A sibling scheduled for removal is not an escape route.
+        let mut candidates = BTreeSet::new();
         let mut pending = vec![id.clone()];
         while let Some(next) = pending.pop() {
-            if let Some(kids) = self.children.get(&next) {
-                for kid in kids {
-                    let other_parent = self.items.get(kid).is_some_and(|item| {
-                        item.parents
-                            .iter()
-                            .any(|p| p != &next && self.items.contains_key(p))
-                    });
-                    if !other_parent {
-                        pending.push(kid.clone());
-                    }
-                }
+            if candidates.insert(next.clone())
+                && let Some(kids) = self.children.get(&next)
+            {
+                pending.extend(kids.iter().cloned());
+            }
+        }
+        let mut kept = HashSet::new();
+        let mut pending: Vec<_> = candidates
+            .iter()
+            .filter(|next| *next != id)
+            .filter(|next| {
+                self.items.get(*next).is_some_and(|item| {
+                    item.parents.iter().any(|parent| {
+                        !candidates.contains(parent)
+                            && (parent == &self.root || self.items.contains_key(parent))
+                    })
+                })
+            })
+            .cloned()
+            .collect();
+        while let Some(next) = pending.pop() {
+            if next != *id
+                && kept.insert(next.clone())
+                && let Some(kids) = self.children.get(&next)
+            {
+                pending.extend(kids.iter().cloned());
+            }
+        }
+        let mut removed = Vec::new();
+        for next in candidates {
+            if kept.contains(&next) {
+                continue;
             }
             if let Some(item) = self.unlink(&next) {
                 removed.push(item);
@@ -385,6 +408,41 @@ mod tests {
         let removed = tree.remove_recursive(&ItemId::new("x"));
         assert_eq!(removed.len(), 1, "plan.txt still lives under Shared");
         assert!(tree.resolve(["Shared", "plan.txt"]).is_some());
+    }
+
+    #[test]
+    fn recursive_removal_preserves_an_implicit_root_parent() {
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
+        tree.upsert(item(
+            "shared",
+            &["folder", "root"],
+            "Shared",
+            ItemKind::Folder,
+        ));
+        tree.upsert(item("file", &["shared"], "file", ItemKind::File));
+        let removed = tree.remove_recursive(&ItemId::new("folder"));
+        assert_eq!(
+            removed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["folder"]
+        );
+        assert_eq!(
+            tree.resolve(["Shared", "file"]).unwrap().id.as_str(),
+            "file"
+        );
+    }
+
+    #[test]
+    fn recursive_removal_deletes_internal_diamonds_and_cycles() {
+        let mut tree = Tree::new(ItemId::new("root"));
+        tree.upsert(item("folder", &["root"], "Folder", ItemKind::Folder));
+        tree.upsert(item("a", &["folder", "b"], "A", ItemKind::Folder));
+        tree.upsert(item("b", &["folder", "a"], "B", ItemKind::Folder));
+        tree.upsert(item("file", &["a", "b"], "file", ItemKind::File));
+        let removed = tree.remove_recursive(&ItemId::new("folder"));
+        assert_eq!(removed.len(), 4);
+        assert!(tree.is_empty());
+        assert!(tree.children(&ItemId::new("root")).is_empty());
     }
 
     #[test]
