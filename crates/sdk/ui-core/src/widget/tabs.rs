@@ -170,6 +170,33 @@ struct ClosingTab {
     started_at: Instant,
 }
 
+/// Whoever opened a tab on a shared desktop, when it is not this desktop's
+/// person and they may not rearrange it: the tab offers no close, a drag on
+/// it pulls a little and springs back, and hovering it names them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabHolder {
+    /// Their name, as presence shows it.
+    pub name: String,
+    /// Their presence colour.
+    pub rgb: (u8, u8, u8),
+}
+
+/// A drag on a tab someone else holds: how far it was pulled, and since
+/// when it springs back.
+#[derive(Clone, Copy, Debug)]
+struct Resist {
+    tab: u64,
+    origin: Point,
+    pull: vello::kurbo::Vec2,
+    released_at: Option<Instant>,
+}
+
+/// How far a held tab follows a drag before it stops: the reach of the
+/// rubber band ([`crate::tokens::rubber_band`]), a section gap.
+const RESIST_REACH: f32 = crate::tokens::Spacing::BASE.s4;
+/// How long a held tab takes to spring back once let go.
+const RESIST_RETURN_MS: u64 = 260;
+
 #[derive(Clone, Debug)]
 pub struct TabDescriptor {
     pub id: u64,
@@ -337,6 +364,11 @@ pub struct TabBar {
     /// of the ×; hovering swaps the × back, so the tab never stops being
     /// closable. Sidecar for the same reason as the two above.
     pub(crate) modified_ids: HashSet<u64>,
+    /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
+    /// reason as the three above.
+    held_ids: HashMap<u64, TabHolder>,
+    /// A drag on a held tab, pulling it or springing it back.
+    resist: Option<Resist>,
     /// Whether the hover-reveal maximize chip is offered at all. A host whose
     /// tabs are windows wants it; a host whose tabs are documents inside one
     /// window has nothing for it to do, and a chip that appears under the
@@ -456,6 +488,8 @@ impl TabBar {
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
+            held_ids: HashMap::new(),
+            resist: None,
             show_maximize: true,
             closable: true,
             new_tab: true,
@@ -1168,7 +1202,9 @@ impl TabBar {
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
         let close_rect_target = self.close_rects.get(i).copied().unwrap_or(Rect::ZERO);
-        if !(close_affordance_visible(look, is_pinned) && close_rect_target.area() > 0.0) {
+        let is_held = self.held_ids.contains_key(&t.id);
+        if !(close_affordance_visible(look, is_pinned || is_held) && close_rect_target.area() > 0.0)
+        {
             return;
         }
         let alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
@@ -1874,6 +1910,76 @@ impl TabBar {
     pub fn is_pinned(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
     }
+    /// Mark `id` as held by someone else ([`TabHolder`]), or clear the mark.
+    /// `true` when that changed what the tab offers.
+    pub fn set_holder(&mut self, id: u64, holder: Option<TabHolder>) -> bool {
+        match holder {
+            Some(holder) => self.held_ids.insert(id, holder.clone()).as_ref() != Some(&holder),
+            None => self.held_ids.remove(&id).is_some(),
+        }
+    }
+    /// Who holds `id`, when someone else does.
+    pub fn holder(&self, id: u64) -> Option<&TabHolder> {
+        self.held_ids.get(&id)
+    }
+    /// Whether someone else holds `id`.
+    pub fn is_held(&self, id: u64) -> bool {
+        self.held_ids.contains_key(&id)
+    }
+    /// Name whoever holds the tab under the pointer, in their colour, beside
+    /// it in the tab strip: on someone else's window that is the whole
+    /// explanation of why it offers no close and will not move. Within
+    /// `viewport`, the strip's band, so it never covers the window's content.
+    pub(crate) fn draw_holder_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+    ) {
+        if self.pending_drag.is_some() {
+            return;
+        }
+        let Some((t, rect)) = self
+            .hover_idx
+            .and_then(|i| self.tabs.get(i).zip(self.tab_rects.get(i)))
+        else {
+            return;
+        };
+        let Some(holder) = self.held_ids.get(&t.id) else {
+            return;
+        };
+        let label = crate::i18n!("tab-held-by", "name" => holder.name.clone());
+        let color = theme.tokens.colors.presence.of_rgb(holder.rgb);
+        super::tooltip::draw_person_tooltip_on(
+            scene,
+            transform,
+            tr,
+            theme,
+            (*rect, super::tooltip::TooltipSide::Beside),
+            (&label, color),
+            viewport,
+        );
+    }
+
+    /// How far the held tab being dragged is pulled from its place, if one
+    /// is: following the drag, or springing back after it.
+    fn resist_offset(&self) -> Option<(u64, vello::kurbo::Vec2)> {
+        let resist = self.resist?;
+        let keep = match resist.released_at {
+            None => 1.0,
+            Some(at) => {
+                let back = Duration::from_millis(RESIST_RETURN_MS);
+                let elapsed = at.elapsed();
+                if self.reduce_motion || elapsed >= back {
+                    return None;
+                }
+                1.0 - crate::ease_out(elapsed.as_secs_f64() / back.as_secs_f64())
+            }
+        };
+        Some((resist.tab, resist.pull * keep))
+    }
     /// Caller ensures the tab exists; a stale entry is tolerated (filtered at
     /// render time) but should be cleaned up via `unpin` when the tab is removed.
     pub fn pin(&mut self, id: u64) {
@@ -2061,6 +2167,14 @@ impl TabBar {
     /// Released outside this bar's rect → `pending_detach`; the parent `GroupRow`
     /// resolves the target bar by hit-testing sibling `bar_rect()`s.
     fn finish_drag_release(&mut self, handled: &mut bool) {
+        if let Some(resist) = self.resist.as_mut().filter(|r| r.released_at.is_none()) {
+            if resist.pull == vello::kurbo::Vec2::ZERO {
+                self.resist = None;
+            } else {
+                resist.released_at = Some(crate::time::now());
+                *handled = true;
+            }
+        }
         if self.pending_drag.is_some() {
             if let Some((from, _)) = self.press_origin {
                 if self.rect.contains(self.last_cursor) {
@@ -3329,6 +3443,10 @@ impl Widget for TabBar {
             && self
                 .drag_lifted_at
                 .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
+        // Held still, a pulled tab only moves with the pointer: only its
+        // spring back runs by itself.
+        let resisting =
+            self.resist.is_some_and(|r| r.released_at.is_some()) && self.resist_offset().is_some();
         drop_zone
             || layout
             || insert_fade
@@ -3338,6 +3456,7 @@ impl Widget for TabBar {
             || drag_lift
             || hover_intent
             || busy
+            || resisting
     }
 }
 
@@ -3480,10 +3599,14 @@ impl TabBar {
             };
             let combined_alpha = fade_alpha * source_dim;
 
-            let pill_transform = if fade_y == 0.0 {
+            let pull = self
+                .resist_offset()
+                .filter(|(tab, _)| *tab == t.id)
+                .map_or(vello::kurbo::Vec2::ZERO, |(_, pull)| pull);
+            let pill_transform = if fade_y == 0.0 && pull == vello::kurbo::Vec2::ZERO {
                 transform
             } else {
-                compose(transform, Affine::translate((0.0, fade_y)))
+                compose(transform, Affine::translate((pull.x, fade_y + pull.y)))
             };
             let pill_alpha_active = combined_alpha < 1.0;
             // Wider than the pill so hover-reveal action icons fade in cleanly.
@@ -3795,11 +3918,12 @@ impl TabBar {
         // The red wash follows the painted glyph. Presses, and the hover
         // intent (which never opens a pill from its ×), use the forgiving
         // 32 px target from `clickable_controls`.
+        let is_held_at = |i: usize| self.tabs.get(i).is_some_and(|t| self.is_held(t.id));
         self.hover_close_idx = self
             .close_rects
             .iter()
             .position(|r| r.area() > 0.0 && r.contains(p))
-            .filter(|&i| !is_pinned_at(i));
+            .filter(|&i| !is_pinned_at(i) && !is_held_at(i));
         // One point lights one chip: the close target first, then a painted
         // action glyph, then the enlarged action targets by priority — the
         // same resolution the press uses.
@@ -3827,7 +3951,21 @@ impl TabBar {
         };
         self.hover_intent.on_motion(&sample, crate::time::now());
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
-        if let Some((idx, origin)) = self.press_origin
+        if let Some(resist) = self.resist.as_mut().filter(|r| r.released_at.is_none()) {
+            // Someone else's tab follows the drag a little and no further.
+            let pull = |d: f64| {
+                let reach = f64::from(crate::tokens::rubber_band(
+                    crate::num::f32_of_f64(d.abs()),
+                    RESIST_REACH,
+                ));
+                reach.copysign(d)
+            };
+            resist.pull = vello::kurbo::Vec2::new(
+                pull(p.x - resist.origin.x),
+                pull(p.y - resist.origin.y) / 2.0,
+            );
+            *handled = true;
+        } else if let Some((idx, origin)) = self.press_origin
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
             && let Some(t) = self.tabs.get(idx)
         {
@@ -3886,7 +4024,8 @@ impl TabBar {
                 self.close_hit_rect(i)
                     .is_some_and(|r| r.contains(cursor_pos))
             })
-            .filter(|&i| !is_pinned_at(i));
+            .filter(|&i| !is_pinned_at(i))
+            .filter(|&i| self.tabs.get(i).is_none_or(|t| !self.is_held(t.id)));
         let action = if close_idx.is_some() {
             None
         } else {
@@ -3957,6 +4096,14 @@ impl TabBar {
             };
             let origin = pill.center();
             self.press_origin = Some((idx, origin));
+            if let Some(tab) = self.tabs.get(idx).filter(|t| self.is_held(t.id)) {
+                self.resist = Some(Resist {
+                    tab: tab.id,
+                    origin: cursor_pos,
+                    pull: vello::kurbo::Vec2::ZERO,
+                    released_at: None,
+                });
+            }
             self.drag_offset = Some(vello::kurbo::Vec2::new(
                 self.last_cursor.x - pill.x0,
                 self.last_cursor.y - pill.y0,
@@ -6057,6 +6204,81 @@ mod tests {
     }
 
     /// Mirrors the hand-built rects other tests use to skip the taffy layout pass.
+    fn holder() -> TabHolder {
+        TabHolder {
+            name: "Ben".into(),
+            rgb: (200, 80, 40),
+        }
+    }
+
+    fn move_to(b: &mut TabBar, x: f64, y: f64) {
+        let mut handled = false;
+        b.on_cursor_moved(winit::dpi::PhysicalPosition::new(x, y), 1.0, &mut handled);
+    }
+
+    #[test]
+    fn someone_elses_tab_offers_no_close() {
+        let mut b = bar_with_laid_out_rects();
+        assert!(b.set_holder(2, Some(holder())));
+        assert!(
+            !b.set_holder(2, Some(holder())),
+            "the same holder changes nothing"
+        );
+        // The pointer on its close glyph lights nothing and a press closes
+        // nothing; it selects the tab like any press on it.
+        move_to(&mut b, 155.0, 20.0);
+        assert_eq!(b.hover_close_idx, None);
+        let mut handled = false;
+        b.on_left_press(&mut handled);
+        assert_eq!(b.pending_close, None);
+        assert!(b.closing_tabs.is_empty());
+        assert_eq!(b.active_id(), 2);
+        // Its own tab beside it closes as ever.
+        let mut b = bar_with_laid_out_rects();
+        b.set_holder(2, Some(holder()));
+        move_to(&mut b, 69.0, 20.0);
+        assert_eq!(b.hover_close_idx, Some(0));
+    }
+
+    #[test]
+    fn a_drag_on_someone_elses_tab_pulls_it_a_little_and_springs_back() {
+        let mut b = bar_with_laid_out_rects();
+        b.set_holder(2, Some(holder()));
+        move_to(&mut b, 88.0, 20.0);
+        let mut handled = false;
+        b.on_left_press(&mut handled);
+        // Far past the drag threshold, and out of the bar.
+        move_to(&mut b, 400.0, 220.0);
+        assert!(b.pending_drag.is_none(), "it is not lifted");
+        let (tab, pull) = b.resist_offset().expect("it is pulled");
+        assert_eq!(tab, 2);
+        assert!(pull.x > 0.0 && pull.x < f64::from(RESIST_REACH), "{pull:?}");
+        assert!(pull.y > 0.0 && pull.y < f64::from(RESIST_REACH), "{pull:?}");
+        let mut handled = false;
+        b.finish_drag_release(&mut handled);
+        assert!(handled, "the release is the tab's");
+        assert_eq!(b.pending_detach, None);
+        assert_eq!(b.pending_reorder, None);
+        assert!(b.needs_animation_frame(), "it springs back");
+        // Once back, nothing more moves.
+        b.resist = b.resist.map(|resist| Resist {
+            released_at: crate::time::now()
+                .checked_sub(Duration::from_millis(RESIST_RETURN_MS + 1)),
+            ..resist
+        });
+        assert_eq!(b.resist_offset(), None);
+
+        // Its own tab still lifts.
+        let mut b = bar_with_laid_out_rects();
+        b.set_holder(2, Some(holder()));
+        move_to(&mut b, 6.0, 20.0);
+        let mut handled = false;
+        b.on_left_press(&mut handled);
+        move_to(&mut b, 140.0, 20.0);
+        assert!(b.pending_drag.is_some());
+        assert_eq!(b.resist_offset(), None);
+    }
+
     fn bar_with_laid_out_rects() -> TabBar {
         let mut b = bar();
         b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);

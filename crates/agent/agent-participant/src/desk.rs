@@ -9,22 +9,12 @@
 //! nothing is streamed. A record already on the desk is left where the
 //! people put it.
 
-use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ReadDoc as _, ScalarValue, Value};
+use automerge::AutoCommit;
 use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, TileContent};
-
-/// The key of the shared desktop document holding the desktop as JSON.
-const DESKTOP_KEY: &str = "desktop";
-
-/// The desktop as pages share it: the tree and each tab's record.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SharedDesktop {
-    tree: DesktopTree,
-    records: Vec<(u64, String)>,
-}
+use tilo_desktop_model::ownership::SharedDesktop;
+use tilo_desktop_model::{IdMinter, TileContent, shared_record};
 
 /// One view to put on the desk.
 pub(crate) struct View<'a> {
@@ -41,13 +31,7 @@ pub(crate) struct View<'a> {
 /// shared desktop.
 pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
-    let Ok(Some((Value::Scalar(value), _))) = doc.get(automerge::ROOT, DESKTOP_KEY) else {
-        return None;
-    };
-    let ScalarValue::Str(text) = value.as_ref() else {
-        return None;
-    };
-    let mut desktop: SharedDesktop = serde_json::from_str(text).ok()?;
+    let mut desktop = shared_record::read(&doc, None)?;
     if desktop
         .records
         .iter()
@@ -58,10 +42,12 @@ pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) ->
     let tab = add_tab(&mut desktop, author, view)?;
     desktop.records.push((tab, view.record.to_owned()));
     desktop.records.sort_unstable();
-    let json = serde_json::to_string(&desktop).ok()?;
+    // The agent opened it: it is the agent's to close, as anyone's window is
+    // theirs.
+    desktop.authors.insert(tab, author.to_owned());
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
-    doc.put(automerge::ROOT, DESKTOP_KEY, json).ok()?;
+    shared_record::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
 }
@@ -175,19 +161,17 @@ mod tests {
                 window_groups: vec![group(30, tab(31, "so.tilo.notes"))],
             },
         ];
-        let mut tree = DesktopTree::default();
-        tree.workspaces.push(workspace);
         let desktop = SharedDesktop {
-            tree,
+            tree: tilo_desktop_model::DesktopTree {
+                workspaces: vec![workspace],
+                ..tilo_desktop_model::DesktopTree::default()
+            },
             records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
+            authors: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            DESKTOP_KEY,
-            serde_json::to_string(&desktop).unwrap(),
-        )
-        .unwrap();
+        shared_record::write(&mut doc, &desktop).unwrap();
+        doc.commit();
         doc.save()
     }
 
@@ -200,13 +184,7 @@ mod tests {
     }
 
     fn read(changes: &[Vec<u8>]) -> SharedDesktop {
-        let doc = merged(changes);
-        let text = doc
-            .get(automerge::ROOT, DESKTOP_KEY)
-            .unwrap()
-            .and_then(|(value, _)| value.into_string().ok())
-            .expect("the desktop is a string");
-        serde_json::from_str(&text).unwrap()
+        shared_record::read(&merged(changes), None).expect("a desktop")
     }
 
     #[test]

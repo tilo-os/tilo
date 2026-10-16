@@ -1,106 +1,62 @@
-//! History for a desktop that is not kept as a room document.
+//! History for a desktop kept as one shared record.
 //!
-//! A host that saves (or replicates) its desktop as one JSON value keeps its
-//! history in an Automerge document whose every change replaces that value
-//! under [`DESKTOP_KEY`], stamped with when it was made and who made it
-//! ([`record`]). The history pane reads room documents, so
-//! [`room_history`] replays such a log into one: each change that moved a
-//! window of the room becomes one change of the room's projection, by the
-//! same actor at the same time, which the pane summarises ("opened",
-//! "closed", "renamed") and replays exactly as it does a native room's.
+//! A host that saves (or replicates) its desktop as a shared desktop record
+//! ([`tilo_desktop_model::shared_record`]) stamps each change of it with
+//! when it was made and who made it ([`record`]). The history pane reads
+//! room documents, so [`room_history`] replays such a log into one: each
+//! change that moved a window of the room becomes one change of the room's
+//! projection, by the same actor at the same time, which the pane
+//! summarises ("opened", "closed", "renamed") and replays exactly as it does
+//! a native room's.
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
-use automerge::{AutoCommit, ROOT, ReadDoc as _, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT};
 use tilo_automerge::WriteTyped as _;
+use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
+use tilo_desktop_model::{RoomId, Workspace, shared_record};
 
-/// The key every change of a desktop log writes the desktop under.
-pub const DESKTOP_KEY: &str = "desktop";
 /// A change's message names its author after this prefix.
 const AUTHOR_PREFIX: &str = "author:";
 /// The newest changes a room history replays; older ones stay in the log.
 pub const MAX_REPLAYED_CHANGES: usize = 600;
 
-/// The desktop a log value carries: a bare tree, or `{ "tree": … }` with
-/// the host's own fields beside it.
-fn tree_of(value: &serde_json::Value) -> Option<DesktopTree> {
-    let tree = value.get("tree").unwrap_or(value);
-    serde_json::from_value(tree.clone()).ok()
-}
-
-/// What a change of the desktop is about: its windows, not which of them is
-/// focused, so moving focus records nothing.
-fn layout_of(value: &serde_json::Value) -> serde_json::Value {
-    let mut value = value.clone();
-    let tree = match value.get_mut("tree") {
-        Some(tree) => tree,
-        None => &mut value,
-    };
-    if let Some(tree) = tree.as_object_mut() {
-        for key in ["active", "active_strip", "active_group"] {
-            tree.remove(key);
-        }
-        if let Some(workspaces) = tree
-            .get_mut("workspaces")
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for workspace in workspaces {
-                if let Some(strips) = workspace
-                    .get_mut("strips")
-                    .and_then(serde_json::Value::as_array_mut)
-                {
-                    for strip in strips {
-                        if let Some(groups) = strip
-                            .get_mut("window_groups")
-                            .and_then(serde_json::Value::as_array_mut)
-                        {
-                            for group in groups {
-                                if let Some(group) = group.as_object_mut() {
-                                    group.remove("active_tab");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+/// The desktop a host value carries: `{ tree, records?, authors? }`, or a
+/// bare tree.
+fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
+    if value.get("tree").is_some() {
+        return serde_json::from_value(value.clone()).ok();
     }
-    value
-}
-
-fn text_at(doc: &AutoCommit, heads: Option<&[automerge::ChangeHash]>) -> Option<String> {
-    let found = match heads {
-        Some(heads) => doc.get_at(ROOT, DESKTOP_KEY, heads),
-        None => doc.get(ROOT, DESKTOP_KEY),
-    };
-    match found.ok()?? {
-        (Value::Scalar(scalar), _) => match scalar.as_ref() {
-            ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
+    Some(SharedDesktop {
+        tree: serde_json::from_value(value.clone()).ok()?,
+        ..SharedDesktop::default()
+    })
 }
 
 /// Write `value` to `log` as one change by `author` at `time` (seconds since
-/// the epoch) when its windows differ from what the log holds. Returns
-/// whether it wrote.
+/// the epoch) when what the record keeps of it differs from what the log
+/// holds; which window is focused is not kept, so moving focus records
+/// nothing. Returns whether it wrote.
 pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, time: i64) -> bool {
-    let current = text_at(log, None).and_then(|text| serde_json::from_str(&text).ok());
-    if current.is_some_and(|current| layout_of(&current) == layout_of(value)) {
+    let Some(desktop) = desktop_of(value) else {
         return false;
+    };
+    match shared_record::write(log, &desktop) {
+        Ok(true) => {
+            log.commit_with(
+                CommitOptions::default()
+                    .with_message(format!("{AUTHOR_PREFIX}{author}"))
+                    .with_time(time),
+            );
+            true
+        }
+        Ok(false) => false,
+        Err(_) => {
+            log.rollback();
+            false
+        }
     }
-    if log.put(ROOT, DESKTOP_KEY, value.to_string()).is_err() {
-        return false;
-    }
-    log.commit_with(
-        CommitOptions::default()
-            .with_message(format!("{AUTHOR_PREFIX}{author}"))
-            .with_time(time),
-    );
-    true
 }
 
 /// Save a changed log through the host's store. A refusal keeps it pending,
@@ -165,10 +121,7 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
     let mut declared = false;
     let mut projected: BTreeSet<u16> = BTreeSet::new();
     for change in changes.into_iter().skip(skip) {
-        let Some(tree) = text_at(&log, Some(&[change.hash()]))
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| tree_of(&value))
-        else {
+        let Some(tree) = shared_record::read(&log, Some(&[change.hash()])).map(|d| d.tree) else {
             continue;
         };
         let Some(workspace) = tree.workspaces.iter().find(|w| w.room == room) else {
@@ -232,7 +185,7 @@ mod tests {
     use super::*;
     use crate::activity::{ActivitySnapshot, RoomActivityPane};
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{IdMinter, Tab, TileContent};
+    use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
 
     fn app(minter: &mut IdMinter, title: &str) -> Tab {
         Tab {
@@ -427,7 +380,7 @@ mod tests {
             0
         );
         let mut junk = AutoCommit::new();
-        junk.put(ROOT, DESKTOP_KEY, "not json").unwrap();
+        junk.put(ROOT, "workspaces", "not a desktop").unwrap();
         junk.commit();
         assert_eq!(
             room_history(junk, RoomId::new()).doc.get_changes(&[]).len(),

@@ -168,6 +168,30 @@ pub fn administrator_grant(room: &str, person: &str, granted_by: Subject) -> Gra
     }
 }
 
+/// The id of the grant that lets an administrator moderate `person`'s room.
+#[must_use]
+pub fn administrator_moderation_grant_id(person: &str) -> GrantId {
+    GrantId(format!("room-admin-moderation-v1:{person}"))
+}
+
+/// The grant that lets `person`, an administrator of `room`, moderate it:
+/// every moderation action allowed, as a Moderator may, given beside
+/// [`administrator_grant`] by its giver. It sits one level below
+/// [`moderation`], where an Editor's own role denies, so it decides every
+/// moderation action whatever that role says.
+#[must_use]
+pub fn administrator_moderation_grant(room: &str, person: &str, granted_by: Subject) -> Grant {
+    Grant {
+        id: administrator_moderation_grant_id(person),
+        subject: Subject::Person(person.to_owned()),
+        node: moderation(room).any(Level::Action),
+        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
 /// Whether `grant` is an administrator's grant of `room` in the shape rooms
 /// held before [`administrator_grant`]: the owner's lasting Allow on the
 /// room's resource, where it decides nothing an Editor's role does not

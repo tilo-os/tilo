@@ -123,3 +123,33 @@ fn reconciling_a_room_without_old_grants_writes_nothing_and_needs_no_writer() {
             .unwrap()
     );
 }
+
+/// An administrator moderates the room as a Moderator does, an Editor not:
+/// the grant comes and goes with the administrator's.
+#[test]
+fn an_administrator_moderates_and_an_editor_does_not() {
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let node = TreePath::room(peer.room())
+        .app("so.tilo.chat")
+        .kind("chat.message")
+        .resource("welcome")
+        .field(roles::MODERATION_FIELD)
+        .action("remove");
+    let moderates = |peer: &StatePeer| {
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .allows(&node, tilo_action_policy::ActionKind::Undoable, now)
+    };
+    assert!(!moderates(&peer));
+    assert!(
+        peer.governance_mut()
+            .set_member_administrator(user, &host_key, now)
+            .unwrap()
+    );
+    assert!(moderates(&peer));
+    peer.governance_mut()
+        .set_member_role(user, crate::join::MemberRole::Editor, &host_key, now)
+        .unwrap();
+    assert!(!moderates(&peer));
+}

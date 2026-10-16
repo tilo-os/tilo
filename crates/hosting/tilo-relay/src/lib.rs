@@ -89,6 +89,8 @@ pub mod compute_worker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 #[cfg(not(target_arch = "wasm32"))]
+mod desktop_guard;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod environment_bridge;
 #[cfg(target_os = "linux")]
 pub mod environment_guest;
