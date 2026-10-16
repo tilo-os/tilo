@@ -807,6 +807,11 @@ existing authenticated owner socket, not the test-control socket:
 tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" actions invoke session-diagnostics inspect@session-diagnostics --args-json '{"app_id":"so.tilo.browser"}'
 ```
 
+`profile-start` (optional `seconds`, 1–600, default 30) and `profile-stop`
+record a profile of the running compositor into
+`$XDG_STATE_HOME/tilo/profiles/`; `inspect` reports its state under `profile`.
+See [Profiling the running desktop](performance-flags.md#profiling-the-running-desktop).
+
 The history is captured directly by the compositor, not reconstructed from
 journal or flight-recorder replay. Inspect does not launch an app, replay an
 action or change diagnostic configuration. An unsupported connection receives

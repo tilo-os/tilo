@@ -11,7 +11,7 @@ name: Security / tenant and agent isolation
 # Each suite also runs in the affected-package pull-request CI when its crate
 # changes. This lane runs them together every night and on demand, against
 # both relay builds that ship: the default one and the `agents` build the
-# room service image uses (room-service-image.yml). It starts its own relays
+# room service image uses (the t check image-room-service). It starts its own relays
 # in process and never contacts a deployed host.
 on:
   schedule:

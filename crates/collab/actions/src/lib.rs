@@ -144,6 +144,7 @@ pub mod registry;
 pub mod remote;
 pub mod resource;
 pub mod schema;
+pub mod selection;
 pub mod surface;
 
 pub use action::{
@@ -211,6 +212,10 @@ pub use resource::{
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
+};
+pub use selection::{
+    BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
+    SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;

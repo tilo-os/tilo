@@ -129,6 +129,7 @@ members = [
     "apps/video-player",
     "apps/vpn",
     "apps/weather",
+    "apps/web-search",
     "apps/windows",
     "apps/word-processor",
 
@@ -274,6 +275,7 @@ members = [
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-invidious",
+    "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",

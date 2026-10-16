@@ -3654,6 +3654,7 @@ impl WorkspaceTree {
             route,
             status: WorkspaceTaskStatus::Queued,
             resource,
+            subject: None,
             created_at: now,
             updated_at: now,
             audit: vec![WorkspaceTaskAuditEvent::new(

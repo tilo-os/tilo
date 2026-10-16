@@ -229,6 +229,7 @@ impl HostApplicationsProvider {
                         placement,
                         portal_workspace_id,
                         requested_at: std::time::Instant::now(),
+                        reopen_from_tray: true,
                     })
                 } else {
                     host_apps::launch(&desktop_id, None).map(|_| ())

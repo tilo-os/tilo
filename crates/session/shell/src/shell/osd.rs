@@ -82,6 +82,9 @@ pub enum OsdKind {
     /// A tablet pad's mode button switched its rings, strips and buttons
     /// to `mode` (from zero) of `modes`.
     PadMode { mode: u32, modes: u32 },
+    /// The ask-agent chord with no agent in the workspace live to take a
+    /// task. Saying so beats a chord that silently does nothing.
+    NoAgent,
 }
 
 /// A short caption carried inline so a readout stays `Copy`: the slab is
@@ -243,6 +246,10 @@ impl Osd {
         Self::at(OsdKind::PadMode { mode, modes }, 0.0)
     }
 
+    pub fn no_agent() -> Self {
+        Self::at(OsdKind::NoAgent, 0.0)
+    }
+
     pub fn input_source(name: &str) -> Self {
         Self::at(OsdKind::InputSource(OsdLabel::new(name)), 0.0)
     }
@@ -280,6 +287,7 @@ impl Osd {
                 &[("percent", level_to_percent(self.level).into())],
             ),
             OsdKind::NoBacklight => t("osd-no-backlight"),
+            OsdKind::NoAgent => t("osd-no-agent"),
             OsdKind::AirplaneMode { on: true } => t("osd-airplane-mode-on"),
             OsdKind::AirplaneMode { on: false } => t("osd-airplane-mode-off"),
             OsdKind::Touchpad { enabled: true } => t("osd-touchpad-on"),
@@ -617,6 +625,7 @@ fn draw_glyph(
             (ui::icons::Icon::Keyboard, colors.text_primary)
         }
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
+        OsdKind::NoAgent => (ui::icons::Icon::Bot, colors.text_dim),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
         OsdKind::Touchpad { enabled } | OsdKind::MouseKeys { enabled } => (

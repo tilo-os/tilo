@@ -1507,6 +1507,17 @@ impl ShellDriver {
                 #[cfg(not(debug_assertions))]
                 return Err("dictation shots require a debug build".into());
             }
+            "agent-composer"
+            | "agent-composer-typed"
+            | "agent-composer-answer"
+            | "agent-composer-working" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_agent_composer_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("agent composer shots require a debug build".into());
+            }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -2750,6 +2761,10 @@ impl ShellDriver {
         "dictation-listening",
         "dictation-finishing",
         "dictation-model-required",
+        "agent-composer",
+        "agent-composer-typed",
+        "agent-composer-answer",
+        "agent-composer-working",
         "notifications",
         "notifications-one",
         "notifications-dnd",

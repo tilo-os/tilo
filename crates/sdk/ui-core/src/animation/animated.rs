@@ -549,9 +549,9 @@ mod tests {
 
         // Case `transition_closing_stays_visible_until_settled`.
         {
-            let mut t = Transition::open();
-            t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
             let now = crate::time::now();
+            let mut t = Transition::open();
+            t.set_open_at(false, Duration::from_millis(80), Curve::EaseOut, now);
             assert!(
                 t.is_visible(now),
                 "a closing surface must stay visible so its exit animates"
@@ -563,14 +563,34 @@ mod tests {
 
         // Case `transition_reversal_retargets_from_current_value`.
         {
+            // Both ends on one explicit clock: reading the wall clock twice
+            // made the reversal land wherever the machine's clock had ticked
+            // to, and when it hadn't ticked at all the surface was still at
+            // 0 and correctly never shown.
+            let start = crate::time::now();
             let mut t = Transition::closed();
-            t.set_open(true, Duration::from_secs(1), Curve::Linear);
-            // Can't advance wall-clock precisely without sleeping, so assert the
-            // structural contract: after a reversal it's still visible
-            // (mid-flight, not popped to 0).
-            t.set_open(false, Duration::from_secs(1), Curve::Linear);
+            t.set_open_at(true, Duration::from_secs(1), Curve::Linear, start);
+            let flip = start + Duration::from_millis(300);
+            t.set_open_at(false, Duration::from_secs(1), Curve::Linear, flip);
             assert!(!t.is_open());
-            assert!(t.is_visible(crate::time::now()));
+            assert!(
+                t.is_visible(flip),
+                "a reversal mid-flight must not pop the surface to 0"
+            );
+            assert!(
+                (t.value(flip) - 0.3).abs() < 1e-3,
+                "the exit starts from the openness reached: {}",
+                t.value(flip)
+            );
+            // The exit is scaled by the distance left: 30% of the 1 s exit.
+            let halfway = flip + Duration::from_millis(150);
+            assert!(
+                (t.value(halfway) - 0.15).abs() < 1e-3,
+                "{}",
+                t.value(halfway)
+            );
+            let settled = flip + Duration::from_millis(300);
+            assert!(!t.is_visible(settled));
         }
 
         // Case `transition_repeated_same_intent_is_noop_once_settled`.

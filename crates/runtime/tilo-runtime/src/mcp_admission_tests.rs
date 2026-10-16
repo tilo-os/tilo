@@ -9,7 +9,7 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
         host.clone(),
         "room".into(),
         actor,
-        None,
+        Some("secret".into()),
         None,
     ));
     let created = Arc::new(Mutex::new(Vec::new()));
@@ -53,7 +53,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
             host.clone(),
             "room".into(),
             "04".repeat(32),
-            None,
+            Some("secret".into()),
             None,
         ));
         endpoint
@@ -74,7 +74,7 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
                 .dispatch(
                     &Method::POST,
                     "/mcp",
-                    &HeaderMap::new(),
+                    &bearer_headers(&[]),
                     &initialize("same label"),
                 )
                 .await;

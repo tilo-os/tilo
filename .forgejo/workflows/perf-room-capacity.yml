@@ -13,7 +13,7 @@ name: Perf / room host capacity
 # minutes after its build, and nothing about a pull request needs it. Never point it at a deployed
 # host; the bench starts its own.
 #
-# Built as the room service image builds its relay (room-service-image.yml):
+# Built as the room service image builds its relay (the t check image-room-service):
 # thin LTO, 16 codegen units, the relay's agents feature.
 on:
   workflow_dispatch:

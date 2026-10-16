@@ -265,6 +265,16 @@ if [ -f "$flight_dir/latest.log" ]; then
         mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"; } 2>/dev/null ||
         rm -f -- "$flight_dir/previous.log.tmp" 2>/dev/null || true
 fi
+# The recorder keeps the compositor's log events (tracing records) in
+# events.log under their own bound, so hours of periodic measurement lines in
+# latest.log cannot displace a launch's timing or an error.
+flight_events=$flight_dir/events.log
+if [ -f "$flight_events" ]; then
+    { tail -c 4194304 -- "$flight_events" >"$flight_dir/previous-events.log.tmp" &&
+        chmod 0600 "$flight_dir/previous-events.log.tmp" &&
+        mv -f -- "$flight_dir/previous-events.log.tmp" "$flight_dir/previous-events.log"; } 2>/dev/null ||
+        rm -f -- "$flight_dir/previous-events.log.tmp" 2>/dev/null || true
+fi
 flight_log=$flight_dir/latest.log
 { : >"$flight_log" && chmod 0600 "$flight_log"; } 2>/dev/null || true
 flight_started=$(date --iso-8601=seconds)
@@ -340,9 +350,12 @@ set -e
 shell_pid=
 wait "$flight_relay_pid" 2>/dev/null || true
 flight_relay_pid=
-printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
-    "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)" \
-    >>"$flight_log" 2>/dev/null || true
+end_record=$(printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s' \
+    "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)")
+printf '%s
+' "$end_record" >>"$flight_log" 2>/dev/null || true
+printf '%s
+' "$end_record" >>"$flight_events" 2>/dev/null || true
 if [ -e "$logout_request" ]; then
     status=0
     logout_completed=1

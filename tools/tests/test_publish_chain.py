@@ -28,7 +28,8 @@ products = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(products)
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
-DEFAULTS = {"buildah": "buildah@sha256:1", "skopeo": "skopeo@sha256:2", "signing_env": {"K": "v"}}
+DEFAULTS = {"buildah": "buildah@sha256:1", "skopeo": "skopeo@sha256:2", "signing_env": {"K": "v"},
+            "dev_signing_env": {"K": "dev"}}
 
 
 def checks(*product: dict) -> dict[str, dict]:
@@ -79,6 +80,17 @@ class GeneratorTests(unittest.TestCase):
         c = checks({"family": "f", "name": "dev", "repository": "r/dev", "dev": ["{commit}"],
                     "dispatch": True, "build": {"run": "build {out}"}})
         self.assertEqual(c["publish-dev"]["on"], ["dispatch"])
+
+    def test_development_candidates_sign_with_the_development_key_only(self):
+        c = checks({"family": "f", "name": "cand", "repository": "r/cand", "dev": ["{commit}"],
+                    "dev_signed": True, "build": {"run": "build {out}"}})
+        self.assertEqual(c["sign-cand"]["on"], ["main"])
+        self.assertEqual(c["sign-cand"]["id_token"], ["tilo-dev-signing"])
+        self.assertEqual(c["sign-cand"]["env"], {"K": "dev", "TILO_DEV_SIGNING": "1"})
+        self.assertIn("sign-cand", c["publish-cand"]["needs"])
+        with self.assertRaises(products.ProductError):
+            checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
+                    "release": ["sha-{commit}"], "dev_signed": True, "build": {"run": "build {out}"}})
 
     def test_release_only_products_need_their_signature(self):
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
@@ -328,6 +340,17 @@ class ScriptTests(unittest.TestCase):
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="main")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("only releases are signed", result.stderr)
+
+    def test_development_signing_is_for_main_only(self):
+        self.env["TILO_DEV_SIGNING"] = "1"
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signs main's candidates only", result.stderr)
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.publish("{commit}", ref="main", channel="dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.receipt()["signed"])
 
     def test_the_dry_run_signs_with_a_throwaway_key(self):
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")

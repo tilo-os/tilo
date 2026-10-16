@@ -629,6 +629,22 @@ fn active_strip_max_scroll(frame: &FrameBuilder) -> f64 {
         .map_or(0.0, |(_, _, max)| max)
 }
 
+/// Report spacing for the bench's pan: wider than a strip resamples across,
+/// so every frame shows exactly the travel last reported, as frames here run
+/// back to back rather than on a display's clock.
+const REPORT_SPACING: Duration = Duration::from_millis(25);
+
+/// When pan report `step` of a pan of `reports` reports was made: in the
+/// past, [`REPORT_SPACING`] apart.
+fn report_at(step: usize, reports: usize) -> Instant {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let span = REPORT_SPACING.saturating_mul(count(reports.saturating_add(40)));
+    let now = Instant::now();
+    now.checked_sub(span)
+        .and_then(|base| base.checked_add(REPORT_SPACING.saturating_mul(count(step))))
+        .unwrap_or(now)
+}
+
 fn pan(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
@@ -646,17 +662,22 @@ fn pan(
     };
     let mut travel = 0.0;
     let mut direction = 1.0;
-    fixture.frame.host_mut().update_active_strip_pan(0.0, true);
+    let reports = frames.saturating_add(WARM_UP_FRAMES).saturating_add(1);
+    fixture
+        .frame
+        .host_mut()
+        .update_active_strip_pan(0.0, true, report_at(0, reports));
     for index in 0..frames.saturating_add(WARM_UP_FRAMES) {
         travel += direction * PAN_STEP;
         if travel >= max || travel <= 0.0 {
             direction = -direction;
             travel = travel.clamp(0.0, max);
         }
-        fixture
-            .frame
-            .host_mut()
-            .update_active_strip_pan(travel, false);
+        fixture.frame.host_mut().update_active_strip_pan(
+            travel,
+            false,
+            report_at(index.saturating_add(1), reports),
+        );
         if index == 0 {
             samples.start = single_frame(fixture, target, size)?;
             continue;
@@ -671,18 +692,21 @@ fn pan(
     fixture
         .frame
         .host_mut()
-        .end_active_strip_pan(Instant::now());
+        .end_active_strip_pan(Instant::now(), false);
     samples.rewarm = rest_and_warm(fixture, target, size)?;
-    fixture.frame.host_mut().update_active_strip_pan(0.0, true);
     fixture
         .frame
         .host_mut()
-        .update_active_strip_pan(PAN_STEP, false);
+        .update_active_strip_pan(0.0, true, report_at(0, 2));
+    fixture
+        .frame
+        .host_mut()
+        .update_active_strip_pan(PAN_STEP, false, report_at(1, 2));
     samples.restart = single_frame(fixture, target, size)?;
     fixture
         .frame
         .host_mut()
-        .end_active_strip_pan(Instant::now());
+        .end_active_strip_pan(Instant::now(), false);
     Ok(samples)
 }
 

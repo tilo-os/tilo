@@ -30,12 +30,13 @@ enum Step {
     Seccomp,
     Fork,
     Exec,
+    Ids,
 }
 
 impl Step {
     fn from_u32(n: u32) -> Option<Self> {
         use Step::{
-            Caps, Cwd, Exec, Fork, Hostname, Landlock, LandlockRule, Loopback, NoNewPrivs, Op,
+            Caps, Cwd, Exec, Fork, Hostname, Ids, Landlock, LandlockRule, Loopback, NoNewPrivs, Op,
             Pivot, PivotStage, Private, Seccomp, Stage,
         };
         [
@@ -54,6 +55,7 @@ impl Step {
             Seccomp,
             Fork,
             Exec,
+            Ids,
         ]
         .into_iter()
         .find(|s| *s as u32 == n)
@@ -81,6 +83,8 @@ struct Child<'a> {
     status: RawFd,
     report: RawFd,
     landlock: Option<RawFd>,
+    /// Where the plan's idmapped trees are, in order.
+    trees_at: RawFd,
 }
 
 fn errno() -> u32 {
@@ -159,6 +163,41 @@ impl Child<'_> {
         unsafe { libc::close(self.sync) };
     }
 
+    /// Take on the job's ids, where it has host ids of its own: the init
+    /// starts as the worker's uid, which the job's namespace doesn't map.
+    /// It keeps its capabilities in the namespace (it was never its root),
+    /// and drops the worker's supplementary groups, which would otherwise
+    /// still grant their access on the host.
+    fn become_ids(&self) {
+        let Some((uid, gid)) = self.plan.become_ids else {
+            return;
+        };
+        // SAFETY: raw system calls with integer arguments: libc's wrappers
+        // would try to change the ids of threads that exist only in the
+        // worker.
+        unsafe {
+            self.check(
+                libc::syscall(
+                    libc::SYS_setgroups,
+                    0_usize,
+                    std::ptr::null::<libc::gid_t>(),
+                ),
+                Step::Ids,
+                0,
+            );
+            self.check(
+                libc::syscall(libc::SYS_setresgid, gid, gid, gid),
+                Step::Ids,
+                1,
+            );
+            self.check(
+                libc::syscall(libc::SYS_setresuid, uid, uid, uid),
+                Step::Ids,
+                2,
+            );
+        }
+    }
+
     fn reset_signals() {
         for sig in 1..=64 {
             if sig == libc::SIGKILL || sig == libc::SIGSTOP {
@@ -225,7 +264,7 @@ impl Child<'_> {
         }
         for (i, op) in plan.ops.iter().enumerate() {
             // SAFETY: each call takes C strings the plan owns.
-            let rc = unsafe { run_op(op) };
+            let rc = unsafe { run_op(op, self.trees_at) };
             if rc < 0 && op.fatal() {
                 self.fail(Step::Op, i, errno());
             }
@@ -495,6 +534,7 @@ impl Child<'_> {
         // the job.
         unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
         Self::reset_signals();
+        self.become_ids();
         self.build_root();
         self.name_and_network();
         self.drop_capabilities();
@@ -512,11 +552,11 @@ impl Child<'_> {
     }
 }
 
-/// One mount operation.
+/// One mount operation; the plan's idmapped trees are at `trees_at` on.
 ///
 /// # Safety
 /// Takes the C strings `op` owns; for the child only.
-unsafe fn run_op(op: &Op) -> libc::c_long {
+unsafe fn run_op(op: &Op, trees_at: RawFd) -> libc::c_long {
     let opt = |c: &Option<CString>| c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     // SAFETY: every pointer is a live C string or null where the call
     // allows it.
@@ -566,6 +606,20 @@ unsafe fn run_op(op: &Op) -> libc::c_long {
                     if *recursive { sys::AT_RECURSIVE } else { 0 },
                     &raw const attr,
                     std::mem::size_of::<sys::MountAttr>(),
+                )
+            }
+            Op::Attach { tree, dst } => {
+                let fd = RawFd::try_from(*tree)
+                    .ok()
+                    .and_then(|t| trees_at.checked_add(t))
+                    .unwrap_or(-1);
+                libc::syscall(
+                    libc::SYS_move_mount,
+                    fd,
+                    c"".as_ptr(),
+                    libc::AT_FDCWD,
+                    dst.as_ptr(),
+                    sys::MOVE_MOUNT_F_EMPTY_PATH,
                 )
             }
         }
@@ -748,33 +802,80 @@ pub struct Fds {
     pub extra: Vec<(OwnedFd, RawFd)>,
 }
 
-/// How long the job's setup may take before the worker gives up on it.
+/// How long the job's setup may wait for anything but a CPU before the worker
+/// gives up on it: a mount that hangs, a lock that is never released.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How often a setup that has not reported is looked at.
+const SETUP_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the job's setup has spent waiting for a CPU, so far: the time
+/// `pid` and its children spent ready to run (`/proc/<pid>/schedstat`), or,
+/// if longer, the time some task of their cgroup did (its `cpu.pressure`).
+/// A setup step can wait on a lock that a task of the same cgroup holds while
+/// it waits for a CPU: that wait is for a CPU too. Zero where the kernel keeps
+/// neither statistic.
+fn cpu_wait(pid: libc::pid_t, cgroup: Option<&std::path::Path>) -> Duration {
+    let one = |p: &str| {
+        std::fs::read_to_string(format!("/proc/{p}/schedstat"))
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let children =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+    let ready = children
+        .split_whitespace()
+        .map(one)
+        .fold(one(&pid.to_string()), u64::saturating_add);
+    let pressure = cgroup
+        .and_then(|dir| std::fs::read_to_string(dir.join("cpu.pressure")).ok())
+        .and_then(|text| {
+            let some = text.lines().find(|l| l.starts_with("some "))?;
+            some.split_whitespace()
+                .find_map(|f| f.strip_prefix("total="))?
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0);
+    Duration::from_nanos(ready).max(Duration::from_micros(pressure))
+}
+
 /// Wait for the report pipe to close (the command is running) or to say
-/// which step failed.
-/// Block on the report pipe: `Ok(None)` when it closes (the command runs),
-/// `Ok(Some(_))` with the 12-byte failure record.
-fn read_report_bytes(report: OwnedFd) -> Result<Option<[u8; 12]>, SpawnError> {
-    let deadline = Instant::now().checked_add(SETUP_TIMEOUT);
+/// which step failed: `Ok(None)` when it closes, `Ok(Some(_))` with the
+/// 12-byte failure record.
+///
+/// On a busy machine the job's setup waits for a CPU, at the share its cgroup
+/// gets: the time it spends ready to run doesn't count against
+/// `SETUP_TIMEOUT`, only the time it spends waiting for anything else.
+fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Option<[u8; 12]>, SpawnError> {
+    let start = Instant::now();
+    let cgroup =
+        crate::job::cgroup::cgroup_of(&pid.to_string(), std::path::Path::new("/sys/fs/cgroup"))
+            .ok();
+    let cgroup = cgroup.as_deref();
+    let before = cpu_wait(pid, cgroup);
     let mut f = std::fs::File::from(report);
     let mut buf = [0_u8; 12];
     let mut got = 0_usize;
     loop {
-        let left = deadline.map_or(Duration::ZERO, |d| {
-            d.saturating_duration_since(Instant::now())
-        });
-        if left.is_zero() {
+        let runnable = cpu_wait(pid, cgroup).saturating_sub(before);
+        let waited = start.elapsed().saturating_sub(runnable);
+        if waited >= SETUP_TIMEOUT {
             return Err(SpawnError::Setup(format!(
-                "the job did not start within {SETUP_TIMEOUT:?}"
+                "the job did not start within {SETUP_TIMEOUT:?} (besides {:.1}s waiting for a CPU)",
+                runnable.as_secs_f64()
             )));
         }
+        let left = SETUP_TIMEOUT.saturating_sub(waited).min(SETUP_CHECK_EVERY);
         let mut pfd = libc::pollfd {
             fd: f.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        let ms = libc::c_int::try_from(left.as_millis()).unwrap_or(libc::c_int::MAX);
+        let ms = libc::c_int::try_from(left.as_millis())
+            .unwrap_or(libc::c_int::MAX)
+            .max(1);
         // SAFETY: one pollfd structure on the stack.
         let rc = unsafe { libc::poll(&raw mut pfd, 1, ms) };
         if rc < 0 {
@@ -839,6 +940,7 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
         Some(Step::Landlock) => "enforcing Landlock".into(),
         Some(Step::Seccomp) => "installing the seccomp filter".into(),
         Some(Step::Fork) => "starting the command".into(),
+        Some(Step::Ids) => "taking on the job's own ids".into(),
         Some(Step::Exec) => {
             let program = plan
                 .argv
@@ -862,8 +964,8 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
     SpawnError::Setup(format!("{what}: {os}{hint}"))
 }
 
-fn read_report(report: OwnedFd, plan: &Plan) -> Result<(), SpawnError> {
-    match read_report_bytes(report)? {
+fn read_report(report: OwnedFd, pid: libc::pid_t, plan: &Plan) -> Result<(), SpawnError> {
+    match read_report_bytes(report, pid)? {
         None => Ok(()),
         Some(buf) => Err(describe_failure(buf, plan)),
     }
@@ -878,6 +980,7 @@ struct Layout {
     status: RawFd,
     report: RawFd,
     landlock: Option<RawFd>,
+    trees_at: RawFd,
     keep_below: RawFd,
     above: RawFd,
 }
@@ -916,6 +1019,12 @@ fn plan_layout(
         }
         None => None,
     };
+    let trees_at = next(highest, 5)?;
+    for (i, tree) in plan.trees.iter().enumerate() {
+        let i = RawFd::try_from(i)
+            .map_err(|_| SpawnError::Invalid("too many idmapped mounts".into()))?;
+        moves.push((tree.as_raw_fd(), next(trees_at, i)?));
+    }
     let keep_below = next(moves.iter().map(|(_, t)| *t).max().unwrap_or(2), 1)?;
     let above = next(
         moves
@@ -932,6 +1041,7 @@ fn plan_layout(
         status,
         report,
         landlock,
+        trees_at,
         keep_below,
         above,
     })
@@ -990,17 +1100,32 @@ fn finish(
     setup: Option<SetupFn<'_>>,
 ) -> Result<(), SpawnError> {
     let pid = job.pid();
-    write_proc(
-        pid,
-        "uid_map",
-        &format!("{} {} 1\n", ids.inside_uid, ids.outside_uid),
-    )?;
-    write_proc(pid, "setgroups", "deny\n")?;
-    write_proc(
-        pid,
-        "gid_map",
-        &format!("{} {} 1\n", ids.inside_gid, ids.outside_gid),
-    )?;
+    if let Some(block) = ids.block {
+        // The worker may map any ids (it holds CAP_SETUID and CAP_SETGID),
+        // so `setgroups` stays allowed: the init drops the worker's groups.
+        write_proc(
+            pid,
+            "uid_map",
+            &format!("0 {} {}\n", block.uid, block.count),
+        )?;
+        write_proc(
+            pid,
+            "gid_map",
+            &format!("0 {} {}\n", block.gid, block.count),
+        )?;
+    } else {
+        write_proc(
+            pid,
+            "uid_map",
+            &format!("{} {} 1\n", ids.inside_uid, ids.outside_uid),
+        )?;
+        write_proc(pid, "setgroups", "deny\n")?;
+        write_proc(
+            pid,
+            "gid_map",
+            &format!("{} {} 1\n", ids.inside_gid, ids.outside_gid),
+        )?;
+    }
     if let Some(setup) = setup {
         setup(&Started { pid }).map_err(SpawnError::Setup)?;
     }
@@ -1008,7 +1133,40 @@ fn finish(
     go.write_all(b"g")
         .map_err(|e| SpawnError::Setup(format!("releasing the job: {e}")))?;
     drop(go);
-    read_report(report_r, plan)
+    read_report(report_r, job.pid(), plan)
+}
+
+/// Make the anonymous pipes the job is given its own user's, where it has a
+/// host user of its own: a pipe belongs to whoever made it (the worker),
+/// mode 0600, and opening it again by path (`/dev/stdout`, which QEMU and
+/// shell scripts do) checks that. Descriptors of anything else (a file, a
+/// terminal, a named FIFO) stay as they are.
+fn give_pipes<'a>(
+    fds: impl Iterator<Item = &'a OwnedFd>,
+    ids: &crate::job::spec::IdMap,
+    block: crate::job::spec::IdBlock,
+) -> Result<(), SpawnError> {
+    let (Some(uid), Some(gid)) = (
+        block.uid.checked_add(ids.inside_uid),
+        block.gid.checked_add(ids.inside_gid),
+    ) else {
+        return Err(SpawnError::Invalid(
+            "the job's ids overflow its block".into(),
+        ));
+    };
+    for fd in fds {
+        // An anonymous pipe reads as `pipe:[<inode>]`, a named FIFO as its path.
+        let pipe = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+            .is_ok_and(|to| to.as_os_str().as_encoded_bytes().starts_with(b"pipe:["));
+        // SAFETY: fchown on a descriptor we hold.
+        if pipe && unsafe { libc::fchown(fd.as_raw_fd(), uid, gid) } != 0 {
+            return Err(SpawnError::Setup(format!(
+                "giving the job its output pipe: {}",
+                io::Error::last_os_error()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Start `plan` as a job. See [`crate::job::Launch::spawn`].
@@ -1041,6 +1199,13 @@ pub fn spawn(
             .map_or_else(|| null.as_raw_fd(), AsRawFd::as_raw_fd)
     };
 
+    if let Some(block) = ids.block {
+        let given = [&fds.stdin, &fds.stdout, &fds.stderr]
+            .into_iter()
+            .flatten()
+            .chain(fds.extra.iter().map(|(fd, _)| fd));
+        give_pipes(given, &ids, block)?;
+    }
     let layout = plan_layout(
         plan,
         [raw(&fds.stdin), raw(&fds.stdout), raw(&fds.stderr)],
@@ -1067,6 +1232,7 @@ pub fn spawn(
         status: layout.status,
         report: layout.report,
         landlock: layout.landlock,
+        trees_at: layout.trees_at,
     };
     // SAFETY: clone3 without CLONE_VM: the child gets a copy of this
     // address space and continues on a copy of this stack, like fork. It

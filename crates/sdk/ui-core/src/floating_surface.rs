@@ -365,6 +365,18 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
+    /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
+    /// (sent once). An app that never says so is never asked, so an older
+    /// one does not receive a message it cannot read.
+    SelectionCapable,
+    /// The person asked an agent about what they selected in this app's
+    /// window (an "Ask agent…" entry, or the shell's chord answered through
+    /// [`FloatingSurfaceHostMessage::ShareSelection`]); `None` when nothing
+    /// is selected. The shell opens its agent composer seeded with it. The
+    /// app's identity is the launcher's, never the message's.
+    AskAgent {
+        selection: Option<crate::shared_selection::SharedSelection>,
+    },
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.
@@ -420,6 +432,12 @@ pub enum FloatingSurfaceHostMessage {
     PaintKeyframe,
     /// Nobody watches the window any more: stop capturing the page.
     PaintStop,
+    /// The person pressed the desktop's "ask an agent" chord over this
+    /// app's focused window: answer with
+    /// [`FloatingSurfaceClientMessage::AskAgent`] carrying the current
+    /// selection. Sent only to an app that announced
+    /// [`FloatingSurfaceClientMessage::SelectionCapable`].
+    ShareSelection,
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
     /// never gain overlay authority.

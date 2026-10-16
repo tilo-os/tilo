@@ -68,7 +68,8 @@ Summary:
 
 - Not a full OS, compositor, or apps UI install
 - Not copying `user-identity/privkey.bin` into the agent or relay
-- Not exposing MCP beyond loopback without a token (the runtime refuses that)
+- Not exposing MCP without a token, loopback included (the runtime refuses
+  that: every process and account on the machine can reach a loopback port)
 - Not collapsing the agent into the home-peer principal: agents that need an
   `AgentDelegation` still use the agents path in [`agents.md`](agents.md)
 

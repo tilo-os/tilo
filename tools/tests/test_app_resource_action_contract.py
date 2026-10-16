@@ -152,6 +152,27 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertEqual(violations, [])
+        with self.subTest(phase='headless service publishing to the broker passes'):
+            source = "fn publish() -> CollabRequest { CollabRequest::PublishActions { app_id, actions } }\n"
+            service = (
+                '[package]\nkind = "service"\n[entrypoint]\nbin = "bin/svc"\ntype = "cli"\n'
+            )
+            root = self.fixture(source)
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(service, encoding="utf-8")
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+        with self.subTest(phase='a windowed app publishing to the broker still needs resources'):
+            root = self.fixture(source)
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                service.replace('type = "cli"', 'type = "gui"'), encoding="utf-8"
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        with self.subTest(phase='a headless service publishing nothing still needs resources'):
+            root = self.fixture("struct Service;\n")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(service, encoding="utf-8")
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
         with self.subTest(phase='toolkit host without resource descriptor fails'):
             root = self.fixture(
                 "pub fn app_root() {\n"

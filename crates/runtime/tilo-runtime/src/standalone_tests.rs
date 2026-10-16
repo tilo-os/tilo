@@ -540,6 +540,7 @@ fn task(id: &str) -> tilo_desktop_model::WorkspaceTask {
         route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
         status: WorkspaceTaskStatus::Queued,
         resource: None,
+        subject: None,
         created_at: 1,
         updated_at: 1,
         audit: Vec::new(),
