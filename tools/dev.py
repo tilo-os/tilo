@@ -117,6 +117,9 @@ def run_plan(selection: dict, out: Path, *, root: Path = ROOT, keep_going: bool 
             save(receipt_path, receipt)
             print(f"[{step['name']}]", flush=True)
             before = time.monotonic()
+            source = step.get("test_source")
+            if source and hashlib.sha256((root / source).read_bytes()).hexdigest() != step["test_source_sha256"]:
+                raise RuntimeError(f"test source changed after planning: {source}")
             # Keep live output on the terminal. No ambient env/credentials or raw
             # signing/VM console output is collected into a portable receipt.
             child = subprocess.Popen(step["argv"], cwd=root)
@@ -136,6 +139,8 @@ def run_plan(selection: dict, out: Path, *, root: Path = ROOT, keep_going: bool 
             finally:
                 row["elapsed_seconds"] = round(time.monotonic() - before, 3)
                 row["finished_at"] = now()
+            if source and hashlib.sha256((root / source).read_bytes()).hexdigest() != step["test_source_sha256"]:
+                raise RuntimeError(f"test source changed during execution: {source}")
             row.update(status="success" if code == 0 else "failure", exit_code=code)
             save(receipt_path, receipt)
             if code:
