@@ -775,6 +775,33 @@ pub fn parameter_signature(offer: &Offer) -> String {
 /// The prefix of a host (non-Tilo) application's id in the catalogue.
 const HOST_APP_PREFIX: &str = "host:";
 
+/// The Tilo applications `request` (lowercased) names by the title their
+/// open publishes ("Writer"), with that title: each needs a successful
+/// operation in it before the task is done. A host application is never
+/// one of them: opening it is all an agent can do there, and its title is
+/// often an everyday word ("Web", "Files") the request uses for something
+/// else.
+pub fn named_applications<'a>(catalogue: &'a Catalogue, request: &str) -> Vec<(&'a str, &'a str)> {
+    catalogue
+        .offers
+        .iter()
+        .filter_map(|offer| {
+            opened_app(offer).map(|app| (app, offer.descriptor.resource_label.as_str()))
+        })
+        .filter(|(app, _)| !app.starts_with(HOST_APP_PREFIX))
+        .filter(|(_, title)| {
+            !title.is_empty()
+                && if title.contains(' ') {
+                    request.contains(&title.to_lowercase())
+                } else {
+                    request
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word.eq_ignore_ascii_case(title))
+                }
+        })
+        .collect()
+}
+
 /// The published operations, compactly, for the first turn (of the task loop
 /// and of a plan decision): enough to invoke or plan the common ones directly
 /// without a discovery round trip. Every id shown is revealed. Every
@@ -1646,6 +1673,37 @@ mod tests {
             "{summary}"
         );
         assert!(summary.contains("list_applications"), "{summary}");
+    }
+
+    /// A request naming a Tilo application by its title names it; a host
+    /// application's everyday title ("Web") does not.
+    #[test]
+    fn a_host_application_is_never_named_by_a_request() {
+        let open = |app: &str, title: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.resource_label = title.to_owned();
+            open
+        };
+        let catalogue = Catalogue {
+            offers: vec![
+                open("host:org.gnome.Epiphany", "Web"),
+                open("so.tilo.word-processor", "Writer"),
+            ],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let request = "find it by web search and put it in writer";
+        assert_eq!(
+            named_applications(&catalogue, request),
+            vec![("so.tilo.word-processor", "Writer")]
+        );
     }
 
     /// An open next to an application that already publishes operations
