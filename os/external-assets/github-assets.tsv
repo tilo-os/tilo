@@ -15,7 +15,6 @@ e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-s
 87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv
 65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727	bottles-programs-d1160b8.tar.gz	https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
-bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
 e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
 # xwayland-satellite v0.8.2, built with os/external-assets/xwayland-satellite/.
@@ -35,7 +34,6 @@ f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158	appimagetool-1.
 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d	type2-runtime-20251108-x86_64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444	type2-runtime-20251108-aarch64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
-3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	joycond-0df025a-LICENSE	https://raw.githubusercontent.com/DanielOgorchock/joycond/0df025ac5dc284b1f31172b6b252321ba788c4de/LICENSE
 # Official v4l2loopback tag archive; built and signed with the exact Tilo kernel.
 1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034	v4l2loopback-0.15.3-a7e4a4d.tar.gz	https://github.com/v4l2loopback/v4l2loopback/archive/a7e4a4dea36187ad3550c797d647bcc50faced42.tar.gz

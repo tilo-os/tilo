@@ -303,6 +303,22 @@ git = true
 writable_sources = true
 inputs = ["**"]
 
+# Live Miracast capture, end to end: tilo-projector's Miracast session asks a simulated
+# ScreenCast portal on a private bus for the screen, captures the headless PipeWire screen it
+# grants through pipewiresrc, encodes H.264 and AAC from the headless PulseAudio, and streams
+# MPEG-TS over RTP to the miracast crate's strict test sink (crates/system/projector/src/
+# session/miracast/tests.rs). It runs in the builder this tree defines, which carries
+# PipeWire and WirePlumber; the `test` family skips it on a builder without them.
+[[check]]
+name = "miracast-capture"
+image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
+run = "CARGO_TARGET_DIR=${TMPDIR:-/tmp}/miracast-capture-target bash tools/test-env.sh cargo test --locked -p tilo-projector --bin tilo-projector session::miracast"
+inputs = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+cargo_packages = ["tilo-projector"]
+env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1" }
+requires = ["arch=x86_64"]
+cost = "minutes"
+
 # The generated blocks of this file match what they are generated from (suites.toml,
 # products.toml, .config/, the workspace's manifests and the Rust files suites.toml lists
 # as reading outside their package). policy checks this too, but takes many minutes and

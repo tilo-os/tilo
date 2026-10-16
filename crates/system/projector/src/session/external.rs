@@ -1,4 +1,4 @@
-//! `AirPlay` and Miracast sessions, driven through an external sender process.
+//! `AirPlay` sessions, driven through an external sender process.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -124,52 +124,6 @@ fn run_airplay_process(
     )
 }
 
-pub(crate) fn run_miracast_session(
-    device: &ProjectionDevice,
-    options: &ProjectionOptions,
-    context: &SessionContext,
-) -> Result<(), ProjectorError> {
-    let peer = receiver_address(device)?.to_owned();
-    let command_args = miracast_command_args(peer, options.audio, options.stream_policy);
-    run_external_process(
-        &context.helpers.fluxcast,
-        &command_args,
-        context,
-        &["PLAY accepted; media stream started."],
-        "Miracast",
-        None,
-    )
-}
-
-fn miracast_command_args(
-    peer: String,
-    audio: bool,
-    stream_policy: DisplayStreamPolicy,
-) -> Vec<String> {
-    let profile = stream_policy.ceiling(None);
-    let mut args = vec![
-        "--protocol".to_owned(),
-        "wfd".to_owned(),
-        "--wfd-peer".to_owned(),
-        peer,
-        "--fps".to_owned(),
-        profile.fps.to_string(),
-        "--bitrate".to_owned(),
-        format!("{}k", profile.bitrate_kbps),
-        "--wfd-capture-backend".to_owned(),
-        "portal".to_owned(),
-        "--wfd-media-pipeline".to_owned(),
-        "ffmpeg".to_owned(),
-    ];
-    if let Some((width, height)) = stream_policy.resolution_limit.dimensions() {
-        args.extend(["--output-res".to_owned(), format!("{width}x{height}")]);
-    }
-    if !audio {
-        args.push("--wfd-no-audio".to_owned());
-    }
-    args
-}
-
 /// What the session loop wakes for.
 enum SenderOutput {
     /// A line of sender output, and whether it says the stream is up.
@@ -192,7 +146,6 @@ fn run_external_process(
         // Keep the sender and its GStreamer capture children in one group so
         // Disconnect cannot strand a camera/audio/capture process.
         .process_group(0)
-        .env("PYTHONUNBUFFERED", "1")
         // Only the selected sender gets the explicitly supplied credential.
         // Ambient codes must not pair a receiver or reach an unrelated helper.
         .env_remove("TILO_PROJECTION_CREDENTIAL")
@@ -413,7 +366,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
-    fn airplay_miracast_and_external_senders_run_without_hardware() {
+    fn airplay_senders_run_without_hardware() {
         // Phase `airplay_process_readiness_and_disconnect_are_hardware_free`.
         {
             let (root, context, events) = fixture("airplay");
@@ -456,35 +409,7 @@ mod tests {
             );
             fs::remove_dir_all(root).expect("remove state fixture");
         }
-        // Phase `miracast_process_readiness_and_disconnect_are_hardware_free`.
-        {
-            let (root, context, events) = fixture("miracast");
-            let sender = root.join("miracast-sender-simulator");
-            write_sender(
-                &sender,
-                b"#!/bin/sh\ntrap 'exit 0' TERM INT\necho 'PLAY accepted; media stream started.'\nwhile :; do sleep 1; done\n",
-            );
-            let worker = context.clone();
-            let sender_path = sender.display().to_string();
-            let session = std::thread::spawn(move || {
-                run_external_process(
-                    &sender_path,
-                    &[],
-                    &worker,
-                    &["PLAY accepted; media stream started."],
-                    "Miracast",
-                    None,
-                )
-            });
-            assert!(connected(&events), "Miracast readiness was not published");
-            context.control().request_stop(None);
-            session
-                .join()
-                .expect("join Miracast session")
-                .expect("clean Miracast disconnect");
-            fs::remove_dir_all(root).expect("remove Miracast fixture directory");
-        }
-        // Phase `external_sender_arguments_select_portal_capture_audio_and_exact_receiver`.
+        // Phase `airplay_sender_arguments_select_audio_and_exact_receiver`.
         {
             let airplay = airplay_command_args(
                 "[2001:db8::7]",
@@ -501,33 +426,6 @@ mod tests {
             assert!(airplay.windows(2).any(|a| a == ["-port", "7000"]));
             assert!(airplay.windows(2).any(|a| a == ["-hwaccel", "openh264"]));
             assert!(airplay.iter().any(|a| a == "-no-audio"));
-
-            let miracast = miracast_command_args(
-                "02:00:00:00:00:09".to_owned(),
-                true,
-                DisplayStreamPolicy {
-                    adaptive: true,
-                    resolution_limit: DisplayResolutionLimit::P720,
-                    max_fps: 60,
-                },
-            );
-            assert!(
-                miracast
-                    .windows(2)
-                    .any(|a| a == ["--wfd-peer", "02:00:00:00:00:09"])
-            );
-            assert!(
-                miracast
-                    .windows(2)
-                    .any(|a| a == ["--wfd-capture-backend", "portal"])
-            );
-            assert!(
-                miracast
-                    .windows(2)
-                    .any(|a| a == ["--wfd-media-pipeline", "ffmpeg"])
-            );
-            assert!(miracast.windows(2).any(|a| a == ["--fps", "60"]));
-            assert!(!miracast.iter().any(|a| a == "--wfd-no-audio"));
         }
     }
 }

@@ -9172,6 +9172,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "miracast"
+version = "0.1.0"
+source = "git+https://code.tilo.so/tilo/miracast.git?rev=c37c8cdfcdf7959a1daa38925f0e13d217c083c0#c37c8cdfcdf7959a1daa38925f0e13d217c083c0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "ml-dsa"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18137,6 +18148,7 @@ dependencies = [
 name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
  "bounded-command",
  "fcast-sender-sdk",
  "futures-util",
@@ -18144,6 +18156,7 @@ dependencies = [
  "google-cast-protocol",
  "hex",
  "mdns-sd",
+ "miracast",
  "postcard",
  "prost",
  "rand 0.10.1",
@@ -18155,6 +18168,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-callstream",
  "tilo-files",

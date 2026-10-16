@@ -34,6 +34,10 @@ pub enum Capability {
     /// with the `verity` feature): `TILO_FSVERITY_DIR`, else the test's
     /// temporary directory.
     FsVerity,
+    /// A private `PipeWire` with a session manager to serve a headless screen
+    /// (`pipewire`, `wireplumber`, `pw-dump` and `GStreamer`'s `PipeWire`
+    /// plugin).
+    ScreenCapture,
     /// Giving a file in the temporary directory to another user ([`chown_to`]):
     /// root with `CAP_CHOWN` on a filesystem that can hold that user. Root in a
     /// job sandbox without capabilities is uid 0 and still cannot.
@@ -52,6 +56,7 @@ impl Capability {
             Self::FuseControl => "TILO_REQUIRE_FUSECTL",
             Self::Fanotify => "TILO_REQUIRE_FANOTIFY",
             Self::FsVerity => "TILO_REQUIRE_FSVERITY",
+            Self::ScreenCapture => "TILO_REQUIRE_SCREEN_CAPTURE",
             Self::Chown => "TILO_REQUIRE_CHOWN",
         }
     }
@@ -74,6 +79,7 @@ impl fmt::Display for Capability {
             Self::FuseControl => "the FUSE control filesystem",
             Self::Fanotify => "fanotify",
             Self::FsVerity => "fs-verity",
+            Self::ScreenCapture => "screen capture",
             Self::Chown => "giving files to another user",
         })
     }
