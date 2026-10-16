@@ -1057,11 +1057,14 @@ impl Chat {
         if !self.workspaces.contains(workspace) {
             return Err(Refusal::new("there is no such workspace"));
         }
-        if category
-            .as_ref()
-            .is_some_and(|category| !self.categories.contains(category))
-        {
-            return Err(Refusal::new("there is no such category"));
+        if let Some(category) = &category {
+            let category = self
+                .categories
+                .get(category)
+                .ok_or_else(|| Refusal::new("there is no such category"))?;
+            if category.workspace != *workspace {
+                return Err(Refusal::new("the category belongs to another workspace"));
+            }
         }
         let name = name.trim().trim_start_matches('#');
         if name.is_empty() {
