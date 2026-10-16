@@ -404,12 +404,31 @@ pub(crate) fn prepare_in_background() {
     });
 }
 
+/// Why neither `playbin` nor `playbin3` could be made. Almost always the
+/// plugin search, not the plugins: `GStreamer` looks beside the
+/// `libgstreamer` it was loaded from unless told otherwise, so name where it
+/// looked and what it found there.
+fn no_playback_element() -> String {
+    let plugins = gst::Registry::get().plugins().len();
+    let searched = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0")
+        .unwrap_or_else(|_| "the directory beside libgstreamer".into());
+    format!("GStreamer has no playback element: {plugins} plugins registered from {searched}")
+}
+
 impl GstState {
-    /// Build the pipeline with no source yet. `None` when `GStreamer` cannot
-    /// initialise or the sink chain cannot be built, so the engine falls back
-    /// to the synthesized backend.
-    pub fn new(acceptance: FrameAcceptance, policy: HwPolicy, audio_output: bool) -> Option<Self> {
-        gst::init().ok()?;
+    /// Build the pipeline with no source yet.
+    ///
+    /// # Errors
+    ///
+    /// Why no pipeline could be built: `GStreamer` would not initialise, its
+    /// registry has no playback element (no plugins were found), or the
+    /// sink chain could not be assembled.
+    pub fn new(
+        acceptance: FrameAcceptance,
+        policy: HwPolicy,
+        audio_output: bool,
+    ) -> Result<Self, String> {
+        gst::init().map_err(|error| format!("GStreamer could not start: {error}"))?;
         // Pick up plugins a codec-pack merge added (or an unmerge removed)
         // before ranking, so new hardware decoders get their rank too.
         crate::extensions::refresh_registry();
@@ -428,9 +447,10 @@ impl GstState {
         let playbin = gst::ElementFactory::make("playbin")
             .build()
             .or_else(|_| gst::ElementFactory::make("playbin3").build())
-            .ok()?;
+            .map_err(|_| no_playback_element())?;
 
-        let (video_sink, appsink, copy_stage) = build_video_sink(acceptance)?;
+        let (video_sink, appsink, copy_stage) = build_video_sink(acceptance)
+            .ok_or("GStreamer could not build the video output (appsink, videoconvert)")?;
         playbin.set_property("video-sink", &video_sink);
 
         // Audio through a real sink so playback is audible, with an explicit
@@ -443,8 +463,8 @@ impl GstState {
         if !audio_output {
             playbin.set_property_from_str("flags", "video+text+deinterlace+soft-colorbalance");
         } else if crate::audio_output::is_governed() {
-            let (audio_bin, output) =
-                crate::audio_output::gst::sink_bin("tilo_asink", "tilo_gain").ok()?;
+            let (audio_bin, output) = crate::audio_output::gst::sink_bin("tilo_asink", "tilo_gain")
+                .map_err(|error| format!("the audio output could not be built: {error}"))?;
             playbin.set_property("audio-sink", &audio_bin);
             governed_output = Some(output);
         } else if let Ok(audio_bin) = gst::parse::bin_from_description(
@@ -472,8 +492,10 @@ impl GstState {
             });
         }
 
-        let bus = playbin.bus()?;
-        Some(Self {
+        let bus = playbin
+            .bus()
+            .ok_or("the playback pipeline has no message bus")?;
+        Ok(Self {
             playbin,
             appsink,
             bus,
