@@ -720,7 +720,7 @@ impl NumberInput {
     fn commit_local(&mut self) {
         if let Some(parsed) = self.parse_text(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
-            if (clamped - self.value).abs() > f64::EPSILON {
+            if !clamped.is_nan() && clamped != self.value {
                 self.value = clamped;
                 self.record_user_value(clamped);
             }
@@ -734,7 +734,7 @@ impl NumberInput {
     /// Records a change + pending write when it actually moves.
     fn step_by(&mut self, delta: f64) {
         let next = (self.value + delta).clamp(self.min, self.max);
-        if (next - self.value).abs() > f64::EPSILON {
+        if !next.is_nan() && next != self.value {
             self.value = next;
             self.record_user_value(next);
         }
@@ -809,7 +809,7 @@ impl Widget for NumberInput {
             && let Pulled::Value(v) = binding.pull(state, root)
         {
             let clamped = v.clamp(self.min, self.max);
-            if (clamped - self.value).abs() > f64::EPSILON {
+            if !clamped.is_nan() && clamped != self.value {
                 self.value = clamped;
                 self.sync_field();
             }
@@ -1131,7 +1131,7 @@ impl Widget for NumberInput {
                     return false;
                 };
                 let clamped = parsed.clamp(self.min, self.max);
-                if (clamped - self.value).abs() > f64::EPSILON {
+                if !clamped.is_nan() && clamped != self.value {
                     self.value = clamped;
                     self.record_user_value(clamped);
                 }
@@ -1386,6 +1386,27 @@ mod tests {
             let n = NumberInput::new(1.0).with_range(8.0, 72.0);
             assert_eq!(n.value(), 8.0, "under-min initial value clamps to min");
         }
+    }
+
+    #[test]
+    fn small_numeric_edits_and_steps_are_not_discarded() {
+        let state = crate::LocalState::new(0.0);
+        let mut number = NumberInput::from_state(&state)
+            .with_precision(18)
+            .with_step(1e-18);
+        number.set_focus(true);
+        number.field.set_text("0.000000000000000001");
+        dispatch(&mut number, &named_key(NamedKey::Enter));
+        assert_eq!(state.get(), 1e-18);
+        assert_eq!(number.take_changed(), Some(1e-18));
+        dispatch(&mut number, &named_key(NamedKey::ArrowUp));
+        assert_eq!(state.get(), 2e-18);
+        assert_eq!(number.take_changed(), Some(2e-18));
+        number.set_focus(false);
+        state.set(3e-18);
+        number.sync(&AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(number.value(), 3e-18);
+        assert_eq!(number.field.value(), "0.000000000000000003");
     }
 
     #[test]
