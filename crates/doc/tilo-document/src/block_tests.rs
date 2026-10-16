@@ -255,6 +255,54 @@ fn markdown_is_inserted_as_the_blocks_it_says_with_their_marks() {
 }
 
 #[test]
+fn block_text_written_as_the_read_shows_it_means_what_its_markdown_says() {
+    let mut replica = seeded("[tilo OS](search for the tilo homepage)");
+    let id = id_of(&replica, "\\[tilo OS");
+    // The read escapes the brackets that are no link; text taken from it
+    // writes them back as they were, not with the escapes in them.
+    let shown = page(&replica).remove(0);
+    assert_eq!(shown, "\\[tilo OS\\](search for the tilo homepage)");
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": format!("{shown} today") }),
+    )
+    .unwrap();
+    assert_eq!(
+        blocks(&replica)[0].text,
+        "[tilo OS](search for the tilo homepage) today"
+    );
+
+    // A link written as Markdown, with nothing said about it, is a link.
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": "[tilo OS](https://tilo.so/)" }),
+    )
+    .unwrap();
+    let block = &blocks(&replica)[0];
+    assert_eq!(block.text, "tilo OS");
+    assert!(
+        block
+            .marks
+            .iter()
+            .any(|mark| mark.name == "link" && (mark.start, mark.end) == (0, 7)),
+        "{:?}",
+        block.marks
+    );
+    assert_eq!(page(&replica), ["[tilo OS](https://tilo.so/)"]);
+
+    // `markdown: false` writes the characters as they are.
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": "[a](https://tilo.so/)", "markdown": false }),
+    )
+    .unwrap();
+    assert_eq!(blocks(&replica)[0].text, "[a](https://tilo.so/)");
+}
+
+#[test]
 fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
     let mut replica = seeded("buy **oat** milk");
     let id = id_of(&replica, "buy");
