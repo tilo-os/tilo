@@ -4964,6 +4964,7 @@ mod tests {
                     source_peer: 1,
                     ts,
                     encoded_h264: vec![0x41; 1024],
+                    seq: ts,
                 });
                 let allocated = backlog
                     .frames
@@ -5017,6 +5018,7 @@ mod tests {
             source_peer: 1,
             encoded_h264,
             ts,
+            seq: ts,
         };
         let mut backlog = SurfaceFrameBacklog::default();
         for ts in 1..4 {
@@ -5611,6 +5613,7 @@ mod tests {
                         source_peer,
                         encoded_h264: vec![0, 0, 0, 1, 0x65],
                         ts: 99,
+                        seq: 0,
                     },
                 })
                 .await
@@ -5932,6 +5935,7 @@ mod tests {
                         source_peer,
                         encoded_h264: vec![0, 0, 0, 1, 0x65],
                         ts: 1,
+                        seq: 0,
                     },
                 })
                 .await

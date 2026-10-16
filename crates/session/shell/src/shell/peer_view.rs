@@ -89,8 +89,17 @@ pub enum PushOutcome {
     /// decoder's wait (a loaded machine). Nothing recorded yet: the picture
     /// arrives with a later push or [`PeerView::collect_late_picture`].
     Pending,
-    /// The decoder rejected the payload. Nothing recorded.
+    /// The decoder rejected the payload. Nothing recorded, and the units
+    /// after it wait for a keyframe like [`Self::AwaitingKeyframe`].
     DecodeFailed,
+    /// A delta unit whose reference chain is broken: a unit before it never
+    /// arrived, or the stream has not reached its first keyframe. It is not
+    /// decoded, since a decoder fed it shows corrupt pictures or rejects
+    /// every delta until the next keyframe anyway.
+    AwaitingKeyframe,
+    /// A delta older than one already decoded, overtaken on the way or
+    /// repeated. Not decoded; the chain it belonged to has moved on.
+    Stale,
 }
 
 /// Frames of streams that have no view yet, by `(source peer, surface)`.
@@ -99,29 +108,34 @@ pub enum PushOutcome {
 /// frame is the keyframe a decoder must begin at. A frame that overtakes the
 /// start is held here and decoded as soon as the view mounts, instead of the
 /// viewer waiting for the next keyframe. Bounded: the first frames of a few
-/// streams, and nothing larger than a frame on the wire.
+/// streams, and nothing larger than a frame on the wire. Each frame keeps its
+/// sequence number, so frames past the bound read as a gap to the view.
 #[derive(Default)]
 pub struct EarlyFrames {
-    held: HashMap<(u64, u64), Vec<Vec<u8>>>,
+    held: HashMap<(u64, u64), Vec<HeldFrame>>,
 }
+
+/// A held frame's sequence number and encoded bytes.
+pub type HeldFrame = (u64, Vec<u8>);
 
 impl EarlyFrames {
     const STREAMS: usize = 8;
     const FRAMES: usize = 4;
 
     /// Keep `frame` of a stream with no view, in arrival order.
-    pub fn hold(&mut self, key: (u64, u64), frame: Vec<u8>) {
+    pub fn hold(&mut self, key: (u64, u64), seq: u64, frame: Vec<u8>) {
         if !self.held.contains_key(&key) && self.held.len() >= Self::STREAMS {
             return;
         }
         let frames = self.held.entry(key).or_default();
         if frames.len() < Self::FRAMES {
-            frames.push(frame);
+            frames.push((seq, frame));
         }
     }
 
-    /// The frames held for a stream whose view just mounted.
-    pub fn take(&mut self, key: (u64, u64)) -> Vec<Vec<u8>> {
+    /// The frames held for a stream whose view just mounted, with their
+    /// sequence numbers.
+    pub fn take(&mut self, key: (u64, u64)) -> Vec<HeldFrame> {
         self.held.remove(&key).unwrap_or_default()
     }
 
@@ -205,6 +219,9 @@ pub struct PeerView {
     /// The newest push whose picture is still decoding: its motion-to-photon
     /// latency then, and when, so a late picture's latency counts the wait.
     pending_push: Option<(Option<u64>, ui::time::Instant)>,
+    /// The sequence number the next delta unit must carry to continue the
+    /// decoder's reference chain; `None` until a keyframe starts one.
+    next_seq: Option<u64>,
 }
 
 impl PeerView {
@@ -251,6 +268,7 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
+            next_seq: None,
         }
     }
 
@@ -318,6 +336,7 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
+            next_seq: None,
         }
     }
 
@@ -345,6 +364,7 @@ impl PeerView {
             self.decoder.set_picture_wake(self.picture_wake.clone());
             self.pending_push = None;
             self.late_poll_until = None;
+            self.next_seq = None;
         }
         self.decoder.set_display_size(display_size);
     }
@@ -378,9 +398,9 @@ impl PeerView {
 
     /// Drops failed decodes silently (the next frame typically
     /// recovers). Returns `true` if a new frame was decoded.
-    pub fn push_encoded(&mut self, nalus: &[u8]) -> bool {
+    pub fn push_encoded(&mut self, seq: u64, nalus: &[u8]) -> bool {
         matches!(
-            self.push_encoded_with_latency(nalus, None),
+            self.push_encoded_with_latency(seq, nalus, None),
             PushOutcome::Decoded | PushOutcome::DroppedOldest,
         )
     }
@@ -389,12 +409,36 @@ impl PeerView {
     /// still records a zero-latency sample. Drop-oldest: at
     /// `PENDING_CEILING` the previous latest is dropped but the new
     /// frame still becomes `latest` — the drop is on the paint side.
+    ///
+    /// `seq` is the unit's `SurfaceFrame::seq`. Units can go missing between
+    /// the owner's encoder and here (a saturated queue, a failed read), and
+    /// a delta after a missing unit references a picture this decoder never
+    /// saw: it is held back until the owner's next keyframe restarts the
+    /// chain.
     #[tracing::instrument(level = "trace", skip(self, nalus), fields(nalu_bytes = nalus.len()))]
     pub fn push_encoded_with_latency(
         &mut self,
+        seq: u64,
         nalus: &[u8],
         latency_ns: Option<u64>,
     ) -> PushOutcome {
+        // A keyframe always starts a chain, whatever its number: a share
+        // replaced by a new session numbers its units from zero again, and
+        // its first keyframe can overtake the stream start announcing it.
+        if self.next_seq != Some(seq) && !media::realtime::is_keyframe(self.codec(), nalus) {
+            if self.next_seq.is_some_and(|next| seq < next) {
+                return PushOutcome::Stale;
+            }
+            if self.next_seq.take().is_some() {
+                tracing::debug!(
+                    surface = self.surface_id,
+                    seq,
+                    "peer stream lost a unit; waiting for its next keyframe"
+                );
+            }
+            return PushOutcome::AwaitingKeyframe;
+        }
+        self.next_seq = seq.checked_add(1);
         let decoded = self.decoder.decode(nalus);
         let pending = self.decoder.picture_pending();
         let now = ui::time::Instant::now();
@@ -403,11 +447,13 @@ impl PeerView {
             .flatten();
         self.pending_push = pending.then_some((latency_ns, now));
         let Some(frame) = decoded else {
-            return if pending {
-                PushOutcome::Pending
-            } else {
-                PushOutcome::DecodeFailed
-            };
+            if pending {
+                return PushOutcome::Pending;
+            }
+            // Whatever the decoder kept of a rejected unit is no base for
+            // the deltas after it.
+            self.next_seq = None;
+            return PushOutcome::DecodeFailed;
         };
         self.accept(frame, latency_ns)
     }
@@ -848,9 +894,11 @@ mod tests {
     /// Push `unit` and settle its picture as the compositor loop does: a
     /// push never waits, so a picture still decoding is collected once it
     /// is out. A rejected unit stays [`PushOutcome::DecodeFailed`], and one
-    /// whose picture never comes stays [`PushOutcome::Pending`].
+    /// whose picture never comes stays [`PushOutcome::Pending`]. The unit
+    /// continues the view's sequence.
     fn push_settled(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> PushOutcome {
-        let outcome = view.push_encoded_with_latency(unit, latency_ns);
+        let seq = view.next_seq.unwrap_or(0);
+        let outcome = view.push_encoded_with_latency(seq, unit, latency_ns);
         if outcome != PushOutcome::Pending {
             return outcome;
         }
@@ -969,16 +1017,16 @@ mod tests {
     fn frames_ahead_of_their_stream_start_wait_bounded_in_order() {
         let mut early = EarlyFrames::default();
         for frame in 0..6_u8 {
-            early.hold((1, 2), vec![frame]);
+            early.hold((1, 2), u64::from(frame), vec![frame]);
         }
         assert_eq!(
             early.take((1, 2)),
-            vec![vec![0], vec![1], vec![2], vec![3]],
+            vec![(0, vec![0]), (1, vec![1]), (2, vec![2]), (3, vec![3])],
             "the first frames, keyframe first, and only a few"
         );
         assert!(early.take((1, 2)).is_empty());
         for stream in 0..20 {
-            early.hold((stream, 0), vec![1]);
+            early.hold((stream, 0), 0, vec![1]);
         }
         assert_eq!(
             (0..20)
@@ -986,7 +1034,7 @@ mod tests {
                 .count(),
             EarlyFrames::STREAMS
         );
-        early.hold((3, 3), vec![1]);
+        early.hold((3, 3), 0, vec![1]);
         early.forget((3, 3));
         assert!(early.take((3, 3)).is_empty());
     }
@@ -1104,7 +1152,7 @@ mod tests {
             })
         }));
         let started = std::time::Instant::now();
-        let outcome = view.push_encoded_with_latency(&nalus, None);
+        let outcome = view.push_encoded_with_latency(0, &nalus, None);
         eprintln!(
             "first push of a stream: {:?}, {outcome:?}",
             started.elapsed()
@@ -1154,7 +1202,7 @@ mod tests {
     fn push_until_pending(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> usize {
         const ATTEMPTS: usize = 50;
         for decoded in 0..ATTEMPTS {
-            match view.push_encoded_with_latency(unit, latency_ns) {
+            match view.push_encoded_with_latency(view.next_seq.unwrap_or(0), unit, latency_ns) {
                 PushOutcome::Pending => return decoded,
                 outcome => {
                     assert_eq!(outcome, PushOutcome::Decoded, "push {decoded}");
@@ -1237,7 +1285,7 @@ mod tests {
     fn peer_view_stream_queue_bounds_latency_and_rebuilds_decoders() {
         fn push_encoded_returns_false_for_empty_payload() {
             let mut view = PeerView::new(0, 0);
-            assert!(!view.push_encoded(&[]));
+            assert!(!view.push_encoded(0, &[]));
             assert!(view.latest_frame().is_none());
         }
 

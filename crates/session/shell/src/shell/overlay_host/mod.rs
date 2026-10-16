@@ -4838,20 +4838,23 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Decode the newest frame into the mounted peer view. The network inbox
-    /// already coalesces older frames, so this never accumulates video here.
+    /// Decode the next encoded unit (sequence number `seq`) into the mounted
+    /// peer view. Returns whether the decoder took it.
     pub fn push_peer_stream_frame(
         &mut self,
         source_peer: u64,
         surface_id: u64,
+        seq: u64,
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
         self.peer_stream_view_mut(source_peer, surface_id)
             .is_some_and(|view| {
-                !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                matches!(
+                    view.push_encoded_with_latency(seq, encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::Decoded
+                        | crate::shell::peer_view::PushOutcome::DroppedOldest
+                        | crate::shell::peer_view::PushOutcome::Pending
                 )
             })
     }

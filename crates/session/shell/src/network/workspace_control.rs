@@ -174,6 +174,7 @@ impl WorkspaceControlSession {
                 source_peer,
                 encoded_h264,
                 ts,
+                ..
             } if transport_peer == Some(self.target)
                 && *source_peer == self.target_peer
                 && self.stream_is_h264

@@ -416,6 +416,7 @@ impl LegacyWindows {
                 source_peer,
                 encoded_h264,
                 ts,
+                ..
             } if *source_peer == own => {
                 let cached = rooms
                     .values()
@@ -891,6 +892,7 @@ mod tests {
             source_peer: own(),
             encoded_h264: bytes.to_vec(),
             ts: 5_000,
+            seq: 0,
         }
     }
     fn presence(author: [u8; 32], message: &NeighbourMsg) -> Vec<u8> {
