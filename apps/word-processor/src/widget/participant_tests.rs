@@ -320,7 +320,7 @@ fn participant_presence_uses_the_block_key_and_byte_offsets() {
         ui::PresencePayload::Selection { start: 7, end: 13 }
     );
 
-    assert!(wp.remove_participant(&typist));
+    ui::collaboration::participants::Participants::leave_participant(&mut wp, &typist);
     assert_eq!(wp.participant_presence(&state.doc).len(), 1);
 }
 
