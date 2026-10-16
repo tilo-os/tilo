@@ -5,8 +5,10 @@
 //! What each device holds of the person's workspaces, and what of it is
 //! only there, is [`residency`]: this device's storage summary is the
 //! `storage-summary` effect, which another of the person's devices asks
-//! for too.
+//! for too, and the other devices' are theirs, asked of each through the
+//! host ([`other_devices`]).
 
+mod other_devices;
 mod residency;
 
 pub use residency::{DeviceResidency, Fleet};
@@ -158,22 +160,28 @@ pub(crate) fn answer(
 pub struct StorageArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<StorageModel>>,
+    /// The window's client for the action door, which asks the person's
+    /// other devices for their summaries.
+    remote: ui::RemoteActions,
 }
 
 impl StorageArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            remote,
         }
     }
 
     /// The model, created on first use: a capture's scans nothing and asks
-    /// no storage service.
+    /// no storage service and no other device.
     pub fn model(&self) -> &Shared<StorageModel> {
         self.model.get_or_init(|| {
             let model = if self.cx.reaches_devices() {
-                StorageModel::new(self.cx.clone())
+                let mut model = StorageModel::new(self.cx.clone());
+                model.ask_other_devices(other_devices::OtherDevices::new(self.remote.clone()));
+                model
             } else {
                 let mut model = StorageModel::with_roots(
                     self.cx.clone(),
@@ -223,6 +231,9 @@ pub struct StorageModel {
     policy_result: Option<PolicyAnswer>,
     /// What each of the person's devices holds of their workspaces.
     fleet: Fleet,
+    /// The person's other devices, asked for their summaries; `None` where
+    /// no device is reached.
+    others: Option<other_devices::OtherDevices>,
     /// The residency effect running against the storage service, and how
     /// it ends.
     residency_job: Option<(
@@ -299,6 +310,7 @@ impl StorageModel {
             cache_policy: None,
             policy_result: None,
             fleet: Fleet::default(),
+            others: None,
             residency_job: None,
             summary_waiting: false,
             replies: Replies::default(),
@@ -306,7 +318,33 @@ impl StorageModel {
         }
     }
 
+    /// Ask the person's other devices for their summaries through
+    /// `others`, now and whenever the figures are read again.
+    fn ask_other_devices(&mut self, mut others: other_devices::OtherDevices) {
+        others.refresh();
+        self.others = Some(others);
+    }
+
+    /// Take in the other devices' answers that arrived; whether any did.
+    fn poll_other_devices(&mut self) -> bool {
+        let Some(others) = self.others.as_mut() else {
+            return false;
+        };
+        let arrived = others.poll();
+        let changed = arrived.listed.is_some() || !arrived.summaries.is_empty();
+        if let Some(listed) = &arrived.listed {
+            self.fleet.keep_listed(listed);
+        }
+        for device in arrived.summaries {
+            self.fleet.adopt(device);
+        }
+        changed
+    }
+
     fn refresh_sync(&mut self) {
+        if let Some(others) = self.others.as_mut() {
+            others.refresh();
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = sender.send(SyncRead::now());
@@ -870,10 +908,12 @@ impl PaneModel for StorageModel {
             }
         }
         let policy_changed = self.poll_policy();
+        let others_answered = self.poll_other_devices();
         let finished = (waiting.0 && self.snapshot_result.is_none())
             || (waiting.1 && self.sync_result.is_none())
             || residency_finished
-            || policy_changed;
+            || policy_changed
+            || others_answered;
         std::mem::take(&mut self.changed) || finished
     }
 
