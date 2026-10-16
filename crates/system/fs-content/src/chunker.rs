@@ -420,7 +420,10 @@ pub fn build_reader(
     let mut chunks = Vec::new();
     loop {
         while !eof && filled < capacity {
-            let n = reader.read(buf.get_mut(filled..).unwrap_or_default())?;
+            let n = match reader.read(buf.get_mut(filled..).unwrap_or_default()) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
             if n == 0 {
                 eof = true;
             }
@@ -513,6 +516,34 @@ mod tests {
         let (fresh, _) = build(&data, None);
         assert_eq!(rebuilt, fresh);
         assert!(rebuilt.verify(&data));
+    }
+
+    #[test]
+    fn streamed_chunking_retries_interrupted_reads() {
+        struct InterruptedReader<'a> {
+            remaining: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for InterruptedReader<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let limit = buf.len().min(4096);
+                self.remaining.read(&mut buf[..limit])
+            }
+        }
+
+        let data = pseudo_random(512 * 1024, 9);
+        let reader = InterruptedReader {
+            remaining: &data,
+            interrupt: false,
+        };
+        let (streamed, _) = build_reader(reader, data.len() as u64, None).unwrap();
+        let (fresh, _) = build(&data, None);
+        assert_eq!(streamed, fresh);
+        assert!(streamed.verify(&data));
     }
 
     #[test]
