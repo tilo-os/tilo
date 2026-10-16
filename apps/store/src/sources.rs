@@ -454,7 +454,9 @@ pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<S
         .map(|i| i.name.trim().to_ascii_lowercase())
         .collect();
     for fh in flathub_items {
-        if fh.installed.is_installed() || !tilo_names.contains(&fh.name.trim().to_ascii_lowercase())
+        if fh.installed.is_installed()
+            || fh.install_ref_path.is_some()
+            || !tilo_names.contains(&fh.name.trim().to_ascii_lowercase())
         {
             out.push(fh);
         }
