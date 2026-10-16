@@ -604,7 +604,10 @@ impl TypstApp {
     /// Compile the source shown to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
     fn export_pdf_to_path(&self, path: &std::path::Path) -> Result<(), String> {
-        let bytes = compile::compile_pdf(&self.parts, &self.source_cache).map_err(|diags| {
+        // File effects run before the editor pulls the latest document in
+        // sync. Export the live resource, not the previous frame's cache.
+        let file = self.current_file().ok_or("there is no file to export")?;
+        let bytes = compile::compile_pdf(&self.parts, &file.source).map_err(|diags| {
             let errs = diags
                 .iter()
                 .filter(|d| d.kind == compile::DiagKind::Error)
@@ -1928,6 +1931,45 @@ mod tests {
         assert!(
             app.save_status.failure().is_none(),
             "a successful retry dismisses the failure card"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pdf_export_uses_the_live_source_before_the_editor_pulls_it() {
+        let mut replica = Replica::<Workspace>::new();
+        replica
+            .apply(crate::resource::new_file(
+                "report.typ",
+                None,
+                "= Previous draft",
+            ))
+            .unwrap();
+        let mut app = TypstApp::new();
+        let mut doc = AutoCommit::load(&replica.save()).unwrap();
+        present(&mut app, &doc);
+        app.sync(&doc, &ROOT);
+        assert_eq!(app.source_cache, "= Previous draft");
+
+        let id = app.current.clone().unwrap();
+        let source = Workspace::paths().files.item(&id).source;
+        replica
+            .apply(ui::tilo_resource::Invoke::edit(&source.replace("#let broken = (")).unwrap())
+            .unwrap();
+        doc = AutoCommit::load(&replica.save()).unwrap();
+        present(&mut app, &doc);
+        // As on the real effect path, the resource is presented but the
+        // editor's per-frame source cache has not been pulled yet.
+        let dir = unique_dir("export-live-source");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.pdf");
+        std::fs::write(&path, b"previous export").unwrap();
+        app.pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
+        app.sync(&doc, &ROOT);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"previous export",
+            "the invalid live source must fail instead of exporting the older draft"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
