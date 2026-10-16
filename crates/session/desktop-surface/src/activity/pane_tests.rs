@@ -4665,8 +4665,96 @@ mod task_review_tests {
             snapshot.tasks[0].title = "Send note X by mail to Bob".into();
             snapshot.controls.get_mut(&id).unwrap().confirmation = Some(confirmation);
         }
+        // The person here manages the workspace, and its roster names the
+        // agent.
+        tree.adopt_ownerless_workspaces(&"local".to_owned());
+        if let Some(workspace) = tree.desktop.active_workspace_mut() {
+            workspace
+                .collaborators
+                .push(tilo_desktop_model::Collaborator {
+                    id: "scribe".into(),
+                    name: "Scribe".into(),
+                    ..Default::default()
+                });
+        }
         pane.refresh(&mut tree);
         (tree, pane, host)
+    }
+
+    #[test]
+    fn the_card_names_the_agent_and_offers_always_allow_only_to_who_may_grant() {
+        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
+        paint(&mut pane, &Theme::light());
+        assert_eq!(pane.agent_label("scribe"), "Scribe");
+        assert_eq!(pane.take_confirmation_notices()[0].agent, "Scribe");
+        assert!(
+            pane.task_action_rects
+                .iter()
+                .any(|(action, _)| *action == TaskAction::AlwaysAllow)
+        );
+        pane.explicit_local_user = Some("visitor".into());
+        pane.refresh(&mut tree);
+        paint(&mut pane, &Theme::light());
+        assert!(
+            !pane
+                .task_action_rects
+                .iter()
+                .any(|(action, _)| *action == TaskAction::AlwaysAllow),
+            "someone who may not change agent access is not offered it"
+        );
+    }
+
+    #[test]
+    fn a_card_taller_than_the_sheet_scrolls_to_its_buttons() {
+        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        pane.layout_window(Rect::new(0.0, 0.0, 560.0, 640.0));
+        paint(&mut pane, &theme);
+        let viewport = pane.review_scroll.viewport.unwrap();
+        assert!(
+            pane.review_scroll.content > viewport.height(),
+            "the card overflows"
+        );
+        let confirm = |pane: &RoomActivityPane| {
+            pane.task_action_rects
+                .iter()
+                .find_map(|(action, rect)| (*action == TaskAction::ConfirmDraft).then_some(*rect))
+                .unwrap()
+        };
+        assert!(
+            confirm(&pane).y0 > viewport.y1,
+            "Confirm starts below the fold"
+        );
+        let wheel = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -100.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        let outcome = pane.handle_event(
+            &wheel,
+            1.0,
+            &Modifiers::default(),
+            Some(viewport.center()),
+            &mut tree,
+        );
+        assert!(outcome.handled);
+        paint(&mut pane, &theme);
+        let last = pane
+            .task_action_rects
+            .iter()
+            .map(|(_, rect)| rect.y1)
+            .fold(f64::MIN, f64::max);
+        assert!(
+            last > viewport.y0 && last <= viewport.y1,
+            "scrolled to the end, the last button is in view"
+        );
+        // Keyboard focus brings a control back into view by itself.
+        pane.review_scroll.offset = 0.0;
+        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::ConfirmDraft));
+        paint(&mut pane, &theme);
+        paint(&mut pane, &theme);
+        assert!(viewport.contains(confirm(&pane).center()));
     }
 
     fn paint(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {

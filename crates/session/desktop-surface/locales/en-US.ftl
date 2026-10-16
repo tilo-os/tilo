@@ -1123,6 +1123,7 @@ activity-confirm-decline = Decline
 activity-confirm-send-decline = Decline action
 activity-confirm-back = Back
 activity-confirm-always = Always allow this
+activity-confirm-always-note = “Always allow this” changes this workspace’s agent access, so it works only on the device that manages the workspace. You can undo it in Workspace Settings › Agents.
 activity-confirm-reason-label = Reason for the agent (optional)
 activity-confirm-reason-placeholder = Say what to do instead
 activity-confirm-field-description = Change this before confirming
@@ -1154,6 +1155,7 @@ activity-task-review-status-unassigned = { $status ->
         [cancelled] Cancelled
        *[other] Nobody is working on this yet
     }
+activity-task-review-status-asking = { $agent } is waiting for your answer
 activity-task-details = Details
 activity-task-hide-details = Hide details
 activity-task-position = { $index } of { $count }

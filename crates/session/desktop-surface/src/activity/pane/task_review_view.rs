@@ -9,7 +9,7 @@ use super::{
 use crate::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 use ui::icons::Icon;
 use ui::text_render::TextWeight;
-use ui::widget::{ButtonRole, ControlSize};
+use ui::widget::{ButtonRole, ControlSize, ScrollMetrics, Scrollbar};
 use vello::peniko::Color;
 
 #[derive(Clone)]
@@ -383,7 +383,7 @@ impl RoomActivityPane {
         y: f64,
         actions: &[TaskAction],
         task: &tilo_desktop_model::WorkspaceTask,
-    ) {
+    ) -> f64 {
         let gap = f64::from(paint.theme.tokens.spacing.s2);
         let height = ui::widget::ButtonFace::height(ControlSize::Regular, paint.theme);
         let (mut x, mut y) = (bounds.x0, y);
@@ -406,9 +406,6 @@ impl RoomActivityPane {
                 x = bounds.x0;
                 y += height + gap;
             }
-            if y + height > bounds.y1 {
-                break;
-            }
             let rect = Rect::new(x, y, x + width, y + height);
             ui::widget::Button::paint(
                 paint.scene,
@@ -420,6 +417,7 @@ impl RoomActivityPane {
             self.task_action_rects.push((*action, rect));
             x += width + gap;
         }
+        y + height
     }
 
     /// "2 of 8" between Previous and Next. Each keeps its side whether or
@@ -511,7 +509,97 @@ impl RoomActivityPane {
         lines
     }
 
-    pub(super) fn draw_review_tasks(&mut self, paint: &mut PaintCtx<'_>, bounds: Rect) {
+    /// The reviewed task in a viewport of its own that scrolls when the
+    /// task, its card and its buttons run past the sheet — at a large text
+    /// scale, or with a long draft to confirm.
+    pub(super) fn draw_scrolling_review(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        viewport: Rect,
+        focused: Option<Rect>,
+    ) {
+        let mut scroll = self.review_scroll;
+        scroll.viewport = Some(viewport);
+        // Keep the control that has keyboard focus in view, from where it
+        // was painted last frame.
+        let in_review = matches!(
+            self.keyboard_focus,
+            Some(
+                ActivityFocus::TaskAction(_)
+                    | ActivityFocus::Task(_)
+                    | ActivityFocus::ConfirmField(_)
+                    | ActivityFocus::DeclineReason
+            )
+        );
+        if let Some(focused) = focused.filter(|_| in_review) {
+            if focused.y1 > viewport.y1 {
+                scroll.offset += focused.y1 - viewport.y1;
+            } else if focused.y0 < viewport.y0 {
+                scroll.offset -= viewport.y0 - focused.y0;
+            }
+        }
+        let max = ScrollMetrics::new(scroll.content, viewport.height(), 0.0).max_scroll();
+        scroll.offset = scroll.offset.clamp(0.0, max);
+        let gutter = f64::from(paint.theme.tokens.metrics.scrollbar_gutter);
+        let content = Rect::new(
+            viewport.x0,
+            viewport.y0 - scroll.offset,
+            viewport.x1 - gutter / 2.0,
+            f64::MAX / 4.0,
+        );
+        paint.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            paint.transform,
+            &viewport,
+        );
+        let bottom = self.draw_review_tasks(paint, content);
+        paint.scene.pop_layer();
+        scroll.content = bottom - content.y0;
+        let metrics = ScrollMetrics::new(scroll.content, viewport.height(), scroll.offset);
+        if metrics.overflows() {
+            let bar = Scrollbar::vertical();
+            let lane = Rect::new(viewport.x1 - gutter, viewport.y0, viewport.x1, viewport.y1);
+            let track = bar.track_in(lane, paint.theme);
+            bar.draw(
+                paint.scene,
+                paint.transform,
+                track,
+                metrics,
+                paint.theme,
+                false,
+            );
+        }
+        self.review_scroll = scroll;
+    }
+
+    /// Scroll the reviewed task by a wheel turn over it; whether it moved.
+    pub(super) fn scroll_review(
+        &mut self,
+        point: vello::kurbo::Point,
+        delta: &winit::event::MouseScrollDelta,
+    ) -> bool {
+        let Some(viewport) = self.review_scroll.viewport else {
+            return false;
+        };
+        if self.view != ActivityView::Tasks || !viewport.contains(point) {
+            return false;
+        }
+        let dy = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, lines) => f64::from(*lines) * 40.0,
+            winit::event::MouseScrollDelta::PixelDelta(pixels) => pixels.y,
+        };
+        let max =
+            ScrollMetrics::new(self.review_scroll.content, viewport.height(), 0.0).max_scroll();
+        let offset = (self.review_scroll.offset - dy).clamp(0.0, max);
+        let moved = (offset - self.review_scroll.offset).abs() > f64::EPSILON;
+        self.review_scroll.offset = offset;
+        moved
+    }
+
+    /// Paint the reviewed task from `bounds`' top; returns where it ends.
+    pub(super) fn draw_review_tasks(&mut self, paint: &mut PaintCtx<'_>, bounds: Rect) -> f64 {
         self.review_approval = None;
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let body = paint.theme.text(TextRole::Body);
@@ -521,7 +609,7 @@ impl RoomActivityPane {
         let x = inner.x0;
         let mut y = bounds.y0 + gap;
         let Some(Ok(snapshot)) = self.task_review.clone() else {
-            return;
+            return y;
         };
         let snapshot = &*snapshot;
         let primary = paint.theme.tokens.colors.text_primary;
@@ -533,7 +621,7 @@ impl RoomActivityPane {
         {
             let missing = t("activity-task-review-missing");
             draw_review_line(paint, (&missing, primary), &body, width, x, &mut y);
-            return;
+            return y;
         }
         let selected = self
             .selected_task
@@ -545,40 +633,25 @@ impl RoomActivityPane {
         let Some(task) = self.tasks.get(self.review_task_offset).cloned() else {
             let empty = t("activity-tasks-empty");
             draw_review_line(paint, (&empty, primary), &body, width, x, &mut y);
-            return;
+            return y;
         };
         self.selected_task = Some(task.id.clone());
         if self.tasks.len() > 1 {
             y = self.draw_review_pager(paint, inner, y);
         }
         let top = y;
-        // What the task is, in its own words: wrapped, at most two lines.
-        let title_style = body.clone().with_weight(TextWeight::Medium);
-        let (_, line_h) = paint.text.measure_style(&task.title, None, &title_style);
-        let (_, title_h) = paint
-            .text
-            .measure_style(&task.title, Some(width), &title_style);
-        let title = if title_h > 2.0 * line_h + 1.0 {
-            // Elided to a little under two lines' run, so the wrap lands on
-            // the second line whatever the word breaks.
-            paint
-                .text
-                .elide_to_width_style(&task.title, 1.8 * width, &title_style)
-        } else {
-            task.title.clone()
-        };
-        let (_, title_h) = paint.text.measure_style(&title, Some(width), &title_style);
-        paint.text.draw_style(
-            paint.scene,
-            &title,
-            primary,
-            at(paint.transform, x, y),
-            Some(width),
-            &title_style,
-        );
-        y += f64::from(title_h) + f64::from(paint.theme.tokens.spacing.s2);
+        y = draw_review_title(paint, &task.title, (x, y), width);
         // Who is doing it and where it stands.
-        let state = review_state_line(&task);
+        let asking = self
+            .reviewed_confirmation(&task.id)
+            .is_some_and(|(_, confirmation)| confirmation.is_waiting());
+        let state = review_state_line(
+            &task,
+            task.assigned_agent
+                .as_deref()
+                .map(|id| self.agent_label(id)),
+            asking,
+        );
         draw_review_line(paint, (&state, primary), &body, width, x, &mut y);
         if let Some(notice) = self.review_notice.clone() {
             draw_review_line(paint, (&notice, dim), &caption, width, x, &mut y);
@@ -617,7 +690,7 @@ impl RoomActivityPane {
                     .map_or(0, |direction| direction.revision),
             })
         });
-        self.draw_review_actions(paint, inner, y + gap, &actions, &task);
+        let bottom = self.draw_review_actions(paint, inner, y + gap, &actions, &task);
         if self
             .task_action_rects
             .iter()
@@ -625,7 +698,38 @@ impl RoomActivityPane {
         {
             self.review_approval = approval;
         }
+        bottom + gap
     }
+}
+
+/// What the task is, in its own words: wrapped, at most two lines.
+/// Returns the line below it.
+fn draw_review_title(paint: &mut PaintCtx<'_>, title: &str, (x, y): (f64, f64), width: f32) -> f64 {
+    let title_style = paint
+        .theme
+        .text(TextRole::Body)
+        .with_weight(TextWeight::Medium);
+    let (_, line_h) = paint.text.measure_style(title, None, &title_style);
+    let (_, title_h) = paint.text.measure_style(title, Some(width), &title_style);
+    let title = if title_h > 2.0 * line_h + 1.0 {
+        // Elided to a little under two lines' run, so the wrap lands on the
+        // second line whatever the word breaks.
+        paint
+            .text
+            .elide_to_width_style(title, 1.8 * width, &title_style)
+    } else {
+        title.to_owned()
+    };
+    let (_, title_h) = paint.text.measure_style(&title, Some(width), &title_style);
+    paint.text.draw_style(
+        paint.scene,
+        &title,
+        paint.theme.tokens.colors.text_primary,
+        at(paint.transform, x, y),
+        Some(width),
+        &title_style,
+    );
+    y + f64::from(title_h) + f64::from(paint.theme.tokens.spacing.s2)
 }
 
 /// One line of the reviewed task, elided rather than run past the sheet.
@@ -651,9 +755,18 @@ fn draw_review_line(
 }
 
 /// Who is doing the task and where it stands, as one sentence.
-fn review_state_line(task: &tilo_desktop_model::WorkspaceTask) -> String {
+/// `asking` when the run waits for the person to answer an action.
+fn review_state_line(
+    task: &tilo_desktop_model::WorkspaceTask,
+    agent: Option<String>,
+    asking: bool,
+) -> String {
     let status = ("status", task.status.key().into());
-    match task.assigned_agent.as_deref() {
+    match agent {
+        Some(agent) if asking => t_args(
+            "activity-task-review-status-asking",
+            &[("agent", agent.into())],
+        ),
         Some(agent) => t_args(
             "activity-task-review-status",
             &[status, ("agent", agent.into())],

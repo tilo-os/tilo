@@ -1148,6 +1148,7 @@ activity-confirm-decline = Ablehnen
 activity-confirm-send-decline = Aktion ablehnen
 activity-confirm-back = Zurück
 activity-confirm-always = Immer erlauben
+activity-confirm-always-note = „Immer erlauben“ ändert den Agentenzugriff dieses Arbeitsbereichs und funktioniert deshalb nur auf dem Gerät, das den Arbeitsbereich verwaltet. Du kannst es unter Arbeitsbereichseinstellungen › Agenten zurücknehmen.
 activity-confirm-reason-label = Grund für den Agenten (optional)
 activity-confirm-reason-placeholder = Sag, was stattdessen passieren soll
 activity-confirm-field-description = Vor dem Bestätigen ändern
@@ -1179,6 +1180,7 @@ activity-task-review-status-unassigned = { $status ->
         [cancelled] Abgebrochen
        *[other] Noch arbeitet niemand daran
     }
+activity-task-review-status-asking = { $agent } wartet auf deine Antwort
 activity-task-details = Details
 activity-task-hide-details = Details ausblenden
 activity-task-position = { $index } von { $count }
