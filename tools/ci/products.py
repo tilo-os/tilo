@@ -33,10 +33,9 @@ COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.
                  "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh", *COSIGN_INPUTS]
 PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
-# Signing and publishing read only what the build produced, so any architecture would do, but a
-# check holding an identity token runs as a micro-VM step, and t finds no guest kernel for
-# `arch=any`: they run on x86_64, where the most micro-VM capacity is.
-CREDENTIAL_REQUIRES = ["arch=x86_64"]
+# Signing and publishing read only what the build produced, so they run on any architecture (as
+# micro-VM steps, since they hold credentials, booting the guest of the node they land on).
+CREDENTIAL_REQUIRES = ["arch=any"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
