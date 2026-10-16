@@ -150,7 +150,14 @@ groups. A path whose filesystem can't be idmapped (a device on devtmpfs, a
 container's `/tmp`) is bound as it is, and a writable one is reported to the
 caller (`Job::unmapped`) rather than failing the job. A socket (a VM step's
 passt) is never idmapped: the worker makes it for the job, so it becomes the
-job's user's. t hands the blocks out
+job's user's. The job's system files (its image root, or the host's `/usr`,
+`/etc` and `/lib*`) are idmapped too, but with every id keeping its number: root's
+files stay root's, read-only, in every tier, so a program that trusts only
+root's files (a dynamic loader, a setuid helper) still trusts them for a job that
+runs as uid 1000. A job whose uid has no entry in the root's `/etc/passwd` (a
+nested job in an image that knows only root) gets one, `job` at home in `/tmp`
+with root's shell, and a group entry likewise: the root's files with the line
+added, bound read-only over them. t hands the blocks out
 from `0x70000000` up and falls back to the shared uid, loudly, where a trial job
 shows it can't.
 
