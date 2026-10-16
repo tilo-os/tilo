@@ -871,6 +871,14 @@ impl LogsApp {
         Self::with_entries(Vec::new(), false)
     }
     fn show_entries(&mut self, entries: Vec<LogEntry>) {
+        if self.entries != entries {
+            // Equal counts and endpoints do not imply equal journal contents.
+            // Invalidate the inspector too: metadata can change without changing
+            // the entry's resource id.
+            self.published = None;
+            self.published_rows = None;
+            self.inspected = Inspected::Stale;
+        }
         self.entries = entries;
         self.source_error = None;
         self.rebuild_facets();
@@ -946,6 +954,34 @@ mod tests {
             );
             std::thread::park_timeout(std::time::Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn refresh_republishes_changed_middle_records_and_facets() {
+        let mut app = captured((1280, 800));
+        let (mut entries, revision) = surface(&mut app, |viewer| {
+            (viewer.entries.clone(), viewer.shared.borrow().rows_revision)
+        });
+        entries[1].message = "Updated middle record".into();
+        entries[1].unit = "updated.service".into();
+        entries[1].priority = Priority::Crit;
+        surface(&mut app, |viewer| viewer.show_read(Ok(entries.clone())));
+        app.settle();
+        surface(&mut app, |viewer| {
+            let bridge = viewer.shared.borrow();
+            assert_ne!(bridge.rows_revision, revision);
+            assert_eq!(bridge.rows[1].message, "Updated middle record");
+            assert_eq!(bridge.rows[1].unit, "updated");
+            assert_eq!(bridge.rows[1].priority, Priority::Crit);
+            assert!(bridge.units.contains(&"updated.service".to_owned()));
+        });
+        let revision = surface(&mut app, |viewer| viewer.shared.borrow().rows_revision);
+        surface(&mut app, |viewer| viewer.show_read(Ok(entries)));
+        assert_eq!(
+            surface(&mut app, |viewer| viewer.shared.borrow().rows_revision),
+            revision,
+            "an unchanged poll does not rebuild the table"
+        );
     }
 
     #[test]
