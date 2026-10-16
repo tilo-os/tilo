@@ -1791,3 +1791,760 @@ fn a_map_saved_over_its_copy_writes_what_a_whole_write_does() {
     }
     assert_eq!(saves, 320);
 }
+
+// --- Items added to a local copy; lists, sets and grids saved over theirs ----
+
+fn shot(id: &str, label: &str) -> Shot {
+    Shot {
+        id: id.to_owned(),
+        opacity: 1.0,
+        label: Compared(label.to_owned()),
+    }
+}
+
+#[test]
+fn an_item_pushed_onto_a_local_copy_is_compared_with_nothing() {
+    let before = cut(300);
+    let mut after = before.clone();
+    let id = Id::from_raw("s0150");
+    after.shots.find_mut(&id).unwrap().opacity = 0.5;
+    after.shots.push(shot("s9000", "new"));
+    after.stack.push(shot("s9001", "newer"));
+    // Changed after it came: still one new item.
+    after
+        .stack
+        .find_mut(&Id::from_raw("s9001"))
+        .unwrap()
+        .opacity = 0.25;
+    let (edits, compared, _) = counted(|| edits_of(&before, &after));
+    assert!(
+        compared <= 2,
+        "{compared} labels of 600 compared for one changed and two new items"
+    );
+    let paths = Cut::paths();
+    assert_eq!(
+        edits,
+        [
+            paths.shots.item(&id).opacity.set(0.5),
+            paths.shots.insert(&shot("s9000", "new")),
+            paths.stack.insert(
+                300,
+                &Shot {
+                    opacity: 0.25,
+                    ..shot("s9001", "newer")
+                }
+            ),
+        ],
+    );
+    assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
+}
+
+/// Change `cut`'s lists at random, items added among the changes: new ids,
+/// ids already held, items changed after they came, and changes a copy
+/// cannot follow item by item.
+fn add_and_change(cut: &mut Cut, rng: &mut Lcg, step: usize) {
+    let id = Id::from_raw(format!("s{:04}", rng.next(48)));
+    let label = format!("step {step}");
+    match rng.next(10) {
+        // An id that may be held already: then items left and came.
+        0 | 1 => cut.shots.push(shot(id.as_str(), &label)),
+        2 => cut.stack.push(shot(id.as_str(), &label)),
+        3 => cut
+            .shots
+            .push(shot(&format!("n{step:04}-{}", rng.next(1000)), &label)),
+        4 => {
+            if let Some(shot) = cut.shots.find_mut(&id) {
+                shot.opacity = f64::from(u32::try_from(step).unwrap());
+            }
+        }
+        5 => {
+            if let Some(shot) = cut.stack.find_mut(&id) {
+                shot.label = Compared(label);
+            }
+        }
+        6 => {
+            // An id changed in place, perhaps of an item just added.
+            if let Some(shot) = cut.shots.find_mut(&id) {
+                shot.id = format!("s{:04}", rng.next(60));
+            }
+        }
+        7 => cut.shots.retain(|shot| shot.id != id.as_str()),
+        8 => {
+            cut.stack.take(&id);
+        }
+        _ => {
+            // A copy held across an addition: the addition copies again.
+            let held = cut.clone();
+            cut.shots
+                .push(shot(&format!("h{step:04}-{}", rng.next(1000)), &label));
+            drop(held);
+        }
+    }
+}
+
+#[test]
+fn the_edits_of_a_local_copy_items_were_added_to_match_comparing_every_item() {
+    for seed in 0..60 {
+        let mut rng = Lcg(seed);
+        let mut before = cut(40);
+        if seed % 2 == 0 {
+            before.shots.settle();
+        }
+        let mut after = before.clone();
+        for step in 0..rng.next(10) {
+            add_and_change(&mut after, &mut rng, step);
+        }
+        assert_eq!(
+            edits_of(&before, &after),
+            edits_of(&apart(&before), &apart(&after)),
+            "seed {seed}"
+        );
+        for shot in &after.shots {
+            let first = after.shots.iter().position(|other| other.id == shot.id);
+            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
+        }
+    }
+}
+
+#[test]
+fn saving_a_keyed_list_changed_and_added_to_visits_only_those_items() {
+    use tilo_resource::__private::ROOT;
+    use tilo_resource::Fields;
+    let folios: Vec<Folio> = (0..300)
+        .map(|n| Folio {
+            id: format!("f{n:04}"),
+            page: Page(format!("page {n}")),
+        })
+        .collect();
+    let before = Volume {
+        title: "volume".into(),
+        folios: folios.clone().into(),
+        stack: folios.into(),
+    };
+    let mut doc = Doc::new().with_actor(actor("base"));
+    before.write_fields(&mut doc, &ROOT).unwrap();
+    commit_at_zero(&mut doc);
+
+    let mut after = before.clone();
+    after.folios.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
+    after.folios.push(Folio {
+        id: "f9000".into(),
+        page: Page("new".into()),
+    });
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        after
+            .write_changed_fields(
+                &before,
+                &mut changed,
+                &ROOT,
+                &tilo_resource::Delta::nothing(),
+            )
+            .unwrap();
+    });
+    assert_eq!(stored, 2, "the changed item and the new one are written");
+    assert!(compared <= 4, "{compared} items of 300 compared");
+    let mut whole = doc.fork().with_actor(actor("me"));
+    after.write_fields(&mut whole, &ROOT).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+    let folios: Keyed<Folio> = tilo_resource::read_key(&changed, &ROOT, "folios").unwrap();
+    assert_eq!(folios.len(), 301, "the new item is there");
+}
+
+#[test]
+fn saving_a_collection_changed_in_one_item_compares_no_item_it_shares() {
+    use tilo_resource::__private::ROOT;
+    let mut held = Collection::new();
+    for n in 0..300 {
+        held.push(
+            Id::from_raw(format!("f{n:04}")),
+            Folio {
+                id: format!("f{n:04}"),
+                page: Page(format!("page {n}")),
+            },
+        );
+    }
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "pages", &held).unwrap();
+    commit_at_zero(&mut doc);
+    // As read, so each item knows its stored order key.
+    let before: Collection<Folio> = tilo_resource::read_key(&doc, &ROOT, "pages").unwrap();
+
+    let mut after = before.clone();
+    after.get_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut changed,
+            &ROOT,
+            "pages",
+            &after,
+            &before,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!(stored, 1, "only the changed item is written");
+    assert!(compared <= 4, "{compared} items of 300 compared");
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "pages", &after).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+
+    // Its edits compare the changed item alone.
+    let root = tilo_resource::Path::<Collection<Folio>, Collection<Folio>>::root();
+    let (edits, compared, _) = pages_counted(|| root.edits(&before, &after));
+    assert!(compared <= 2, "{compared} items compared for the edits");
+    assert_eq!(edits.len(), 1);
+    // A copy nothing changed stores as it is.
+    let ((), compared, _) = pages_counted(|| assert!(before.clone().stores_as(&before)));
+    assert_eq!(compared, 0);
+}
+
+/// The map `key` at the document root.
+fn root_map(doc: &Doc, key: &str) -> ObjId {
+    use tilo_resource::__private::{ObjType, ROOT, ReadDoc};
+    match doc.get(ROOT, key).unwrap() {
+        Some((Value::Object(ObjType::Map), id)) => Some(id),
+        _ => None,
+    }
+    .unwrap()
+}
+
+/// What a collaborator writes into the list `shots` meanwhile: an item put
+/// whole, one removed, or a field of one changed.
+fn peer_shots(doc: &mut Doc, rng: &mut Lcg, step: usize) {
+    use tilo_resource::__private::{ObjType, ReadDoc};
+    let mut peer = doc.fork().with_actor(actor("peer"));
+    let shots = root_map(&peer, "shots");
+    let keys: Vec<String> = peer.keys(&shots).collect();
+    for _ in 0..=rng.next(3) {
+        let key = keys
+            .get(rng.next(keys.len() + 1))
+            .cloned()
+            .unwrap_or_else(|| format!("p{step:04}"));
+        match rng.next(3) {
+            0 => tilo_resource::write_key(
+                &mut peer,
+                &shots,
+                &key,
+                &shot(&key, &format!("peer {step}")),
+            )
+            .unwrap(),
+            1 => {
+                if peer.get(&shots, key.as_str()).unwrap().is_some() {
+                    automerge::transaction::Transactable::delete(&mut peer, &shots, key.as_str())
+                        .unwrap();
+                }
+            }
+            _ => {
+                if let Some((Value::Object(ObjType::Map), entry)) =
+                    peer.get(&shots, key.as_str()).unwrap()
+                {
+                    automerge::transaction::Transactable::put(&mut peer, &entry, "opacity", -1.0)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    peer.commit();
+    doc.merge_incoming(&mut peer).unwrap();
+}
+
+/// Whether no two of `items` carry the same id.
+fn ids_unique(items: &Keyed<Shot>) -> bool {
+    let mut ids: Vec<Id> = items.iter().map(Identified::id).collect();
+    ids.sort();
+    ids.dedup();
+    ids.len() == items.len()
+}
+
+#[test]
+fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
+    use tilo_resource::__private::ROOT;
+    let root = tilo_resource::Path::<Keyed<Shot>, Keyed<Shot>>::root();
+    let apart = |items: &Keyed<Shot>| -> Keyed<Shot> { items.to_vec().into() };
+    let mut saves = 0;
+    for seed in 0..40 {
+        let mut rng = Lcg(seed);
+        let mut held: Keyed<Shot> = (0..rng.next(120))
+            .map(|n| shot(&format!("s{n:04}"), &format!("shot {n}")))
+            .collect();
+        held.settle();
+        let mut doc = Doc::new().with_actor(actor("base"));
+        tilo_resource::write_key(&mut doc, &ROOT, "shots", &held).unwrap();
+        commit_at_zero(&mut doc);
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        for step in 0..8 {
+            if rng.next(3) == 0 {
+                peer_shots(&mut doc, &mut rng, step);
+            }
+            let dirty = tracker.delta(&mut doc);
+            // What the slot holds now, brought up to date as a reader does.
+            let mut was = held.clone();
+            let id = root_map(&doc, "shots");
+            let value = Value::Object(tilo_resource::__private::ObjType::Map);
+            was.refresh(&doc, &value, &id, &dirty).unwrap();
+            was.settle();
+            let read: Keyed<Shot> = tilo_resource::read_key(&doc, &ROOT, "shots").unwrap();
+            assert_eq!(was, read, "seed {seed} step {step}: refreshed as read");
+
+            let mut copy = Cut {
+                title: String::new(),
+                shots: was.clone(),
+                stack: Ordered::new(),
+            };
+            for _ in 0..rng.next(6) {
+                add_and_change(&mut copy, &mut rng, step);
+            }
+            let now = copy.shots;
+            assert_eq!(
+                edit_parts(&root.edits(&was, &now)),
+                edit_parts(&root.edits(&apart(&was), &apart(&now))),
+                "seed {seed} step {step}: the edits"
+            );
+
+            let mut changed = doc.fork().with_actor(actor("me"));
+            let mut whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut changed, &ROOT, "shots", &now, &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut whole, &ROOT, "shots", &now).unwrap();
+            commit_at_zero(&mut changed);
+            commit_at_zero(&mut whole);
+            assert_eq!(
+                changed.get_heads(),
+                whole.get_heads(),
+                "seed {seed} step {step}: the saved change"
+            );
+            saves += 1;
+            doc = changed;
+            tracker.start(&mut doc);
+            // Two items under one id are one item in the document.
+            held = if ids_unique(&now) {
+                now
+            } else {
+                tilo_resource::read_key(&doc, &ROOT, "shots").unwrap()
+            };
+        }
+    }
+    assert_eq!(saves, 320);
+}
+
+fn element(n: usize) -> String {
+    format!("e{n:04}")
+}
+
+/// Change `set` at random: elements added (some in runs that split a
+/// chunk) and removed (some in runs that empty one), now and then all of it
+/// cleared or replaced by an equal set that shares nothing.
+fn change_elements(set: &mut Set<String>, rng: &mut Lcg) {
+    for _ in 0..rng.next(6) {
+        let n = rng.next(400);
+        match rng.next(10) {
+            0..=2 => {
+                set.insert(element(n));
+            }
+            3 => {
+                for k in 0..rng.next(80) {
+                    set.insert(format!("{}-{k:02}", element(n)));
+                }
+            }
+            4..=6 => {
+                set.remove(&element(n));
+            }
+            7 => {
+                for k in n..n + rng.next(70) {
+                    set.remove(&element(k));
+                }
+            }
+            8 => {
+                if rng.next(4) == 0 {
+                    *set = Set::new();
+                }
+            }
+            _ => *set = set.iter().cloned().collect(),
+        }
+    }
+}
+
+/// What a collaborator writes into the set `tags` meanwhile: elements
+/// added and removed.
+fn peer_elements(doc: &mut Doc, rng: &mut Lcg) {
+    use tilo_resource::__private::ReadDoc;
+    let mut peer = doc.fork().with_actor(actor("peer"));
+    let tags = root_map(&peer, "tags");
+    for _ in 0..=rng.next(4) {
+        let key = element(rng.next(400));
+        if rng.next(2) == 0 {
+            automerge::transaction::Transactable::put(&mut peer, &tags, key.as_str(), true)
+                .unwrap();
+        } else if peer.get(&tags, key.as_str()).unwrap().is_some() {
+            automerge::transaction::Transactable::delete(&mut peer, &tags, key.as_str()).unwrap();
+        }
+    }
+    peer.commit();
+    doc.merge_incoming(&mut peer).unwrap();
+}
+
+#[test]
+fn a_set_saved_over_its_copy_writes_what_a_whole_write_does() {
+    use tilo_resource::__private::ROOT;
+    let root = tilo_resource::Path::<Set<String>, Set<String>>::root();
+    let apart = |set: &Set<String>| -> Set<String> { set.iter().cloned().collect() };
+    let mut saves = 0;
+    for seed in 0..40 {
+        let mut rng = Lcg(seed);
+        let mut held: Set<String> = (0..rng.next(400)).map(element).collect();
+        let mut doc = Doc::new().with_actor(actor("base"));
+        tilo_resource::write_key(&mut doc, &ROOT, "tags", &held).unwrap();
+        commit_at_zero(&mut doc);
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        for step in 0..8 {
+            if rng.next(3) == 0 {
+                peer_elements(&mut doc, &mut rng);
+            }
+            let dirty = tracker.delta(&mut doc);
+            let mut was = held.clone();
+            let id = root_map(&doc, "tags");
+            let value = Value::Object(tilo_resource::__private::ObjType::Map);
+            was.refresh(&doc, &value, &id, &dirty).unwrap();
+            let read: Set<String> = tilo_resource::read_key(&doc, &ROOT, "tags").unwrap();
+            assert_eq!(was, read, "seed {seed} step {step}: refreshed as read");
+
+            let mut now = was.clone();
+            change_elements(&mut now, &mut rng);
+            assert_eq!(
+                edit_parts(&root.edits(&was, &now)),
+                edit_parts(&root.edits(&apart(&was), &apart(&now))),
+                "seed {seed} step {step}: the edits"
+            );
+
+            let mut changed = doc.fork().with_actor(actor("me"));
+            let mut whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut changed, &ROOT, "tags", &now, &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut whole, &ROOT, "tags", &now).unwrap();
+            if now.stores_as(&was) {
+                assert_eq!(
+                    automerge::transaction::Transactable::pending_ops(&whole),
+                    0,
+                    "seed {seed} step {step}: what stores as before writes nothing"
+                );
+            }
+            commit_at_zero(&mut changed);
+            commit_at_zero(&mut whole);
+            assert_eq!(
+                changed.get_heads(),
+                whole.get_heads(),
+                "seed {seed} step {step}: the saved change"
+            );
+            saves += 1;
+            doc = changed;
+            tracker.start(&mut doc);
+            held = now;
+        }
+    }
+    assert_eq!(saves, 320);
+}
+
+#[test]
+fn a_set_changed_in_one_element_writes_one() {
+    use tilo_resource::__private::ROOT;
+    let held: Set<String> = (0..1000).map(element).collect();
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "tags", &held).unwrap();
+    commit_at_zero(&mut doc);
+
+    assert!(held.clone().stores_as(&held), "a copy stores as it is");
+    let mut now = held.clone();
+    now.insert("e0500-new".to_owned());
+    assert!(!now.stores_as(&held));
+    let mut changed = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key_changed(
+        &mut changed,
+        &ROOT,
+        "tags",
+        &now,
+        &held,
+        &tilo_resource::Delta::nothing(),
+    )
+    .unwrap();
+    assert_eq!(
+        automerge::transaction::Transactable::pending_ops(&changed),
+        1
+    );
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "tags", &now).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+    assert_eq!(
+        edit_parts(&tilo_resource::Path::<Set<String>, Set<String>>::root().edits(&held, &now)),
+        [(
+            Vec::new(),
+            tilo_resource::EditOp::Insert {
+                value: serde_json::json!("e0500-new")
+            }
+        )]
+    );
+}
+
+fn row(n: usize) -> Id {
+    Id::from_raw(format!("r{n:04}"))
+}
+
+fn column(n: usize) -> Id {
+    Id::from_raw(format!("c{n:02}"))
+}
+
+/// Change `grid` at random: cells written, cleared and changed in place,
+/// rows and columns added and removed, now and then all of it replaced by
+/// an equal grid that shares nothing.
+fn change_grid(grid: &mut Grid<i64>, rng: &mut Lcg, step: usize) {
+    let rows: Vec<Id> = grid.rows().cloned().collect();
+    let columns: Vec<Id> = grid.columns().cloned().collect();
+    let pick = |ids: &[Id], rng: &mut Lcg| ids.get(rng.next(ids.len())).cloned();
+    let value = i64::try_from(step).unwrap();
+    for made in 0..rng.next(6) {
+        let (at_row, at_column) = (pick(&rows, rng), pick(&columns, rng));
+        match rng.next(11) {
+            0..=3 => {
+                if let (Some(r), Some(c)) = (at_row, at_column) {
+                    grid.set_cell(&r, &c, Some(value));
+                }
+            }
+            4 => {
+                if let (Some(r), Some(c)) = (at_row, at_column) {
+                    grid.set_cell(&r, &c, None);
+                }
+            }
+            5 => {
+                if let (Some(r), Some(c)) = (at_row, at_column)
+                    && let Some(cell) = grid.cell_mut(&r, &c)
+                {
+                    *cell += 100;
+                }
+            }
+            6 => {
+                let at = rng.next(rows.len() + 1);
+                grid.insert_row(at, Id::from_raw(format!("r{step}-{made}")));
+            }
+            7 => {
+                if let Some(r) = at_row {
+                    grid.remove_row(&r);
+                }
+            }
+            8 => {
+                let at = rng.next(columns.len() + 1);
+                grid.insert_column(at, Id::from_raw(format!("c{step}-{made}")));
+            }
+            9 => {
+                if let Some(c) = at_column {
+                    grid.remove_column(&c);
+                }
+            }
+            _ => *grid = Grid::from_json(&grid.to_json()).unwrap(),
+        }
+    }
+}
+
+/// What a collaborator writes into the grid `grid` meanwhile: cells
+/// written, changed and cleared.
+fn peer_cells(doc: &mut Doc, rng: &mut Lcg) {
+    use tilo_resource::__private::{ObjType, ReadDoc};
+    let mut peer = doc.fork().with_actor(actor("peer"));
+    let grid = root_map(&peer, "grid");
+    let map = |key: &str| match peer.get(&grid, key).unwrap() {
+        Some((Value::Object(ObjType::Map), id)) => Some(id),
+        _ => None,
+    };
+    let (rows, columns, cells) = (map("rows"), map("columns"), map("cells"));
+    let (Some(rows), Some(columns), Some(cells)) = (rows, columns, cells) else {
+        return;
+    };
+    let rows: Vec<String> = peer.keys(&rows).collect();
+    let columns: Vec<String> = peer.keys(&columns).collect();
+    let held: Vec<String> = peer.keys(&cells).collect();
+    for _ in 0..=rng.next(4) {
+        match rng.next(3) {
+            0 => {
+                if let (Some(r), Some(c)) = (
+                    rows.get(rng.next(rows.len())),
+                    columns.get(rng.next(columns.len())),
+                ) {
+                    let key = format!("{r}/{c}");
+                    automerge::transaction::Transactable::put(&mut peer, &cells, key, -1_i64)
+                        .unwrap();
+                }
+            }
+            1 => {
+                if let Some(key) = held.get(rng.next(held.len())) {
+                    automerge::transaction::Transactable::put(
+                        &mut peer,
+                        &cells,
+                        key.as_str(),
+                        -2_i64,
+                    )
+                    .unwrap();
+                }
+            }
+            _ => {
+                if let Some(key) = held.get(rng.next(held.len()))
+                    && peer.get(&cells, key.as_str()).unwrap().is_some()
+                {
+                    automerge::transaction::Transactable::delete(&mut peer, &cells, key.as_str())
+                        .unwrap();
+                }
+            }
+        }
+    }
+    peer.commit();
+    doc.merge_incoming(&mut peer).unwrap();
+}
+
+#[test]
+fn a_grid_saved_over_its_copy_writes_what_a_whole_write_does() {
+    use tilo_resource::__private::ROOT;
+    let root = tilo_resource::Path::<Grid<i64>, Grid<i64>>::root();
+    let apart = |grid: &Grid<i64>| -> Grid<i64> { Grid::from_json(&grid.to_json()).unwrap() };
+    let mut saves = 0;
+    for seed in 0..40 {
+        let mut rng = Lcg(seed);
+        let mut held: Grid<i64> = Grid::new();
+        for n in 0..rng.next(200) {
+            held.insert_row(n, row(n));
+        }
+        for n in 0..=rng.next(8) {
+            held.insert_column(n, column(n));
+        }
+        for n in 0..rng.next(600) {
+            let (r, c) = (row(rng.next(200)), column(rng.next(8)));
+            held.set_cell(&r, &c, Some(i64::try_from(n).unwrap()));
+        }
+        let mut doc = Doc::new().with_actor(actor("base"));
+        tilo_resource::write_key(&mut doc, &ROOT, "grid", &held).unwrap();
+        commit_at_zero(&mut doc);
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        for step in 0..8 {
+            if rng.next(3) == 0 {
+                peer_cells(&mut doc, &mut rng);
+            }
+            let dirty = tracker.delta(&mut doc);
+            let mut was = held.clone();
+            let id = root_map(&doc, "grid");
+            let value = Value::Object(tilo_resource::__private::ObjType::Map);
+            was.refresh(&doc, &value, &id, &dirty).unwrap();
+            let read: Grid<i64> = tilo_resource::read_key(&doc, &ROOT, "grid").unwrap();
+            assert_eq!(was, read, "seed {seed} step {step}: refreshed as read");
+
+            let mut now = was.clone();
+            change_grid(&mut now, &mut rng, step);
+            assert_eq!(
+                edit_parts(&root.edits(&was, &now)),
+                edit_parts(&root.edits(&apart(&was), &apart(&now))),
+                "seed {seed} step {step}: the edits"
+            );
+
+            let mut changed = doc.fork().with_actor(actor("me"));
+            let mut whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut changed, &ROOT, "grid", &now, &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut whole, &ROOT, "grid", &now).unwrap();
+            if now.stores_as(&was) {
+                assert_eq!(
+                    automerge::transaction::Transactable::pending_ops(&whole),
+                    0,
+                    "seed {seed} step {step}: what stores as before writes nothing"
+                );
+            }
+            commit_at_zero(&mut changed);
+            commit_at_zero(&mut whole);
+            assert_eq!(
+                changed.get_heads(),
+                whole.get_heads(),
+                "seed {seed} step {step}: the saved change"
+            );
+            saves += 1;
+            doc = changed;
+            tracker.start(&mut doc);
+            held = now;
+        }
+    }
+    assert_eq!(saves, 320);
+}
+
+#[test]
+fn saving_a_grid_changed_in_one_cell_visits_one_chunk_of_rows() {
+    use tilo_resource::__private::ROOT;
+    let mut held: Grid<Page> = Grid::new();
+    for n in 0..1000 {
+        held.insert_row(n, row(n));
+    }
+    for n in 0..4 {
+        held.insert_column(n, column(n));
+    }
+    for r in 0..1000 {
+        for c in 0..4 {
+            held.set_cell(&row(r), &column(c), Some(Page(format!("{r}:{c}"))));
+        }
+    }
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "grid", &held).unwrap();
+    commit_at_zero(&mut doc);
+
+    let mut now = held.clone();
+    *now.cell_mut(&row(500), &column(2)).unwrap() = Page("changed".into());
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut changed,
+            &ROOT,
+            "grid",
+            &now,
+            &held,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!(stored, 1, "only the changed cell is written");
+    assert!(
+        compared <= 2 * 64 * 4,
+        "{compared} cells of 4000 compared: the changed chunk's rows, at most twice"
+    );
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "grid", &now).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+
+    // An unchanged copy compares and writes nothing.
+    let mut same = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut same,
+            &ROOT,
+            "grid",
+            &held.clone(),
+            &held,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!((compared, stored), (0, 0));
+    assert_eq!(automerge::transaction::Transactable::pending_ops(&same), 0);
+
+    // The edits between the two compare that chunk's cells.
+    let root = tilo_resource::Path::<Grid<Page>, Grid<Page>>::root();
+    let (edits, compared, _) = pages_counted(|| root.edits(&held, &now));
+    assert!(
+        compared <= 64 * 4,
+        "{compared} cells compared for the edits"
+    );
+    assert_eq!(edits.len(), 1);
+}

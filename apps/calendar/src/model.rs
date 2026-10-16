@@ -894,15 +894,19 @@ impl Calendar {
     pub fn event(&self, id: Id) -> Option<&Event> {
         self.events.iter().find(|e| e.id == id)
     }
+    /// The event `id`, to change. Found through [`tilo_resource::Keyed::find_mut`],
+    /// so a copy of the calendar remembers which event changed and saving it
+    /// writes that event, not every one.
     pub fn event_mut(&mut self, id: Id) -> Option<&mut Event> {
-        self.events.iter_mut().find(|e| e.id == id)
+        self.events.find_mut(&key(id))
     }
 
     pub fn task(&self, id: Id) -> Option<&Task> {
         self.tasks.iter().find(|t| t.id == id)
     }
+    /// The task `id`, to change, found as [`Self::event_mut`] finds an event.
     pub fn task_mut(&mut self, id: Id) -> Option<&mut Task> {
-        self.tasks.iter_mut().find(|t| t.id == id)
+        self.tasks.find_mut(&key(id))
     }
 
     /// Top-level tasks (no parent) matching a smart list / project,
