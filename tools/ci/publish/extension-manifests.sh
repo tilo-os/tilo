@@ -109,7 +109,7 @@ case ${1:-} in
     (($#)) || die 'usage: extension-manifests.sh publish DIR...'
     use_cosign
     dnf install -y --setopt=install_weak_deps=False jq >/dev/null 2>&1 || command -v jq >/dev/null
-    export TILO_PACKAGE_PUBLIC_BASE_URL=$package_base TILO_PACKAGE_TOKEN=${REGISTRY_TOKEN:-}
+    export TILO_PACKAGE_PUBLIC_BASE_URL=$package_base TILO_PACKAGE_TOKEN=${TILO_PACKAGES_TOKEN:-}
     export TILO_EXPECTED_EXTENSION_CONTENT_SHA256=$expected
     . os/dev/configure-cosign-kms.sh
     public_key=$scratch/extension-public-key.pem

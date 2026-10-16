@@ -890,7 +890,7 @@ needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
 id_token = ["tilo-extension-manifests"]
 # Generic packages take no identity token.
-secrets = ["REGISTRY_TOKEN"]
+secrets = ["TILO_PACKAGES_TOKEN"]
 requires = ["arch=any"]
 cache = false
 on = ["schedule:40 4 * * *", "dispatch"]
