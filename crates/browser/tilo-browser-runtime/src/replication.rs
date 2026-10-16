@@ -49,6 +49,9 @@ const DESKTOP_KEY: &str = "desktop";
 /// the shared desktop: a role the room grants while they are in it reaches
 /// their page within this.
 const MODERATION_ASK_EVERY_MS: u64 = 30_000;
+/// How soon a page asks again when the room could not answer (the page was
+/// between connections): what it knew stands meanwhile.
+const MODERATION_RETRY_MS: u64 = 3_000;
 
 thread_local! {
     static ROOMS: RefCell<HashMap<u32, Rc<RefCell<Room>>>> = RefCell::new(HashMap::new());
@@ -104,8 +107,8 @@ pub(crate) struct Room {
     /// made on the shared desktop: the attached desktop's flag, set from the
     /// room's answer.
     moderates: Arc<AtomicBool>,
-    /// When the page last asked the room that (Unix milliseconds).
-    asked_moderation_ms: Option<u64>,
+    /// When the page next asks the room that (Unix milliseconds; 0: now).
+    moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -157,7 +160,7 @@ pub(crate) fn open(
         unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
-        asked_moderation_ms: None,
+        moderation_due_ms: Arc::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -242,7 +245,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             room.moderates = Arc::clone(&shared.moderates);
-            room.asked_moderation_ms = None;
+            room.moderation_due_ms.store(0, Ordering::Relaxed);
         }
         room.mounts.insert(
             mount,
@@ -272,14 +275,17 @@ pub(crate) fn pump(id: u32) {
     for notify in notify {
         notify();
     }
-    room.borrow_mut().ask_moderation_when_due();
     publish(id);
 }
 
 /// Send what attached mounts changed since the last call.
 pub(crate) fn publish(id: u32) {
     if let Some(room) = room(id) {
-        room.borrow_mut().send();
+        let mut room = room.borrow_mut();
+        room.send();
+        // Every frame passes here, so the room is asked again on time
+        // whether or not anything arrived from it.
+        room.ask_moderation_when_due();
     }
 }
 
@@ -303,14 +309,15 @@ impl Room {
             return;
         }
         let now = crate::shell::now_ms();
-        if self
-            .asked_moderation_ms
-            .is_some_and(|at| now.saturating_sub(at) < MODERATION_ASK_EVERY_MS)
-        {
+        if now < self.moderation_due_ms.load(Ordering::Relaxed) {
             return;
         }
-        self.asked_moderation_ms = Some(now);
+        self.moderation_due_ms.store(
+            now.saturating_add(MODERATION_ASK_EVERY_MS),
+            Ordering::Relaxed,
+        );
         let moderates = Arc::clone(&self.moderates);
+        let due = Arc::clone(&self.moderation_due_ms);
         let wake: Vec<_> = self
             .mounts
             .values()
@@ -320,20 +327,38 @@ impl Room {
             room: self.uuid.clone(),
             node: tilo_desktop_model::ownership::moderation_node(&self.uuid).to_string(),
         };
-        let _ = self.peer.rooms_then(
+        if let Err(error) = self.peer.rooms_then(
             request,
             Box::new(move |answer| {
-                let now = matches!(
-                    answer,
-                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(true))
-                );
+                let now = match &answer {
+                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
+                    Ok(other) => {
+                        warn(&format!(
+                            "the room did not say what this page may moderate: {other:?}"
+                        ));
+                        false
+                    }
+                    Err(_) => {
+                        due.store(
+                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                            Ordering::Relaxed,
+                        );
+                        return;
+                    }
+                };
                 if moderates.swap(now, Ordering::Relaxed) != now {
                     for wake in &wake {
                         wake();
                     }
                 }
             }),
-        );
+        ) {
+            warn(&format!(
+                "could not ask the room what this page may moderate: {error}"
+            ));
+            self.moderation_due_ms
+                .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+        }
     }
 
     /// Whether `value`, this page's desktop, closes, moves or renames
@@ -353,7 +378,11 @@ impl Room {
         let (Some(before), Some(after)) = (parse(room), parse(value)) else {
             return false;
         };
-        !tilo_desktop_model::ownership::foreign_acts(&before, &after, author).is_empty()
+        let acts = tilo_desktop_model::ownership::foreign_acts(&before, &after, author);
+        if !acts.is_empty() {
+            warn(&format!("undid a change to what others made: {acts:?}"));
+        }
+        !acts.is_empty()
     }
 
     /// Every record a mount has open in this room, as wire `(app, record)`.
@@ -396,7 +425,7 @@ impl Room {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
-                    self.asked_moderation_ms = None;
+                    self.moderation_due_ms.store(0, Ordering::Relaxed);
                 }
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>

@@ -4285,7 +4285,7 @@ impl Widget for GroupRow {
         // the strip edge must not keep the desktop at the refresh rate.
         self.snap_in_flight()
             || self.shift_in_flight()
-            || self.group_drag_active()
+            || self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
             || self
                 .group_resist_back
                 .is_some_and(|(id, _, _)| self.group_pull(id).is_some())

@@ -315,6 +315,24 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         )
         .await
         .unwrap();
+    // What each page asks before it offers a close on someone else's window.
+    let moderates = |device: &TestDevice| {
+        let rooms = relay.rooms().unwrap();
+        let cert = device.cert.clone();
+        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+            room: room.room.clone(),
+            node: tilo_desktop_model::ownership::moderation_node(&room.room).to_string(),
+        };
+        async move { rooms.page_rooms(&cert, request).await }
+    };
+    assert_eq!(
+        moderates(&mo_browser).await,
+        tilo_relay_protocol::rooms::RoomsReply::Permits(true)
+    );
+    assert_eq!(
+        moderates(&ada_browser).await,
+        tilo_relay_protocol::rooms::RoomsReply::Permits(false)
+    );
     let workspace = room.workspace_id;
     let ada_client = page_client(&relay, &ada_browser, workspace).await;
     let ben_client = page_client(&relay, &ben_browser, workspace).await;

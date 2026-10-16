@@ -650,9 +650,11 @@ pub(super) async fn handle_delta(
         tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
         return Ok(None);
     }
-    if let Some(reason) = desktop_refusal(&ws, peer.device_public_key, &env).await {
+    if desktop_refusal(&ws, peer.device_public_key, &env)
+        .await
+        .is_some()
+    {
         // Neither kept nor forwarded, as above.
-        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a shared desktop change");
         return Ok(None);
     }
     let observed = match (&env, session.compactor) {
@@ -700,10 +702,12 @@ pub(super) async fn desktop_refusal(
     }
     let authority = ws.lock().await.room_authority.clone()?;
     let rooms = authority.rooms()?;
-    rooms
+    let reason = rooms
         .decide_desktop_write(authority.room(), author, &body)
         .await
-        .err()
+        .err()?;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
+    Some(reason)
 }
 
 /// What the room's governor follows of `env`, a member's state change: its
@@ -772,9 +776,11 @@ pub(super) async fn handle_delta_prefix(
         trace_native_publication("server_authorized", envelope, None);
     }
     for envelope in &envelopes {
-        if let Some(reason) = desktop_refusal(&workspace, peer.device_public_key, envelope).await {
+        if desktop_refusal(&workspace, peer.device_public_key, envelope)
+            .await
+            .is_some()
+        {
             // The prefix is kept whole or not at all.
-            tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a shared desktop change");
             return Ok(None);
         }
     }

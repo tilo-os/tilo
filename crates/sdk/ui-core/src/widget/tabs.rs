@@ -3418,7 +3418,10 @@ impl Widget for TabBar {
             && self
                 .drag_lifted_at
                 .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
-        let resisting = self.resist_offset().is_some();
+        // Held still, a pulled tab only moves with the pointer: only its
+        // spring back runs by itself.
+        let resisting =
+            self.resist.is_some_and(|r| r.released_at.is_some()) && self.resist_offset().is_some();
         drop_zone
             || layout
             || insert_fade
