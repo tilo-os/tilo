@@ -258,6 +258,50 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     );
 }
 
+/// A copy has no uses, so duplicating from Most used must leave that
+/// filtered place before opening it; subsequent typing belongs to the copy.
+#[test]
+fn duplicating_from_most_used_opens_the_copy_for_editing() {
+    let mut original = snippet("Deploy", "kubectl apply");
+    original.uses.add(1);
+    let mut app = launched(&[original]);
+    activate(&mut app, "Most used");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Smart(SmartFolder::MostUsed)
+    );
+    open_row(&mut app, "Deploy");
+    activate(&mut app, "More actions");
+    activate(&mut app, "Duplicate");
+    let (copy_id, copy) = by_title(&app, "Deploy (copy)");
+    assert_eq!(copy.uses.get(), 0);
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        Some(copy_id),
+        "the unused copy opens even though Most used excluded it"
+    );
+    {
+        let harness = app.harness();
+        let editor = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::MultilineTextInput)
+            .map(|(id, _)| id)
+            .expect("the copied snippet's editor");
+        harness
+            .perform_a11y_action(editor, &ui::a11y::Action::Focus)
+            .unwrap();
+        harness.key("End");
+        harness.type_text(" --dry-run");
+    }
+    app.settle();
+    assert_eq!(
+        by_title(&app, "Deploy (copy)").1.body,
+        "kubectl apply --dry-run"
+    );
+    assert_eq!(by_title(&app, "Deploy").1.body, "kubectl apply");
+}
+
 /// The open snippet's folder and tag chips reveal their snippets through the
 /// action each place publishes.
 #[test]

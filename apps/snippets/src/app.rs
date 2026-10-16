@@ -567,6 +567,11 @@ impl Core {
         let Some(title) = self.library.get(id).map(|s| s.title.clone()) else {
             return;
         };
+        // The copy has no uses yet: leave Most used so it can open instead
+        // of silently keeping the original in the editor.
+        if self.selection == Selection::Smart(SmartFolder::MostUsed) {
+            self.select(Selection::default());
+        }
         // The copy is no favorite, so Favorites does not list it: there
         // the open snippet stays.
         if self.selection != Selection::Smart(SmartFolder::Favorites) {
