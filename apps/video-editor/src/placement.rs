@@ -253,6 +253,17 @@ fn import_content(project: &Project) -> ActionDecl<VideoProject> {
     .answering()
 }
 
+/// What to do about a source the bin lacks: a model naming a file the room
+/// holds (an attachment, a shared file) has to bring it into the bin first,
+/// and only the content address does that.
+fn import_hint() -> String {
+    format!(
+        "A file the room holds goes into the bin with {IMPORT_CONTENT} first: pass its \
+         content address (`tilo.content:<hash>`) as `content` and the name to place it by \
+         as `name`"
+    )
+}
+
 /// The bin source an argument names: its id (`video.media:<id>` too), else
 /// its name exactly, else its name ignoring case.
 pub(crate) fn media_named<'a>(project: &'a Project, named: &str) -> Result<&'a MediaItem, String> {
@@ -260,10 +271,16 @@ pub(crate) fn media_named<'a>(project: &'a Project, named: &str) -> Result<&'a M
     if named.is_empty() {
         return Err("name the source to place: its id or its name in the bin".into());
     }
+    if named.starts_with("tilo.content:") {
+        return Err(format!(
+            "`{named}` is a content address, not a bin source: {IMPORT_CONTENT} it first \
+             (`content`: `{named}`), then place it by the name or id that answers"
+        ));
+    }
     if let Ok(id) = named.trim_start_matches("video.media:").parse::<Uuid>() {
         return project
             .media(id)
-            .ok_or_else(|| format!("the bin holds no source {id}"));
+            .ok_or_else(|| format!("the bin holds no source {id}; {}", import_hint()));
     }
     let exact: Vec<&MediaItem> = project.media.iter().filter(|m| m.name == named).collect();
     let found = if exact.is_empty() {
@@ -280,7 +297,8 @@ pub(crate) fn media_named<'a>(project: &'a Project, named: &str) -> Result<&'a M
         [] => {
             let held: Vec<&str> = project.media.iter().map(|m| m.name.as_str()).collect();
             Err(format!(
-                "the bin holds no source named `{named}`; it holds {held:?}"
+                "the bin holds no source named `{named}`; it holds {held:?}. {}",
+                import_hint()
             ))
         }
         many => Err(format!(
@@ -908,6 +926,20 @@ mod tests {
         assert!(
             unknown.contains("Harbour"),
             "names what the bin holds: {unknown}"
+        );
+        assert!(
+            unknown.contains("import-content first") && unknown.contains("tilo.content:<hash>"),
+            "says how to bring the source in: {unknown}"
+        );
+        let address = fixture
+            .run(
+                ADD_CLIP,
+                serde_json::json!({"media": "tilo.content:abc123"}),
+            )
+            .unwrap_err();
+        assert!(
+            address.contains("is a content address") && address.contains("import-content it first"),
+            "{address}"
         );
         let sound_lane = fixture
             .run(
