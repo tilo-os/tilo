@@ -198,7 +198,7 @@ pub struct Core {
     inflight: usize,
     content_generation: u64,
     next_ticket: u64,
-    dispatched: HashMap<u64, (u64, RequestKind)>,
+    dispatched: HashMap<u64, (u64, RequestKind, Option<u64>)>,
     pub status: String,
     notice: Option<ForecastNotice>,
 
@@ -330,8 +330,12 @@ impl Core {
                 request,
             } = request
             {
+                let search_seq = match request.as_ref() {
+                    Request::Geocode { seq, .. } => Some(*seq),
+                    _ => None,
+                };
                 self.dispatched
-                    .insert(*ticket, (*generation, request.kind()));
+                    .insert(*ticket, (*generation, request.kind(), search_seq));
             }
         }
         requests
@@ -342,7 +346,7 @@ impl Core {
     pub(crate) fn disconnected_responses(&self) -> Vec<Response> {
         self.dispatched
             .iter()
-            .map(|(&ticket, &(generation, kind))| Response::Tracked {
+            .map(|(&ticket, &(generation, kind, _))| Response::Tracked {
                 ticket,
                 generation,
                 response: Box::new(Response::Error {
@@ -642,7 +646,12 @@ impl Core {
                 generation,
                 response,
             } => {
-                if self.dispatched.remove(&ticket).is_none() {
+                let Some((_, _, search_seq)) = self.dispatched.remove(&ticket) else {
+                    return;
+                };
+                // Failures carry no query sequence of their own. Fence them
+                // with the dispatched request, just like successful results.
+                if search_seq.is_some_and(|seq| seq != self.search_seq) {
                     return;
                 }
                 if generation != self.content_generation {
@@ -752,6 +761,10 @@ impl Core {
     /// React to the search field's text changing: cache lookup for instant
     /// matches, arm the debounce, and refresh the dropdown's view.
     fn on_query_changed(&mut self, text: &str) {
+        // Invalidate immediately, not after the debounce: an older response
+        // must never be displayed or cached under the newly typed query.
+        self.search_seq += 1;
+        self.geocode_inflight = false;
         self.search_query = text.to_string();
         let key = text.trim().to_lowercase();
         if key.is_empty() {
@@ -804,6 +817,7 @@ impl Core {
     /// Show and focus the add-place field with an empty query. Called by the
     /// header's Add button and the empty state's action.
     pub(crate) fn begin_search(&mut self) {
+        self.search_seq += 1;
         self.close_menu();
         self.search.set_text("");
         self.search.begin_edit();
@@ -815,6 +829,7 @@ impl Core {
 
     /// Hide the add-place field and clear its transient state.
     fn end_search(&mut self) {
+        self.search_seq += 1;
         self.search.close();
         self.search.set_focus(false);
         self.search.set_text("");
@@ -1962,6 +1977,86 @@ fn same_place(a: &SavedLocation, b: &SavedLocation) -> bool {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn obsolete_geocodes_cannot_replace_or_poison_the_current_query() {
+        for failure in [false, true] {
+            for next_query in ["Paris", "", "cached"] {
+                let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+                core.begin_search();
+                core.on_query_changed("London");
+                core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                core.maybe_fire_geocode();
+                let mut requests = core.take_tracked_outbox();
+                let Request::Tracked {
+                    ticket,
+                    generation,
+                    request,
+                } = requests.pop().unwrap()
+                else {
+                    panic!("expected tracked geocode");
+                };
+                let Request::Geocode { seq, .. } = *request else {
+                    panic!("expected geocode");
+                };
+                let cached = crate::sample::sample_geocode_results();
+                core.geocode_cache.insert("cached".into(), cached.clone());
+                core.on_query_changed(next_query);
+                let expected: Vec<_> = core.search_results.iter().map(|l| l.id).collect();
+                core.apply_response(Response::Tracked {
+                    ticket,
+                    generation,
+                    response: Box::new(if failure {
+                        Response::Error {
+                            kind: RequestKind::Geocode,
+                            message: "offline".into(),
+                        }
+                    } else {
+                        Response::Geocode {
+                            seq,
+                            results: cached,
+                        }
+                    }),
+                });
+                assert_eq!(
+                    core.search_results.iter().map(|l| l.id).collect::<Vec<_>>(),
+                    expected
+                );
+                assert!(!core.geocode_cache.contains_key("paris"));
+                assert!(!core.geocode_inflight);
+                if next_query == "Paris" {
+                    core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                    core.maybe_fire_geocode();
+                    let mut requests = core.take_tracked_outbox();
+                    let Request::Tracked {
+                        ticket,
+                        generation,
+                        request,
+                    } = requests.pop().unwrap()
+                    else {
+                        panic!("expected tracked geocode");
+                    };
+                    let Request::Geocode { seq, query } = *request else {
+                        panic!("expected geocode");
+                    };
+                    assert_eq!(query, "Paris");
+                    let paris =
+                        SavedLocation::new("Paris", "", "France", "FR", 48.85, 2.35, "auto");
+                    core.apply_response(Response::Tracked {
+                        ticket,
+                        generation,
+                        response: Box::new(Response::Geocode {
+                            seq,
+                            results: vec![paris.clone()],
+                        }),
+                    });
+                    assert_eq!(core.search_results, vec![paris.clone()]);
+                    assert_eq!(core.geocode_cache.get("paris"), Some(&vec![paris]));
+                    assert!(!core.search_pending());
+                }
+            }
+        }
+    }
 
     #[test]
     fn core_search_and_accessibility_drive_real_fetches() {
