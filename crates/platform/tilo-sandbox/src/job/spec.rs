@@ -78,12 +78,30 @@ impl JobSpec {
     /// every mount to a process it confines, in any namespace. The job
     /// itself still holds no capability: what it mounts, it mounts in a
     /// user namespace it creates.
+    ///
+    /// A job that would be root inside becomes [`NESTING_ID`] instead. Its
+    /// root holds no capability, and since Linux 5.12 mapping uid 0 of the
+    /// job's namespace into a new one (`unshare --map-root-user`,
+    /// bubblewrap's own namespace) takes `CAP_SETFCAP` there, so writing
+    /// `uid_map` fails with `EPERM`. Any other id maps itself as an
+    /// unprivileged user would. Set `ids` afterwards to choose another
+    /// non-root id.
     pub fn allow_nested_sandboxes(&mut self) -> &mut Self {
         self.seccomp = Seccomp::Ci(CiProfile::Nested);
         self.landlock = Landlock::Off;
+        if self.ids.inside_uid == 0 {
+            self.ids.inside_uid = NESTING_ID;
+        }
+        if self.ids.inside_gid == 0 {
+            self.ids.inside_gid = NESTING_ID;
+        }
         self
     }
 }
+
+/// Who a job that starts sandboxes of its own is inside, unless its caller
+/// names another non-root id (see [`JobSpec::allow_nested_sandboxes`]).
+pub const NESTING_ID: u32 = 1000;
 
 /// `PATH` when the job names none.
 pub const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

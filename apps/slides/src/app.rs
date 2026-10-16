@@ -179,18 +179,6 @@ enum Mode {
     Present,
 }
 
-/// One of the two surfaces a multi-output present produces. Returned by
-/// [`SlidesApp::present_output_plan`] so a compositor integration knows
-/// which view to paint on which output. See the multi-monitor seam doc on
-/// `present_output_plan`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PresentSurface {
-    /// The clean, letterboxed slide shown to the room (larger output).
-    Audience,
-    /// The presenter dashboard: current + next + notes + timer + position.
-    Presenter,
-}
-
 /// An on-canvas alignment guide produced by the snapping logic while a
 /// drag is live. Coordinates are in slide space; the renderer maps them
 /// to the destination rect.
@@ -1765,27 +1753,6 @@ impl SlidesApp {
     /// the widget's private state.
     pub fn wants_fullscreen(&self) -> bool {
         self.mode == Mode::Present
-    }
-
-    /// The *audience* surface description for a multi-output present: the
-    /// clean slide (no presenter chrome), letterboxed on a black field.
-    ///
-    /// Multi-monitor presenter mode (the design intent):
-    ///   * The compositor enumerates connected outputs. With two outputs, it
-    ///     fullscreens the clean **audience** presentation on the **larger**
-    ///     output, and paints the presentation's **presenter dashboard** on
-    ///     the other.
-    ///   * Both surfaces share one CRDT deck + one `cur_slide`, so advancing
-    ///     on either output is reflected on both instantly (the model is
-    ///     already per-deck, with `cur_slide` per-peer view state).
-    ///
-    /// `ui::App` turns this into a real second winit toplevel when the session
-    /// exposes a monitor distinct from this window. The primary window then
-    /// becomes this dashboard; a one-output session keeps the regular
-    /// fullscreen audience fallback. Both views are pure projections of the
-    /// same deck + `cur_slide` and therefore stay in lock-step.
-    pub fn present_output_plan(&self) -> (PresentSurface, PresentSurface) {
-        (PresentSurface::Audience, PresentSurface::Presenter)
     }
 
     // --- text editing -------------------------------------------------------

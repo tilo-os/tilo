@@ -5189,9 +5189,9 @@ impl FileExplorerWidget {
         self.favs.borrow().favorites.clone()
     }
 
-    /// Shared favourites store (tests / the headless shots demo).
-    #[doc(hidden)]
-    pub fn favorites_store(&self) -> FavStore {
+    /// Shared favourites store.
+    #[cfg(test)]
+    pub(crate) fn favorites_store(&self) -> FavStore {
         self.favs.clone()
     }
 
@@ -5924,7 +5924,8 @@ impl FileExplorerWidget {
 
     /// Replace the editable rename text. The next `sync` seeds the local
     /// editor; this test seam deliberately has no document side effect.
-    pub fn set_rename_buffer(&mut self, s: String) {
+    #[cfg(test)]
+    pub(crate) fn set_rename_buffer(&mut self, s: String) {
         self.rename_buffer = s;
         self.rename_seed_pending = true;
     }
@@ -6398,7 +6399,8 @@ where
 
 /// Remove the installed route, restoring the standalone fallback. Used by
 /// tests, which share the thread-local with each other.
-pub fn clear_document_opener() {
+#[cfg(test)]
+pub(crate) fn clear_document_opener() {
     DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = None);
 }
 
@@ -6446,7 +6448,8 @@ impl FileExplorerWidget {
     /// # Errors
     ///
     /// Returns the OS error if launching the entry's associated app fails.
-    pub fn open_entry<R: CommandRunner>(
+    #[cfg(test)]
+    pub(crate) fn open_entry<R: CommandRunner>(
         &mut self,
         idx: usize,
         runner: &mut R,

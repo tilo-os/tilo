@@ -390,6 +390,7 @@ impl SyncPlayout {
     }
 
     /// Audio buffered ahead of the playout position, in nanoseconds.
+    #[cfg(test)]
     pub fn buffered_ns(&self) -> i64 {
         let Some((&start, last)) = self.frames.last_key_value() else {
             return 0;

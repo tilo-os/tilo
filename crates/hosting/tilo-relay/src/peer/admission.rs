@@ -166,7 +166,9 @@ async fn stage_fresh_checkpoint_inner(
     let store = store.clone();
     let staged = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        store.stage_fresh_checkpoint(&channel, &raw)
+        crate::timing::windowed("stage.checkpoint", || {
+            store.stage_fresh_checkpoint(&channel, &raw)
+        })
     })
     .await
     .ok()?;
@@ -234,8 +236,15 @@ fn retain_or_commit_stage(
             // Disposed of after the job, unless its lineage selected it.
             state.retention_candidates.push(fresh.discard_paths());
             match state.store.start_fresh_retain(channel, fresh, raw)? {
-                Ok(build) => Ok(build),
-                Err((_, raw)) => state.store.start_retain(channel, None, raw),
+                Ok(build) => {
+                    // Counted: the turns that only selected their stage.
+                    crate::timing::window("owner.commit.staged", crate::timing::start());
+                    Ok(build)
+                }
+                Err((_, raw)) => {
+                    crate::timing::window("owner.commit.stage_moved", crate::timing::start());
+                    state.store.start_retain(channel, None, raw)
+                }
             }
         }
         (fresh, seq) => {
@@ -682,6 +691,8 @@ impl StateTurn {
         state: &mut crate::persistence::State,
         prepared: &mut Option<AdmissionRecipients>,
     ) -> Result<Step<StateCommit>, crate::store::StoreError> {
+        // This job changes retained history only through retention.
+        state.retaining_only();
         if let Some(begun) = crate::timing::start() {
             let _ = self.persist_begun.set(begun);
         }
@@ -702,7 +713,7 @@ impl StateTurn {
                 None, envelope, captured, publish,
             )));
         }
-        let seq = state.next_sequence()?;
+        let seq = crate::timing::windowed("owner.commit.sequence", || state.next_sequence())?;
         self.sequence = Some(seq);
         self.durable_sequence
             .store(seq, std::sync::atomic::Ordering::SeqCst);
@@ -719,8 +730,10 @@ impl StateTurn {
             });
         if let Some((channel, seq)) = retention {
             test_point!(pause(state.store.root(), "state-persist"));
-            let build = retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())?
-                .with_continuity(continuity.clone());
+            let build = crate::timing::windowed("owner.commit.retain_start", || {
+                retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())
+            })?
+            .with_continuity(continuity.clone());
             state.retention_scratch = Some(build.scratch().to_owned());
             self.retained_build = Some(build);
         } else {
@@ -740,7 +753,9 @@ impl StateTurn {
         let Some(build) = self.retained_build.as_mut() else {
             return Ok(ControlFlow::Continue(()));
         };
-        let result = match build.step(WorkLimit::default()) {
+        let result = match crate::timing::windowed("owner.commit.retain_step", || {
+            build.step(WorkLimit::default())
+        }) {
             Ok(result) => result,
             Err(error) => {
                 let Some(activation) = build.publication_on_error() else {
@@ -788,7 +803,9 @@ impl StateTurn {
     ) -> Result<Step<()>, crate::store::StoreError> {
         let current = self.commit.as_mut().invariant("commit missing")?;
         if let Some(work) = self.replay_pending_work.as_mut() {
-            match work.step(state, crate::persistence::output_budget()) {
+            match crate::timing::windowed("owner.commit.held_step", || {
+                work.step(state, crate::persistence::output_budget())
+            }) {
                 Ok(Step::More) => return Ok(Step::More),
                 Ok(Step::Done(written)) => {
                     self.metrics.add_bytes_queued(written);

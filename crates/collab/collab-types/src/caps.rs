@@ -13,6 +13,7 @@
 //! record from an app, do not grant it.
 
 use serde::{Deserialize, Serialize};
+mod fs_authority_v1;
 pub mod net;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
@@ -242,13 +243,69 @@ impl Scope {
 /// rooms: the sandbox capabilities people hold over shared files, and who
 /// may reach each room a relay carries (keyed by the relay's room id) — the
 /// room's members, as its policy names them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Written as an object. It also reads the bare capability array that
+/// preceded it ([`fs_authority_v1`]): that file persists on a machine across
+/// image updates, and failing to read it leaves the filesystem unmounted.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FsAuthority {
-    #[serde(default)]
     pub capabilities: Vec<CapOverride>,
-    #[serde(default)]
     pub room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+/// The current, object form of [`FsAuthority`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FsAuthorityV2 {
+    #[serde(default)]
+    capabilities: Vec<CapOverride>,
+    #[serde(default)]
+    room_members: std::collections::BTreeMap<String, Vec<RoomMember>>,
+}
+
+impl<'de> Deserialize<'de> for FsAuthority {
+    /// An object is the current form; an array is the list before it. The
+    /// shape alone decides, so an error names what is wrong inside the form
+    /// the file is actually in.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+
+        struct Either;
+        impl<'de> serde::de::Visitor<'de> for Either {
+            type Value = FsAuthority;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(
+                    "a file authority object (`{\"capabilities\": [...]}`) or the capability \
+                     array written before it",
+                )
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<FsAuthority, A::Error> {
+                let FsAuthorityV2 {
+                    capabilities,
+                    room_members,
+                } = FsAuthorityV2::deserialize(MapAccessDeserializer::new(map))?;
+                Ok(FsAuthority {
+                    capabilities,
+                    room_members,
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<FsAuthority, A::Error> {
+                let old = Vec::deserialize(SeqAccessDeserializer::new(seq))?;
+                Ok(FsAuthority::from(fs_authority_v1::migrate(old)))
+            }
+        }
+
+        deserializer.deserialize_any(Either)
+    }
 }
 
 /// A person a relay admits to one room: until `until` (Unix seconds,

@@ -461,8 +461,7 @@ pub use history_source::{
     participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
-    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
-    SemanticActivity, StatusOrigin, StatusSharing,
+    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

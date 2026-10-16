@@ -1,7 +1,7 @@
 //! Date labels for the message list and reader header. Calendar arithmetic
 //! comes from `ui::date`, so the app needs no `chrono`/`time` dependency.
 
-use ui::date::{civil_from_days, days_from_civil};
+use ui::date::civil_from_days;
 
 /// `utc_min` (minutes since the epoch, UTC) on the local clock the person
 /// reads, through `ui::clock` so a capture shows the pinned time.
@@ -18,14 +18,6 @@ pub fn gravatar_url(email: &str) -> String {
         email.trim().to_ascii_lowercase().as_bytes(),
     ));
     format!("https://www.gravatar.com/avatar/{hash}?s=96&d=404")
-}
-
-/// Epoch-minutes for a Y/M/D H:M (UTC).
-pub fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
-    days_from_civil(y, mo, d)
-        .saturating_mul(1440)
-        .saturating_add(i64::from(h).saturating_mul(60))
-        .saturating_add(i64::from(mi))
 }
 
 /// Compact relative timestamp for the message-list column:
@@ -77,6 +69,15 @@ fn month_name(month: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::date::days_from_civil;
+
+    /// Epoch-minutes for a Y/M/D H:M (UTC).
+    fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
+        days_from_civil(y, mo, d)
+            .saturating_mul(1440)
+            .saturating_add(i64::from(h).saturating_mul(60))
+            .saturating_add(i64::from(mi))
+    }
 
     #[test]
     fn date_helpers_compute_weekdays_relative_and_absolute_labels() {

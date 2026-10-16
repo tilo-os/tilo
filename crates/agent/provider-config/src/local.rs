@@ -490,25 +490,6 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
         .unwrap_or(0)
 }
 
-/// Determine the best runtime without probing hardware from an unprivileged
-/// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
-/// and sufficient VRAM are confirmed; CPU is used otherwise.
-pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if *vram_mib >= 8192 && !driver.trim().is_empty())) {
-        return RuntimeDecision::Ready(RuntimeKind::NvidiaCuda);
-    }
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Amd { vram_mib, rocm: Some(version) } if *vram_mib >= 8192 && !version.trim().is_empty())) {
-        return RuntimeDecision::Ready(RuntimeKind::AmdRocm);
-    }
-    if hardware.memory_mib >= 8192 && hardware.cpu_threads >= 4 {
-        RuntimeDecision::Ready(RuntimeKind::Cpu)
-    } else {
-        RuntimeDecision::Unavailable(
-            "Local inference needs at least 8 GiB RAM and four CPU threads, or a supported accelerator.",
-        )
-    }
-}
-
 /// Select an explicit model using its declared capacity and compatible pinned engines.
 /// Hardware facts are used exactly as observed, without rounding VRAM up. The
 /// caller supplies only kinds whose signed runtime supports the model's format.
@@ -1081,38 +1062,10 @@ mod tests {
         }
     }
 
-    /// The runtime is picked CUDA, then `ROCm`, then CPU only when the facts support it; installation
-    /// resumes then verifies before each install; activation refuses a network-facing `vLLM` endpoint.
+    /// Installation resumes then verifies before each install; activation refuses a network-facing
+    /// `vLLM` endpoint.
     #[test]
     fn local_model_setup_follows_the_hardware_and_verifies_before_activating() {
-        // Phase: picks_cuda_then_rocm_then_cpu_only_when_facts_support_it.
-        {
-            assert_eq!(
-                select_runtime(&HardwareSnapshot {
-                    accelerators: vec![Accelerator::Nvidia {
-                        vram_mib: 12288,
-                        driver: "560".into()
-                    }],
-                    ..cpu()
-                }),
-                RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
-            );
-            assert_eq!(
-                select_runtime(&HardwareSnapshot {
-                    accelerators: vec![Accelerator::Amd {
-                        vram_mib: 16384,
-                        rocm: Some("6.2".into())
-                    }],
-                    ..cpu()
-                }),
-                RuntimeDecision::Ready(RuntimeKind::AmdRocm)
-            );
-            assert_eq!(
-                select_runtime(&cpu()),
-                RuntimeDecision::Ready(RuntimeKind::Cpu)
-            );
-        }
-
         // Phase: installation_resumes_then_verifies_before_each_install.
         {
             let mut fake = Fake {

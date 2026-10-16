@@ -231,7 +231,6 @@ pub use record_replication::{
 pub use record_repository::{
     MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS, RecordRepository,
     RecordRepositoryError, RecordRepositoryKey, RecordTransactionCheckpoint,
-    RecordTransactionStatus,
 };
 #[cfg(feature = "filesystem")]
 pub use record_subscription::{

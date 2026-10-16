@@ -2435,55 +2435,6 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
     reason = "the test intentionally exercises the complete palette-to-resource-operation route"
 )]
 fn global_search_and_canonical_views_route_without_mutation() {
-    // Phase `global_search_deep_links_route_to_the_real_view_and_play_path`.
-    {
-        use crate::search_type::SearchHit;
-        let (mut app, mut doc) = app_with_doc();
-
-        // Real ids straight from the seeded library.
-        let album = app.lib.albums.keys().next().unwrap().clone();
-        let artist = app.lib.artists.keys().next().unwrap().clone();
-        let playlist = app.lib.playlists().next().unwrap().id.clone();
-        let track = app.lib.tracks.keys().next().unwrap().clone();
-
-        // An album deep-link opens the album page.
-        assert!(app.open_deep_link(
-            &SearchHit::album_link(&album),
-            &mut ui::widget::Edits::lend(&mut doc)
-        ));
-        assert_eq!(app.view, View::Album(album));
-
-        // An artist deep-link opens the artist page.
-        assert!(app.open_deep_link(
-            &SearchHit::artist_link(&artist),
-            &mut ui::widget::Edits::lend(&mut doc)
-        ));
-        assert_eq!(app.view, View::Artist(artist));
-
-        // A playlist deep-link opens the playlist page.
-        assert!(app.open_deep_link(
-            &SearchHit::playlist_link(&playlist),
-            &mut ui::widget::Edits::lend(&mut doc)
-        ));
-        assert_eq!(app.view, View::Playlist(playlist));
-
-        // A track deep-link actually plays that track through the real play path.
-        assert!(app.open_deep_link(
-            &SearchHit::track_link(&track),
-            &mut ui::widget::Edits::lend(&mut doc)
-        ));
-        assert_eq!(app.pb.current.as_deref(), Some(track.as_str()));
-        assert!(app.pb.queue.contains(&track));
-
-        // A hostile / unknown link is rejected and changes nothing.
-        let view_before = app.view.clone();
-        assert!(!app.open_deep_link(
-            "https://evil/track/x",
-            &mut ui::widget::Edits::lend(&mut doc)
-        ));
-        assert_eq!(app.view, view_before);
-    }
-
     // Phase `ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates`.
     {
         // Exercise the real palette broker seam: a result address resolves in

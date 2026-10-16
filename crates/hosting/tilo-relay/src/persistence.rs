@@ -257,12 +257,26 @@ pub(crate) struct State {
     pub(crate) retention_candidates: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     workers: Arc<Semaphore>,
     replay_worker: Arc<Semaphore>,
+    /// The running normal job changes retained history only through
+    /// retention, which forgets what captures listed of each lineage it
+    /// writes ([`State::retaining_only`]); unless it says so, the owner
+    /// forgets every listing after it.
+    retaining_only: bool,
 }
 pub(crate) fn error(message: impl Into<String>) -> StoreError {
     StoreError::Io(std::io::Error::other(message.into()))
 }
 
 impl State {
+    /// The running job changes retained history only through retention
+    /// (`RetainBuild`) or a channel's replacement (compaction), each of
+    /// which forgets what captures listed of what it writes: what they
+    /// listed of the rest stays valid after the job
+    /// (`WorkspaceStore::forget_listed`).
+    pub(crate) const fn retaining_only(&mut self) {
+        self.retaining_only = true;
+    }
+
     pub(crate) fn next_sequence(&mut self) -> Result<u64, StoreError> {
         self.next_sequence_at(tilo_clock::unix_now_ns())
     }
@@ -401,6 +415,7 @@ fn start(
         retention_candidates: Vec::new(),
         workers: budgets.workers.clone(),
         replay_worker: budgets.replay_worker.clone(),
+        retaining_only: false,
     }));
     tokio::spawn(run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state));
     let handle = Persistence {
@@ -727,9 +742,19 @@ async fn run_owner_lanes(
         };
         match work {
             Work::Normal(job) => {
+                state.lock_recover().retaining_only = false;
                 (job.job)(state.clone()).await;
                 completed.done(job.sequence);
                 prefer_normal = false;
+                // What captures listed stays valid after a job that changed
+                // retained history only through retention; any other may
+                // have changed any lineage.
+                let state = state.lock_recover();
+                if !state.retaining_only {
+                    // Counted: the jobs after which every listing is gone.
+                    crate::timing::window("owner.listing_forgotten", crate::timing::start());
+                    state.store.forget_listed(None);
+                }
             }
             Work::Replay(job) => {
                 (job.job)(state.clone()).await;
@@ -745,6 +770,7 @@ async fn run_owner_lanes(
         // One retained transaction can leave at most one known scratch
         // root. Finish its disposal before another mutation can create one.
         let root = state.lock_recover().retention_scratch.take();
+        let disposing = crate::timing::start();
         if let Some(root) = root {
             let mut discard = None;
             loop {
@@ -782,6 +808,8 @@ async fn run_owner_lanes(
                 }
             }
         }
+        crate::timing::window("owner.scratch_disposal", disposing);
+        let disposing = crate::timing::start();
         let candidates = std::mem::take(&mut state.lock_recover().retention_candidates);
         for (lineage, staged) in candidates {
             let mut discard = None;
@@ -820,6 +848,8 @@ async fn run_owner_lanes(
         // Generations retention replaced while a capture still had to pin
         // them, collected once no capture does. A failed collection is
         // left to the lineage's next commit, which collects all of them.
+        crate::timing::window("owner.stage_disposal", disposing);
+        let collecting = crate::timing::start();
         let deferred = state.lock_recover().store.deferred_collections();
         for lineage in deferred {
             let mut collect = None;
@@ -853,6 +883,7 @@ async fn run_owner_lanes(
                 }
             }
         }
+        crate::timing::window("owner.deferred_collection", collecting);
         // An entry still in use needs no turn: its ticket's drop wakes the
         // owner. So does an entry whose session or connection ended, since
         // that session drops its ticket as it ends.
@@ -1426,11 +1457,15 @@ pub(crate) async fn blocking<T: Send + 'static>(
     workers: Arc<Semaphore>,
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, StoreError> {
+    let waiting = crate::timing::start();
     let permit = workers
         .acquire_owned()
         .await
         .map_err(|e| error(e.to_string()))?;
+    crate::timing::window("blocking.worker_wait", waiting);
+    let dispatched = crate::timing::start();
     tokio::task::spawn_blocking(move || {
+        crate::timing::window("blocking.dispatch", dispatched);
         let _permit = permit;
         operation()
     })
@@ -1483,6 +1518,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         }))
     }
 
@@ -1954,6 +1990,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
@@ -2010,6 +2047,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         }))
     }
 
@@ -2111,6 +2149,83 @@ mod tests {
         );
     }
 
+    /// What captures listed survives a job that changes retained history
+    /// only through retention, and no other job.
+    #[tokio::test]
+    async fn an_owner_forgets_what_captures_listed_after_a_job_it_cannot_vouch_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let store = state.lock().unwrap().store.clone();
+        let frame = crate::transport::encode(&crate::transport::Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [1; 32],
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta: crate::coedit::CoeditPayload::RetainedDelta {
+                channel: [9; 32],
+                body: vec![1; 10],
+            }
+            .encode()
+            .unwrap(),
+        })
+        .unwrap();
+        store.retain_delta(&[9; 32], 1, &frame).unwrap();
+        let list = || {
+            let mut build = store
+                .start_replay_capture(crate::store::replay::ReplayId([4; 16]), [2; 32])
+                .unwrap();
+            let snapshot = loop {
+                if let Step::Done(snapshot) = store
+                    .capture_replay_step(&mut build, WorkLimit::default())
+                    .unwrap()
+                {
+                    break snapshot;
+                }
+            };
+            let mut discard = snapshot.into_discard().unwrap();
+            while discard.step(WorkLimit::default()).unwrap() == Step::More {}
+        };
+        list();
+        assert_eq!(store.listed_lineage_names().len(), 1);
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        normal_tx
+            .send(NormalJob {
+                sequence: 1,
+                job: Box::new(|state| {
+                    Box::pin(async move {
+                        state.lock().unwrap().retaining_only();
+                    })
+                }),
+            })
+            .await
+            .unwrap();
+        let (vouched_tx, vouched) = oneshot::channel();
+        let observed = store.clone();
+        normal_tx
+            .send(NormalJob {
+                sequence: 2,
+                job: Box::new(move |_| {
+                    Box::pin(async move {
+                        let _ = vouched_tx.send(observed.listed_lineage_names().len());
+                    })
+                }),
+            })
+            .await
+            .unwrap();
+        drop((normal_tx, replay_tx));
+        Box::pin(run_owner(normal_rx, replay_rx, state)).await;
+        assert_eq!(
+            vouched.await.unwrap(),
+            1,
+            "a job changing history only through retention keeps the listing"
+        );
+        assert!(
+            store.listed_lineage_names().is_empty(),
+            "a job that says nothing of what it changed forgets every listing"
+        );
+    }
+
     #[test]
     fn the_completed_watermark_only_moves_over_a_contiguous_prefix() {
         let mut completed = Completed::default();
@@ -2207,6 +2322,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
@@ -2267,6 +2383,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);

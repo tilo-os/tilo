@@ -263,14 +263,8 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
         );
     });
 
-    // Case `present_output_plan_pairs_audience_with_presenter`.
-    presenting().with(|app| {
-        assert_eq!(
-            app.present_output_plan(),
-            (PresentSurface::Audience, PresentSurface::Presenter)
-        );
-        assert!(app.wants_fullscreen());
-    });
+    // Case `presenting_wants_fullscreen`.
+    presenting().with(|app| assert!(app.wants_fullscreen()));
 
     // Case `entering_present_does_not_request_fullscreen_until_presenting`.
     let editing = Bench::sample().read(SlidesApp::wants_fullscreen);

@@ -348,12 +348,15 @@ fn reactions_carry_the_persona() {
 #[test]
 fn a_ban_blocks_and_hand_made_role_changes_are_reverted() {
     let mut g = guild();
+    g.map.push(discord_origin("m1", "dm1", None));
     let ban = MemberChanged {
         user_id: "u7".into(),
         banned: true,
         ..MemberChanged::default()
     };
-    assert_eq!(plan_member(&g, &ban, &json!({})).blocks, ["u7"]);
+    let banned = plan_member(&g, &ban, &json!({}));
+    assert_eq!(banned.blocks, ["u7"]);
+    assert_eq!(banned.deletes, ["m1"], "what was mirrored of them goes");
     g.map_roles = true;
     g.map.push(mapping(MappedKind::Role, "editor", "r_ed"));
     g.map.push(mapping(MappedKind::Role, "owner", "r_own"));

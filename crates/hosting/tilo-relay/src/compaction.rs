@@ -661,7 +661,12 @@ async fn owner_run<T: Send + 'static>(
         .submit_prepared_wait(
             4096,
             async { Ok(()) },
-            move |state, ()| on_cpu(|| operation(&state.store)),
+            move |state, ()| {
+                // Retention and channel replacement each forget what
+                // captures listed of what they write.
+                state.retaining_only();
+                on_cpu(|| operation(&state.store))
+            },
             |result| async { result },
         )
         .await

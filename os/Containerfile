@@ -2392,7 +2392,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
-COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
+COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf os/usr/share/user-tmpfiles.d/tilo-secret-service.conf /usr/share/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why

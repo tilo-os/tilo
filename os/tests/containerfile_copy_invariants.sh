@@ -73,6 +73,9 @@ containerfile="$repo/os/Containerfile"
 # PID 1 from unprivileged processes and breaks libsystemd unit lookups.
 # user-tmpfiles.d/tilo-fs.conf is a deliberate addition: it creates the
 # filesystem services' roots, which their PrivateIPC sandbox cannot.
+# user-tmpfiles.d/tilo-secret-service.conf is a deliberate addition: it
+# creates the vault directory the secret service's read-only home names in
+# ReadWritePaths=, which must exist before the unit can start.
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
@@ -211,7 +214,7 @@ containerfile="$repo/os/Containerfile"
 # (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
-expected_contract=37eca2c7f752663580eb772f6673e1e4640e70bd483e97d9f644246f5c381f76
+expected_contract=4fae4e01857a54f73efb172537ae5b9c5cb3d97a4fc7d688325d83a89257b67c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

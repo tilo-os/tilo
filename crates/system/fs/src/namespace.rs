@@ -2387,13 +2387,10 @@ impl Namespace {
         Some(format!("/{}", parts.join("/")))
     }
 
-    /// Every live path whose file content or generated thumbnail has `hash`.
-    ///
-    /// A content hash is not an authority token: peers can learn hashes from
-    /// logs, caches, or another file with identical bytes. The blob provider
-    /// uses this reverse lookup and then asks the ACL about the returned paths.
-    /// Trashed nodes are omitted, so deleting the last readable reference also
-    /// stops authorising future fetches of its old content.
+    /// Every live path whose file content or generated thumbnail has `hash`,
+    /// as tests observe it; the blob provider indexes
+    /// [`Self::live_blob_owners`] once instead. Trashed nodes are omitted.
+    #[cfg(test)]
     pub fn live_paths_for_blob(&self, hash: Hash) -> Vec<String> {
         self.live_node_ids()
             .into_iter()
@@ -2404,13 +2401,14 @@ impl Namespace {
             .collect()
     }
 
-    /// Bounded direct reverse lookup for manifest roots and thumbnails.
-    /// Returns stable record IDs only—never paths, names, or sibling metadata.
+    /// Bounded direct reverse lookup for manifest roots and thumbnails, as
+    /// tests observe [`Self::live_record_blob_roots`]. Returns stable record
+    /// IDs only—never paths, names, or sibling metadata.
     ///
     /// # Errors
     ///
-    /// Returns an error when the scan limit is invalid or the bounded live
-    /// namespace cannot be represented as a complete record graph.
+    /// As [`Self::live_record_blob_roots`].
+    #[cfg(test)]
     pub fn live_record_ids_for_direct_blob(
         &self,
         hash: Hash,
@@ -3254,8 +3252,8 @@ impl Namespace {
     }
 
     /// Every live node naming content, with its path: the input of the blob
-    /// provider's reverse index. One pass over the tree, where calling
-    /// [`Self::live_paths_for_blob`] per blob would scan it per request.
+    /// provider's reverse index. One pass over the tree, where a lookup per
+    /// blob would scan it per request.
     /// A record placed at more than one live node publishes no thumbnail,
     /// as in [`Self::thumbnail_for_id`].
     pub(crate) fn live_blob_owners(&self) -> Vec<LiveBlobOwner> {

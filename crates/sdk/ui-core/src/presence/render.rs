@@ -149,30 +149,6 @@ impl PresenceCtx {
         }
     }
 
-    /// `kurbo::Affine` composition below is plain f64 matrix math with no
-    /// panic path; `arithmetic_side_effects` flags the `*` operator
-    /// overload anyway.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
-    )]
-    pub fn draw_peer_pointer(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        transform: Affine,
-        user: &UserId,
-        pos: (f32, f32),
-    ) {
-        let color = color_for(self, user, theme);
-        let t = transform * Affine::translate((f64::from(pos.0), f64::from(pos.1)));
-        let halo = Circle::new(Point::ORIGIN, 9.0);
-        scene.fill(Fill::NonZero, t, color.with_alpha_factor(0.22), None, &halo);
-        let dot = Circle::new(Point::ORIGIN, 5.0);
-        scene.fill(Fill::NonZero, t, color, None, &dot);
-        scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
-    }
-
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
     /// wayfinding to where a peer currently is. Two translucent fills
     /// approximate a radial glow without an actual gradient.
@@ -1401,24 +1377,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn pointers_and_carets_paint_in_the_peer_colour_with_their_marker() {
-        // phase: peer_pointer_paints_peer_color_at_center
-        // "alice" maps to the pinned pink (0xec, 0x48, 0x99): the dot center
-        // should read red-high / green-low / blue-mid.
-        {
-            let ctx = PresenceCtx::empty();
-            let theme = Theme::default();
-            let mut scene = Scene::new();
-            let user = UserId("alice".to_string());
-            ctx.draw_peer_pointer(&mut scene, &theme, Affine::IDENTITY, &user, (40.0, 40.0));
-
-            let mut r = OffscreenRenderer::new(80, 80);
-            let rgba = r.render(&scene, Color::BLACK);
-            let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 40);
-            assert!(
-                red > 150 && green < 150 && blue > 70,
-                "expected alice's pink pointer at center, got ({red},{green},{blue})"
-            );
-        }
         // phase: only_a_pointer_this_layer_owns_reaches_the_screen
         // "One person, one pointer": painted once when this layer owns it, not
         // at all when the compositor overlay does. Both halves are asserted in

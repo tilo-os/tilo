@@ -123,31 +123,6 @@ impl WhatsappRuntime {
         Ok(reference)
     }
 
-    /// Project an event delivered by this account-owned SDK instance. The host
-    /// retains the event subscription and must never mix events across clients.
-    ///
-    /// # Errors
-    /// Refuses unrelated message/account/chat/class or a server rejection.
-    pub fn server_ack(
-        &self,
-        route: &Route,
-        operation: &str,
-        event: &whatsapp_rust::wacore::types::events::ServerAck,
-    ) -> Result<crate::whatsapp::Evidence, Error> {
-        let from = event.from.as_ref().map(ToString::to_string);
-        crate::whatsapp::acknowledgment(
-            route,
-            operation,
-            &crate::whatsapp::ServerAck {
-                account: &self.owner.account,
-                stanza_id: &event.id,
-                class: event.class.as_deref(),
-                from: from.as_deref(),
-                rejected: event.error.is_some(),
-            },
-        )
-    }
-
     /// Admit an actual SDK recipient receipt from this runtime's subscription.
     /// Exact direct JIDs are required; alternate phone/LID identities are never
     /// guessed. Self/group receipts cannot supply recipient delivery evidence.
@@ -389,19 +364,6 @@ mod tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(runtime.status("op").is_none());
-        let ack = whatsapp_rust::wacore::types::events::ServerAck::builder()
-            .id("op".into())
-            .class("message".into())
-            .from("123@lid".parse().unwrap())
-            .build();
-        assert_eq!(
-            runtime.server_ack(&route, "op", &ack),
-            Ok(crate::whatsapp::Evidence::ServerAcknowledged)
-        );
-        assert_eq!(
-            runtime.server_ack(&route, "another-op", &ack),
-            Err(Error::WrongRequest)
-        );
     }
 
     fn receipt_fixture() -> whatsapp_rust::wacore::types::events::Receipt {
