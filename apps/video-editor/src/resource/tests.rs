@@ -420,6 +420,41 @@ fn deleting_clips_sources_and_tracks_takes_what_hangs_off_them() {
 }
 
 #[test]
+fn linked_actions_refuse_to_change_a_locked_partner() {
+    let (mut project, clip) = one_clip();
+    let track = Uuid::new_v4();
+    project.tracks.push(Track {
+        id: track,
+        kind: TrackKind::Audio,
+        locked: true,
+        ..Default::default()
+    });
+    let audio = project.add_linked_audio(clip, track).unwrap();
+    let actions = [
+        Project::REMOVE_CLIP.with(id(clip)),
+        Project::CLOSE_GAP.with(id(clip)),
+        Project::CUT.with((id(clip), 10.0)),
+        Project::TRIM_HEAD.with((id(clip), 5.0)),
+        Project::TRIM_TAIL.with((id(clip), 20.0)),
+        Project::RETIME.with((id(clip), 2.0)),
+        Project::REVERSE.with(id(clip)),
+        Project::NORMAL_SPEED.with(id(clip)),
+    ];
+    for action in actions {
+        let mut replica = holding(&project);
+        assert!(replica.apply_confirmed(action).is_err());
+        assert_eq!(replica.state().unwrap(), project);
+    }
+
+    // Unlinking stops edits following the sound, so its locked lane no
+    // longer prevents editing the picture alone.
+    project.unlink_clips(&[clip]);
+    let mut replica = holding(&project);
+    replica.apply(Project::CUT.with((id(clip), 10.0))).unwrap();
+    assert_eq!(replica.state().unwrap().clip(audio), project.clip(audio));
+}
+
+#[test]
 fn an_effect_is_added_moved_set_and_removed_by_its_own_id() {
     let (p, cid) = one_clip();
     let mut replica = holding(&p);

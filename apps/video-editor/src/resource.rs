@@ -259,7 +259,7 @@ impl Project {
     /// Delete a clip and the clips linked to it.
     #[action(id = "delete", item = clips, destructive)]
     pub fn remove_clip(&mut self, clip: &Id) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         self.delete_linked(id);
         Ok(())
     }
@@ -267,7 +267,7 @@ impl Project {
     /// Delete a clip and close the gap it leaves.
     #[action(id = "ripple-delete", item = clips, destructive)]
     pub fn close_gap(&mut self, clip: &Id) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         self.ripple_delete_linked(id);
         Ok(())
     }
@@ -279,7 +279,7 @@ impl Project {
         clip: &Id,
         #[param("Seconds on the timeline where it is cut")] at: f64,
     ) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         if self.split_linked(id, instant(at)?).is_empty() {
             return Err(Refusal::new("the clip does not cover that time"));
         }
@@ -293,7 +293,7 @@ impl Project {
         clip: &Id,
         #[param("Seconds on the timeline the clip starts at")] at: f64,
     ) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         let at = instant(at)?;
         let start = self.covering(id, at)?.start;
         self.trim_in_linked(id, at - start);
@@ -307,7 +307,7 @@ impl Project {
         clip: &Id,
         #[param("Seconds on the timeline the clip ends at")] at: f64,
     ) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         let at = instant(at)?;
         let end = self.covering(id, at)?.end();
         self.trim_out_linked(id, at - end);
@@ -321,7 +321,7 @@ impl Project {
         clip: &Id,
         #[param("Playback rate: 1 is normal, 0.5 half speed, 2 double")] rate: f64,
     ) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         if !rate.is_finite() || rate <= 0.0 {
             return Err(Refusal::new("a playback rate is a positive number"));
         }
@@ -333,7 +333,7 @@ impl Project {
     /// Play a clip backwards, or forwards again.
     #[action(id = "toggle-reverse", item = clips)]
     pub fn reverse(&mut self, clip: &Id) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         let (rate, reverse) = self
             .clip(id)
             .map_or((1.0, false), |c| (c.speed.rate(), c.speed.reverse));
@@ -344,7 +344,7 @@ impl Project {
     /// Play a clip at normal speed.
     #[action(id = "reset-speed", item = clips)]
     pub fn normal_speed(&mut self, clip: &Id) -> Result<(), Refusal> {
-        let id = self.editable(clip)?;
+        let id = self.editable_link_group(clip)?;
         self.set_speed_linked(id, 1.0, false);
         Ok(())
     }
@@ -522,6 +522,20 @@ impl Project {
         }
         if !self.clip_editable(id) {
             return Err(Refusal::new("the clip's track is locked"));
+        }
+        Ok(id)
+    }
+
+    /// Linked edits must not bypass a partner's track lock or leave the
+    /// picture and sound out of sync by editing only the unlocked half.
+    fn editable_link_group(&self, clip: &Id) -> Result<ClipId, Refusal> {
+        let id = self.editable(clip)?;
+        if self
+            .link_group(id)
+            .iter()
+            .any(|member| !self.clip_editable(*member))
+        {
+            return Err(Refusal::new("a linked clip's track is locked"));
         }
         Ok(id)
     }
