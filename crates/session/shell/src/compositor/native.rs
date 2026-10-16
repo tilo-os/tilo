@@ -1803,8 +1803,9 @@ fn start_chooser_service(
     }
 }
 
-/// Open the files apps asked the chooser service to open, each in the app
-/// that owns its type, in the asking app's workspace.
+/// Open the files and links apps asked the chooser service to open, each in
+/// the app that owns its type or claims its scheme, in the asking app's
+/// workspace.
 fn pump_chooser_opens(
     service: &crate::compositor::chooser_service::ChooserService,
     chrome: &crate::shell::chrome_state::Chrome,
@@ -1823,6 +1824,7 @@ fn pump_chooser_opens(
         }
         let _ = open.reply.send(outcome);
     }
+    service.open_requested_links(chrome);
 }
 
 /// Answer an app's request about its own tab. The app id is the one the

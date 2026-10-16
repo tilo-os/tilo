@@ -7,7 +7,9 @@
 //! file picker, on screen, limited to the paths the app's workspace grants
 //! it; whatever comes back is checked against the grants again before the
 //! app hears it. Opening a file hands it to the compositor thread, which
-//! opens it in the app that owns its type.
+//! opens it in the app that owns its type; opening a link hands it to the
+//! same dispatcher the shell's search opens links with, which starts the app
+//! that claims its scheme.
 //!
 //! Who answers a chooser: a session with someone at it (an attached agent
 //! driving the screen, or an ordinary desktop) shows it; an unattended one
@@ -52,9 +54,35 @@ pub struct OpenRequest {
     pub reply: mpsc::Sender<Result<(), String>>,
 }
 
+/// An app asked for `uri` to be opened in the app that claims its scheme.
+/// Answered on the compositor thread, like [`OpenRequest`].
+pub struct LinkOpenRequest {
+    pub caller: PortalCaller,
+    pub uri: String,
+    pub reply: mpsc::Sender<LinkOpened>,
+}
+
+/// How the shell answered a [`LinkOpenRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkOpened {
+    Opened,
+    /// No app this session knows claims the link; the asking app hands it
+    /// to its desktop's opener instead.
+    Unclaimed,
+    Refused(String),
+}
+
+/// Where a connection queues its opens for the compositor thread.
+#[derive(Clone)]
+struct OpenQueues {
+    documents: mpsc::Sender<OpenRequest>,
+    links: mpsc::Sender<LinkOpenRequest>,
+}
+
 pub struct ChooserService {
     grants: GrantStoreHandle,
     opens: mpsc::Receiver<OpenRequest>,
+    links: mpsc::Receiver<LinkOpenRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -83,6 +111,11 @@ impl ChooserService {
         let listener = UnixListener::bind(&path)
             .map_err(|error| format!("bind chooser service {}: {error}", path.display()))?;
         let (opens_tx, opens_rx) = mpsc::channel();
+        let (links_tx, links_rx) = mpsc::channel();
+        let queues = OpenQueues {
+            documents: opens_tx,
+            links: links_tx,
+        };
         let grants = context.grants.clone();
         let context = Arc::new(context);
         let stop = Arc::new(AtomicBool::new(false));
@@ -95,7 +128,7 @@ impl ChooserService {
                         Ok(_) if thread_stop.load(Ordering::Acquire) => break,
                         Ok((stream, _)) => {
                             let context = Arc::clone(&context);
-                            let opens = opens_tx.clone();
+                            let opens = queues.clone();
                             let _ = std::thread::Builder::new()
                                 .name("tilo-chooser-conn".into())
                                 .spawn(move || serve_connection(stream, &context, &opens));
@@ -118,6 +151,7 @@ impl ChooserService {
         Ok(Self {
             grants,
             opens: opens_rx,
+            links: links_rx,
             stop,
             acceptor: Some(acceptor),
             path,
@@ -152,6 +186,36 @@ impl ChooserService {
     }
 }
 
+impl ChooserService {
+    /// Open the links apps asked for, through the dispatcher the shell's
+    /// search uses, in the asking app's workspace when it is the one on
+    /// screen.
+    pub fn open_requested_links(&self, chrome: &crate::shell::chrome_state::Chrome) {
+        use crate::shell::uri_open::{self, UriOpenError};
+        for open in self.links.try_iter() {
+            let active = chrome.borrow().tree().desktop.active;
+            let outcome = if open.caller.workspace_id == active {
+                match uri_open::open_in_workspace(&open.uri, chrome) {
+                    Ok(_) => LinkOpened::Opened,
+                    Err(UriOpenError::InvalidUri | UriOpenError::NoHandler { .. }) => {
+                        LinkOpened::Unclaimed
+                    }
+                    Err(UriOpenError::NoWorkspace) => {
+                        LinkOpened::Refused(t("portal-chooser-other-workspace"))
+                    }
+                    Err(UriOpenError::Launch(error)) => LinkOpened::Refused(error.user_message()),
+                }
+            } else {
+                LinkOpened::Refused(t("portal-chooser-other-workspace"))
+            };
+            if let LinkOpened::Refused(reason) = &outcome {
+                tracing::info!(app = %open.caller.app_id, %reason, "app link open refused");
+            }
+            let _ = open.reply.send(outcome);
+        }
+    }
+}
+
 impl Drop for ChooserService {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -166,11 +230,7 @@ impl Drop for ChooserService {
     }
 }
 
-fn serve_connection(
-    stream: UnixStream,
-    context: &Arc<ChooserContext>,
-    opens: &mpsc::Sender<OpenRequest>,
-) {
+fn serve_connection(stream: UnixStream, context: &Arc<ChooserContext>, opens: &OpenQueues) {
     let Ok(writer) = stream.try_clone() else {
         return;
     };
@@ -242,7 +302,7 @@ fn authenticate(grants: &GrantStoreHandle, handshake: &Handshake) -> Option<Port
 
 fn answer(
     context: &ChooserContext,
-    opens: &mpsc::Sender<OpenRequest>,
+    opens: &OpenQueues,
     caller: &PortalCaller,
     request: Request,
 ) -> Reply {
@@ -319,7 +379,41 @@ fn answer(
                 _ => Reply::Cancelled { id },
             }
         }
-        Request::Open { id, path } => answer_open(context, opens, caller, id, path),
+        Request::Open { id, path } => answer_open(context, &opens.documents, caller, id, path),
+        Request::OpenUri { id, uri } => answer_open_uri(context, &opens.links, caller, id, uri),
+    }
+}
+
+fn answer_open_uri(
+    context: &ChooserContext,
+    links: &mpsc::Sender<LinkOpenRequest>,
+    caller: &PortalCaller,
+    id: u64,
+    uri: String,
+) -> Reply {
+    let (reply, outcome) = mpsc::channel();
+    if links
+        .send(LinkOpenRequest {
+            caller: caller.clone(),
+            uri,
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(LinkOpened::Opened) => Reply::Opened { id },
+        Ok(LinkOpened::Unclaimed) => Reply::Unclaimed { id },
+        Ok(LinkOpened::Refused(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
     }
 }
 
@@ -1288,6 +1382,170 @@ mod tests {
         });
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 3, .. })));
         assert!(session.service.drain_opens().is_empty());
+    }
+
+    /// Remembers what reached the app's own (desktop) opener.
+    #[derive(Default)]
+    struct DesktopOpener(Mutex<Vec<String>>);
+
+    impl tilo_dialogs::UriOpener for DesktopOpener {
+        fn open(&self, uri: &str) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(uri.to_owned());
+            Ok(())
+        }
+    }
+
+    /// Video Player's "Play more video and audio formats" and Camera's
+    /// privacy link open Settings through the dispatcher the shell's search
+    /// uses, never the desktop's opener, which has no `settings:` handler; a
+    /// link nothing in the session claims still goes to the desktop.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn an_app_link_opens_in_the_app_that_claims_its_scheme() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::launcher as shell_launcher;
+        use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let apps = base.join("apps");
+        let payload = apps.join("payloads/so.tilo.settings");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest = payload.join("manifest.toml");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/settings/tilo-app.toml"),
+            &manifest,
+        )
+        .unwrap();
+        std::fs::write(
+            apps.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'so.tilo.settings'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest.display().to_string(),
+            ),
+        )
+        .unwrap();
+        let (data, config) = (base.join("data"), base.join("config"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        let log = base.join("launched.log");
+        let bin = base.join("tilo-launcher");
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps)
+            .set("TILO_LAUNCHER_BIN", &bin)
+            .set("XDG_RUNTIME_DIR", &base)
+            .set("XDG_DATA_HOME", &data)
+            .set("XDG_DATA_DIRS", &data)
+            .set("XDG_CONFIG_HOME", &config)
+            .set("XDG_CONFIG_DIRS", &config);
+        crate::shell::host_apps::invalidate_cache();
+        shell_launcher::set_test_execution_program(Some(bin));
+        shell_launcher::set_wayland_socket_path(Some(base.join("wayland-0")));
+        shell_launcher::invalidate_app_cache();
+        shell_launcher::clear_pending_placements();
+        let _ = shell_launcher::drain_events();
+
+        let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
+        shell_launcher::action_authority::follow_tree(&tree);
+        let chrome = ChromeState::new_with_handle(tree.clone());
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        let socket = base.join("chooser.sock");
+        let service = ChooserService::start_at(
+            socket.clone(),
+            ChooserContext {
+                grants: GrantStoreHandle::new(tree),
+                pickers: Arc::new(FilePickerQueue::new()),
+                presence: Arc::new(|| true),
+                save_directory: None,
+                wake: Arc::new(|| {}),
+            },
+        )
+        .unwrap();
+        let desktop = Arc::new(DesktopOpener::default());
+        // Each app's end: the connection its launcher opened and named, and
+        // the opener its toolkit builds on it.
+        let opener_of = |app_id: &str| {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream
+                .write_all(&launcher::services::chooser_handshake(app_id, &room).unwrap())
+                .unwrap();
+            tilo_dialogs::shell::ShellLink::connect(stream)
+                .unwrap()
+                .opener(Arc::clone(&desktop) as Arc<dyn tilo_dialogs::UriOpener>)
+        };
+        let open = |opener: &Arc<dyn tilo_dialogs::UriOpener>, uri: &'static str| {
+            let opener = Arc::clone(opener);
+            let asked = std::thread::spawn(move || opener.open(uri).map_err(|e| e.to_string()));
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .expect("thirty seconds fit in an Instant");
+            while !asked.is_finished() {
+                service.open_requested_links(&chrome);
+                assert!(Instant::now() < deadline, "{uri} was never answered");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            asked.join().unwrap()
+        };
+        let player = opener_of("so.tilo.video-player");
+        let camera = opener_of("so.tilo.camera");
+
+        assert_eq!(open(&player, "settings://updates"), Ok(()));
+        assert_eq!(open(&camera, "settings://privacy/camera"), Ok(()));
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("thirty seconds fit in an Instant");
+        let commands = loop {
+            let commands: Vec<String> = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            if commands.len() >= 2 {
+                break commands;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Settings was not launched: {commands:?}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        for uri in ["settings://updates", "settings://privacy/camera"] {
+            assert!(
+                commands
+                    .iter()
+                    .any(|command| command.contains("--app-id so.tilo.settings")
+                        && command.contains(&format!("--open-uri {uri}"))),
+                "Settings is launched on {uri}: {commands:#?}"
+            );
+        }
+        assert!(
+            desktop.0.lock().unwrap().is_empty(),
+            "a link a Tilo app claims never reaches the desktop's opener"
+        );
+
+        assert_eq!(open(&player, "mailto:ada@example.test"), Ok(()));
+        assert_eq!(*desktop.0.lock().unwrap(), ["mailto:ada@example.test"]);
+
+        shell_launcher::set_test_execution_program(None);
+        shell_launcher::set_wayland_socket_path(None);
+        shell_launcher::invalidate_app_cache();
+        shell_launcher::clear_pending_placements();
+        let _ = shell_launcher::drain_events();
     }
 
     #[test]
