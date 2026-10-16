@@ -310,6 +310,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     let mut title = String::new();
     let mut start: Option<NaiveDateTime> = None;
     let mut end: Option<NaiveDateTime> = None;
+    let mut duration = None;
     let mut all_day = false;
     let mut location = String::new();
     let mut rrule = String::new();
@@ -403,6 +404,12 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                     };
                     end = Some(dt);
                 }
+                "DURATION" => {
+                    let Some(parsed) = parse_event_duration(&val) else {
+                        return (None, i);
+                    };
+                    duration = Some(parsed);
+                }
                 _ => {}
             }
         }
@@ -414,7 +421,16 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     }) else {
         return (None, i);
     };
-    let mut end = end.unwrap_or(start);
+    let mut end = match (end, duration) {
+        (Some(end), _) => end,
+        (None, Some((days, time))) => {
+            let Some(end) = duration_end(start, &timezone, days, time) else {
+                return (None, i);
+            };
+            end
+        }
+        (None, None) => start,
+    };
     // DATE-valued DTSTART/DTEND follows RFC 5545's exclusive-end convention.
     // A surprising number of hand-authored feeds still send the same date for
     // both; keep that malformed-but-common input visible as one day rather
@@ -655,6 +671,77 @@ fn parse_cal_date(val: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
 }
 
+/// RFC 5545 event durations are positive weeks, days or time spans, not
+/// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
+fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
+    let value = value.trim().strip_prefix('+').unwrap_or(value.trim());
+    let mut rest = value.strip_prefix('P')?;
+    if let Some(weeks) = rest.strip_suffix('W') {
+        let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
+        return (days > 0).then_some((days, chrono::Duration::zero()));
+    }
+    let mut days = 0_i64;
+    let mut seconds = 0_i64;
+    let mut time = false;
+    let mut last_rank = 0;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('T') {
+            if time || after.is_empty() {
+                return None;
+            }
+            time = true;
+            rest = after;
+        }
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        let amount = rest.get(..digits)?.parse::<i64>().ok()?;
+        let unit = rest.as_bytes().get(digits)?;
+        let (rank, multiplier) = match (time, unit) {
+            (false, b'D') => (1, 24 * 60 * 60),
+            (true, b'H') => (2, 60 * 60),
+            (true, b'M') => (3, 60),
+            (true, b'S') => (4, 1),
+            _ => return None,
+        };
+        if rank <= last_rank {
+            return None;
+        }
+        last_rank = rank;
+        if time {
+            seconds = seconds.checked_add(amount.checked_mul(multiplier)?)?;
+        } else {
+            days = amount;
+        }
+        rest = rest.get(digits + 1..)?;
+    }
+    if days == 0 && seconds == 0 {
+        return None;
+    }
+    Some((days, chrono::Duration::try_seconds(seconds)?))
+}
+
+fn duration_end(
+    start: NaiveDateTime,
+    zone: &str,
+    days: i64,
+    time: chrono::Duration,
+) -> Option<NaiveDateTime> {
+    // Days are nominal calendar days; hours/minutes/seconds are elapsed
+    // time. They differ when the event crosses a daylight-saving change.
+    let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
+    if zone == "floating" {
+        return wall.checked_add_signed(time);
+    }
+    let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
+    let end = instant.checked_add_signed(time)?;
+    Some(
+        end.with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
+            .naive_local(),
+    )
+}
+
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
     // e.g. "-PT15M", "-PT1H", "-PT720M".
     let s = v.trim().trim_start_matches('-').trim_start_matches("PT");
@@ -734,6 +821,63 @@ pub fn sample_ics(today: NaiveDate) -> String {
 mod tests {
     use super::*;
     use chrono::Timelike as _;
+
+    #[test]
+    fn duration_events_keep_their_full_span() {
+        for (start, duration, expected) in [
+            ("DTSTART:20260615T090000", "PT1H30M", "2026-06-15T10:30:00"),
+            (
+                "DTSTART:20260615T090000Z",
+                "+PT45M15S",
+                "2026-06-15T09:45:15",
+            ),
+            ("DTSTART;VALUE=DATE:20260615", "P3D", "2026-06-18T00:00:00"),
+            ("DTSTART;VALUE=DATE:20260615", "P2W", "2026-06-29T00:00:00"),
+            (
+                "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                "P1D",
+                "2026-03-29T12:00:00",
+            ),
+            (
+                "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                "PT24H",
+                "2026-03-29T13:00:00",
+            ),
+        ] {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Visit\r\n{start}\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let (events, _) = parse(&payload);
+            assert_eq!(events.len(), 1, "{duration}");
+            assert_eq!(
+                events[0].end,
+                expected.parse::<NaiveDateTime>().unwrap(),
+                "{duration}"
+            );
+            let model = Calendar {
+                events: events.into(),
+                ..Calendar::default()
+            };
+            let (round_trip, _) = parse(&export(&model));
+            assert_eq!(round_trip[0].end, model.events.first().unwrap().end);
+        }
+        for duration in [
+            "P",
+            "PT",
+            "-PT1H",
+            "P1M",
+            "PT1H1H",
+            "PT1M1H",
+            "P1DT",
+            "PT999999999999999999H",
+            "P9999999999999999W",
+        ] {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20260615T090000\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            assert!(parse(&payload).0.is_empty(), "{duration}");
+        }
+    }
 
     #[test]
     fn external_uids_preserve_detached_occurrences_and_import_identity() {
