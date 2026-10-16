@@ -3727,10 +3727,16 @@ fn news_brief(news: &[DocumentRoute], pending: &[String]) -> String {
         for (index, step) in pending.iter().enumerate() {
             let _ = write!(steps, "\n{}. {step}", index.saturating_add(1));
         }
+        // A step written against an earlier read (a row number, a cell, an
+        // id) may now point at what someone else added or moved meanwhile:
+        // replayed as it was, it overwrites their work.
         format!(
             "Plan the rest of the request again with what you learned. These steps were about \
-             to run:{steps}\nKeep them (plan them again as they are) unless the news changes \
-             them."
+             to run:{steps}\nPlan them again unless the news changes them, but the room may \
+             have changed since they were planned: a step that writes to a row, cell, position \
+             or id it read earlier must be checked against the record as it is now (read it \
+             again) and corrected first, as others may have added, moved or filled rows since. \
+             Prefer writing by key or appending over an old row number."
         )
     };
     format!(
@@ -4747,8 +4753,9 @@ mod tests {
     }
 
     /// News that interrupts a plan shows it the steps it was about to run,
-    /// to keep unless the news changes them; news after the last step says
-    /// the planned steps are done.
+    /// to keep unless the news changes them once the rows and positions
+    /// they write to are checked again; news after the last step says the
+    /// planned steps are done.
     #[test]
     fn news_that_interrupts_a_plan_shows_the_steps_it_was_about_to_run() {
         let mut post = invoke("so.tilo.chat", "chat.channel:logins", "post");
@@ -4784,6 +4791,11 @@ mod tests {
         );
         assert!(brief.contains("2. so.tilo.chat export-content"), "{brief}");
         assert!(brief.contains("unless the news changes them"), "{brief}");
+        assert!(
+            brief.contains("must be checked against the record as it is now")
+                && !brief.contains("plan them again as they are"),
+            "positions read before the news are checked, not replayed: {brief}"
+        );
 
         let mut done = Running::new("t2".into(), "x".into(), Vec::new(), Vec::new());
         done.by_model = true;
