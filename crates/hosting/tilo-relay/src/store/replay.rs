@@ -305,6 +305,9 @@ impl Default for ReplayLimits {
 #[derive(Clone, Copy, Debug)]
 pub struct ReplaySummary {
     pub total_frames: u64,
+    /// Of `total_frames`, those replayed from the device's pending queue
+    /// rather than retained history.
+    pub pending_frames: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
@@ -652,6 +655,7 @@ pub struct ReplaySnapshot {
     cleanup: File,
     ready: bool,
     count: u64,
+    pending_count: u64,
     read_offset: u64,
     cleanup_offset: u64,
     batch_number: u64,
@@ -847,6 +851,9 @@ impl ReplaySnapshot {
                 meta.key = vec![charge.to_string().into()];
                 write_meta(&mut self.output, &meta)?;
                 increment(&mut self.count)?;
+                if meta.pending {
+                    increment(&mut self.pending_count)?;
+                }
             }
         }
         Ok(())
@@ -1056,6 +1063,7 @@ impl WorkspaceStore {
                     cleanup,
                     ready: false,
                     count: 0,
+                    pending_count: 0,
                     read_offset: 0,
                     cleanup_offset: 0,
                     batch_number: 0,
@@ -1365,6 +1373,7 @@ impl WorkspaceStore {
         if snapshot.ready {
             return Ok(Step::Done(ReplaySummary {
                 total_frames: snapshot.count,
+                pending_frames: snapshot.pending_count,
             }));
         }
         snapshot.stats.last_step_work = 0;
@@ -1494,6 +1503,7 @@ impl WorkspaceStore {
                 snapshot.ready = true;
                 return Ok(Step::Done(ReplaySummary {
                     total_frames: snapshot.count,
+                    pending_frames: snapshot.pending_count,
                 }));
             }
         }

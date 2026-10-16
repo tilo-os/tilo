@@ -280,6 +280,10 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
             }
             ReplayAdvance::Exhausted(summary) => {
                 replayed_frames = replayed_frames.saturating_add(summary.total_frames);
+                session.metrics.add_replayed_pending(summary.pending_frames);
+                session.metrics.add_replayed_retained(
+                    summary.total_frames.saturating_sub(summary.pending_frames),
+                );
                 if boundary_done {
                     crate::timing::event("join.catchup", phase, summary.total_frames);
                     let cleaning = crate::timing::start();
