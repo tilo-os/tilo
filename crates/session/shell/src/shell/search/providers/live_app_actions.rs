@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tilo_search::{Document, Matching, Page, SearchIndex};
+use tilo_search::{Document, Hit, Hits, Matching, Page, SearchIndex};
 use ui::search::FieldWeight;
 
 use crate::shell::certified_action_session::ActionSessionSource;
@@ -385,6 +385,10 @@ struct SurfaceSnapshot {
     /// entry's id to compare: with thirty windows' actions published, a
     /// listing of six thousand rows minted thirty-six million ids.
     by_id: HashMap<String, usize>,
+    /// The positions `index` holds (every entry but the programmatic ones),
+    /// in key order: what an empty query browses. `machine_index` holds
+    /// every position.
+    listed: Vec<usize>,
 }
 
 impl SurfaceSnapshot {
@@ -402,6 +406,12 @@ impl SurfaceSnapshot {
                 .entry(LiveAppActionsProvider::result_id(surface, action))
                 .or_insert(at);
         }
+        let listed = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, action))| !action.contract.is_programmatic())
+            .map(|(at, _)| at)
+            .collect();
         Self {
             source_generation,
             scope,
@@ -409,7 +419,57 @@ impl SurfaceSnapshot {
             index,
             machine_index,
             by_id,
+            listed,
         }
+    }
+
+    /// The page of `needle`'s hits among the entries a caller lists (every
+    /// entry with `include_programmatic`), as the index ranks them. `None`
+    /// for a one-row projection, which has no index.
+    ///
+    /// An empty needle browses: every listed entry, in key order and at rank
+    /// 0, as the index answers it. That page is read off the positions
+    /// directly; asking the index for it ranked and ordered every entry on
+    /// each page, so walking a catalogue of `n` actions 48 rows at a time
+    /// cost `n` squared over 48. A listing of thirty windows' published
+    /// actions spent a third of its time there.
+    fn find(&self, include_programmatic: bool, needle: &str, page: Page) -> Option<Hits> {
+        let index = if include_programmatic {
+            self.machine_index.as_ref()
+        } else {
+            self.index.as_ref()
+        }?;
+        if !needle.is_empty() {
+            return Some(index.search(needle, page));
+        }
+        let listed = if include_programmatic {
+            self.entries.len()
+        } else {
+            self.listed.len()
+        };
+        let end = page.offset.saturating_add(page.limit).min(listed);
+        let start = page.offset.min(end);
+        let hit = |key: usize| Hit {
+            key: key as u64,
+            segment: None,
+            rank: Some(0),
+            score: 0,
+        };
+        let hits = if include_programmatic {
+            (start..end).map(hit).collect()
+        } else {
+            self.listed
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .map(hit)
+                .collect()
+        };
+        Some(Hits {
+            hits,
+            more: end < listed,
+        })
     }
 
     /// The entry `id` names, if this snapshot holds it.
@@ -3318,20 +3378,16 @@ impl SearchProvider for LiveAppActionsProvider {
             if snapshot.scope != scope {
                 return SearchPage::exhausted(revision, results);
             }
-            let Some(index) = (if ctx.include_programmatic {
-                &snapshot.machine_index
-            } else {
-                &snapshot.index
-            }) else {
-                return SearchPage::exhausted(revision, results);
-            };
-            let found = index.search(
+            let Some(found) = snapshot.find(
+                ctx.include_programmatic,
                 &needle,
                 Page {
                     offset: local_offset,
                     limit: local_work.min(local_limit),
                 },
-            );
+            ) else {
+                return SearchPage::exhausted(revision, results);
+            };
             let candidates = found
                 .hits
                 .iter()
@@ -4175,6 +4231,65 @@ mod tests {
             "{minted} ids minted for {expected} rows: resolving a row must not mint every \
              entry's id"
         );
+    }
+
+    /// An empty query pages the listed entries off their positions, and
+    /// answers every page exactly as the index does: the same keys, in the
+    /// same order, with the same continuation, with and without the
+    /// programmatic entries.
+    #[test]
+    fn an_empty_query_browses_exactly_what_the_index_answers() {
+        let entries: Vec<(PublishedSurface, PublishedAction)> = (0..300)
+            .map(|at| {
+                let mut action = local_action(&format!("action {at}"), &format!("action-{at}"));
+                if at % 7 == 3 {
+                    action
+                        .contract
+                        .tags
+                        .push(tilo_actions::PROGRAMMATIC_TAG.into());
+                }
+                let surface = PublishedSurface {
+                    peer_id: 7,
+                    app_id: "so.tilo.fixture".into(),
+                    route: CrdtRoute::app("so.tilo.fixture", "room"),
+                    actions: Vec::new(),
+                    live: true,
+                };
+                (surface, action)
+            })
+            .collect();
+        let index = index_actions(&entries, false);
+        let machine_index = index_actions(&entries, true);
+        let snapshot =
+            SurfaceSnapshot::new(1, String::new(), entries, Some(index), Some(machine_index));
+        for include_programmatic in [false, true] {
+            let index = if include_programmatic {
+                snapshot.machine_index.as_ref()
+            } else {
+                snapshot.index.as_ref()
+            }
+            .unwrap();
+            let mut offset = 0;
+            loop {
+                let page = tilo_search::Page { offset, limit: 48 };
+                let browsed = snapshot.find(include_programmatic, "", page).unwrap();
+                let searched = index.search("", page);
+                let keys = |hits: &tilo_search::Hits| {
+                    hits.hits
+                        .iter()
+                        .map(|hit| (hit.key, hit.rank.unwrap_or(0)))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(keys(&browsed), keys(&searched), "page at {offset}");
+                assert_eq!(browsed.more, searched.more, "page at {offset}");
+                offset += browsed.hits.len();
+                if !browsed.more {
+                    break;
+                }
+            }
+            let listed = if include_programmatic { 300 } else { 300 - 43 };
+            assert_eq!(offset, listed, "every listed entry is browsed once");
+        }
     }
 
     #[test]
