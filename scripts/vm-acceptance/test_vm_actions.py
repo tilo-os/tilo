@@ -40,6 +40,34 @@ class ActionsPagingTest(unittest.TestCase):
 
         return patch("acceptance.vm.subprocess.run", side_effect=run)
 
+    def test_bracket_prefixed_progress_does_not_hide_the_json_response(self):
+        output = '[connecting to VM]\n' + json.dumps({"actions": [CLOSER]}, indent=2) + '\nreceipt: done\n'
+        with patch("acceptance.vm.subprocess.run", return_value=
+                   subprocess.CompletedProcess([], 0, output, "")):
+            self.assertEqual(self.vm.actions(), [CLOSER])
+
+    def test_malformed_json_uses_the_vm_error_boundary(self):
+        with patch("acceptance.vm.subprocess.run", return_value=
+                   subprocess.CompletedProcess([], 0, '{"chrome":', "")):
+            with self.assertRaisesRegex(VmError, "no JSON in output"):
+                self.vm.state()
+
+    def test_truncated_outer_document_does_not_return_a_nested_value(self):
+        output = 'receipt: connected\n{\n  "chrome": {\n    "displays": [\n      {"id": 1}\n'
+        with patch("acceptance.vm.subprocess.run", return_value=
+                   subprocess.CompletedProcess([], 0, output, "")):
+            with self.assertRaisesRegex(VmError, "no JSON in output"):
+                self.vm.state()
+
+    def test_restart_retries_a_malformed_state_response(self):
+        replies = [subprocess.CompletedProcess([], 0, output, "") for output in
+                   ("restarted", '{"chrome":', '{"chrome": {}}')]
+        with (patch("acceptance.vm.subprocess.run", side_effect=replies) as run,
+              patch("acceptance.vm.time.sleep")):
+            self.vm.restart_session()
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(self.vm.requested_restarts, 1)
+
     def test_a_closer_past_the_first_page_is_listed(self):
         first = {"actions": [row(n) for n in range(3)], "truncated": True, "next_cursor": "3.ab"}
         last = {"actions": [CLOSER], "truncated": False, "next_cursor": None}

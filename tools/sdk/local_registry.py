@@ -89,14 +89,19 @@ def compatible(a: str, b: str) -> bool:
 def place_crate(name: str, version: str, checksum: str, out: pathlib.Path) -> None:
     target = out / f"{name}-{version}.crate"
     if target.exists():
+        if hashlib.sha256(target.read_bytes()).hexdigest() != checksum:
+            raise SystemExit(f"{name} {version}: checksum mismatch in {target}")
         return
     for cache in (CARGO_HOME / "registry" / "cache").glob("index.crates.io-*"):
         source = cache / f"{name}-{version}.crate"
         if source.is_file():
+            if hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
+                raise SystemExit(f"{name} {version}: checksum mismatch in {source}")
             try:
                 os.link(source, target)
             except FileExistsError:
-                pass
+                if hashlib.sha256(target.read_bytes()).hexdigest() != checksum:
+                    raise SystemExit(f"{name} {version}: checksum mismatch in {target}")
             except OSError:
                 shutil.copyfile(source, target)
             return

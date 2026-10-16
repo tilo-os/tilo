@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'apps'))
@@ -45,6 +45,65 @@ class PackagingErrorBoundaries(unittest.TestCase):
                     transport.request('user', output=output)
             self.assertEqual(caught.exception.filename, str(output))
             self.assertEqual(output.read_bytes(), b'existing artifact')
+
+    def test_standalone_download_checks_declared_length(self):
+        api = assembly.ReadOnlyAPI('test-token')
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'artifact'
+            for download in (False, True):
+                for raw, headers, valid in (
+                        (b'{}', {'Content-Length': '4'}, False),
+                        (b'{}', {'Content-Length': '2'}, True),
+                        (b'{}', {}, True)):
+                    response = Response(raw)
+                    response.headers = headers
+                    with self.subTest(download=download, headers=headers), patch(
+                            'urllib.request.OpenerDirector.open', return_value=response):
+                        if valid:
+                            result = api.get('/actions/runs/1', output if download else None)
+                            if download:
+                                self.assertEqual(output.read_bytes(), raw)
+                                output.unlink()
+                            else:
+                                self.assertEqual(result, {})
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'truncated'):
+                                api.get('/actions/runs/1', output if download else None)
+                            self.assertFalse(output.exists())
+
+    def test_failed_downloads_allow_retry_without_removing_existing_files(self):
+        transport = service.Transport('test-token')
+        api = assembly.ReadOnlyAPI('test-token')
+        clients = (
+            lambda output: transport.request('user', maximum=4, output=output),
+            lambda output: api.get('/actions/artifacts/1/zip', output),
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(assembly, 'MAX_BYTES', 4):
+            output = Path(temporary) / 'artifact'
+            for client in clients:
+                for failure in ('truncated', 'read-error', 'interrupted', 'oversized'):
+                    response = Response(b'12')
+                    if failure == 'oversized':
+                        response = Response(b'12345')
+                        response.headers = {}
+                    elif failure != 'truncated':
+                        error = OSError('connection lost') if failure == 'read-error' else KeyboardInterrupt()
+                        # Write a prefix before failing, as a real broken stream does.
+                        response.read = Mock(side_effect=[b'12', error])
+                        response.read1 = response.read
+                    with self.subTest(client=client, failure=failure), patch(
+                            'urllib.request.OpenerDirector.open', return_value=response):
+                        with self.assertRaises((ValueError, OSError, KeyboardInterrupt)):
+                            client(output)
+                        self.assertFalse(output.exists())
+                    with patch('urllib.request.OpenerDirector.open', return_value=Response(b'1234')):
+                        client(output)
+                    self.assertEqual(output.read_bytes(), b'1234')
+                    with patch('urllib.request.OpenerDirector.open', return_value=Response(b'1234')):
+                        with self.assertRaises(FileExistsError):
+                            client(output)
+                    self.assertEqual(output.read_bytes(), b'1234')
+                    output.unlink()
 
     def test_invalid_current_package_is_not_replaced_by_baseline(self):
         with tempfile.TemporaryDirectory() as temporary:

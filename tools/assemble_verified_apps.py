@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Nonpublishing final collection assembly from pinned verified baseline artifacts."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -55,6 +56,21 @@ def extract_tar(archive, output):
                     shutil.copyfileobj(source, destination)
 
 
+@contextmanager
+def download_destination(output):
+    """Remove failed downloads without deleting a pre-existing destination."""
+    if output is None:
+        yield None
+        return
+    target = output.open('xb')
+    try:
+        with target:
+            yield target
+    except BaseException:
+        output.unlink()
+        raise
+
+
 class ReadOnlyAPI:
     def __init__(self, token):
         self.token = token
@@ -67,17 +83,22 @@ class ReadOnlyAPI:
         request = urllib.request.Request(API + path, headers={'Authorization': 'Bearer ' + self.token})
         with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
             maximum = MAX_BYTES if output else 2 * 1024**2
-            if output:
-                with output.open('xb') as target:
+            length = response.headers.get('Content-Length')
+            channel.require(length is None or (length.isdigit() and int(length) <= maximum),
+                            'API response exceeds limit')
+            with download_destination(output) as target:
+                if target is not None:
                     size = 0
                     while chunk := response.read(1024**2):
                         size += len(chunk)
                         channel.require(size <= maximum, 'artifact download exceeds limit')
                         target.write(chunk)
-                return
-            raw = response.read(maximum + 1)
-            channel.require(len(raw) <= maximum, 'API response exceeds limit')
-            return channel.read_json(raw)
+                    channel.require(length is None or size == int(length), 'API response truncated')
+                    return
+                raw = response.read(maximum + 1)
+                channel.require(len(raw) <= maximum, 'API response exceeds limit')
+                channel.require(length is None or len(raw) == int(length), 'API response truncated')
+                return channel.read_json(raw)
 
 
 def baseline_tree(api, proof, expected_hash, source, builder, collection, architecture, policy_sha, work, policy):

@@ -378,7 +378,11 @@ def _terminal(ctx, res, app: DailyApp) -> None:
 
 def _ozone_flag(ctx, res, flag: str) -> None:
     """The running browser is the one this launch started, on the platform it asked for."""
-    hits = _lines(ctx.vm.exec(f"pgrep -u \"$(id -u)\" -f -- '--ozone-platform={flag}' | head -3; true"))
+    # A pgrep -f literal also matches the shell executing that very probe,
+    # making a missing platform flag look healthy. Read actual browser argv instead.
+    hits = [str(pid) for pid, proc in _procs(ctx).items()
+            if proc.exe in ("chromium-browser", "chromium", "chrome")
+            and f"--ozone-platform={flag}" in proc.cmd.split()][:3]
     res.metrics[f"ozone_{flag}_pids"] = hits
     expect(hits, f"no Chromium process runs with --ozone-platform={flag}")
 
