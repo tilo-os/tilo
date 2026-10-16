@@ -154,6 +154,28 @@ T_REF=stable bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-
 cat target/publish/web-entry/receipt.json
 ```
 
+Chains that are not one container image (the apps, the desktop packages, the Windows imager,
+the env tools) differ between architectures only by the architecture, so they are written once
+as a `[[matrix]]`: each `[[matrix.check]]` is an ordinary check whose fields may name the
+placeholders of `each`, written once per variant. One with `only = ["x86_64"]` is written for
+those variants only, one whose name has no placeholder once after them, and `fields` go to every
+check that doesn't set them:
+
+```toml
+[[matrix]]
+family = "windows"
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { image = "registry.tilo.so/tilo/tilo-builder@sha256:…" }
+
+[[matrix.check]]
+name = "build/windows-{arch}"
+run = "bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/build"
+needs = ["build/windows-sdk-{arch}"]
+```
+
+A variant can carry more than the architecture where names differ (`deb = "arm64"`,
+`node = "arch=arm64"`).
+
 `tools/tests/test_publish_chain.py` covers the generator and the scripts' channel rules.
 
 ## Declared in t.toml
@@ -164,9 +186,9 @@ cat target/publish/web-entry/receipt.json
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`, `publish-ci-control`: `sha-<commit>` | (CI tooling, not a product) |
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
-| relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `release-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
+| relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
-| kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `release-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
+| kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
 | CI builder | `image-ci-builder-x86_64`, `-aarch64` | | | (canaries and promotion stay with build-ci-builder.yml) |
 | release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
 | local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
@@ -195,13 +217,13 @@ and privileged pools (rpm's database can't be written on their storage).
 | `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | all three, smoke included | trusted half: release nodes |
 | `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | both architectures, their test and the index | trusted half: release nodes |
 | `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | build and the image test, server answering `/health` | trusted half: release nodes |
-| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `release-relay` (`v*` tags) | `rpm-snapshot`, `image-relay` (its Compose contract, then the build) | trusted half: release nodes |
+| `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (`v*` tags) | `rpm-snapshot`, `image-relay` (its Compose contract, then the build) | trusted half: release nodes |
 | `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | trusted half: release nodes, and the `TAPP_PUBLISHER_IDENTITY` secret |
-| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `release-kernel-buildroot` | both architectures built and audited | trusted half: release nodes; the pin (`kernel-buildroot.sh pin`, a check that pushes) once the workflow stops proposing it |
+| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `publish-kernel-buildroot` | both architectures built and audited | trusted half: release nodes; the pin (`kernel-buildroot.sh pin`, a check that pushes) once the workflow stops proposing it |
 | `build-ci-builder.yml` | `image-ci-builder-*` | both architectures (6.5 min each) | canaries: images built in the same run (`image = { check = … }`) and the compiler cache; signing and promotion: release nodes |
 | `build-rpms.yml` | `image-rpms-*` | both architectures (15–18 min) | signing with SLSA provenance and promotion: not written yet, release nodes |
 | `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | aarch64 in 2 h 11 min (no compiler cache) | acceptance (KVM boot, Secure Boot probe): privileged nodes; signing with provenance and the pin: not written yet |
-| `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `release-legacy-guest` | agent and end-to-end binaries | guest image and end-to-end test: privileged nodes; trusted half: release nodes; the pin (`legacy-guest.sh pin`) |
+| `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest` | agent and end-to-end binaries | guest image and end-to-end test: privileged nodes; trusted half: release nodes; the pin (`legacy-guest.sh pin`) |
 | `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries on both architectures | catalog build: privileged nodes; publication: tools are sealed inside the build, so publishing needs them re-signed with the publisher identity afterwards and the catalog rewritten |
 | `ci-development-signing.yml` | `development-signing-context-*`, `development-signing-*` | both contexts | the fixture run (nested Podman): privileged nodes |
 | `build-windows-compat.yml` | none | | its scripts drive Docker; they need Podman on privileged nodes |
