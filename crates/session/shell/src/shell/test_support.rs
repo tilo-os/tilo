@@ -193,6 +193,46 @@ pub(crate) fn settled_pan_report(step: u32) -> std::time::Instant {
 #[cfg(test)]
 pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
 
+/// This process's settings document, replaced by `source` until the guard
+/// drops and then restored, also while a failing test unwinds.
+///
+/// Which document the process reads is as process-wide as its environment:
+/// the installed source, else the file `XDG_CONFIG_HOME` names. A test that
+/// installed a source beside a test holding a [`tilo_test_env::TestHome`]
+/// took that test's settings writes, and uninstalling it sent the other
+/// test's reads back to a file it never wrote: the automatic display input
+/// tests saw their own policy vanish in a parallel run. So the guard holds
+/// the process-wide test-environment lock, as `TestHome` does, for as long
+/// as the source is installed.
+#[cfg(test)]
+#[must_use = "the source is uninstalled as soon as the guard drops"]
+pub(crate) struct InstalledSettings {
+    previous: Option<std::sync::Arc<dyn settings_store::SettingsSource>>,
+    // Released after `drop` restored the previous source.
+    _env: tilo_test_env::EnvLock,
+}
+
+/// Install `source` as this process's settings until the guard drops.
+#[cfg(test)]
+pub(crate) fn install_settings(
+    source: std::sync::Arc<dyn settings_store::SettingsSource>,
+) -> InstalledSettings {
+    let env = tilo_test_env::lock();
+    let previous = settings_store::installed_source();
+    settings_store::install_source(Some(source));
+    InstalledSettings {
+        previous,
+        _env: env,
+    }
+}
+
+#[cfg(test)]
+impl Drop for InstalledSettings {
+    fn drop(&mut self) {
+        settings_store::install_source(self.previous.take());
+    }
+}
+
 /// Forbids production service starts (workers, process-global handles,
 /// ambient identity and file lookups) for the lifetime of a guard.
 ///
@@ -261,3 +301,4 @@ mod ambient {
         assert_eq!(guard.attempts(), 1);
     }
 }
+
