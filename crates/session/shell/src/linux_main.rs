@@ -336,13 +336,20 @@ fn session_host_view(
     }
 }
 
-fn install_session_settings() {
+fn install_session_settings() -> std::io::Result<()> {
     let Some(paths) = settings_store::SessionPaths::configured() else {
         tracing::warn!("no config directory; settings are not kept this session");
-        return;
+        return Ok(());
+    };
+    // Bootc accepts /home/<user> as well as /var/home/<user>. Only the
+    // login home is trusted here; copy-directory components stay unresolved
+    // until descriptor-relative traversal rejects any links beneath it.
+    let paths = match std::env::var_os("HOME") {
+        Some(home) => paths.resolve_trusted_root(std::path::Path::new(&home))?,
+        None => paths,
     };
     let copy = paths.copy.clone();
-    match settings_store::SessionSettings::open(paths) {
+    match settings_store::SessionSettings::open_checked(paths) {
         Ok(session) => {
             let session = std::sync::Arc::new(session);
             // Another process writing the copy (Settings, a CLI) is taken in
@@ -406,11 +413,9 @@ fn install_session_settings() {
             };
             settings_store::install_source(Some(source));
         }
-        Err(error) => tracing::error!(
-            %error,
-            "cannot open the settings records; this session reads and writes settings.json itself"
-        ),
+        Err(error) => return Err(error),
     }
+    Ok(())
 }
 
 #[allow(
@@ -623,7 +628,10 @@ pub fn run() -> std::process::ExitCode {
 
     // After first boot has written what it imports, so the records take it
     // in, and before the compositor's first read.
-    install_session_settings();
+    if let Err(error) = install_session_settings() {
+        tracing::error!(%error, "cannot safely open session settings; repair the settings copy or its lock before starting the session");
+        return std::process::ExitCode::FAILURE;
+    }
 
     // The compositor serves portals unconditionally — the shipped session runs
     // `shell --backend drm` with no flags, so gating file open/save behind an
