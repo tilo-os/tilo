@@ -258,13 +258,13 @@ Deleted:
 | `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | `publish-registry-server` on main 291d4d45c1 pushed `tilo-registry-server:sha-291d4d45c1…` |
 | `build-release-tools.yml` | `image-release-tools-x86_64`, `-aarch64`, `image-release-tools`, `publish-release-tools` | builds in r5072cc14f4; `publish-release-tools` on main 0fcb7c612d pushed the index `sha-0fcb7c612d…` |
 | `release-verifier-bundles.yml` | `verifier-bundle-x86_64`, `-aarch64` (dispatch) | rfad5de2f14, r352e0cb508 |
+| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | `publish-ci-fast` and `publish-ci-control` on main ad95cf21a4, after the smoke test |
 
 Still here, with what is missing:
 
 | workflow | checks on t | passed on t | missing |
 |---|---|---|---|
-| `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | builds from a working tree earlier | a main run with the builds' memory raised (they were killed at 4 GiB) |
-| `room-service-image.yml`, `web-entry.yml` | the services chains (above) | the generic chain on a rehearsal tag (rba3e9736f8) | their own development publication from main; web entry's carried version |
+| `room-service-image.yml`, `web-entry.yml` | the services chains (above) | `publish-web-entry` on main af37478272; the generic release chain on rehearsal tags (rba3e9736f8, r52ab3e2a09, re8c0ae664c) | room service's development publication from main; web entry's carried version; a stable run |
 | `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (version tags) | `rpm-snapshot`, `image-relay` | a version tag |
 | `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | a stable run |
 | `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `publish-kernel-buildroot`, `pin-kernel-buildroot` | both architectures; `pin-kernel-buildroot` on main | a stable run |
@@ -354,7 +354,15 @@ them is t's server config; what they may do is the other side's:
 | audience | refs | accepted by |
 |---|---|---|
 | `registry.tilo.so` | `main`, `stable`, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
-| `sts.amazonaws.com` | `stable`, `tag:v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
+| `sts.amazonaws.com` | `stable`, `tag:v*`, `tag:desktop-v*`, `tag:imager-v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
+
+More roles trust t's issuer the same way, each with its own keys:
+
+| role | audience and references | keys |
+|---|---|---|
+| `TiloTPackageSigner` | `sts.amazonaws.com`; `stable`, `desktop-v*` and `imager-v*` tags | `alias/tilo-rpm-signing` (RSA 4096, digests only), `alias/tilo-authenticode-signing` (RSA 3072) |
+| `TiloTExtensionManifestSigner` | `tilo-extension-manifests`; `main` | `alias/tilo-extension-manifests` |
+| `TiloTDevSigner` | `tilo-dev-signing`; `main` | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
 
 The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
 signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in
@@ -366,7 +374,8 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | `DEV_APP_PUBLISHER_IDENTITY` | `main` | the development app publisher identity, for development app collections from main |
 | `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-speech-catalog` |
 | `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
-| `INFRA_PROMOTION_TOKEN` | `stable` | may create branches and pull requests on the infra repository: `cloud-promotion` (not in t's config yet) |
+| `INFRA_PROMOTION_TOKEN` | `stable` | the bot t-infra-promotion's token, which may create branches and pull requests on the infra repository: `cloud-promotion` |
+| `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results |
 
 `sign-apps-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`, `submit-apps` only
 `TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the identity that signed the tapp), and
