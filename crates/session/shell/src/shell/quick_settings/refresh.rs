@@ -500,8 +500,22 @@ impl QsRefresh {
         });
     }
 
+    /// Read the networks `NetworkManager` already knows. Never waits for a
+    /// radio scan, which takes over ten seconds on some adapters: the tile's
+    /// "connected to" must not depend on one.
     pub fn kick_wifi_networks(&mut self) {
         self.spawn(Tier::Wifi, || {
+            QsReading::WifiNetworks(qs::list_wifi_networks())
+        });
+    }
+
+    /// The person asked to look again: scan, then read. A failed scan still
+    /// reads the known list; the failure is logged.
+    pub fn kick_wifi_rescan(&mut self) {
+        self.spawn(Tier::Wifi, || {
+            if let Err(error) = qs::scan_wifi() {
+                tracing::warn!(target: "tilo::os_actions", op = "scan_wifi", %error, "Wi-Fi scan failed");
+            }
             QsReading::WifiNetworks(qs::list_wifi_networks())
         });
     }

@@ -30,7 +30,7 @@ pub mod client;
 pub mod model;
 
 pub use client::{
-    BUS_NAME, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH, captive_portal_uri,
-    check_connectivity_now, state, watch,
+    BUS_NAME, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH, WIRELESS_INTERFACE,
+    captive_portal_uri, check_connectivity_now, scan_wifi, state, watch,
 };
 pub use model::{LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink, metered_from_raw};

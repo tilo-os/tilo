@@ -1,15 +1,17 @@
 //! The `NetworkManager` client: one reading, a followed reading, an explicit
-//! connectivity check and the captive-portal URI.
+//! connectivity check, an explicit Wi-Fi scan and the captive-portal URI.
 //!
 //! Everything goes to `org.freedesktop.NetworkManager` on the **system** bus.
 //! Reading its properties is open to every local client under the stock D-Bus
-//! policy; `CheckConnectivity` is subject to polkit, which may refuse callers
-//! outside an active session.
+//! policy; `CheckConnectivity` and `RequestScan` are subject to polkit, which
+//! may refuse callers outside an active session.
+
+use std::collections::HashMap;
 
 use futures_util::StreamExt;
 use tokio::sync::watch;
 use zbus::proxy::CacheProperties;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, Proxy};
 
 use crate::model::{
@@ -24,6 +26,8 @@ pub const ROOT_PATH: &str = "/org/freedesktop/NetworkManager";
 pub const ROOT_INTERFACE: &str = "org.freedesktop.NetworkManager";
 const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
+/// A Wi-Fi device's interface: `RequestScan` and the `LastScan` it advances.
+pub const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 /// Signals buffered per stream before the oldest is dropped. Every signal
 /// triggers a full re-read, so a dropped one loses nothing.
@@ -38,6 +42,12 @@ pub enum NmError {
     NotRunning,
     #[error("NetworkManager returned an unsafe connectivity-check URI")]
     UnsafeUri,
+    #[error("NetworkManager manages no Wi-Fi device")]
+    NoWifiDevice,
+    #[error("the Wi-Fi device went away during the scan")]
+    WifiDeviceRemoved,
+    #[error("the connection to NetworkManager closed")]
+    Disconnected,
 }
 
 /// A handle on `NetworkManager` over one D-Bus connection.
@@ -100,19 +110,7 @@ impl NmClient {
             Some(SIGNAL_QUEUE),
         )
         .await?;
-        let owners = MessageStream::for_match_rule(
-            MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .sender("org.freedesktop.DBus")?
-                .path("/org/freedesktop/DBus")?
-                .interface("org.freedesktop.DBus")?
-                .member("NameOwnerChanged")?
-                .arg(0, BUS_NAME)?
-                .build(),
-            &self.connection,
-            Some(SIGNAL_QUEUE),
-        )
-        .await?;
+        let owners = name_owner_changes(&self.connection).await?;
         let initial = read_state(&self.connection)
             .await
             .unwrap_or_else(|_| NetworkState::unknown());
@@ -134,6 +132,114 @@ impl NmClient {
         let root = proxy(&self.connection, ROOT_PATH, ROOT_INTERFACE).await?;
         let raw: u32 = root.call("CheckConnectivity", &()).await?;
         Ok(NmConnectivity::from_raw(raw))
+    }
+
+    /// Scan for Wi-Fi networks now: ask every Wi-Fi device `NetworkManager`
+    /// manages to scan, and return once each has finished. A device's scan
+    /// has finished when its `LastScan` moves past the value read before the
+    /// request; that is followed by signal, nothing polls.
+    ///
+    /// A radio scan takes as long as the hardware needs (more than ten
+    /// seconds on some adapters), so this is for a deliberate "look again"
+    /// on a worker. Reading what is in range never waits for it: the access
+    /// points `NetworkManager` already knows are always readable at once.
+    ///
+    /// # Errors
+    ///
+    /// [`NmError::NoWifiDevice`] when no device can scan,
+    /// [`NmError::Bus`] when `NetworkManager` refuses every request (radio
+    /// off, polkit) or the bus closes, [`NmError::NotRunning`] when it leaves
+    /// the bus, [`NmError::WifiDeviceRemoved`] when a scanning device goes
+    /// away before finishing.
+    pub async fn scan_wifi(&self) -> Result<(), NmError> {
+        ensure_running(&self.connection).await?;
+        // Subscribe before reading `LastScan`, so a scan finishing between
+        // the read and the request cannot be missed.
+        let mut changes = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .interface(PROPERTIES_INTERFACE)?
+                .member("PropertiesChanged")?
+                .arg(0, WIRELESS_INTERFACE)?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let mut removals = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .path(ROOT_PATH)?
+                .interface(ROOT_INTERFACE)?
+                .member("DeviceRemoved")?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let mut owners = name_owner_changes(&self.connection).await?;
+
+        let mut pending = self.request_scans().await?;
+        while !pending.is_empty() {
+            tokio::select! {
+                signal = changes.next() => {
+                    let Some(signal) = signal else {
+                        return Err(NmError::Disconnected);
+                    };
+                    if let Ok(signal) = signal
+                        && let Some((device, scanned)) = last_scan_of(&signal)
+                        && pending.get(&device).is_some_and(|before| *before != scanned)
+                    {
+                        pending.remove(&device);
+                    }
+                }
+                signal = removals.next() => {
+                    let Some(signal) = signal else {
+                        return Err(NmError::Disconnected);
+                    };
+                    if let Ok(signal) = signal
+                        && let Ok(device) = signal.body().deserialize::<OwnedObjectPath>()
+                        && pending.contains_key(device.as_str())
+                    {
+                        return Err(NmError::WifiDeviceRemoved);
+                    }
+                }
+                // The daemon left (or was replaced): its scans are gone.
+                signal = owners.next() => {
+                    return Err(if signal.is_some() { NmError::NotRunning } else { NmError::Disconnected });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask every Wi-Fi device to scan; each device asked, with the `LastScan`
+    /// it reported before the request.
+    async fn request_scans(&self) -> Result<HashMap<String, i64>, NmError> {
+        let root = proxy(&self.connection, ROOT_PATH, ROOT_INTERFACE).await?;
+        let devices: Vec<OwnedObjectPath> = root.get_property("Devices").await?;
+        let mut pending = HashMap::new();
+        let mut refused = None;
+        for device in devices {
+            let wireless = proxy(&self.connection, device.as_str(), WIRELESS_INTERFACE).await?;
+            // Not a Wi-Fi device: it has no `LastScan`.
+            let Ok(before) = wireless.get_property::<i64>("LastScan").await else {
+                continue;
+            };
+            let options: HashMap<&str, Value<'_>> = HashMap::new();
+            match wireless.call_method("RequestScan", &(options,)).await {
+                Ok(_) => {
+                    pending.insert(device.as_str().to_owned(), before);
+                }
+                Err(error) => refused = Some(error),
+            }
+        }
+        if pending.is_empty() {
+            return Err(refused.map_or(NmError::NoWifiDevice, NmError::from));
+        }
+        Ok(pending)
     }
 
     /// `NetworkManager`'s configured connectivity-check URI. Opening it is the
@@ -205,6 +311,15 @@ pub async fn check_connectivity_now() -> Result<NmConnectivity, NmError> {
     NmClient::system().await?.check_connectivity_now().await
 }
 
+/// See [`NmClient::scan_wifi`].
+///
+/// # Errors
+///
+/// As [`NmClient::scan_wifi`].
+pub async fn scan_wifi() -> Result<(), NmError> {
+    NmClient::system().await?.scan_wifi().await
+}
+
 /// See [`NmClient::captive_portal_uri`].
 ///
 /// # Errors
@@ -212,6 +327,36 @@ pub async fn check_connectivity_now() -> Result<NmConnectivity, NmError> {
 /// As [`NmClient::captive_portal_uri`].
 pub async fn captive_portal_uri() -> Result<String, NmError> {
     NmClient::system().await?.captive_portal_uri().await
+}
+
+/// The device and its new `LastScan`, when `signal` is a Wi-Fi device's
+/// `PropertiesChanged` carrying one.
+fn last_scan_of(signal: &zbus::Message) -> Option<(String, i64)> {
+    let header = signal.header();
+    let device = header.path()?.as_str().to_owned();
+    let (_, changed, _) = signal
+        .body()
+        .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+        .ok()?;
+    let scanned = i64::try_from(changed.get("LastScan")?).ok()?;
+    Some((device, scanned))
+}
+
+/// `NetworkManager` joining or leaving the bus.
+async fn name_owner_changes(connection: &Connection) -> zbus::Result<MessageStream> {
+    MessageStream::for_match_rule(
+        MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .path("/org/freedesktop/DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg(0, BUS_NAME)?
+            .build(),
+        connection,
+        Some(SIGNAL_QUEUE),
+    )
+    .await
 }
 
 async fn follow(

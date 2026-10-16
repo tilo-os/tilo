@@ -15439,7 +15439,7 @@ impl ShellOverlayHost {
             state.quick_settings.wifi_scan_error = None;
             state.bump();
             drop(state);
-            self.qs_refresh.kick_wifi_networks();
+            self.qs_refresh.kick_wifi_rescan();
         }
         let _ = self.try_connect_with_shared_wifi_password();
     }
