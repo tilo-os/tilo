@@ -189,10 +189,23 @@ family = "ci-images"
 name = "ci-builder"
 about = """
 The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
-and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture.
-Its canaries, signing and promotion stay with build-ci-builder.yml for now."""
+and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
+joined into one index. The canaries below run inside each candidate before anything is signed
+or published. Everyone pushes to main, so main publishes only unsigned development tags
+(`dev-<commit>`, and `dev-<commit>-<arch>` for each image); nothing a consumer resolves by a
+moving tag or verifies against keys/cosign.pub comes from main. Stable signs the index and both
+images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
+cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
+older toolchain."""
 repository = "registry.tilo.so/tilo/tilo-builder"
 arches = ["x86_64", "aarch64"]
+index = true
+children = true
+dev = ["dev-{commit}"]
+release = ["{commit}", "{rust}"]
+gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64"]
+publish = { inputs = ["rust-toolchain.toml"] }
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
@@ -201,6 +214,36 @@ cost = "heavy"
 timeout_secs = 14400
 cpus = 16
 memory = "32G"
+
+# The builder's canaries, in the candidate the same run built (build-ci-builder.yml's
+# cache-cold and cache-warm steps). Two jobs prove t's compiler cache works from it: the
+# cold one compiles under a prefix nobody used and must write, the warm one, a fresh compiler
+# process in another job (on whichever node), must read that back. The candidate's key covers
+# everything that went into it, so a new image runs them again.
+[[matrix]]
+family = "ci-images"
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { requires = ["arch={arch}"], default = false }
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-cold-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+outputs = ["/target/publish/ci-builder/{arch}/canary/prefix"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-warm-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+needs = ["canary-ci-builder-cache-cold-{arch}"]
+cost = "minutes"
 
 # ---------------------------------------------------------------------------
 # The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
