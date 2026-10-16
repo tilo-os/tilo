@@ -623,6 +623,12 @@ fn exercise_import_transitions(
             std::thread::yield_now();
         };
         assert_eq!(completed.config["files_mode"], "import");
+        assert!(service.mounted().is_empty());
+        assert!(
+            runtime_fs::cloud::import_writer_lock(&root.path().unwrap(), account.id.as_str())
+                .is_err(),
+            "Settings must fence the pinned metadata commit until completion or abort"
+        );
         if outcome == 2 {
             let id = AccountsPane::save_signed_in(root, &completed).unwrap();
             pane.sign_in.as_mut().unwrap().finish_async(id);
@@ -652,16 +658,22 @@ fn exercise_import_transitions(
         } else {
             pane.close_sign_in();
         }
-        // Abort is deliberately off the UI thread. A second prepare succeeds
-        // only after that worker has restored the original Sync state.
+        // Abort is deliberately off the UI thread. The daemon can remount
+        // before Settings reads the abort response and drops its writer fence.
+        // Probe both conditions, in the same order as Settings preparation, so
+        // the next form cannot race the previous abort worker's lock release.
         let (tx, rx) = std::sync::mpsc::channel();
         let socket = runtime_fs::cloud::default_socket().unwrap();
+        let config_root = root.path().unwrap();
         let id = account.id.to_string();
         std::thread::spawn(move || {
             let mut client = runtime_fs::cloud::CloudClient::connect(socket).unwrap();
             loop {
-                if let Ok(token) = client.prepare_import(&id) {
+                if let Ok(writer) = runtime_fs::cloud::import_writer_lock(&config_root, &id)
+                    && let Ok(token) = client.prepare_import(&id)
+                {
                     client.abort_import(&id, &token).unwrap();
+                    drop(writer);
                     tx.send(()).unwrap();
                     break;
                 }
