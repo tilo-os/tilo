@@ -481,32 +481,12 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             targets.insert(offer.id(), Target::OpenRecord(route.clone()));
             offers.push(offer);
         }
-        if context.open.iter().any(|(route, _)| route.app_id == *app) || previewed(app) {
+        let is_open = context.open.iter().any(|(route, _)| route.app_id == *app);
+        let second = is_open && context.new_documents.contains(app);
+        if (is_open || previewed(app)) && !second {
             continue;
         }
-        let offer = Offer {
-            app: app.clone(),
-            broker_peer_id: None,
-            descriptor: ActionDescriptor {
-                semantic_identity: None,
-                address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
-                resource_kind: surface::APPLICATION_KIND.to_owned(),
-                resource_label: app.clone(),
-                action_label: format!("open {app} on a new, empty document"),
-                description: Some(format!(
-                    "{app} is not open, so none of what it can do is listed yet. \
-                     Opening it creates a new, empty record and puts its own operations on \
-                     the list. To change a document the room already has, open that one with \
-                     its record.{app}.<record>#open instead."
-                )),
-                locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                kind: tilo_actions::OperationKind::Effect,
-                contract: tilo_actions::ActionContract::default(),
-                params: Vec::new(),
-                input: tilo_actions::InputSpec::None,
-                view: None,
-            },
-        };
+        let offer = app_open_offer(app, second);
         targets.insert(offer.id(), Target::Open(app.clone()));
         offers.push(offer);
     }
@@ -519,6 +499,43 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
         },
         targets,
     )
+}
+
+/// The open of `app` on a new, empty document (`app.<app>#open`): offered
+/// while the app is not open, or as a `second` document beside the open
+/// one, which refused an import for the content it holds.
+fn app_open_offer(app: &str, second: bool) -> Offer {
+    let description = if second {
+        format!(
+            "A new, empty {app} document beside the one open, which holds content an import \
+             would replace (so the import there was refused). Open this, then import into the \
+             new document: its operations are listed once it opens."
+        )
+    } else {
+        format!(
+            "{app} is not open, so none of what it can do is listed yet. Opening it creates a \
+             new, empty record and puts its own operations on the list. To change a document \
+             the room already has, open that one with its record.{app}.<record>#open instead."
+        )
+    };
+    Offer {
+        app: app.to_owned(),
+        broker_peer_id: None,
+        descriptor: ActionDescriptor {
+            semantic_identity: None,
+            address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
+            resource_kind: surface::APPLICATION_KIND.to_owned(),
+            resource_label: app.to_owned(),
+            action_label: format!("open {app} on a new, empty document"),
+            description: Some(description),
+            locus: tilo_actions::ExecutionLocus::ServerPreferred,
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract::default(),
+            params: Vec::new(),
+            input: tilo_actions::InputSpec::None,
+            view: None,
+        },
+    }
 }
 
 /// Where the open of each record `search_room` may find runs: it opens by
@@ -4817,6 +4834,54 @@ pub(crate) mod tests {
             "documents first"
         );
         assert!(!first.shown.is_empty(), "what fits is shown");
+    }
+
+    /// While a document of an app is open its bare open is not offered:
+    /// its operations are. Once an import into it was refused for what it
+    /// holds, a new, empty document of the app is offered beside it, said
+    /// to be a second document (not the one to use instead), and planned it
+    /// is an open naming no record, which opens a new one.
+    #[test]
+    fn a_refused_import_offers_a_new_document_beside_the_open_one() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let writer = "so.tilo.word-processor";
+        let import = operation(
+            "tilo.rich-text",
+            "import-docx-content",
+            OperationKind::Document,
+            vec![ActionParam::required("content", ParamType::Text, "A .docx")],
+        );
+        let mut context = PlanContext {
+            open: vec![(route(writer, "evidence"), vec![import])],
+            apps: vec![writer.into()],
+            ..PlanContext::default()
+        };
+        let new_open = format!("app.{writer}#open");
+        let offered = |context: &PlanContext| {
+            let (catalogue, targets) = catalogue(context);
+            let ids: Vec<String> = catalogue.offers.iter().map(Offer::id).collect();
+            (catalogue, targets, ids)
+        };
+        let (_, _, ids) = offered(&context);
+        assert!(!ids.contains(&new_open), "{ids:?}");
+
+        context.new_documents = vec![writer.into()];
+        let (catalogue, targets, ids) = offered(&context);
+        assert!(ids.contains(&new_open), "{ids:?}");
+        assert!(matches!(targets.get(&new_open), Some(Target::Open(app)) if app == writer));
+        let summary = tilo_agent::tools::catalogue_summary(
+            &catalogue,
+            &mut tilo_agent::tools::Revealed::new(),
+            64,
+        );
+        assert!(
+            summary.contains("opens a second window on a new, empty document"),
+            "{summary}"
+        );
+        assert!(
+            !summary.contains("this would open a second window)"),
+            "{summary}"
+        );
     }
 
     /// An app the task is about with nothing open is offered with what a

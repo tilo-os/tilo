@@ -2957,3 +2957,177 @@ async fn the_plan_after_a_wait_is_offered_the_rooms_chat_channel_to_reply_in() {
     cass.close();
     host.relay.shutdown().await;
 }
+
+/// A letter written and exported as `.docx` in a document never published,
+/// kept in `content`: what an agent is given to import.
+fn exported_letter(content: &tilo_content::ContentStore, words: &str) -> String {
+    let maker = tilo_agent_participant::ConfinedReplica::open(
+        &catalogue(),
+        WRITER,
+        ROOM,
+        "maker",
+        true,
+        Seed::New,
+    )
+    .unwrap()
+    .with_content(content.clone());
+    maker
+        .invoke(
+            &ActionAddress::new("tilo.rich-text", "write-markdown"),
+            serde_json::json!({ "markdown": words })
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    maker
+        .invoke(
+            &ActionAddress::new("tilo.rich-text", "export-content"),
+            serde_json::json!({ "format": "docx" }).as_object().unwrap(),
+            false,
+        )
+        .unwrap()
+        .resources
+        .first()
+        .cloned()
+        .expect("the letter is exported")
+}
+
+/// The visa-form flow once Eve's evidence document is written: Fay's
+/// import naming no record, and her read after it, go into a new document
+/// of her own and never open Eve's; with Eve's document open beside hers
+/// (as a person might open it), Fay's later step naming no record still
+/// writes in hers; and an import naming Eve's document, which the app would
+/// refuse for what it holds, goes into a new document too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_naming_no_document_never_lands_in_one_another_agent_is_writing() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let fay_content = tilo_content::ContentStore::memory();
+    let (mut fay, fay_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("fay", "Fay"),
+        &[WRITER],
+        fay_content.clone(),
+    )
+    .await;
+    let (mut eve, eve_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("eve", "Eve"),
+        &[WRITER],
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+
+    let evidence = written(&[(
+        WRITER,
+        "tilo.rich-text",
+        "write-markdown",
+        serde_json::json!({ "markdown": "# Evidence upload\n\n## Identity" }),
+    )]);
+    let [wrote] = run_together(&mut [(&mut eve, &eve_control)], &[evidence])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&wrote);
+    wait_for("Fay to see Eve's document", || {
+        fay.pump();
+        eve.pump();
+        let seen = !known_of(&fay, WRITER).is_empty();
+        async move { seen.then_some(()) }
+    })
+    .await;
+    settle(&mut [&mut fay, &mut eve]).await;
+    let [eves] = known_of(&fay, WRITER)
+        .try_into()
+        .unwrap_or_else(|known| panic!("Eve wrote in one document: {known:?}"));
+
+    let letter = exported_letter(&fay_content, "# Employer letter\n\nThe post is permanent.");
+    let import_and_read = written(&[
+        (
+            WRITER,
+            "tilo.rich-text",
+            "import-docx-content",
+            serde_json::json!({ "content": letter }),
+        ),
+        (
+            WRITER,
+            "tilo.rich-text",
+            "read-text",
+            serde_json::json!({ "format": "markdown" }),
+        ),
+    ]);
+    let [imported] = run_together(&mut [(&mut fay, &fay_control)], &[import_and_read])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&imported);
+    assert!(
+        fay.app(&eves).is_none(),
+        "neither the import nor the read opened Eve's document"
+    );
+    settle(&mut [&mut fay, &mut eve]).await;
+    let [fays] = known_of(&eve, WRITER)
+        .try_into()
+        .unwrap_or_else(|known| panic!("Fay imported into one new document: {known:?}"));
+    let fay_holds = body(fay.app(&fays).expect("Fay has her document open"));
+    assert!(fay_holds.contains("Employer letter"), "{fay_holds}");
+    let eve_holds = body(eve.app(&eves).unwrap());
+    assert!(eve_holds.contains("Evidence upload"), "{eve_holds}");
+    assert!(!eve_holds.contains("Employer letter"), "{eve_holds}");
+
+    // Eve's document open beside Fay's: a later task's step naming no
+    // record writes in Fay's own, not in Eve's.
+    fay.open(WRITER, Some(&eves.record)).unwrap();
+    let note = written(&[(
+        WRITER,
+        "tilo.rich-text",
+        "append-markdown",
+        serde_json::json!({ "markdown": "Checked by Fay." }),
+    )]);
+    let [noted] = run_together(&mut [(&mut fay, &fay_control)], &[note])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&noted);
+    assert!(body(fay.app(&fays).unwrap()).contains("Checked by Fay."));
+    assert!(!body(fay.app(&eves).unwrap()).contains("Checked by Fay."));
+
+    // An import naming Eve's document would replace what it holds, which
+    // the app refuses: it goes into a new document instead.
+    let named = serde_json::json!([{
+        "app": WRITER, "record": eves.record, "resource": "tilo.rich-text",
+        "action": "import-docx-content", "arguments": { "content": letter },
+    }])
+    .to_string();
+    let [again] = run_together(&mut [(&mut fay, &fay_control)], &[named])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&again);
+    settle(&mut [&mut fay, &mut eve]).await;
+    let eve_holds = body(eve.app(&eves).unwrap());
+    assert!(!eve_holds.contains("Employer letter"), "{eve_holds}");
+    assert_eq!(
+        known_of(&eve, WRITER).len(),
+        2,
+        "Fay's second import is in a document of its own"
+    );
+
+    fay.close();
+    eve.close();
+    host.relay.shutdown().await;
+}

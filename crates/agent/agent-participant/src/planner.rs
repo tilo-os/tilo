@@ -173,6 +173,10 @@ pub struct PlanContext {
     /// person running it turned it on
     /// ([`crate::vision::ROOM_PICTURES_ENV`]).
     pub room_pictures: bool,
+    /// Apps of which the plan is offered a new, empty document although
+    /// one is open (`app.<app>#open`): an import into the open one was
+    /// refused for the content it holds, and only a new document takes it.
+    pub new_documents: Vec<String>,
 }
 
 impl PlanContext {

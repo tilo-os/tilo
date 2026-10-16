@@ -227,8 +227,9 @@ fn open_note(catalogue: &Catalogue, offer: &Offer, app: &str) -> String {
         .any(|o| o.app == app && opened_app(o).is_none())
     {
         format!(
-            " ({app} is already open and its operations are listed: use those; this would \
-             open a second window)"
+            " ({app} is already open and its operations are listed: use those to work in the \
+             open document; this opens a second window on a new, empty document, as an import \
+             the open one refused for its content needs)"
         )
     } else {
         format!(" (opens {app} in a new window; its operations then appear)")
