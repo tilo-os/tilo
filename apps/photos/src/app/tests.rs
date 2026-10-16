@@ -2401,6 +2401,71 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
     }
 }
 
+#[test]
+fn crop_to_view_uses_the_edited_image_aspect_ratio() {
+    for quarters in [0, 1] {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        let original = shots_pattern(400, 200);
+        let hash = app
+            .content
+            .put(&pixels::encode_png(&original).unwrap())
+            .unwrap();
+        let open = OpenImage::new("crop.png", 400, 200, hash);
+        let id = crate::test_doc::put_image(&mut doc, &open);
+        let edits = crate::model::Edits {
+            crop: Rect01 {
+                x: 0.0,
+                y: 0.0,
+                w: 0.25,
+                h: 1.0,
+            },
+            rotate_quarters: quarters,
+        };
+        crate::test_doc::set_photo_edits(&mut doc, &id, edits);
+        app.show_photo(&id);
+        sync(&mut app, &mut doc);
+        let viewer = app.viewer.as_mut().unwrap();
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = viewer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(200.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+            )
+            .unwrap();
+        viewer.apply_layout(&taffy, node, Point::ORIGIN);
+        viewer.set_zoom(2.0);
+        let expected = if quarters == 0 {
+            Rect01 {
+                x: 0.0,
+                y: 0.25,
+                w: 1.0,
+                h: 0.5,
+            }
+        } else {
+            Rect01 {
+                x: 0.25,
+                y: 0.0,
+                w: 0.5,
+                h: 1.0,
+            }
+        };
+        assert_eq!(app.visible_rect(), expected);
+        app.pending = Some(Hit::CropToView);
+        app.drain_pending();
+        settle(&mut app, &mut doc);
+        assert_eq!(
+            crate::test_doc::photo_edits(&doc, &id),
+            edits.cropped_from_view(expected)
+        );
+    }
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
