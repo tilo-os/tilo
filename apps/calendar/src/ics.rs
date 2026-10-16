@@ -424,9 +424,13 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     let mut end = match (end, duration) {
         (Some(end), _) => end,
         (None, Some((days, time))) => {
-            let Some(end) = duration_end(start, &timezone, days, time) else {
+            let Some((duration_start, end, duration_zone)) =
+                duration_span(start, &timezone, days, time)
+            else {
                 return (None, i);
             };
+            start = duration_start;
+            timezone = duration_zone;
             end
         }
         (None, None) => start,
@@ -722,24 +726,32 @@ fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
     Some((days, chrono::Duration::try_seconds(seconds)?))
 }
 
-fn duration_end(
+fn duration_span(
     start: NaiveDateTime,
     zone: &str,
     days: i64,
     time: chrono::Duration,
-) -> Option<NaiveDateTime> {
+) -> Option<(NaiveDateTime, NaiveDateTime, String)> {
     // Days are nominal calendar days; hours/minutes/seconds are elapsed
     // time. They differ when the event crosses a daylight-saving change.
     let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
     if zone == "floating" {
-        return wall.checked_add_signed(time);
+        return Some((start, wall.checked_add_signed(time)?, zone.into()));
     }
     let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
     let end = instant.checked_add_signed(time)?;
-    Some(
-        end.with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
-            .naive_local(),
-    )
+    let end_wall = end
+        .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
+        .naive_local();
+    if crate::timezone::wall_to_utc(zone, end_wall)?.0 != end {
+        // The wall-time model always resolves a fold to its earlier instant.
+        // A duration can end in the later fold, even before its local start.
+        // Store both endpoints in UTC rather than lose the elapsed interval
+        // when the event passes through validation, reminders or export.
+        let start = crate::timezone::wall_to_utc(zone, start)?.0;
+        return Some((start.naive_utc(), end.naive_utc(), "UTC".into()));
+    }
+    Some((start, end_wall, zone.into()))
 }
 
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
