@@ -53,11 +53,11 @@ Each failure comes with its relevant output and the command that reproduces it.
 
 ```
 t suggest                      # what to run next: what failed for you, what your change affects
-t test clippy                  # one family (test, clippy, check, goldens), a check (fmt, deny, wasm, ...), a package, a check id, a glob, or `all`
+t test clippy                  # one family (test, test-x86_64, clippy, check, goldens), a check (fmt, deny, wasm, ...), a package, a check id, a glob, or `all`
 t test test/tilo-fs            # one package's tests
 t test 'suite-*'               # the suites outside Cargo, one check per group of tools/ci/suites.toml
 t test 'nightly-*'             # the scheduled suites (also 'weekly-*'), only when asked for
-t test test/shell --test 'interaction_test::'   # selected tests; never cached
+t test test-x86_64/shell --test 'interaction_test::'   # selected tests; never cached
 t failed                       # run again what failed for you recently
 t cargo check -p shell --tests # any compiling cargo subcommand, output streamed
 t build -p terminal            # build on the server; the programs land in ./target
