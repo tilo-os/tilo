@@ -163,40 +163,6 @@ impl StatePeer {
             }))
     }
 
-    fn has_fresh_successor(
-        &self,
-        original: &LocalDocument,
-        outbox: &[NeighbourMsg],
-        selected: [u8; 32],
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let history = self.publication_history(original)?;
-        for message in outbox {
-            if !crate::outbox::fresh(message, now) {
-                continue;
-            }
-            let candidate = self.retained_document(message, selected)?;
-            if candidate.route != original.route
-                || candidate.admission.sequence() <= original.admission.sequence()
-                || !matches!(candidate.mutation, Some(DocumentMutation::Incremental(_)))
-                || self.checkpoint_sequence_covers(message)
-            {
-                continue;
-            }
-            let Some(successor) = self.recovery_publication_history(&candidate)? else {
-                continue;
-            };
-            if history
-                .get_heads()
-                .iter()
-                .all(|head| successor.get_change_meta_by_hash(head).is_some())
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     // A successor may rely only on changes the governor has acknowledged, not
     // missing ancestors held solely in our local document. Otherwise a fresh
     // dependent frame would indefinitely suppress recovery of its predecessor.
@@ -351,10 +317,12 @@ impl PeerOutbox<'_> {
             .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
     }
     /// Compare retained real history with the admitted durable governor checkpoint.
+    /// A test oracle for the recovery projection.
     ///
     /// # Errors
     ///
     /// Returns an error if `history` does not belong to this room.
+    #[cfg(test)]
     pub fn retained_local_history_retired(self, history: &StatePeer) -> Result<bool, String> {
         self.peer.validate_retained_history(history)?;
         for (route, old) in &history.core.documents {
@@ -366,75 +334,6 @@ impl PeerOutbox<'_> {
     }
 }
 impl PeerOutboxMut<'_> {
-    /// The returned prefix is identical to the input; only authorized successors append.
-    /// The outer owner must commit this candidate and the entire queue before send.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a queued message is not authentic retained custody or a successor
-    /// cannot be signed.
-    pub fn reconcile_local_outbox(
-        self,
-        outbox: &[NeighbourMsg],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        publication_size(outbox)?;
-        let selected = key.verifying_key().to_bytes();
-        self.peer.permissions(selected, now)?;
-        for original in outbox {
-            self.peer.retained_document(original, selected)?;
-        }
-        let mut candidate = self.peer.clone();
-        let mut retained = outbox.to_vec();
-        for original in outbox {
-            let local = candidate.retained_document(original, selected)?;
-            // A sealed write is renewed only through its key holder, by
-            // `renew_local_sealed`; it stays in custody until the governor's
-            // watermark covers it.
-            if local.mutation.is_none()
-                || candidate
-                    .outbox()
-                    .retained_local_document_retired(original, selected)?
-            {
-                continue;
-            }
-            if matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
-                && crate::outbox::fresh(original, now)
-                && !candidate.checkpoint_sequence_covers(original)
-            {
-                continue;
-            }
-            if !candidate.fresh_local_recovery_checkpoint(&local.route, now)?
-                || candidate.has_fresh_successor(&local, &retained, selected, now)?
-            {
-                continue;
-            }
-            // Validate real history before signing. A Snapshot remains immutable;
-            // its complete native history is independently signed as an Incremental.
-            candidate.publication_history(&local)?;
-            let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
-                local.mutation
-            else {
-                continue;
-            };
-            if retained.len() == MAX_PUBLICATIONS {
-                return Err("local publication count limit".into());
-            }
-            let renewed = candidate.publish_incremental(
-                &local.route.app,
-                &local.route.record,
-                bytes,
-                key,
-                now,
-            )?;
-            candidate.retained_document(&renewed, selected)?;
-            retained.push(renewed);
-            publication_size(&retained)?;
-        }
-        *self.peer = candidate;
-        Ok(retained)
-    }
     /// Renew `original`, a sealed write of the selected device still in
     /// custody, once it expired before the governor's watermark retired it.
     /// `reseal` is the channel's key holder: it returns the payload to carry
@@ -513,101 +412,6 @@ impl PeerOutboxMut<'_> {
         candidate.retained_document(&message, selected)?;
         *self.peer = candidate;
         Ok(Some(message))
-    }
-    /// Actual retained peer history; missing original signatures are not reconstructed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `history` does not belong to this room or a publication cannot be
-    /// signed.
-    pub fn recover_local_history(
-        self,
-        history: &StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        self.recover_local_history_with_outbox(history, &[], key, now)
-    }
-    /// Recover only history not carried by a fresh exact publication in the actual queue.
-    /// Returns new publications only; the supplied queue remains immutable custody.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `history` or `outbox` does not belong to this room or a
-    /// publication cannot be signed.
-    pub fn recover_local_history_with_outbox(
-        self,
-        history: &StatePeer,
-        outbox: &[NeighbourMsg],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        publication_size(outbox)?;
-        self.peer.validate_retained_history(history)?;
-        let selected = key.verifying_key().to_bytes();
-        self.peer.permissions(selected, now)?;
-        for message in outbox {
-            self.peer.retained_document(message, selected)?;
-        }
-        let mut candidate = self.peer.clone();
-        let mut retained = outbox.to_vec();
-        for (route, old) in &history.core.documents {
-            if candidate.retained_history_route_retired(route, old)? {
-                continue;
-            }
-            if !candidate.fresh_local_recovery_checkpoint(route, now)? {
-                return Err("retained history needs fresh genuine governor checkpoint".into());
-            }
-            let mut already_carried = false;
-            for message in &retained {
-                if !crate::outbox::fresh(message, now)
-                    || candidate.checkpoint_sequence_covers(message)
-                {
-                    continue;
-                }
-                let local = candidate.retained_document(message, selected)?;
-                if &local.route != route
-                    || local.admission.sequence()
-                        <= old
-                            .channel
-                            .last_seq_per_author
-                            .get(&Ed25519PublicKey::from_bytes(selected))
-                            .copied()
-                            .unwrap_or(0)
-                {
-                    continue;
-                }
-                let Some(successor) = candidate.recovery_publication_history(&local)? else {
-                    continue;
-                };
-                if old
-                    .doc
-                    .base_heads()
-                    .iter()
-                    .all(|head| successor.get_change_by_hash(head).is_some())
-                {
-                    already_carried = true;
-                    break;
-                }
-            }
-            if already_carried {
-                continue;
-            }
-            if retained.len() == MAX_PUBLICATIONS {
-                return Err("local publication count limit".into());
-            }
-            let bytes = old.doc.clone().save();
-            if bytes.len() > MAX_PUBLICATION_BYTES {
-                return Err("local publication byte limit".into());
-            }
-            let message =
-                candidate.publish_incremental(&route.app, &route.record, bytes, key, now)?;
-            candidate.retained_document(&message, selected)?;
-            retained.push(message);
-            publication_size(&retained)?;
-        }
-        *self.peer = candidate;
-        Ok(retained.split_off(outbox.len()))
     }
 }
 

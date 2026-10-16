@@ -507,13 +507,12 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
         "only the governor's signed watermark retires it"
     );
     let later = now.checked_add(Duration::from_secs(600)).unwrap();
-    let queue = member
+    let projection = member
         .outbox_mut()
-        .reconcile_local_outbox(std::slice::from_ref(&write), &b, later)
+        .reconcile_local_recovery_projection(std::slice::from_ref(&write), None, &[], &b, later)
         .unwrap();
-    assert_eq!(
-        queue.len(),
-        1,
+    assert!(
+        projection.is_empty(),
         "a sealed write is never re-signed by a replica without its key"
     );
     assert!(
