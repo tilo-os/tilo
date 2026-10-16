@@ -58,7 +58,7 @@ pub fn run(workspace: uuid::Uuid) -> Result<()> {
     });
     let manager = {
         let _entered = scope.enter();
-        CollaborationManager::for_route(actions::APP_ID, workspace, None, None)
+        CollaborationManager::for_service(actions::APP_ID, workspace)
     }
     .context("connect through TILO_SVC_COLLAB_FD")?;
     let runtime = tilo_rt::daemon("web-search")

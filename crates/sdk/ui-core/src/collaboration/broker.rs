@@ -2630,6 +2630,20 @@ impl SdkConnectSource {
 /// Build the certified device presentation used for a launcher-bound join.
 /// A launcher identity without a device certificate cannot enter the
 /// collaboration session.
+/// The participant kind of a headless service that holds no document of its
+/// own ([`CollaborationManager::for_service`]). It stays on this side: the
+/// broker admits the service as the person whose launch it is.
+const SERVICE_PARTICIPANT: &str = "service";
+
+/// The kind the broker is asked to admit a participant of `kind` as.
+fn broker_participant_kind(kind: &str) -> &str {
+    if kind == SERVICE_PARTICIPANT {
+        "person"
+    } else {
+        kind
+    }
+}
+
 struct SdkJoinIdentity {
     presentation: Vec<u8>,
     /// Requested broker principal kind. The broker only accepts `agent`
@@ -3019,6 +3033,30 @@ impl CollaborationManager {
             handle,
             None,
             "person",
+        )
+    }
+
+    /// Connect a headless service of `app_id` in `cluster_id` that holds no
+    /// document of its own: it publishes actions and answers them. It never
+    /// asks the broker for a committed document, which a room holds only for
+    /// apps that declare resource kinds; asking would fail the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the launcher did not
+    /// hand down a collab service connection.
+    pub fn for_service(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            None,
+            None,
+            None,
+            SERVICE_PARTICIPANT,
         )
     }
 
@@ -4696,7 +4734,7 @@ async fn ensure_sdk_route(
             &channel_id,
             identity_bytes,
             participant_handle.unwrap_or(""),
-            participant_kind,
+            broker_participant_kind(participant_kind),
             record_kind,
         )
         .await
