@@ -129,6 +129,15 @@ done
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
 
+# The product fonts: the shell sets text in them from a `fonts/` directory
+# beside its executable, and the runtime bundle carries the same catalog. They
+# are pinned artifacts the catalog tool materializes, not build outputs.
+fonts=$state/fonts
+rm -rf "$fonts"
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+ln -sfn "$fonts" "$bin/fonts"
+
 # --- 2. Plans -------------------------------------------------------------------
 plan=$state/plan.json
 python3 "$repo_root/tools/apps/app_release.py" --apps "${selected[*]}" > "$plan"
@@ -164,11 +173,8 @@ if [[ -f $runtimes/.key && $(<"$runtimes/.key") == "$runtime_key" && -f $runtime
 fi
 if [[ -z $runtime_version ]]; then
     say "baking the runtime bundle"
-    fonts=$state/work/fonts
-    rm -rf "$fonts" "$state/work/runtime"
+    rm -rf "$state/work/runtime"
     mkdir -p "$state/work"
-    python3 "$repo_root/tools/font-catalog.py" prepare \
-        "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
     OUT_DIR="$state/work/runtime" RUNTIME_RELEASE="$release" FROM=/ \
         VERSION_OUT="$state/work/runtime-version" ARCH="$(uname -m)" \
         IDENTITY_JSON="$identity" BUNDLE_BIN="$bin/tilo-runtime-bundle" \
@@ -177,7 +183,7 @@ if [[ -z $runtime_version ]]; then
     runtime_version=$(<"$state/work/runtime-version")
     find "$runtimes" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
     mv "$state/work/runtime/tilo-runtime/$runtime_version" "$runtimes/$runtime_version"
-    rm -rf "$state/work/runtime" "$fonts"
+    rm -rf "$state/work/runtime"
     printf '%s\n' "$runtime_version" > "$runtimes/.version"
     printf '%s\n' "$runtime_key" > "$runtimes/.key"
 fi
