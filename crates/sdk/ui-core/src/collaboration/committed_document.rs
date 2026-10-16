@@ -580,6 +580,13 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// An agent's connection never asks for a committed document, which the
+    /// broker would refuse it; a person's app still reads its own.
+    #[test]
+    fn only_a_person_route_opens_its_committed_document() {
+        assert!(!opens_committed_document("agent"));
+        assert!(opens_committed_document("person"));
+    }
     #[tokio::test]
     async fn terminal_reads_cannot_be_republished_or_renewed() {
         let reads = Reads::default();
@@ -1437,6 +1444,15 @@ async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
     }
 }
 
+/// Whether a route joined as `participant_kind` asks the broker for its
+/// committed document. The broker serves committed reads only to a process
+/// the launcher holds custody of for that app, which an agent never is, so it
+/// refuses an agent's open. An agent works through actions and task runs, not
+/// its own document; asking would fail its whole connection in a native room.
+fn opens_committed_document(participant_kind: &str) -> bool {
+    participant_kind != "agent"
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1447,13 +1463,17 @@ pub(super) async fn install(
     inbound: &InboundBridge,
     join: NativeReadJoin,
 ) -> Result<bool, String> {
+    let key = spec.channel_id();
+    if !opens_committed_document(join.participant_kind.as_str()) {
+        inbound.state.document_reads.legacy(&key)?;
+        return Ok(false);
+    }
     let first = channel
         .committed_document(&Request::Open {
             known_revision: None,
         })
         .await
         .map_err(|e| e.to_string())?;
-    let key = spec.channel_id();
     if first == Reply::Legacy {
         inbound.state.document_reads.legacy(&key)?;
         return Ok(false);

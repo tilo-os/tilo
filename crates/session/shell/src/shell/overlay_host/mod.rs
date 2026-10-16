@@ -12,6 +12,7 @@
 
 mod agent_actions;
 mod agent_markers;
+mod ask_agent;
 mod axis_navigation;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
@@ -944,6 +945,8 @@ pub struct ShellOverlayHost {
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
     agent_quick_composer_node: Option<NodeId>,
+    /// The ask-agent chord's progress and the apps that answer it.
+    selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2544,6 +2547,7 @@ impl ShellOverlayHost {
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,
+            selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -13933,6 +13937,9 @@ impl ShellOverlayHost {
                 self.toggle_emoji_picker();
             }
             return true;
+        }
+        if action == A::AskAgent {
+            return self.press_ask_agent_chord(repeat);
         }
         if !matches!(
             action,

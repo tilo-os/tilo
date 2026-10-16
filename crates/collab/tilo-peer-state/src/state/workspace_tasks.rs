@@ -914,6 +914,142 @@ mod tests {
         fixture.check_owner_epoch();
     }
 
+    /// Queue `command` as the governor, start its run on the host and answer
+    /// the run's frozen execution authority.
+    fn frozen_authority(
+        command: &WorkspaceTaskCommand,
+    ) -> (
+        tilo_desktop_model::WorkspaceTaskExecutionAuthority,
+        SystemTime,
+    ) {
+        let (mut peer, governor, _, now) = peer();
+        let (_, queued) = peer
+            .workspace_mut()
+            .apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [1; 32],
+                &WorkspaceTaskAuthority::Person {
+                    caller: governor.clone(),
+                },
+                command,
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        peer.workspace_mut()
+            .apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [2; 32],
+                &WorkspaceTaskAuthority::Host { attestor: governor },
+                &WorkspaceTaskCommand::StartRun {
+                    task_id: task_id.clone(),
+                    agent_id: "scribe".into(),
+                },
+                now,
+            )
+            .unwrap();
+        let controls =
+            crate::workspace_task::controls_of(peer.core.room_doc.as_ref().unwrap()).unwrap();
+        (controls[&task_id].execution_authority.clone().unwrap(), now)
+    }
+
+    #[test]
+    fn a_task_about_a_selection_keeps_a_room_wide_authority() {
+        use tilo_action_policy::ActionKind;
+        let subject = tilo_actions::SelectionSubject {
+            app_id: "so.tilo.notes".into(),
+            app_label: "Notes".into(),
+            resource: tilo_actions::ActionResource {
+                id: "A".into(),
+                kind: "document".into(),
+                label: "Document A".into(),
+            },
+            anchor: tilo_actions::SelectionAnchor::of_text("some text")
+                .at(tilo_actions::SelectionPlace::range("block-1", 0, 9)),
+        };
+        let (bound, now) = frozen_authority(&WorkspaceTaskCommand::QueueInstructionAbout {
+            title: "Link this".into(),
+            instruction: "Search for xy and turn the selection into a link".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            subject: Box::new(subject),
+        });
+        assert_eq!(
+            bound.scope,
+            TreePath::room(ROOM),
+            "the selection narrows nothing"
+        );
+        let room = TreePath::room(ROOM);
+        assert!(
+            bound.allows(
+                &room
+                    .clone()
+                    .app("so.tilo.search")
+                    .kind("search")
+                    .resource("web")
+                    .action("search"),
+                ActionKind::Read,
+                now
+            ),
+            "another app's action, such as a web search"
+        );
+        assert!(
+            bound.allows(
+                &room
+                    .app("notes")
+                    .kind("document")
+                    .resource("B")
+                    .action("append"),
+                ActionKind::Undoable,
+                now
+            ),
+            "an action on a resource other than the selected one"
+        );
+    }
+
+    #[test]
+    fn an_explicit_attachment_still_narrows_the_authority() {
+        use tilo_action_policy::ActionKind;
+        let (bound, now) = frozen_authority(&WorkspaceTaskCommand::Queue {
+            title: "Edit attached document".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: Some(Box::new(tilo_desktop_model::WorkspaceTaskResource {
+                app_id: Some("so.tilo.notes".into()),
+                app_label: Some("Notes".into()),
+                id: "A".into(),
+                kind: "document".into(),
+                label: "Document A".into(),
+                agent_request: None,
+            })),
+        });
+        let document = TreePath::room(ROOM).app("so.tilo.notes").kind("document");
+        assert_eq!(bound.scope, document.clone().resource("A"));
+        assert!(bound.allows(
+            &document.clone().resource("A").action("append"),
+            ActionKind::Undoable,
+            now
+        ));
+        assert!(!bound.allows(
+            &document.resource("B").action("append"),
+            ActionKind::Undoable,
+            now
+        ));
+        assert!(
+            !bound.allows(
+                &TreePath::room(ROOM)
+                    .app("so.tilo.search")
+                    .kind("search")
+                    .resource("web")
+                    .action("search"),
+                ActionKind::Read,
+                now
+            )
+        );
+    }
+
     #[test]
     fn foreign_room_membership_cannot_authorize_an_agent_task() {
         let (mut peer, governor, _, now) = peer();

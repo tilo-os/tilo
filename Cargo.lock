@@ -16846,6 +16846,7 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "hex",
+ "postcard",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -19346,6 +19347,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-web-search"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-wet-media"
 version = "0.1.0"
 dependencies = [
@@ -21682,6 +21698,28 @@ dependencies = [
  "tracing",
  "wasm-bindgen-futures",
  "wasmtimer",
+]
+
+[[package]]
+name = "web-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-files",
+ "tilo-net",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-web-search",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
 ]
 
 [[package]]

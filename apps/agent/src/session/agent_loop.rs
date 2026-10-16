@@ -498,6 +498,28 @@ fn settle(
     None
 }
 
+/// How long the first run waits for the companions started beside the
+/// agent to publish: long enough for a headless service to start and
+/// connect, short enough that a companion that never comes costs the run
+/// little.
+const COMPANION_WAIT: Duration = Duration::from_secs(15);
+
+/// The `companions` none of whose actions `surfaces` holds yet.
+fn missing_companions(
+    companions: &[String],
+    surfaces: &[ui::collaboration::BrokerActionSurface],
+) -> Vec<String> {
+    companions
+        .iter()
+        .filter(|app| {
+            !surfaces
+                .iter()
+                .any(|surface| surface.app_id == **app && !surface.actions.is_empty())
+        })
+        .cloned()
+        .collect()
+}
+
 /// The report of an invoke that did not succeed, saying why.
 fn refused_report(error: String) -> InvokeReport {
     InvokeReport {
@@ -515,6 +537,44 @@ impl Session {
     ) {
         self.broker_surfaces = surfaces;
         self.broker_revision = self.broker_revision.wrapping_add(1);
+    }
+
+    /// Wait, at most [`COMPANION_WAIT`], until every companion the desktop
+    /// started beside this agent has published its actions; once, before
+    /// the first run plans. A companion starts with the agent, so the first
+    /// run was otherwise planned against a catalogue without it: offered no
+    /// web search, the model opened the browser instead. Events other than
+    /// catalogue republications are kept for the session loop.
+    fn await_companions(&mut self) {
+        if self.awaiting_companions.is_empty() {
+            return;
+        }
+        let deadline = ui::time::now() + COMPANION_WAIT;
+        let mut kept = Vec::new();
+        loop {
+            self.absorb_catalogue_updates();
+            let missing = missing_companions(&self.awaiting_companions, &self.broker_surfaces);
+            if missing.is_empty() {
+                break;
+            }
+            let now = ui::time::now();
+            if now >= deadline {
+                tracing::warn!(
+                    ?missing,
+                    "companions did not publish in time; planning without them"
+                );
+                break;
+            }
+            match self.link.recv(deadline - now) {
+                Ok(Some(CollabEvent::ActionCatalogue { surfaces })) => {
+                    self.set_broker_surfaces(surfaces);
+                }
+                Ok(Some(other)) => kept.push(other),
+                Ok(None) | Err(_) => {}
+            }
+        }
+        self.link.defer(kept);
+        self.awaiting_companions.clear();
     }
 
     /// Apply catalogue republications already queued on the link, without
@@ -710,6 +770,7 @@ impl Session {
                 MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
             )
         };
+        self.await_companions();
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
@@ -750,13 +811,14 @@ impl Session {
         // so the next task reads system, tools and catalogue back from the
         // cache rather than prefilling them; an OpenAI-compatible provider
         // caches the same repeated prefix by itself.
+        let request = super::selection_prompt::task_request(run, &catalogue);
+        // The request as the model reads it, the selection it is about and
+        // the operations named for it included, so a run that acted at the
+        // wrong place can be told apart from one that was never told where.
+        tracing::info!(task_id = %run.task_id, %request, "task request");
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!(
-                "{}The request:\n\n{}",
-                self.memory.render(),
-                run.instruction().trim()
-            ),
+            task: format!("{}The request:\n\n{request}", self.memory.render()),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
         for turn in 0..MAX_LOOP_TURNS {
@@ -2014,6 +2076,49 @@ mod tests {
     const SECOND_PEER: u64 = 10;
     const DOC: &str = "word-processor.document";
 
+    /// The first run waits for a companion until it has published actions:
+    /// a surface of the companion's app holding none (still starting) does
+    /// not count, and other apps' surfaces never stand in for it.
+    #[test]
+    fn a_companion_counts_once_it_has_published_actions() {
+        let companions = vec!["so.tilo.web-search".to_owned()];
+        let surface = |app: &str, actions: Vec<ExportedAction>| BrokerActionSurface {
+            peer_id: PEER,
+            provider: None,
+            app_id: app.into(),
+            cluster_id: Uuid::from_u128(1).to_string(),
+            record_id: String::new(),
+            live: true,
+            actions,
+        };
+        let search = || {
+            descriptor(
+                "search",
+                "Search the web",
+                tilo_actions::OperationKind::Effect,
+                vec![],
+                Availability::Available,
+                vec![],
+            )
+        };
+        assert_eq!(missing_companions(&companions, &[]), companions);
+        assert_eq!(
+            missing_companions(&companions, &[surface("so.tilo.notes", vec![search()])]),
+            companions
+        );
+        assert_eq!(
+            missing_companions(&companions, &[surface("so.tilo.web-search", vec![])]),
+            companions
+        );
+        assert!(
+            missing_companions(
+                &companions,
+                &[surface("so.tilo.web-search", vec![search()])]
+            )
+            .is_empty()
+        );
+    }
+
     fn descriptor(
         action: &str,
         label: &str,
@@ -2867,6 +2972,7 @@ mod tests {
             task_id: "task:loop".into(),
             title: title.into(),
             instruction: None,
+            subject: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
@@ -2892,6 +2998,8 @@ mod tests {
                     ui::permissions::KindSet::READ_UNDOABLE,
                 ),
                 content: tilo_content::ContentStore::memory(),
+                companions: Vec::new(),
+                provider: None,
             },
             link,
             chooser: Chooser::scripted(
@@ -2905,6 +3013,7 @@ mod tests {
             broker_surfaces: surfaces,
             next_broker_request: 1,
             memory: Memory::default(),
+            awaiting_companions: Vec::new(),
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,

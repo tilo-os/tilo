@@ -1492,18 +1492,25 @@ fn revalidate_native_agent_markers(
                 })
                 .is_some_and(|identity| identity.agent_key == marker.agent)
     });
+    // A composer opened on a selection stands beside no marker, so only the
+    // agent's admission (the identity revision) and suppression close it.
+    let about_selection = frame
+        .host_mut()
+        .agent_quick_composer_mut()
+        .about_selection();
     if let Some(owner) = frame.host_mut().agent_quick_composer_mut().owner().cloned()
         && (suppressed
-            || !current.values().any(|source| {
-                source.launch.workspace_id == owner.room
-                    && source
-                        .agents
-                        .get(&owner.agent)
-                        .and_then(|actor| {
-                            broker.as_ref()?.certified_marker_agent(&owner.room, actor)
-                        })
-                        .is_some_and(|identity| identity.agent_key == owner.agent)
-            })
+            || !about_selection
+                && !current.values().any(|source| {
+                    source.launch.workspace_id == owner.room
+                        && source
+                            .agents
+                            .get(&owner.agent)
+                            .and_then(|actor| {
+                                broker.as_ref()?.certified_marker_agent(&owner.room, actor)
+                            })
+                            .is_some_and(|identity| identity.agent_key == owner.agent)
+                })
             || broker
                 .as_ref()
                 .and_then(|source| source.identity_revision(&owner.room))
@@ -2306,6 +2313,19 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SelectionCapable => {
+                    frame_builder
+                        .host_mut()
+                        .note_selection_capable(connection, &app_id);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection } => {
+                    // The app id is the launcher's: a selection is only ever
+                    // credited to the app that holds it, and only while it
+                    // is focused.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_ask_agent(&app_id, selection);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
                     // offer its own windows' pages.
@@ -2340,6 +2360,9 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);
+                frame_builder
+                    .host_mut()
+                    .forget_selection_capable(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -2366,6 +2389,17 @@ fn pump_floating_surface_service(
                 changed = true;
             }
         }
+    }
+    // The ask-agent chord asks the focused app for its selection, or opens
+    // the composer itself once that app had its moment to answer.
+    for connection in frame_builder
+        .host_mut()
+        .route_ask_agent_chord(Instant::now())
+    {
+        service.send(
+            connection,
+            &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
+        );
     }
     // Apps whose pages someone started or stopped watching.
     for (connection, watched) in state.paint_watch_changes() {
@@ -14201,6 +14235,10 @@ pub fn run() {
                         .and_then(|network| network.next_deadline()),
                 ),
                 (
+                    "ask-agent",
+                    frame_builder.host().ask_agent_deadline(park_now),
+                ),
+                (
                     "dictation-service",
                     state.dictation_service_deadline(park_now),
                 ),
@@ -14437,6 +14475,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
+        | crate::shell::osd::OsdKind::NoAgent
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
