@@ -33,6 +33,8 @@ use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+mod own_device;
+
 /// The longest a waiter on a running invocation sleeps without a signalled
 /// change, so a change nothing signals (an idle expiry) costs latency, never
 /// a stalled shortcut run.
@@ -416,6 +418,16 @@ impl CapnpBrokerState {
         let permitted = match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
+            }
+            // Another of the person's devices is reached only for the app's
+            // own actions there, as the person using it; never under the
+            // app's own identity, which holds no reach across devices.
+            RemoteActionMessage::Invoke(request)
+                if request.target.provider == tilo_actions::remote::own_device::PROVIDER =>
+            {
+                tilo_actions::remote::own_device::Invocation::from_argument(&request.argument)
+                    .is_ok_and(|invocation| invocation.app == app_id)
+                    .then(|| person.clone())
             }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request) || link_request(request) {
@@ -1336,6 +1348,9 @@ impl CapnpBrokerState {
             super::host_steps::HostSteps::for_provider(&self.services, &request.target.provider)
         {
             return Pending::ready(self.invoke_host_step(caller, &steps, request));
+        }
+        if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
+            return Pending::ready(self.invoke_own_device(caller, request));
         }
         Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
     }

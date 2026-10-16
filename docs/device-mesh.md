@@ -394,6 +394,18 @@ authorization.
   until it answers, then reports back. Without such a device the action
   fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
   Waking is device administration and needs no optional continuity switch.
+- **An app asking another of the person's devices.** `actions invoke --device`
+  is fire-and-forget; an app that needs the answer (Settings reading each
+  device's storage summary) invokes the host's `tilo.own-device` provider,
+  action `identity.device/invoke`, with `{device, app, resource, action, arguments}`.
+  The broker admits it only for the person at this device and, from an app,
+  only for that app's own actions; agents, bots, Shortcut steps and remote
+  callers are refused. The shell sends it only to a device that is enrolled,
+  authenticated to it under the person's own root, unexpired and unrevoked,
+  as an ordinary invocation of `application:<shared room>:<app>` under the
+  same invocation id, and follows it there by long-poll; the other device
+  decides it for the device its transport authenticated. Its outcome becomes
+  the local invocation's. No new frame exists for it.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.
