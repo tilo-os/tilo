@@ -827,6 +827,33 @@ requires = ["arch=any"]
 on = ["dispatch"]
 
 [[matrix]]
+family = "os"
+about = """
+The OS image (os/Containerfile, tools/ci/publish/os-image.sh), built natively per architecture
+as root in a micro-VM step: `t test os-image-x86_64` builds what a development VM runs from
+your tree, as Build / OS dev did (no LTO, the apps and desktop of the commit, the image only,
+its UKI sealing a placeholder composefs digest) and leaves it as an OCI archive (`t outputs`).
+Its inputs are what os/Containerfile copies from the repository; a cold build compiles for
+about an hour without a compiler cache, so it runs only when asked."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "os-image-{arch}"
+run = "bash tools/ci/publish/os-image.sh build {arch} /target/publish/os/{arch}"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "keys/**", "docs/developers/tasks/**", "scripts/**", "tools/apps/**", "tools/policy/**", "tools/protocols/**", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/font-catalog.py", "tools/atspi_external_client.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
+outputs = ["/target/publish/os/{arch}/image.oci.tar", "/target/publish/os/{arch}/digest", "/target/publish/os/{arch}/revision"]
+# The image is labelled with its commit.
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 10800
+default = false
+
+[[matrix]]
 family = "extension-manifests"
 about = """
 Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh, as
@@ -860,7 +887,7 @@ inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/insta
 needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
 # The extension-manifest key, not the OS release key: devices verify manifests only against
 # keys/extensions.pub. Its role trusts only this audience, which no other check asks for.
-env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:key/60953e72-5a65-4651-af19-cb4b9e10572d", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloForgejoExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
 id_token = ["tilo-extension-manifests"]
 # Generic packages take no identity token.
 secrets = ["REGISTRY_TOKEN"]
