@@ -7,13 +7,14 @@
 #
 #   authenticode.sh <file.exe>
 #
-# Environment (from t's secrets; docs/publishing-on-t.md, Windows):
+# Environment (t.toml and t's secrets; docs/publishing-on-t.md, Windows):
 #   TILO_AUTHENTICODE_KMS_KEY     arn:aws:kms:<region>:<account>:alias/<name> (or key ARN)
 #   TILO_AUTHENTICODE_CERT_CHAIN  the code-signing certificate and its intermediates, PEM
 #   TILO_WINDOWS_PUBLISHER        the certificate subject every signature must carry,
 #                                 as `keytool -printcert` shows it (CN=…, O=…, C=…)
-#   TILO_SIGNING_AWS_ACCESS_KEY_ID, TILO_SIGNING_AWS_SECRET_ACCESS_KEY
-#                                 an IAM user that may only kms:Sign with that key
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+#                                 short-lived credentials of a role that may kms:Sign with
+#                                 that key (aws-web-identity.sh, from t's identity token)
 # TILO_AUTHENTICODE_TIMESTAMP_URL overrides the RFC 3161 timestamp service.
 set -euo pipefail
 
@@ -21,8 +22,8 @@ file="${1:?executable to sign}"
 : "${TILO_AUTHENTICODE_KMS_KEY:?the KMS key ARN to sign with}"
 : "${TILO_AUTHENTICODE_CERT_CHAIN:?the PEM certificate chain of the signing key}"
 : "${TILO_WINDOWS_PUBLISHER:?the expected certificate subject}"
-: "${TILO_SIGNING_AWS_ACCESS_KEY_ID:?signing credentials}"
-: "${TILO_SIGNING_AWS_SECRET_ACCESS_KEY:?signing credentials}"
+: "${AWS_ACCESS_KEY_ID:?signing credentials (aws-web-identity.sh)}"
+: "${AWS_SECRET_ACCESS_KEY:?signing credentials (aws-web-identity.sh)}"
 timestamp="${TILO_AUTHENTICODE_TIMESTAMP_URL:-http://timestamp.digicert.com}"
 
 [[ "$TILO_AUTHENTICODE_KMS_KEY" =~ ^arn:aws:kms:([a-z0-9-]+):[0-9]{12}:(alias|key)/.+$ ]] \
@@ -41,10 +42,8 @@ if [ "$subject" != "$TILO_WINDOWS_PUBLISHER" ]; then
   exit 1
 fi
 
-# jsign reads the AWS credentials from the environment when no --storepass is
-# given, so they never appear on a command line.
-AWS_ACCESS_KEY_ID="$TILO_SIGNING_AWS_ACCESS_KEY_ID" \
-AWS_SECRET_ACCESS_KEY="$TILO_SIGNING_AWS_SECRET_ACCESS_KEY" \
+# jsign reads the AWS credentials, session token included, from the environment when no
+# --storepass is given, so they never appear on a command line.
 AWS_REGION="$region" \
   jsign --storetype AWS --keystore "$region" --alias "$TILO_AUTHENTICODE_KMS_KEY" \
     --certfile "$work/chain.pem" --alg SHA-256 \

@@ -370,7 +370,11 @@ run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target
 needs = ["build/windows-{arch}", "package/windows-{arch}"]
 inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**"]
 outputs = ["/target/windows/{arch}/signed/*"]
-secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+# The certificate chain a CA issues for the KMS key, and its subject; the key, and the role
+# that may sign with it from an identity token of an imager tag, are not secret.
+secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+id_token = ["sts.amazonaws.com"]
+env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", TILO_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner", TILO_SIGNING_REGION = "us-east-1" }
 on = ["tag:imager-v*"]
 requires = ["arch=x86_64"]
 cache = false
@@ -379,7 +383,8 @@ memory = "4G"
 comment = """
 Authenticode, for imager release tags only: re-checks the build's digest against the one
 the package carries, then packages that executable again signing the EXE and the installer
-with a key that never leaves AWS KMS. Its secrets reach release nodes only."""
+with a key that never leaves AWS KMS, as the package signing role an identity token of the
+tag is exchanged for."""
 
 [[matrix.check]]
 name = "package/windows-winget"

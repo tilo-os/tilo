@@ -424,11 +424,10 @@ on x86_64 nodes.
 
 | name | what |
 |---|---|
-| `TILO_AUTHENTICODE_KMS_KEY` | the ARN of the signing key, an asymmetric `RSA_3072` (or larger) `SIGN_VERIFY` key in AWS KMS, e.g. `arn:aws:kms:<region>:<account>:alias/tilo-authenticode-signing` |
 | `TILO_AUTHENTICODE_CERT_CHAIN` | the code-signing certificate a CA issued for that key, then its intermediates, PEM |
 | `TILO_WINDOWS_PUBLISHER` | the certificate's subject as `keytool -printcert` shows it (`CN=…, O=…, L=…, C=…`); signing refuses a chain whose leaf has another |
-| `TILO_SIGNING_AWS_ACCESS_KEY_ID`, `TILO_SIGNING_AWS_SECRET_ACCESS_KEY` | the release signing IAM user, also allowed `kms:Sign` on that key |
 
+The key (`alias/tilo-authenticode-signing`, `RSA_3072`) is not a secret: `sign/windows-<arch>` sets it in `t.toml`, declares `id_token = ["sts.amazonaws.com"]` and exchanges the token for the role `TiloTPackageSigner` (`tools/ci/windows/aws-web-identity.sh`), which trusts only `stable` and the `desktop-v*` and `imager-v*` tags and may only ask KMS to sign with that key and the RPM key; jsign signs with the session's credentials.
 `TILO_AUTHENTICODE_TIMESTAMP_URL` overrides the timestamp service (DigiCert's by default).
 The builder image carries no OpenSSL (`os/tests/no_openssl_runtime.sh`), so the signing check
 does not verify the signatures it makes. Windows has to (`signtool verify /pa` and

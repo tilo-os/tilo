@@ -34,5 +34,7 @@ if [ "$built" != "$packaged" ]; then
   exit 1
 fi
 
+# Credentials of the package signing role, from t's identity token, for both signatures.
+. "$repo/tools/ci/windows/aws-web-identity.sh"
 bash "$repo/apps/imager/packaging/package-windows.sh" "$arch" "$build/imager.exe" "$out" \
   "bash $repo/tools/ci/windows/authenticode.sh"
