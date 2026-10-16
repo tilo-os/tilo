@@ -201,9 +201,7 @@ impl HexModel {
     /// that differ from `saved` are exactly the changed ones (an undo
     /// clears its byte's mark).
     pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
-        if bytes == self.bytes.as_slice() {
-            return;
-        }
+        let unchanged = bytes == self.bytes.as_slice();
         if bytes.len() == saved.len() {
             self.dirty = bytes
                 .iter()
@@ -211,7 +209,7 @@ impl HexModel {
                 .enumerate()
                 .filter_map(|(index, (now, was))| (now != was).then_some(index))
                 .collect();
-        } else {
+        } else if !unchanged {
             let prefix = self
                 .bytes
                 .iter()
@@ -238,6 +236,11 @@ impl HexModel {
                 })
                 .chain(prefix..new_end)
                 .collect();
+        }
+        // Local typing already changed the view's copy, but its dirty marks
+        // still need reconciliation against the saved file above.
+        if unchanged {
+            return;
         }
         // Reuse the buffer: a large file is not reallocated per edit.
         self.bytes.clear();
