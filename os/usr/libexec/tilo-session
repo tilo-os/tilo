@@ -12,6 +12,11 @@
 # that was restarted becomes previous.log. Only a requested restart starts
 # the compositor again. A compositor that exits on its own, a crash included,
 # ends the session as before, so a compositor that cannot start never loops.
+# That includes one whose main loop hung: its watchdog records every thread's
+# stack and exits with status 70, which releases DRM master and the VT, and
+# the person is back at the greeter instead of in front of a frozen screen
+# (crates/session/shell/src/compositor/watchdog.rs). A hang that recurs right
+# after login therefore cannot become a restart loop either.
 set -euo pipefail
 ulimit -c 0
 
