@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCapabilities;
 
+#[cfg(target_os = "linux")]
+use super::idle_quiet_tests::in_a_process_of_its_own;
 use super::idle_quiet_tests::{
     LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, device_reaching, session_threads,
 };
@@ -262,6 +264,14 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
 #[test]
 #[serial_test::serial]
 fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
+    // Every thread of the process counts below, so it measures alone.
+    #[cfg(target_os = "linux")]
+    if in_a_process_of_its_own(concat!(
+        module_path!(),
+        "::after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps"
+    )) {
+        return;
+    }
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[46; 32]);
