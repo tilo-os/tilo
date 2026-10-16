@@ -24,6 +24,7 @@
 pub(crate) use tilo_relay_store::bounded;
 pub(crate) mod compaction;
 pub(crate) mod continuity;
+pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 pub(crate) mod retained;

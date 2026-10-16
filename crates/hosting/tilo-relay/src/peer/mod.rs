@@ -21,6 +21,7 @@ mod dispatch;
 mod fanout;
 mod federation;
 mod live;
+mod records;
 mod replay;
 mod session;
 mod state;
@@ -99,6 +100,7 @@ use live::{
     handle_live, handle_live_join, handle_live_leave, handle_presence, handle_voice,
     route_record_content,
 };
+use records::handle_open_record;
 pub(crate) use subscribe::get_or_autobind_workspace;
 use subscribe::{Subscription, handle_subscribe, handle_unsubscribe};
 

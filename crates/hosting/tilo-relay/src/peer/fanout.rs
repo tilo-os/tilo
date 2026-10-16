@@ -104,6 +104,8 @@ pub(super) struct LiveFrame<'a> {
     fanned: Option<FanoutStamp>,
     checkpoint_channel: Option<[u8; 32]>,
     audience: Option<std::collections::BTreeSet<[u8; 32]>>,
+    /// Who holds the frame's record ([`crate::store::record_sync`]).
+    reach: crate::store::record_sync::Reach,
 }
 
 impl<'a> LiveFrame<'a> {
@@ -117,13 +119,38 @@ impl<'a> LiveFrame<'a> {
         let payloads = &**runtime.store.payloads();
         let checkpoint_channel = gated_checkpoint_channel(payloads, envelope, source);
         let audience = live_audience(runtime, envelope);
+        let reach = record_reach(runtime, envelope);
         Self {
             envelope,
             budget,
             fanned,
             checkpoint_channel,
             audience,
+            reach,
         }
+    }
+}
+
+/// Who holds the record a live frame changes: a document frame on a channel
+/// whose record is on-demand reaches only the devices that hold it.
+fn record_reach(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    envelope: &LiveEnvelope,
+) -> crate::store::record_sync::Reach {
+    use crate::coedit::CoeditPayload;
+    use crate::store::record_sync::Reach;
+    let LiveEnvelope::Original(original) = envelope else {
+        return Reach::Everyone;
+    };
+    let Envelope::Delta { delta, .. } = &**original else {
+        return Reach::Everyone;
+    };
+    match CoeditPayload::decode(delta) {
+        Some(
+            CoeditPayload::Checkpoint { channel, body }
+            | CoeditPayload::RetainedDelta { channel, body },
+        ) => runtime.store.frame_reach(&channel, &body),
+        None => Reach::Everyone,
     }
 }
 
@@ -190,6 +217,14 @@ impl LiveFanout<'_> {
             .audience
             .as_ref()
             .is_some_and(|audience| !audience.contains(&target.peer.device_public_key))
+        {
+            return None;
+        }
+        // An on-demand record's changes go to who opened it; a peer relay
+        // keeps all of the room.
+        if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
+            && target.peer.role == crate::auth::PeerRole::Device
+            && !runtime.holds_record(recipient, &channel)
         {
             return None;
         }
@@ -275,6 +310,11 @@ impl LiveFanout<'_> {
                     && let Some(channel) = self.frame.checkpoint_channel
                 {
                     runtime.mark_checkpoint_served(recipient, channel);
+                }
+                // It follows this chain part now, and keeps it once a later
+                // part is the head.
+                if let crate::store::record_sync::Reach::Head(channel) = self.frame.reach {
+                    runtime.hold_record(recipient, channel);
                 }
             }
             // Ordinary live traffic retains replay coverage under

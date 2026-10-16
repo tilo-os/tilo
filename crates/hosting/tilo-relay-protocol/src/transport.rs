@@ -526,6 +526,29 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// Open an on-demand record of a subscribed room: a record a joining
+    /// device is not replayed (`neighbour_wire::record_sync`). The relay
+    /// sends what it retains of the record as [`Envelope::Delta`]s, under
+    /// the same admission as a replay, then [`Envelope::RecordOpened`];
+    /// from then on the record's live changes reach the device too.
+    OpenRecord {
+        /// Workspace id, subscribed.
+        workspace_id: u64,
+        /// The record's retained channel
+        /// (`neighbour_wire::app_document_channel`).
+        channel: [u8; 32],
+    },
+
+    /// The relay sent everything it retains of an opened record.
+    RecordOpened {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The record's retained channel.
+        channel: [u8; 32],
+        /// How many frames it sent.
+        frames: u32,
+    },
 }
 
 impl Envelope {
@@ -567,7 +590,9 @@ impl Envelope {
             | Self::VoiceRefused { workspace_id, .. }
             | Self::VoiceLeave { workspace_id, .. }
             | Self::VoiceCalls { workspace_id }
-            | Self::VoiceCallList { workspace_id, .. } => Some(*workspace_id),
+            | Self::VoiceCallList { workspace_id, .. }
+            | Self::OpenRecord { workspace_id, .. }
+            | Self::RecordOpened { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } => None,
         }
     }

@@ -140,7 +140,13 @@ pub async fn run(shared: Arc<Shared>) {
         if *stop.borrow() {
             break;
         }
-        seen_failures = take_events(&peer, &stats, shared.started, joined_at, seen_failures);
+        seen_failures = take_events(
+            &peer,
+            &stats,
+            (shared.started, joined_at),
+            seen_failures,
+            &mut None,
+        );
     }
     peer.close();
 }

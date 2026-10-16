@@ -245,6 +245,7 @@ impl RelayCollabTransport {
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
                 | PeerEvent::CompactionRequested { .. }
+                | PeerEvent::RecordOpened { .. }
                 | PeerEvent::Voice(_) => {}
             }
         }

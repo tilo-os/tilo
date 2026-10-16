@@ -164,25 +164,39 @@ impl Seeded {
     }
 
     /// Every change of the chat records as the governor's copy holds them,
-    /// hex-encoded: what the driver checks each guest's writes against.
+    /// hex-encoded: what the driver checks each guest's writes against. A
+    /// chat is its record and the parts after it, numbered from `0` with no
+    /// gap.
     async fn changes(&self) -> anyhow::Result<Vec<String>> {
         let mut changes = Vec::new();
         for room in &self.chats {
-            let Some(bytes) = self
-                .rooms
-                .record_document(room, "so.tilo.chat", crate::guest::CHAT_RECORD)
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?
-            else {
-                continue;
-            };
-            let mut document = automerge::AutoCommit::load(&bytes)?;
-            changes.extend(
-                document
-                    .get_changes(&[])
-                    .into_iter()
-                    .map(|change| hex::encode(change.hash().0)),
-            );
+            let records =
+                std::iter::once(crate::guest::CHAT_RECORD.to_owned())
+                    .chain((0u64..).map(|index| {
+                        neighbour_wire::record_part(crate::guest::CHAT_RECORD, index)
+                    }));
+            for (index, record) in records.enumerate() {
+                let Some(bytes) = self
+                    .rooms
+                    .record_document(room, "so.tilo.chat", &record)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?
+                else {
+                    // The record itself may be missing; the parts end at
+                    // the first one missing.
+                    if index == 0 {
+                        continue;
+                    }
+                    break;
+                };
+                let mut document = automerge::AutoCommit::load(&bytes)?;
+                changes.extend(
+                    document
+                        .get_changes(&[])
+                        .into_iter()
+                        .map(|change| hex::encode(change.hash().0)),
+                );
+            }
         }
         Ok(changes)
     }

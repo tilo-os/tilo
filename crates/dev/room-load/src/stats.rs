@@ -30,6 +30,10 @@ pub struct Stats {
     chat_ms: Mutex<Vec<(u64, f64)>>,
     /// How long each guest refused for a full room waited for the answer.
     full_ms: Mutex<Vec<f64>>,
+    /// How long opening the chat's first part took the guests that scrolled
+    /// back to it, and the frames it came in.
+    scrollback_ms: Mutex<Vec<f64>>,
+    scrollback_frames: AtomicU64,
     failures: Mutex<BTreeMap<String, u64>>,
 }
 
@@ -67,6 +71,12 @@ impl Stats {
     pub fn chat(&self, sent: u64, ms: f64) {
         self.chat_rx.fetch_add(1, Ordering::Relaxed);
         self.chat_ms.lock_recover().push((sent, ms));
+    }
+
+    pub fn scrollback(&self, ms: f64, frames: u32) {
+        self.scrollback_ms.lock_recover().push(ms);
+        self.scrollback_frames
+            .fetch_add(u64::from(frames), Ordering::Relaxed);
     }
 
     pub fn chat_history(&self) {
@@ -109,6 +119,7 @@ impl Stats {
             .collect();
         let mut chat: Vec<f64> = delivered.into_iter().map(|(_, ms)| ms).collect();
         let mut full = self.full_ms.lock_recover().clone();
+        let mut scrollback = self.scrollback_ms.lock_recover().clone();
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         serde_json::json!({
             "joined": load(&self.joined),
@@ -148,6 +159,12 @@ impl Stats {
                 "max": quantile(&mut chat, 1.0),
             },
             "chat_p95_ms_by_sent_s": chat_p95_by_sent_s,
+            "scrollback": {
+                "count": scrollback.len(),
+                "frames": load(&self.scrollback_frames),
+                "p50_ms": quantile(&mut scrollback, 0.5),
+                "p99_ms": quantile(&mut scrollback, 0.99),
+            },
             "live_open": load(&self.live_open),
             "live_ended": load(&self.live_ended),
             "session_failures": load(&self.session_failures),

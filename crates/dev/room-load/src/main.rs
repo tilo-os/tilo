@@ -388,6 +388,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         stop,
         quiet,
         sent: std::sync::Mutex::default(),
+        posts: std::sync::atomic::AtomicUsize::new(0),
     });
 
     let history_s = write_history(&shared, pid).await?;

@@ -144,8 +144,12 @@ pub(super) async fn handle_subscribe(
         .unwrap_or_else(|| mpsc::channel(1).0);
     let completion_workspace = ws.clone();
     let waited = crate::timing::start();
-    let ticket =
+    let mut ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
+    // A peer relay keeps all of the room; a device opens on-demand records.
+    if peer.role == crate::auth::PeerRole::PeerRelay {
+        ticket = ticket.with_every_record();
+    }
     crate::timing::event("join.ticket_wait", waited, 0);
     let capturing = crate::timing::start();
     let capture = ticket.authority.clone();
