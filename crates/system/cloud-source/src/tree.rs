@@ -124,7 +124,7 @@ impl Tree {
                 by_name.entry(base_name(item)).or_default().push(item);
             }
         }
-        let taken: HashSet<String> = by_name.keys().cloned().collect();
+        let mut taken: HashSet<String> = by_name.keys().cloned().collect();
         let mut out = Vec::with_capacity(ids.len());
         for (name, mut group) in by_name {
             group.sort_by(|a, b| a.id.cmp(&b.id));
@@ -138,6 +138,7 @@ impl Tree {
                         ordinal = ordinal.saturating_add(1);
                         candidate = numbered(&name, ordinal);
                     }
+                    taken.insert(candidate.clone());
                     out.push((candidate, item));
                 }
                 ordinal = ordinal.saturating_add(1);
@@ -251,7 +252,16 @@ fn numbered(name: &str, ordinal: u32) -> String {
         ),
         _ => (name, ""),
     };
-    truncate_keeping(stem, &format!(" ({ordinal}){extension}"))
+    let marker = format!(" ({ordinal})");
+    // An extension can occupy nearly NAME_MAX bytes itself. Reserve room
+    // for both the ordinal and at least one byte of the stem.
+    let budget = MAX_NAME_BYTES.saturating_sub(marker.len() + 1);
+    let mut end = extension.len().min(budget);
+    while !extension.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let extension = extension.get(..end).unwrap_or("");
+    truncate_keeping(stem, &format!("{marker}{extension}"))
 }
 
 /// `prefix + suffix`, cutting `prefix` at a char boundary so the result
@@ -330,6 +340,32 @@ mod tests {
                 ("Report.pdf".to_owned(), "a".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn truncated_duplicate_names_remain_unique_and_resolvable() {
+        let mut tree = Tree::new(ItemId::new("root"));
+        let first = format!("{}.txt", "a".repeat(250));
+        let second = format!("{}b.txt", "a".repeat(249));
+        let long_extension = format!("a.{}", "é".repeat(126));
+        for (id, name) in [
+            ("a", &first),
+            ("b", &first),
+            ("c", &second),
+            ("d", &second),
+            ("e", &long_extension),
+            ("f", &long_extension),
+        ] {
+            tree.upsert(item(id, &["root"], name, ItemKind::File));
+        }
+        let children = tree.children(&ItemId::new("root"));
+        assert_eq!(children.len(), 6);
+        let names: HashSet<_> = children.iter().map(|(name, _)| name).collect();
+        assert_eq!(names.len(), 6);
+        for (name, item) in children {
+            assert!(name.len() <= MAX_NAME_BYTES, "{name}");
+            assert_eq!(tree.resolve([name.as_str()]).unwrap().id, item.id);
+        }
     }
 
     #[test]
