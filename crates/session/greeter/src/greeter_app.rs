@@ -630,6 +630,16 @@ pub struct GreeterApp {
     device: DeviceStatus,
     direction: Direction,
     rect: Rect,
+    /// Where the sign-in composition is laid out: the primary output's part
+    /// of the window when the kiosk spans several outputs, else `rect`.
+    content: Rect,
+    /// The kiosk's outputs, when the greeter runs on one (`main.rs`).
+    displays: Option<crate::output_scale::Displays>,
+    /// The output geometry the current layout was built for, relative to
+    /// the window: the primary output, and every output for the backdrop.
+    /// Empty when the window is one output (or its geometry is unknown).
+    layout_area: Option<Rect>,
+    layout_outputs: Vec<Rect>,
     /// The composed subtree, rebuilt each `build_layout`.
     composed: ui::widget::Composed,
     /// Slot holding the winit event-loop proxy, populated by `main.rs`'s
@@ -777,6 +787,10 @@ impl GreeterApp {
             device: DeviceStatus::default(),
             direction: Direction::Column,
             rect: Rect::ZERO,
+            content: Rect::ZERO,
+            displays: None,
+            layout_area: None,
+            layout_outputs: Vec::new(),
             composed: ui::widget::Composed::default(),
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -793,6 +807,39 @@ impl GreeterApp {
     pub fn with_proxy_slot(mut self, slot: Arc<OnceLock<EventLoopProxy<UserEvent>>>) -> Self {
         self.proxy = slot;
         self
+    }
+
+    /// Follow the kiosk's outputs: the sign-in card goes on the primary
+    /// output and the backdrop on each, instead of centring the card in a
+    /// window that spans the seam (or a gap) between displays.
+    #[must_use]
+    pub fn with_displays(mut self, displays: crate::output_scale::Displays) -> Self {
+        self.displays = Some(displays);
+        self
+    }
+
+    /// The primary output and every output, relative to the window, when
+    /// the window spans more than one and is already the layout's size.
+    /// Before the kiosk resizes the window to a changed layout, the
+    /// composition stays centred in the window as on a single display.
+    fn output_layout(&self) -> (Option<Rect>, Vec<Rect>) {
+        let Some(arrangement) = self
+            .displays
+            .as_ref()
+            .map(crate::output_scale::Displays::arrangement)
+        else {
+            return (None, Vec::new());
+        };
+        let Some(extent) = arrangement.extent() else {
+            return (None, Vec::new());
+        };
+        if arrangement.displays.len() < 2
+            || (extent.width() - self.rect.width()).abs() > 1.0
+            || (extent.height() - self.rect.height()).abs() > 1.0
+        {
+            return (None, Vec::new());
+        }
+        (arrangement.primary_in_window(), arrangement.in_window())
     }
 
     /// Build a greeter pre-seeded for a headless `--shots` render of
@@ -935,7 +982,7 @@ impl GreeterApp {
     /// Tight space or large text: a smaller avatar and closer spacing keep
     /// the whole form above the footer.
     fn compact(&self, text_scale: f32) -> bool {
-        (self.rect.height() > 0.0 && self.rect.height() < COMPACT_VIEWPORT_HEIGHT)
+        (self.content.height() > 0.0 && self.content.height() < COMPACT_VIEWPORT_HEIGHT)
             || text_scale >= COMPACT_TEXT_SCALE
     }
 
@@ -992,7 +1039,7 @@ impl GreeterApp {
 
     /// The display size of the time on this screen.
     fn clock_size(&self, compact: bool) -> f32 {
-        let (width, height) = (self.rect.width(), self.rect.height());
+        let (width, height) = (self.content.width(), self.content.height());
         let fraction = match (self.direction, compact) {
             (_, true) => 0.16,
             (Direction::Poster, false) => 0.30,
@@ -1382,7 +1429,7 @@ impl GreeterApp {
                             .with_enabled(!busy),
                     )],
                 )
-                .width(if self.rect.width() < 640.0 {
+                .width(if self.content.width() < 640.0 {
                     SESSION_PICKER_WIDTH * 0.7
                 } else {
                     SESSION_PICKER_WIDTH
@@ -1443,7 +1490,7 @@ impl GreeterApp {
                 }),
         ));
         let trailing = Stack::row(s.s4, trailing).justify(JustifyContent::End);
-        if self.rect.width() > 0.0 && self.rect.width() < 640.0 {
+        if self.content.width() > 0.0 && self.content.width() < 640.0 {
             // A phone-narrow screen stacks the two halves.
             return Box::new(Stack::column(
                 s.s1,
@@ -1486,7 +1533,7 @@ impl GreeterApp {
         let busy = self.phase.is_busy();
         let compact = self.compact(theme.text_scale);
         let s = &theme.tokens.spacing;
-        let wide = self.rect.width() >= 1000.0 && !compact;
+        let wide = self.content.width() >= 1000.0 && !compact;
         let direction = if wide {
             self.direction
         } else {
@@ -2008,9 +2055,38 @@ impl Widget for GreeterApp {
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
         let composition = self.build_composition(theme);
-        let child = self
+        let mut child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
+        (self.layout_area, self.layout_outputs) = self.output_layout();
+        if let Some(area) = self.layout_area {
+            // The composition fills the primary output's part of the window.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "taffy lays out in f32; output geometry is far inside its range"
+            )]
+            let style = Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(area.x0 as f32),
+                    top: length(area.y0 as f32),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                },
+                size: Size {
+                    width: length(area.width() as f32),
+                    height: length(area.height() as f32),
+                },
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                justify_content: Some(JustifyContent::Center),
+                align_items: Some(AlignItems::Center),
+                ..Default::default()
+            };
+            if let Ok(area) = taffy.new_with_children(style, &[child]) {
+                child = area;
+            }
+        }
 
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child` was just built in this one above.
@@ -2030,9 +2106,26 @@ impl Widget for GreeterApp {
             self.compact(self.layout_text_scale),
             self.clock_size(self.compact(self.layout_text_scale))
                 .to_bits(),
-            self.rect.width() >= 1000.0,
+            self.content.width() >= 1000.0,
         );
         self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let mut child = taffy
+            .children(node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        let mut child_origin = Point::new(self.rect.x0, self.rect.y0);
+        self.content = self.rect;
+        if self.layout_area.is_some()
+            && let Some(area) = child
+        {
+            // The primary-output box built above holds the composition.
+            self.content = ui::widget::layout_rect(taffy, area, child_origin);
+            child_origin = Point::new(self.content.x0, self.content.y0);
+            child = taffy
+                .children(area)
+                .ok()
+                .and_then(|children| children.first().copied());
+        }
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
         // and crossings caused by display/text scaling.
@@ -2040,16 +2133,17 @@ impl Widget for GreeterApp {
             self.compact(self.layout_text_scale),
             self.clock_size(self.compact(self.layout_text_scale))
                 .to_bits(),
-            self.rect.width() >= 1000.0,
+            self.content.width() >= 1000.0,
         );
-        if before != after {
+        // The window reached (or left) the size of a multi-output layout:
+        // lay the composition out again for the outputs it now spans.
+        if before != after || self.output_layout().0 != self.layout_area {
             self.dirty_structure = true;
         }
         if let Some(c) = self.composed.element_mut()
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
+            && let Some(child) = child
         {
-            c.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+            c.apply_layout(taffy, child, child_origin);
         }
     }
 
@@ -2064,7 +2158,19 @@ impl Widget for GreeterApp {
         // The backdrop holds one composition. A login screen mostly waits,
         // and a moving full-screen backdrop re-rasterized the whole display
         // behind every keystroke.
-        ui::auth_backdrop::draw(scene, theme, self.rect, BACKDROP_PHASE_SECONDS);
+        // Each output receives its own complete composition, as on the lock
+        // screen, rather than one stretched across displays of different
+        // sizes.
+        if self.layout_outputs.is_empty() {
+            ui::auth_backdrop::draw(scene, theme, transform, self.rect, BACKDROP_PHASE_SECONDS);
+        }
+        for output in &self.layout_outputs {
+            let output = Rect::from_origin_size(
+                (output.x0 + self.rect.x0, output.y0 + self.rect.y0),
+                output.size(),
+            );
+            ui::auth_backdrop::draw(scene, theme, transform, output, BACKDROP_PHASE_SECONDS);
+        }
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -2242,6 +2348,12 @@ impl Widget for GreeterApp {
         let (state, _root) = ui::doc::document_ref(state.doc(), root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
+            return;
+        }
+        if payload == crate::output_scale::OUTPUTS_WAKE {
+            // A display was plugged, removed or rescaled: place the card and
+            // the backdrop for the new arrangement.
+            self.dirty_structure = true;
             return;
         }
         // Progress from the background auth worker (see `crate::auth`).
@@ -2706,6 +2818,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             encoding.path_data.clone(),
         )
+    }
+
+    fn rect_of(w: &dyn Widget, id: &str) -> Option<Rect> {
+        if w.test_id() == Some(id) {
+            return Some(w.get_rect());
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| rect_of(child, id))
+    }
+
+    #[test]
+    fn several_outputs_put_the_card_on_the_built_in_panel_and_the_backdrop_on_each() {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        // The reported laptop: its 2944x1840 panel at scale 2 beside a 1080p
+        // monitor. `cage` stretches the one window over both, so a card
+        // centred in the window straddled the seam between the displays.
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
+        let displays = Displays::fixed(Arrangement {
+            displays: vec![
+                Display {
+                    rect: panel,
+                    internal: true,
+                },
+                Display {
+                    rect: monitor,
+                    internal: false,
+                },
+            ],
+        });
+        let mut app = GreeterApp::with_sessions(test_sessions()).with_displays(displays);
+        layout_at_with_theme(&mut app, (3392.0, 1080.0), &Theme::dark());
+        assert_eq!(app.content, panel);
+        assert_eq!(app.layout_outputs, vec![panel, monitor]);
+        for id in ["greeter.password", "greeter.clock"] {
+            let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+            assert!(
+                rect.area() > 0.0 && inside(panel, rect),
+                "{id} at {rect:?} is not on the built-in panel"
+            );
+        }
+
+        // Before the kiosk has resized the window to the new layout, the
+        // composition stays centred in the window it has.
+        layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
+        assert_eq!(app.content, panel);
+        assert!(app.layout_outputs.is_empty());
     }
 
     #[test]

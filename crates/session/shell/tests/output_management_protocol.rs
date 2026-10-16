@@ -1402,6 +1402,13 @@ fn wl_output_names_are_the_head_names() {
     assert_eq!(outputs, ["VIRTUAL-1", "VIRTUAL-2"]);
 }
 
+/// The greeter's startup configuration over `connection`, settled or not.
+fn greeter_configures(connection: &Connection) -> Result<(), &'static str> {
+    greeter::output_scale::configure_connection(connection)
+        .map(drop)
+        .map_err(|(error, _)| error)
+}
+
 #[test]
 fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
@@ -1438,9 +1445,7 @@ fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
     let connection = Connection::from_socket(client).unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        sender
-            .send(greeter::output_scale::configure_connection(&connection))
-            .unwrap();
+        sender.send(greeter_configures(&connection)).unwrap();
     });
     harness.pump_separate_client("greeter output request", || {
         DisplayTransaction::load().is_some_and(|value| Some(value.id) != previous_transaction)
@@ -1511,6 +1516,74 @@ fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
             );
         }
     }
+}
+
+/// A high-DPI laptop panel the kiosk left at 1x, with a monitor placed beside
+/// it at the panel's 1x width. Scaling the panel alone kept the monitor
+/// there, leaving a gap the greeter's one spanning window (and its centred
+/// sign-in card) fell into: every output gets its own scale, and the
+/// monitor moves to where the scaled panel now ends.
+#[test]
+fn greeter_scales_each_output_and_keeps_the_layout_contiguous() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    settings_store::update_document_at(&settings_store::settings_path().unwrap(), |_| {}).unwrap();
+    let mut harness = Harness::privileged("docked-laptop");
+    let mut heads = heads_from_outputs(&harness.outputs);
+    let panel = heads
+        .iter_mut()
+        .find(|head| head.name() == "VIRTUAL-1")
+        .unwrap();
+    panel.scale = 1.0;
+    panel.physical_size_mm = Some((302, 189));
+    panel.position = (0, 0);
+    let panel_mode = panel.current_mode.unwrap();
+    let monitor = heads
+        .iter_mut()
+        .find(|head| head.name() == "VIRTUAL-2")
+        .unwrap();
+    monitor.position = (i32::try_from(panel_mode.width).unwrap(), 0);
+    harness.state.set_output_heads(heads.clone());
+    harness.pump("unconfigured kiosk", |tool| {
+        tool.head("VIRTUAL-1").1.scale == Some(1.0)
+    });
+    let previous_transaction = DisplayTransaction::load().map(|value| value.id);
+
+    let (client, server) = UnixStream::pair().expect("socketpair");
+    harness
+        .display
+        .handle()
+        .insert_client(server, ClientState::privileged_tool_arc(None))
+        .unwrap();
+    let connection = Connection::from_socket(client).unwrap();
+    let worker = std::thread::spawn(move || {
+        let _ = greeter::output_scale::configure_connection(&connection);
+    });
+    harness.pump_separate_client("greeter output request", || {
+        DisplayTransaction::load().is_some_and(|value| Some(value.id) != previous_transaction)
+            || worker.is_finished()
+    });
+    let transaction = DisplayTransaction::load().expect("greeter requested a configuration");
+    assert_ne!(Some(transaction.id), previous_transaction);
+    let panel = transaction.candidate.output_for("VIRTUAL-1").unwrap();
+    let monitor = transaction.candidate.output_for("VIRTUAL-2").unwrap();
+    let expected = settings_store::display_scale::derive_scale(
+        (panel_mode.width, panel_mode.height),
+        Some((302, 189)),
+    );
+    assert!(expected > 1.0, "the fixture panel is high-DPI");
+    assert!((panel.scale - expected).abs() < 1.0 / 256.0);
+    assert_eq!(monitor.scale, 1.0);
+    assert_eq!((panel.x, panel.y), (0, 0));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a logical width, as wlroots truncates it"
+    )]
+    let panel_width = (f64::from(panel_mode.width) / panel.scale) as i32;
+    assert_eq!(
+        (monitor.x, monitor.y),
+        (panel_width, 0),
+        "the monitor starts where the scaled panel ends"
+    );
 }
 
 /// Exercise the real request handler and session records while another
