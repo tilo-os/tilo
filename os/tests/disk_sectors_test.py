@@ -61,6 +61,38 @@ class DiskSectorsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one ESP"):
             sectors.check(str(self.image))
 
+    def test_partition_array_is_bounded_and_complete(self):
+        for count, width in ((128, 1 << 20), (128, 128)):
+            with self.subTest(count=count, width=width):
+                disk(self.image)
+                with self.image.open("r+b") as stream:
+                    stream.seek(512)
+                    header = bytearray(stream.read(92))
+                    struct.pack_into("<II", header, 80, count, width)
+                    if width == 128:
+                        # Keep a complete ESP before an incomplete entry array:
+                        # finding entry 1 must not excuse missing later entries.
+                        stream.seek(2 * 512)
+                        entry = stream.read(128)
+                        struct.pack_into("<Q", header, 72, ESP_LBA + 64)
+                        stream.seek((ESP_LBA + 64) * 512)
+                        stream.write(entry)
+                        stream.truncate()
+                    stream.seek(512)
+                    stream.write(header)
+                with self.assertRaisesRegex(ValueError, "partition entry array"):
+                    sectors.check(str(self.image))
+
+    def test_esp_extent_must_cover_its_boot_sector(self):
+        for start, end in ((ESP_LBA, ESP_LBA - 1), (ESP_LBA, ESP_LBA + 1000)):
+            with self.subTest(start=start, end=end):
+                disk(self.image)
+                with self.image.open("r+b") as stream:
+                    stream.seek(2 * 512 + 32)
+                    stream.write(struct.pack("<QQ", start, end))
+                with self.assertRaisesRegex(ValueError, "ESP extent"):
+                    sectors.check(str(self.image))
+
     def test_disk_image_pins_512_byte_sectors(self):
         source = (SCRIPT.parent / "disk-image.sh").read_text()
         self.assertIn("--sector-size=512", source)

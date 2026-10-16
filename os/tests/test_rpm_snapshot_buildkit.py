@@ -128,6 +128,16 @@ class SnapshotManifestTests(unittest.TestCase):
                  self.assertRaises(subprocess.CalledProcessError):
                 VERIFY.verify("code.example/tilo/rpms@sha256:" + "a" * 64)
 
+    def test_compressed_metadata_cannot_expand_without_bound(self):
+        with patch.object(VERIFY, "MAX_METADATA_CONTENT", 16 * 1024, create=True):
+            with self.assertRaisesRegex(ValueError, "expanded metadata"):
+                self.check(files={"repo/padding": "x" * (32 * 1024),
+                                  VERIFY.MANIFEST_PATH: "example-package\n"})
+
+    def test_parent_path_is_not_the_repository_manifest(self):
+        with self.assertRaisesRegex(ValueError, "no regular package manifest"):
+            self.check(files={"../" + VERIFY.MANIFEST_PATH: "example-package\n"})
+
     def test_workflows_verify_before_building(self):
         for name in ("build-image.yml", "release-relay.yml"):
             workflow = (SCRIPT.parents[2] / ".forgejo/workflows" / name).read_text()
