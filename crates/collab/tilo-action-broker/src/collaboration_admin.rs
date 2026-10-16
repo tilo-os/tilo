@@ -104,79 +104,6 @@ pub fn action_definitions() -> Vec<CollaborationActionDefinition> {
     ]
 }
 
-/// Installed only by a native owner with its operational V5 writer.
-pub fn media_action_definitions() -> Vec<CollaborationActionDefinition> {
-    use tilo_actions::{ActionParam as P, ParamType as T};
-    // The issue action's privileged admin contract; the list is never empty.
-    let contract = action_definitions()
-        .into_iter()
-        .next()
-        .map(|definition| definition.contract)
-        .unwrap_or_default();
-    let counters = || {
-        vec![
-            P::required("call_id", T::Text, "Canonical governed call identifier"),
-            P::required(
-                "expected_authorization_revision",
-                T::Integer,
-                "Current authorization revision",
-            ),
-            P::required("expected_epoch", T::Integer, "Current call epoch"),
-        ]
-    };
-    [
-        (
-            MEDIA_CREATE_ACTION,
-            "Create call",
-            vec![
-                P::required("app_id", T::Text, "Exact Chat application"),
-                P::required("record_id", T::Text, "Exact admitted Chat record"),
-                P::required("channel_id", T::Text, "Exact voice channel"),
-                P::optional(
-                    "expected_authorization_revision",
-                    T::Integer,
-                    "Current revision; absent only before initialization",
-                ),
-                P::required("allowed", T::Object, "Publish and subscribe directions"),
-            ],
-        ),
-        (MEDIA_END_ACTION, "End call", counters()),
-        (MEDIA_RESTART_ACTION, "Restart call", counters()),
-        (MEDIA_DIRECTIONS_ACTION, "Set call directions", {
-            let mut p = counters();
-            p.push(P::required(
-                "allowed",
-                T::Object,
-                "Publish and subscribe directions",
-            ));
-            p
-        }),
-        (MEDIA_DENIAL_ACTION, "Set participant denial", {
-            let mut p = counters();
-            p.push(P::required(
-                "person_root",
-                T::Text,
-                "Canonical participant person root",
-            ));
-            p.push(P::required(
-                "denied",
-                T::Object,
-                "Denied publish and subscribe directions",
-            ));
-            p
-        }),
-    ]
-    .into_iter()
-    .map(|(id, label, params)| CollaborationActionDefinition {
-        id,
-        label,
-        description: "Administer a durably governed workspace call",
-        params,
-        contract: contract.clone(),
-    })
-    .collect()
-}
-
 pub fn resource(room: &str) -> String {
     format!("workspace:{room}")
 }
@@ -395,19 +322,6 @@ mod tests {
         }
         assert!(parse_operation(MEDIA_CREATE_ACTION, Some(&" ".repeat(16 * 1024 + 1))).is_err());
         assert_eq!(action_definitions().len(), 5);
-        assert_eq!(
-            media_action_definitions()
-                .iter()
-                .map(|d| d.id)
-                .collect::<Vec<_>>(),
-            vec![
-                MEDIA_CREATE_ACTION,
-                MEDIA_END_ACTION,
-                MEDIA_RESTART_ACTION,
-                MEDIA_DIRECTIONS_ACTION,
-                MEDIA_DENIAL_ACTION
-            ]
-        );
     }
 
     #[test]

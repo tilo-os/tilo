@@ -57,7 +57,6 @@ pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
 mod sealed_history;
-pub use media_governance::VerifiedSecurityMetadataOnly;
 pub use sealed_compaction::{SealCheckpoint, SealDelta};
 
 #[expect(
@@ -2863,6 +2862,7 @@ impl StatePeer {
     /// # Errors
     ///
     /// Returns an error if the receipt or checkpoint fails validation.
+    #[cfg(test)]
     pub fn durable_coverage_with_current(
         &self,
         app: &str,
@@ -2891,6 +2891,7 @@ impl StatePeer {
     /// # Errors
     ///
     /// Returns an error if the receipt or checkpoint fails validation.
+    #[cfg(test)]
     pub fn durable_covers_current(&self, app: &str, record: &str) -> Result<bool, String> {
         Ok(self
             .durable_coverage_with_current(app, record)?
