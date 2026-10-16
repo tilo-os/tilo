@@ -10,7 +10,7 @@ name: Build / kernel
 # the OS frozen RPM snapshot, so only kernel inputs trigger a rebuild here.
 # tilo-crypto is filtered to the signing sources the kernel Containerfile
 # copies; TLS fixture code stays behind the default tls-fixture feature and
-# is covered by check.yml / ci-development-signing.yml instead.
+# is covered by check.yml / t's development-signing-<arch> checks instead.
 
 on:
   push:
