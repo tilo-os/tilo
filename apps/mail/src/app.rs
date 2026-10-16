@@ -289,8 +289,6 @@ pub struct MailApp {
     menu_target: Option<MenuTarget>,
     /// A row menu to open once the list has been laid out (a capture).
     pending_menu: Option<MessageId>,
-    /// Open the sidebar drawer once the window has its size (a capture).
-    pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
     /// verb of the mailbox, only after the person confirms.
@@ -516,7 +514,6 @@ impl MailApp {
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
-            pending_drawer: false,
             bulk_purge_confirmation: None,
             search: SearchOpener::new(),
             setup: None,
@@ -779,13 +776,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Open the sidebar drawer once the window has its size (narrow drawer
-    /// shot).
-    pub fn prime_drawer_shot(&mut self) {
-        self.pending_drawer = true;
-        self.dirty = true;
     }
 
     // ---- window shell -----------------------------------------------------
@@ -3546,10 +3536,6 @@ impl Widget for MailApp {
                 // Rest the shell for this width before the first frame.
                 self.nav.snap();
                 self.first_layout = false;
-                if std::mem::take(&mut self.pending_drawer) {
-                    self.nav.open_sidebar();
-                    self.nav.snap();
-                }
                 self.nav.apply_layout(taffy, nav_node, inner);
             }
             self.publish_shell_flags();
@@ -5403,7 +5389,8 @@ mod tests {
         // layout still settles (it panics in `layout_for_test` otherwise).
         {
             let (mut app, _doc) = app();
-            app.prime_drawer_shot();
+            app.nav.open_sidebar();
+            app.nav.snap();
             app.layout_for_test(560.0, 860.0);
             assert!(app.shared.borrow().narrow);
         }
