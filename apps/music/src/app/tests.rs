@@ -22,6 +22,32 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
 }
 
 #[test]
+fn transport_effects_preserve_the_existing_shuffle_history() {
+    use crate::actions::MusicEffect;
+
+    for effect in [
+        MusicEffect::SetVolume { volume: 37 },
+        MusicEffect::Seek { position_ms: 1_000 },
+    ] {
+        let (mut app, _) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
+        app.pb.current = Some("tk_g3".into());
+        app.pb.queue_index = 2;
+        app.pb.shuffle = true;
+        app.pb.playing = false;
+        app.shuffle_order = vec![0, 2, 1];
+        app.begin_effect(tilo_actions::InvocationId::new(), effect)
+            .unwrap();
+        assert_eq!(app.shuffle_order, [0, 2, 1]);
+        app.advance(false);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+        app.advance(false);
+        assert!(!app.pb.playing, "already played tracks must not reappear");
+    }
+}
+
+#[test]
 fn play_next_of_current_song_does_not_restart_its_source() {
     for playing in [false, true] {
         let (mut app, mut doc) = app_with_doc();

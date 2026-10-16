@@ -3225,10 +3225,16 @@ impl MusicApp {
         let requested_playing = playback.playing;
         let changed_track = self.pb.current != playback.current;
         let changed_position = self.pb.position_ms != playback.position_ms;
+        let changed_shuffle =
+            self.pb.shuffle != playback.shuffle || self.pb.queue != playback.queue;
         self.pb = playback;
         self.playhead_ms = self.pb.position_ms as f64;
         self.bound_track.clone_from(&self.pb.current);
-        self.shuffle_order.clear();
+        // Transport preferences must not discard which shuffled tracks have
+        // already played. Only a different queue or shuffle mode invalidates it.
+        if changed_shuffle {
+            self.shuffle_order.clear();
+        }
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
         if changed_track && !self.pb.playing {
             self.retire_replaced_playback();
