@@ -4258,6 +4258,16 @@ impl TextInput {
         self.refresh_suggestion_at(crate::time::now());
     }
 
+    /// Bring the correction offered for the word under the caret up to
+    /// `now`; whether the offer changed. A word settling under the caret
+    /// is a change no input announces, so a host that keeps the field's
+    /// last drawing (a block editor's line) repaints it when this says so.
+    pub(crate) fn settle_suggestion_at(&mut self, now: Instant) -> bool {
+        let before = self.autocorrection_preview.clone();
+        self.refresh_suggestion_at(now);
+        self.autocorrection_preview != before
+    }
+
     fn clear_suggestion(&mut self) {
         self.autocorrection_preview_key = None;
         self.autocorrection_preview = None;
