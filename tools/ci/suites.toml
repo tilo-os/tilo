@@ -326,6 +326,7 @@ suites = [
   "scripts/perf/native_delivery_test.py",
   "scripts/perf/presentation_feedback_test.py",
   "scripts/perf/render_boundaries_test.py",
+  "scripts/perf/resource_bench_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
   "scripts/perf/settings_effects_test.py",
@@ -337,14 +338,21 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
+  "scripts/headless-examples/",
   "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py",
 ]
 suites = [
   "scripts/tests/test_app_launch_sweep.py",
   "scripts/tests/test_demo_scripts.py",
+  "scripts/tests/test_headless_error_handling.py",
   "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
+
+[[group]]
+name = "vm-acceptance-tools"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/tests/test_error_paths.py"]
 
 [[group]]
 name = "ux-bench"
