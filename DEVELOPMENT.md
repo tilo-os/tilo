@@ -1650,10 +1650,13 @@ code 38), which is a refusal, not an unimplemented backend.
 ### Nested desktop with Tilo's own apps
 
 A bare `shell --backend winit` has an empty launcher: it lists only installed,
-signed `.tapp` packages. One command builds the shell and the apps through
-`$CARGO` (a remote cargo drop-in that mirrors artifacts back with `--fetch`), packages and signs the apps with a development key, installs them
-with their runtime bundle into a private store, and starts the nested shell
-beside the model gateway:
+signed `.tapp` packages. One command builds the shell and the apps on a t
+server (t.toml's `nested-session` check, downloaded with `t outputs`: the thin
+apps need the exact `libruntime_dylib.so` of their build, which `t cargo build`
+does not copy back), packages and signs the apps with a development key,
+installs them with their runtime bundle into a private store, and starts the
+nested shell beside the model gateway. The machine running it needs `t` and no
+Rust toolchain:
 
 ```bash
 dist/dev/nested-session.sh                                  # core apps + agent
