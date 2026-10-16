@@ -284,6 +284,7 @@ Deleted:
 | `room-service-image.yml` | `image-room-service-context`, `image-room-service` (its smoke test on the archive), `sign-room-service`, `publish-room-service` | the image and its test r3d39f0a8e5; `publish-room-service` on main a38941e29a; the release chain on rehearsal tags |
 | `web-entry.yml` | `image-web-entry-context`, `image-web-entry` (smoke test on the archive), `carry-web-entry` (stable: carries the version production serves), `sign-web-entry`, `publish-web-entry` | `publish-web-entry` on main ad95cf21a4; context, image and carry re77dfb7adf; the release chain on rehearsal tags |
 | `build-windows-compat.yml` | the windows-compat chain (`image-wine-tools`, `wine-*`, `image-wine-paired`, `image-windows-guest`, `image-fex-*`, `sign-fex-payload`, `publish-*`) | dispatches on main: r766c31687a (FEX payload, signed with the development key), r5b5e69f29c (windows guest); both pointers set |
+| `ci-development-signing.yml` | `development-signing-context-<arch>`, `development-signing-<arch>` (micro-VM steps, on main when what they read changes) | ref31a8cb9a, both architectures |
 
 Still here, with what is missing:
 
@@ -297,7 +298,6 @@ Still here, with what is missing:
 | `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | builds and acceptance on both architectures (re81dd6df90) | signing with provenance, publication and the pin |
 | `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest`, `pin-legacy-guest` | image and end-to-end test (r8673ba882c); the pin on main | a stable run |
 | `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries and catalogs on both architectures (r8673ba882c) | publication: the tools are sealed inside the build, so publishing re-signs them with the publisher identity and rewrites the catalog |
-| `ci-development-signing.yml` | `development-signing-context-*`, `development-signing-*` | both architectures (r8673ba882c) | nothing; it goes next |
 | `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
 | `inspect-rpm-signing.yml` | none | | inspects the signing broker on the Forgejo runner; retires with `release-desktop.yml` |
 
