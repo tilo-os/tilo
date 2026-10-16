@@ -376,7 +376,9 @@ fn reusable_chunk(
         .get(first..)
         .unwrap_or_default()
         .iter()
-        .take_while(|r| r.start < range.end)
+        // FastCDC tests the byte at the cut offset before returning that
+        // offset, so the first byte of the next chunk can move this cut.
+        .take_while(|r| r.start <= range.end)
         .any(|r| !r.is_empty() && r.end > range.start);
     let chunk = *previous.chunks().get(index)?;
     (!touched).then(|| {
@@ -516,6 +518,23 @@ mod tests {
         let (fresh, _) = build(&data, None);
         assert_eq!(rebuilt, fresh);
         assert!(rebuilt.verify(&data));
+    }
+
+    #[test]
+    fn edits_at_chunk_boundaries_recompute_the_preceding_cut() {
+        let mut data = pseudo_random(512 * 1024, 7);
+        let (previous, _) = build(&data, None);
+        let offset = previous.chunk_range(2).unwrap().start as usize;
+        data[offset] ^= 1;
+        let (rebuilt, _) = rebuild(
+            Some(&previous),
+            &data,
+            &[offset as u64..offset as u64 + 1],
+            None,
+        );
+        let (fresh, _) = build(&data, None);
+        assert!(rebuilt.verify(&data));
+        assert_eq!(rebuilt, fresh);
     }
 
     #[test]
