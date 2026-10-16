@@ -907,6 +907,7 @@ osd-keyboard-backlight-off = Keyboard backlight off
 osd-keyboard-backlight = Keyboard backlight { $percent }%
 osd-no-backlight = No adjustable display
 osd-no-agent = No agent is available here
+osd-starting-agent = Starting the agent…
 osd-airplane-mode-on = Airplane mode on
 osd-airplane-mode-off = Airplane mode off
 osd-touchpad-on = Touchpad on
