@@ -18,7 +18,7 @@ cargo install --locked --git https://code.tilo.so/tilo/t
 Then put the server and your token in `~/.config/t/config.toml` (mode `0600`):
 
 ```toml
-server = "https://code.tilo.so/t"
+server = "https://t.tilo.so"
 token = "…"
 ```
 
