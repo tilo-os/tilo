@@ -841,10 +841,22 @@ impl<'a> Device<'a> for TextDevice {
             Glyph::Outline(outline) => outline.outline().bounding_box(),
             Glyph::Type3(_) => kurbo::Rect::ZERO,
         };
-        let (x0, x1) = if outline.width() > 0.0 {
-            (outline.x0.min(0.0), outline.x1)
-        } else {
-            (0.0, 500.0)
+        // The loose box runs to the glyph's advance, where the next glyph
+        // starts, not to the end of its ink: a narrow glyph such as `1`
+        // inks under half its advance, and measuring word gaps from the ink
+        // put a space inside numbers ("3,41 2.50").
+        let advance = match glyph {
+            Glyph::Outline(outline) => outline
+                .advance_width()
+                .filter(|width| width.is_finite() && *width > 0.0)
+                .map(f64::from),
+            Glyph::Type3(_) => None,
+        };
+        let (x0, x1) = match (advance, outline.width() > 0.0) {
+            (Some(advance), true) => (outline.x0.min(0.0), advance),
+            (Some(advance), false) => (0.0, advance),
+            (None, true) => (outline.x0.min(0.0), outline.x1),
+            (None, false) => (0.0, 500.0),
         };
         let loose = to_rect(full.transform_rect_bbox(kurbo::Rect::new(x0, -216.0, x1, 800.0)));
         let bbox = if outline.width() > 0.0 && outline.height() > 0.0 {
