@@ -44,7 +44,11 @@ pointers = { room-service = "{dir}/receipt.json" }
 [[product]]
 family = "services"
 name = "web-entry"
-about = "The web entry (web-entry.yml): the Tilo app on the web, deployed by digest."
+about = """
+The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
+stable's receipt. A release carries the version of the image production serves, so tabs open on
+it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
+what stable signs and publishes. Main's development tags are the build as it is."""
 repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
@@ -59,8 +63,21 @@ cost = "heavy"
 [product.build]
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/browser/tilo-browser-runtime/container/test-image.sh {out}/image.oci.tar"]
+inputs = ["crates/browser/tilo-browser-runtime/container/test-image.sh"]
 cost = "minutes"
 
+# It observes production (the image it replaces), so it runs on every release.
+[product.release_build]
+name = "carry-web-entry"
+run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
+inputs = ["crates/browser/tilo-browser-runtime/container/carry.sh", "crates/browser/tilo-browser-runtime/container/Containerfile.carry", "crates/browser/tilo-browser-runtime/container/test-image.sh"]
+outputs = ["{dir}/release/receipt-extra.json"]
+cache = false
+cost = "minutes"
+
+# Stable's receipt is what cloud-promotion promotes.
 [product.publish]
 pointers = { web-entry = "{dir}/receipt.json" }
 
@@ -172,10 +189,25 @@ family = "ci-images"
 name = "ci-builder"
 about = """
 The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
-and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture.
-Its canaries, signing and promotion stay with build-ci-builder.yml for now."""
+and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
+joined into one index. The canaries below run inside each candidate before anything is signed
+or published. Everyone pushes to main, so main publishes only development tags (`dev-<commit>`,
+and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
+by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
+keys/cosign.pub comes from main. Stable signs the index and both
+images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
+cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
+older toolchain."""
 repository = "registry.tilo.so/tilo/tilo-builder"
 arches = ["x86_64", "aarch64"]
+index = true
+children = true
+dev = ["dev-{commit}"]
+release = ["{commit}", "{rust}"]
+dev_signed = true
+gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64"]
+publish = { inputs = ["rust-toolchain.toml"] }
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
@@ -185,6 +217,51 @@ timeout_secs = 14400
 cpus = 16
 memory = "32G"
 
+# The builder's canaries, in the candidate the same run built (build-ci-builder.yml's
+# cache-cold and cache-warm steps). Two jobs prove t's compiler cache works from it: the
+# cold one compiles under a prefix nobody used and must write, the warm one, a fresh compiler
+# process in another job (on whichever node), must read that back. The candidate's key covers
+# everything that went into it, so a new image runs them again.
+[[matrix]]
+family = "ci-images"
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { requires = ["arch={arch}"], default = false }
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-cold-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+outputs = ["/target/publish/ci-builder/{arch}/canary/prefix"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-warm-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+needs = ["canary-ci-builder-cache-cold-{arch}"]
+cost = "minutes"
+
+# The native Chromium and the browser regressions that once broke on a builder. Their tests run
+# `npm ci` in scripts/moq-browser, inside the source tree. Only x86_64's gates publication for
+# now: on aarch64 its build directory under $TMPDIR loses files mid-build (cargo can't run
+# sccache or read dep info it just wrote), which the job sandbox there has yet to fix.
+[[matrix.check]]
+name = "canary-ci-builder-browser-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh browser"
+inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**"]
+cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
+writable_sources = true
+cost = "heavy"
+cpus = 8
+memory = "16G"
+
 # ---------------------------------------------------------------------------
 # The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
 
@@ -192,11 +269,25 @@ memory = "32G"
 family = "os-base"
 name = "rpms"
 about = """
-The frozen RPM snapshot's build half (tools/ci/publish/rpms-build.sh): every package the OS
-Containerfiles name, resolved, signature-checked and laid out as a repository image, natively
-per architecture. build-rpms.yml still signs and publishes the snapshot."""
+The frozen RPM snapshot (tools/ci/publish/rpms-build.sh): every package the OS Containerfiles
+name, resolved, signature-checked and laid out as a repository image, natively per
+architecture, joined into one index. Stable signs the index and both images, attests the
+index's SLSA provenance (frozen-rpm-index/v1: both package sets and the base, which
+os/dev/resolve-rpm-snapshot.sh and the OS build verify), both with a transparency log entry,
+and publishes it as `set-<fingerprint>` once: a fingerprint already published is never moved.
+Main publishes nothing, since the snapshot is signed; until the cutover build-rpms.yml
+publishes main's."""
 repository = "registry.tilo.so/tilo/rpms"
 arches = ["x86_64", "aarch64"]
+index = true
+children = true
+tlog = true
+release = ["once:set-{fingerprint}"]
+
+[product.provenance]
+run = "bash tools/ci/publish/rpms-provenance.sh {dir}"
+inputs = ["os/dev/rpm-snapshot-fingerprint.py", "os/dev/derive-rpm-package-set.py", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/layer-rpm-snapshot.py", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["{dir}/index/fingerprint", "{dir}/x86_64/fingerprint", "{dir}/aarch64/fingerprint"]
 
 [product.build]
 run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
@@ -237,13 +328,32 @@ pointers = { kernel-buildroot = "{dir}/pins.env" }
 family = "os-base"
 name = "kernel"
 about = """
-The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
-its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
-micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
-compiles the whole kernel. build-kernel.yml still signs, publishes and pins it."""
+The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
+natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
+checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
+(kernel-acceptance-<arch>). Stable
+signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
+commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
+`kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+nothing, since the OS build verifies the kernel's signature; until the cutover build-kernel.yml
+publishes and pins main's. No compiler cache reaches checks yet, so every build compiles the
+whole kernel."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
+release = ["sha-{commit}-{arch}"]
+tlog = true
+gates = ["kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
+after_publish = "bash tools/ci/publish/kernel.sh pins {dir}"
+
+[product.provenance]
+run = "bash tools/ci/publish/kernel.sh provenance {dir}"
+inputs = ["os/kernel-buildroot-snapshot.env"]
+
+[product.publish]
+inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c"]
+outputs = ["{dir}/pins.env"]
+pointers = { kernel = "{dir}/pins.env" }
 
 [product.build]
 run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
@@ -560,16 +670,17 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs as root in a micro-VM step. Run when asked for;
+whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
+what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
 T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
 be dispatched."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
-fields = { default = false }
 
 [[matrix.check]]
 name = "development-signing-context-{arch}"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
-inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "Cargo.lock", "Cargo.toml", "crates/workspace-hack/**", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "crates/system/tilo-crypto/**"]
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source"]
+cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/{arch}/**"]
 requires = ["arch={arch}"]
 cost = "heavy"
@@ -636,7 +747,7 @@ timeout_secs = 3600
 default = false
 
 # ---------------------------------------------------------------------------
-# Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
+# Windows compatibility payloads: development candidates for Windows
 # apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF)
 # from the receipts, or from the `fex-payload-candidate` and `windows-guest-candidate` pointers.
 # Building them takes long, so main publishes them only when asked: `t dispatch
@@ -699,6 +810,12 @@ after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.j
 [product.publish]
 outputs = ["{dir}/reference"]
 pointers = { fex-payload-candidate = "{dir}/reference" }
+
+# Its limited provenance (a development build whose runtime acceptance nothing verified),
+# attested with the development key beside the signature.
+[product.provenance]
+run = "bash tools/ci/publish/fex-provenance.sh {dir} /target/publish/fex-buildroot /target/publish/fex-x86-sdk"
+needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
 
 [product.context]
 run = "bash tools/ci/publish/windows-compat.sh fex-source {dir}/fex-source.tar"
@@ -860,15 +977,14 @@ default = false
 [[matrix]]
 family = "extension-manifests"
 about = """
-Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh, as
-extension-manifests.yml): every day, and when dispatched with `--input images=…`, each
-published OS image's native child resolves every extension inside itself, as root in a
-micro-VM step and without credentials; `publish-extension-manifests` signs the manifests with
-the extension-manifest key in KMS (not the OS release key) and publishes those that changed.
-Mirrors drop superseded builds and publishers ship updates, so nothing is served from the
-cache."""
+Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh): every
+day, and when dispatched with `--input images=…`, each published OS image's native child
+resolves every extension inside itself, as root in a micro-VM step and without credentials;
+`publish-extension-manifests` signs the manifests with the extension-manifest key in KMS (not
+the OS release key) and publishes those that changed. Mirrors drop superseded builds and
+publishers ship updates, so nothing is served from the cache."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { dispatch_inputs = { images = "", expected_content_sha256 = "" } }
+fields = { dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" } }
 
 [[matrix.check]]
 name = "extension-manifests-{arch}"

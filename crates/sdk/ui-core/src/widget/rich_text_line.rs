@@ -30,6 +30,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
+use crate::widget::markdown_input;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use crate::widget::{TextInput, Widget};
 
@@ -160,6 +161,9 @@ pub struct RichTextLine {
     /// Cursor position before the most-recent edit; used with `prev_text` to
     /// figure out where the splice landed.
     prev_cursor: usize,
+    /// Marks that end at this byte for good: text typed there next does not
+    /// continue them (a span closed by its typed markdown delimiter).
+    closed: Option<(usize, Vec<Mark>)>,
     /// `(byte_start, byte_end, author_id)` read from the bound Text's marks
     /// during `sync`; drives the authorship highlight in `BlockEditor::draw`.
     author_runs: Vec<(usize, usize, String)>,
@@ -172,6 +176,9 @@ impl RichTextLine {
         // Block-editor cells render as document copy, not a form field.
         let mut inner = TextInput::local().with_plain_chrome();
         inner.keep_document_inset();
+        // The block editor writes an autocorrection after the keystroke
+        // that typed its word boundary, as an undo step of its own.
+        inner.set_deferred_autocorrection(true);
         Self {
             inner,
             signal: None,
@@ -195,6 +202,7 @@ impl RichTextLine {
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
+            closed: None,
             author_runs: Vec::new(),
             mention_paint: None,
         }
@@ -274,6 +282,53 @@ impl RichTextLine {
         if !enabled {
             self.pending_marks.clear();
         }
+    }
+
+    /// Whether the line shows inline marks (prose) rather than plain
+    /// source (code).
+    pub fn inline_formatting(&self) -> bool {
+        self.inline_formatting
+    }
+
+    /// Whether the caret types into inline code: inside a code span, at its
+    /// end (where the document extends the span over what is typed), or
+    /// with code set for the text typed next.
+    pub fn caret_in_code(&self) -> bool {
+        let caret = self.inner.cursor_pos();
+        self.inline_formatting
+            && (self
+                .pending_marks
+                .iter()
+                .any(|mark| matches!(mark, Mark::Code))
+                || self.marks.iter().any(|span| {
+                    matches!(span.mark, Mark::Code)
+                        && span.range.start < caret
+                        && caret <= span.range.end
+                }))
+    }
+
+    /// Whether `event` types the backtick that closes inline code.
+    fn closes_inline_code(&self, event: &WindowEvent) -> bool {
+        let typed = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        text: Some(text),
+                        ..
+                    },
+                ..
+            } => text.as_str(),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => text.as_str(),
+            _ => return false,
+        };
+        if !self.inline_formatting || !typed.ends_with('`') {
+            return false;
+        }
+        let text = self.inner.value();
+        text.get(..self.inner.cursor_pos().min(text.len()))
+            .and_then(|head| markdown_input::detect_inline(&format!("{head}{typed}")))
+            .is_some_and(|found| found.kind == markdown_input::InlineKind::Code)
     }
 
     pub fn set_wrap(&mut self, wrap: bool) {
@@ -400,6 +455,7 @@ impl RichTextLine {
 
     /// Does NOT mark the line dirty — programmatic writes are not user edits.
     pub fn set_text(&mut self, s: &str) {
+        self.closed = None;
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
         // Doesn't preserve prior marks; parents re-seed via `set_marks`.
@@ -527,6 +583,35 @@ impl RichTextLine {
         &self.transient_colors
     }
 
+    /// Whether the last typed word boundary left a correction to apply.
+    pub fn has_pending_autocorrection(&self) -> bool {
+        self.inner.has_pending_autocorrection()
+    }
+
+    /// Make the correction the last typed word boundary left pending (see
+    /// [`TextInput::apply_pending_autocorrection`]), carrying the marks over
+    /// it as typing does.
+    pub fn apply_pending_autocorrection(&mut self) -> bool {
+        if !self.inner.apply_pending_autocorrection() {
+            return false;
+        }
+        let new_text = self.inner.value().to_string();
+        if new_text != self.prev_text {
+            self.reconcile_marks_after_edit(&new_text);
+            self.prev_text = new_text;
+            self.refresh_attributes();
+        }
+        self.prev_cursor = self.inner.cursor_pos();
+        true
+    }
+
+    /// Text typed next at byte `at` does not continue `marks`, though a
+    /// span of each ends there: the person ended them on purpose. Moving
+    /// the caret or editing elsewhere forgets this.
+    pub fn close_marks_at(&mut self, at: usize, marks: Vec<Mark>) {
+        self.closed = Some((at, marks));
+    }
+
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
         self.marks.sort_by_key(|s| s.range.start);
@@ -561,6 +646,17 @@ impl RichTextLine {
     /// own horizontal inset (none for the editor's plain lines).
     pub fn text_inset(&self, theme: &Theme) -> f64 {
         self.inner.text_inset_x(theme)
+    }
+
+    /// The first visual row's band, `(top, height)`, where a block's
+    /// prefix (a bullet, an ordinal, a checkbox) sits.
+    pub(super) fn first_row_band(&self) -> (f64, f64) {
+        self.inner.first_row_band()
+    }
+
+    /// The style the line's text is shaped in under `text_scale`.
+    pub(super) fn line_style(&self, text_scale: f32) -> crate::text_render::TextStyle {
+        self.inner.line_style(text_scale)
     }
 
     /// Returns 0.0 before the first draw.
@@ -713,7 +809,19 @@ impl RichTextLine {
     /// `LinkOpen` when the edit just typed a `[[` at the caret.
     fn reconcile_marks_after_edit(&mut self, new_text: &str) {
         let (at, inserted, removed) = diff_splice(&self.prev_text, new_text);
-        marks::shift_after_edit(&mut self.marks, at, inserted, removed);
+        marks::carry_through_edit(&mut self.marks, at, inserted, removed);
+        if let Some((closed_at, closed)) = self.closed.take()
+            && closed_at == at
+            && inserted > 0
+        {
+            for mark in &closed {
+                marks::remove_mark_from_range(
+                    &mut self.marks,
+                    at..at.saturating_add(inserted),
+                    mark,
+                );
+            }
+        }
 
         // Drain pending marks onto the inserted bytes.
         if inserted > 0 && !self.pending_marks.is_empty() {
@@ -1223,6 +1331,10 @@ impl Widget for RichTextLine {
             }
         }
 
+        // A word typed in inline code is code: it is never autocorrected,
+        // nor is the word a typed backtick closes into code.
+        let in_code = self.caret_in_code() || self.closes_inline_code(event);
+        self.inner.set_autocorrect(in_code.then_some(false));
         self.inner.handle_event(event, ctx);
 
         // Reconcile marks against any text edit using byte-deltas from the previous snapshot.
@@ -1233,6 +1345,13 @@ impl Widget for RichTextLine {
             self.refresh_attributes();
         }
         self.prev_cursor = self.inner.cursor_pos();
+        if self
+            .closed
+            .as_ref()
+            .is_some_and(|(at, _)| *at != self.prev_cursor)
+        {
+            self.closed = None;
+        }
     }
 
     fn name(&self) -> &'static str {

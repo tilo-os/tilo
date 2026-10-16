@@ -70,24 +70,61 @@ pub(crate) fn char_splice(before: &str, after: &str) -> (usize, usize, String) {
     (prefix, removed, inserted)
 }
 
-/// Where the editor's own rules put `before`'s marks after its text became
-/// `after`: an input that only typed or deleted leaves the marks there.
+/// The splices turning `before` into `after`, each in characters and in
+/// the order they apply. One, unless the edit kept a run and only removed
+/// (or only added) text on both sides of it, as formatting typed markdown
+/// does (`**bold**` becomes `bold`): then two, so the kept run stays the
+/// text it was rather than being written again.
+pub(crate) fn char_splices(before: &str, after: &str) -> Vec<(usize, usize, String)> {
+    let (at, del, ins) = char_splice(before, after);
+    if del == 0 || ins.is_empty() {
+        return vec![(at, del, ins)];
+    }
+    let removed: String = before.chars().skip(at).take(del).collect();
+    // Each offset is into the text as the splices before it left it.
+    if let Some(found) = removed.find(ins.as_str()) {
+        let lead = removed.get(..found).map_or(0, chars);
+        let trail = del.saturating_sub(lead).saturating_sub(chars(&ins));
+        return [(at, lead), (at.saturating_add(chars(&ins)), trail)]
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(from, count)| (from, count, String::new()))
+            .collect();
+    }
+    if let Some(found) = ins.find(removed.as_str()) {
+        let lead = ins.get(..found).unwrap_or_default();
+        let trail = ins
+            .get(found.saturating_add(removed.len())..)
+            .unwrap_or_default();
+        let after_kept = at.saturating_add(chars(lead)).saturating_add(del);
+        return [(at, lead), (after_kept, trail)]
+            .into_iter()
+            .filter(|(_, text)| !text.is_empty())
+            .map(|(from, text)| (from, 0, text.to_owned()))
+            .collect();
+    }
+    vec![(at, del, ins)]
+}
+
+/// Where `before`'s marks are once its text became `after` through the
+/// splices the commit writes ([`char_splices`]), each carrying the marks as
+/// the document does ([`marks::carry_through_edit`]) and as the editor's
+/// own lines do: an input that only typed or deleted leaves them there, and
+/// any other difference is formatting the person changed.
 fn carried_marks(before: &BlockContent, after: &str) -> Vec<MarkSpan> {
-    let old = before.text.as_bytes();
-    let new = after.as_bytes();
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let limit = old.len().min(new.len()).saturating_sub(prefix);
-    let suffix = old
-        .iter()
-        .rev()
-        .zip(new.iter().rev())
-        .take(limit)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let removed = old.len().saturating_sub(prefix).saturating_sub(suffix);
-    let inserted = new.len().saturating_sub(prefix).saturating_sub(suffix);
+    let byte_at = |text: &str, at: usize| {
+        text.char_indices()
+            .nth(at)
+            .map_or(text.len(), |(byte, _)| byte)
+    };
+    let mut text = before.text.clone();
     let mut spans = before.marks.clone();
-    marks::shift_after_edit(&mut spans, prefix, inserted, removed);
+    for (at, del, ins) in char_splices(&before.text, after) {
+        let start = byte_at(&text, at);
+        let end = byte_at(&text, at.saturating_add(del));
+        marks::carry_through_edit(&mut spans, start, ins.len(), end.saturating_sub(start));
+        text.replace_range(start..end, &ins);
+    }
     spans
 }
 
@@ -291,14 +328,15 @@ impl<H: Host> Commit<'_, H> {
                 continue;
             }
             if was.text != block.text {
-                let (at, del, ins) = char_splice(&was.text, &block.text);
-                self.apply(&RichTextAction::SpliceText {
-                    region: RegionKind::Body,
-                    block: block.id.clone(),
-                    at,
-                    del,
-                    ins,
-                })?;
+                for (at, del, ins) in char_splices(&was.text, &block.text) {
+                    self.apply(&RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.id.clone(),
+                        at,
+                        del,
+                        ins,
+                    })?;
+                }
             }
             if carried_marks(was, &block.text) != block.marks {
                 self.remark.insert(block.id.clone());
@@ -829,10 +867,13 @@ mod tests {
 
     #[test]
     fn typing_at_the_end_of_a_bold_word_leaves_the_mark_to_the_document() {
+        // The editor carries the bold over what is typed at its end, as the
+        // document does: only the text is written.
         let (mut doc, mut replica) = document("**bold**");
         let presented = shown(&mut replica, &mut doc);
         let mut edited = presented.clone();
         edited[0].text = "bolder".into();
+        edited[0].marks = vec![MarkSpan::new(0..6, Mark::Bold)];
         commit(&mut replica, &mut doc, &presented, &edited).unwrap();
         assert!(
             matches!(
@@ -842,6 +883,30 @@ mod tests {
             "{:?}",
             replica.applied
         );
+
+        // An editor that ended the bold there (a typed closing `**`) has
+        // the typed text plain in the document too.
+        let (mut doc, mut replica) = document("**bold**");
+        let presented = shown(&mut replica, &mut doc);
+        let mut edited = presented.clone();
+        edited[0].text = "bold!".into();
+        commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+        let now = shown(&mut replica, &mut doc);
+        assert_eq!(now[0].text, "bold!");
+        assert_eq!(now[0].marks, [MarkSpan::new(0..4, Mark::Bold)]);
+    }
+
+    #[test]
+    fn markdown_put_back_around_a_bold_word_is_plain() {
+        let (mut doc, mut replica) = document("a **b**");
+        let presented = shown(&mut replica, &mut doc);
+        let mut edited = presented.clone();
+        edited[0].text = "a **b**".into();
+        edited[0].marks = Vec::new();
+        commit(&mut replica, &mut doc, &presented, &edited).unwrap();
+        let now = shown(&mut replica, &mut doc);
+        assert_eq!(now[0].text, "a **b**");
+        assert!(now[0].marks.is_empty(), "{:?}", now[0].marks);
     }
 
     #[test]
@@ -933,5 +998,41 @@ mod tests {
         assert_eq!(char_splice("héllo", "héllo!"), (5, 0, "!".into()));
         assert_eq!(char_splice("aaa", "aa"), (2, 1, String::new()));
         assert_eq!(char_splice("wörld", "wrld"), (1, 1, String::new()));
+    }
+
+    #[test]
+    fn a_kept_run_is_never_written_again() {
+        for (before, after, splices) in [
+            // Formatting typed markdown removes the delimiters around it.
+            (
+                "a **bö*",
+                "a bö",
+                vec![(2, 2, String::new()), (4, 1, String::new())],
+            ),
+            ("*hi", "hi", vec![(0, 1, String::new())]),
+            // Putting the markdown back adds them around it again.
+            (
+                "a bö",
+                "a **bö**",
+                vec![(2, 0, "**".into()), (6, 0, "**".into())],
+            ),
+            // An autocorrection keeps the letters it did not change.
+            (
+                "doesnt",
+                "doesn't ",
+                vec![(5, 0, "'".into()), (7, 0, " ".into())],
+            ),
+            // Anything else is one splice.
+            ("abc", "axc", vec![(1, 1, "x".into())]),
+            ("teh", "the ", vec![(1, 2, "he ".into())]),
+        ] {
+            let spliced = char_splices(before, after);
+            assert_eq!(spliced, splices, "{before:?} -> {after:?}");
+            let mut text: Vec<char> = before.chars().collect();
+            for (at, del, ins) in spliced {
+                text.splice(at..at.saturating_add(del), ins.chars());
+            }
+            assert_eq!(text.into_iter().collect::<String>(), after, "{before:?}");
+        }
     }
 }

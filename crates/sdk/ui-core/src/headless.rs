@@ -4268,7 +4268,7 @@ impl FrameHarness {
                         && rect.width() > 0.0
                         && rect.height() > 0.0
                         && widget
-                            .accessibility()
+                            .accessibility_root()
                             .is_none_or(|access| !access.state.hidden && !access.state.disabled)
                 })
                 .unwrap_or(false)

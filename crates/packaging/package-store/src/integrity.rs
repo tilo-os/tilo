@@ -355,14 +355,14 @@ mod tests {
     fn fixture(root: &Path) -> InstalledPackage {
         fixture_with_collection(
             root,
-            Collection::from_entries([
+            &Collection::from_entries([
                 ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
                 ("data.txt".to_string(), BlobHash::of(b"hello")),
             ]),
         )
     }
 
-    fn fixture_with_collection(root: &Path, collection: Collection) -> InstalledPackage {
+    fn fixture_with_collection(root: &Path, collection: &Collection) -> InstalledPackage {
         let manifest_bytes = b"[package]\nid = \"so.tilo.example\"\n".to_vec();
         let collection_bytes = collection.encode();
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn verification_requires_an_observable_payload_tree_even_without_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let package = fixture_with_collection(tmp.path(), Collection::from_entries([]));
+        let package = fixture_with_collection(tmp.path(), &Collection::from_entries([]));
         std::fs::remove_dir_all(&package.payload_root).unwrap();
         let error = verify(&package, &package.payload_root).unwrap_err();
         assert!(matches!(error, IntegrityError::Read { path, source }

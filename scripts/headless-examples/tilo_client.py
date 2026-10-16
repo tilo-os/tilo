@@ -142,22 +142,41 @@ class TiloClient:
         env["TILO_TEST_CONTROL"] = socket_path
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
-        proc = subprocess.Popen(
-            [str(binary), "--backend", "headless"],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline:
-            if os.path.exists(socket_path):
-                time.sleep(0.3)  # let the first paint complete
-                return _SpawnedTilo(proc, cls(socket_path), socket_path, profile)
-            time.sleep(0.2)
-        proc.kill()
-        shutil.rmtree(profile, ignore_errors=True)
-        raise TimeoutError(f"compositor did not bind {socket_path} within {wait_seconds}s")
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [str(binary), "--backend", "headless"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            client = cls(socket_path)
+            command_timeout = client.timeout
+            deadline = time.monotonic() + wait_seconds
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    raise RuntimeError(f"compositor exited before readiness: {proc.returncode}")
+                if os.path.exists(socket_path):
+                    client.timeout = min(command_timeout, max(.001, deadline - time.monotonic()))
+                    try:
+                        reply = client.raw({"op": "list_targets"})
+                    except OSError:
+                        pass  # The socket can exist before accept starts.
+                    else:
+                        if "err" in reply:
+                            client._require_ok(reply)
+                        if "targets" not in reply:
+                            raise RuntimeError(f"unexpected readiness response: {reply}")
+                        client.timeout = command_timeout
+                        return _SpawnedTilo(proc, client, socket_path, profile)
+                time.sleep(0.2)
+            raise TimeoutError(f"compositor did not bind {socket_path} within {wait_seconds}s")
+        except BaseException:
+            if proc is not None:
+                _SpawnedTilo(proc, cls(socket_path), socket_path, profile).__exit__()
+            else:
+                shutil.rmtree(profile, ignore_errors=True)
+            raise
 
     # --- Commands ---
 
@@ -203,6 +222,8 @@ class TiloClient:
         keys at the top level.
         """
         resp = self._call({"op": "state_dump"})
+        if "err" in resp:
+            self._require_ok(resp)
         if "state" in resp:
             return resp["state"]
         return resp
@@ -215,9 +236,9 @@ class TiloClient:
 
     def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(self.timeout)
-        s.connect(self.socket_path)
         try:
+            s.settimeout(self.timeout)
+            s.connect(self.socket_path)
             return self._send_recv(s, payload)
         finally:
             s.close()
@@ -263,17 +284,20 @@ class _SpawnedTilo:
         return self.client
 
     def __exit__(self, *exc) -> None:
-        self._proc.terminate()
         try:
-            self._proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self._proc.kill()
-        try:
-            os.unlink(self._socket_path)
-        except FileNotFoundError:
-            pass
-        if self._profile is not None:
-            shutil.rmtree(self._profile, ignore_errors=True)
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait(timeout=5)
+        finally:
+            try:
+                os.unlink(self._socket_path)
+            except FileNotFoundError:
+                pass
+            if self._profile is not None:
+                shutil.rmtree(self._profile, ignore_errors=True)
 
 
 __all__ = ["TiloClient", "Target", "TiloError", "scratch_session_env"]

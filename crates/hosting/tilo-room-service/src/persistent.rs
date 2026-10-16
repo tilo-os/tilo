@@ -1261,9 +1261,7 @@ mod tests {
     /// and its connector workers, write them under its `--state`.
     #[test]
     fn metrics_read_what_the_persistent_relay_and_its_connectors_write() {
-        use tilo_relay_protocol::metrics::{
-            MetricsSnapshot, room_relay_root, room_textfile_dir, save_metrics,
-        };
+        use tilo_relay_protocol::metrics::{MetricsSnapshot, room_relay_root, room_textfile_dir};
         let state = tempfile::tempdir().unwrap();
         let vars = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
@@ -1285,7 +1283,7 @@ mod tests {
         let relay_state = PathBuf::from(&args[at + 1]);
         let root = room_relay_root(&relay_state);
         std::fs::create_dir_all(&root).unwrap();
-        save_metrics(
+        crate::ops::save_fresh_metrics(
             &root,
             &MetricsSnapshot {
                 sessions_open: 2,

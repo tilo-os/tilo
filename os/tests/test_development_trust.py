@@ -156,5 +156,66 @@ class PublicBundleTests(unittest.TestCase):
                 trust.validate(self.output)
 
 
+class PublicReadFailureTests(unittest.TestCase):
+    def test_public_read_rejects_in_place_changes(self):
+        import io
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / 'public'
+            path.write_bytes(b'original public bytes')
+            original_open = io.open
+            class ChangingReader:
+                def __init__(self, stream):
+                    self.stream = stream
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    return self.stream.__exit__(*args)
+                def fileno(self):
+                    return self.stream.fileno()
+                def read(self, *args):
+                    data = self.stream.read(*args)
+                    with original_open(path, 'ab') as output:
+                        output.write(b'changed while reading')
+                    return data
+            def opened(*args, **kwargs):
+                stream = original_open(*args, **kwargs)
+                return ChangingReader(stream)
+            with patch.object(io, 'open', side_effect=opened):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    trust.read_public(path)
+
+    def test_native_identity_parsers_see_the_hashed_bytes(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            inputs = {}
+            paths = {}
+            for name in trust.FILES:
+                label = 'CERTIFICATE' if name.endswith('.crt') else 'PUBLIC KEY'
+                inputs[name] = (f'-----BEGIN {label}-----\nYWJj\n-----END {label}-----\n').encode()
+                paths[name] = root / name
+                paths[name].write_bytes(b'replaced after manifest hash check')
+            inputs['registry-owner.pub'] = b'ab' * 32
+            calls = []
+            def crypto(operation, path):
+                calls.append(operation)
+                self.assertEqual(Path(path).read_bytes(), inputs[Path(path).name])
+                return b'2048 ' + b'1' * 64 if operation == 'rsa-public-key-info' else b'2' * 64
+            with patch.object(trust, 'rust_crypto', side_effect=crypto):
+                result = trust.identities(inputs, paths)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(result['registry-owner.pub'], 'ab' * 32)
+
+    def test_native_parser_timeout_is_a_controlled_validation_error(self):
+        from unittest.mock import patch
+        def timed_out(arguments, **kwargs):
+            self.assertEqual(kwargs.get('timeout'), 120)
+            raise subprocess.TimeoutExpired(arguments, 120)
+        with patch.object(trust.subprocess, 'run', side_effect=timed_out):
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                trust.rust_crypto('certificate-sha256', 'public.crt')
+
+
 if __name__ == '__main__':
     unittest.main()

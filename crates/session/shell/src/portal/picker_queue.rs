@@ -179,6 +179,7 @@ mod tests {
                 title: title.to_string(),
                 save: false,
                 directory: false,
+                writable_directory: false,
                 multiple: false,
                 accept_label: None,
                 current_name: None,

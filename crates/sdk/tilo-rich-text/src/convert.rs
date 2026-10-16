@@ -13,8 +13,8 @@ use tilo_doc::document::MarkValue;
 use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{AttrVal as ActionAttr, MarkVal};
 use ui::widget::BlockContent;
-use ui::widget::BlockKind;
 use ui::widget::marks::{Mark, MarkSpan};
+use ui::widget::{BlockKind, CalloutKind};
 
 /// The deepest list indent the editor draws.
 const MAX_INDENT: i64 = 5;
@@ -61,7 +61,9 @@ pub(crate) fn kind_of(view: &BlockView) -> BlockKind {
         "heading" => BlockKind::Heading(
             u8::try_from(int_attr(view, "level").unwrap_or(1).clamp(1, 3)).unwrap_or(1),
         ),
-        "quote" | "blockquote" => BlockKind::Quote,
+        "quote" | "blockquote" => str_attr(view, CALLOUT)
+            .and_then(CalloutKind::from_name)
+            .map_or(BlockKind::Quote, BlockKind::Callout),
         "list_item" => {
             let indent = indent_of(view);
             match bool_attr(view, "checked") {
@@ -84,6 +86,9 @@ pub(crate) fn kind_of(view: &BlockView) -> BlockKind {
 /// A table the editor keeps as its Markdown source is a paragraph of that
 /// source with this attribute, `true` while it shows as a grid.
 pub(crate) const TABLE_SOURCE: &str = "table_source";
+
+/// The attribute that makes a quote a callout: the alert's name (`warning`).
+pub(crate) const CALLOUT: &str = "alert";
 
 /// An internal link to another page is a `link` to this fragment prefix and
 /// the page's id, which the document's link validation accepts.
@@ -298,7 +303,7 @@ impl KindSpec {
     pub(crate) fn of(content: &BlockContent) -> Self {
         let (kind, level, ordered) = match &content.kind {
             BlockKind::Heading(level) => ("heading", Some(i64::from(*level)), None),
-            BlockKind::Quote => ("quote", None, None),
+            BlockKind::Quote | BlockKind::Callout(_) => ("quote", None, None),
             BlockKind::Bullet { indent } | BlockKind::Checklist { indent, .. } => {
                 ("list_item", Some(i64::from(*indent)), Some(false))
             }
@@ -314,6 +319,10 @@ impl KindSpec {
         };
         let table = match content.kind {
             BlockKind::Table { visual } => Some(ActionAttr::Bool(visual)),
+            _ => None,
+        };
+        let callout = match content.kind {
+            BlockKind::Callout(kind) => Some(ActionAttr::Str(kind.name().to_owned())),
             _ => None,
         };
         let (code, lang, group) = match &content.kind {
@@ -337,6 +346,7 @@ impl KindSpec {
                 ("code_group", group),
                 ("nesting", nesting),
                 (TABLE_SOURCE, table),
+                (CALLOUT, callout),
             ],
         }
     }
@@ -485,6 +495,11 @@ mod tests {
             view("heading", "", &[("level", tilo_doc::AttrVal::Int(2))]),
             view("quote", "", &[]),
             view(
+                "quote",
+                "",
+                &[(CALLOUT, tilo_doc::AttrVal::Str("warning".into()))],
+            ),
+            view(
                 "list_item",
                 "",
                 &[
@@ -510,6 +525,15 @@ mod tests {
                 ],
             ),
         ];
+        assert_eq!(
+            content_of(&cases[3]).kind,
+            BlockKind::Callout(CalloutKind::Warning),
+            "a quote with an alert is that callout"
+        );
+        // A callout made a plain quote again drops its alert.
+        let plain = KindSpec::of(&content_of(&cases[2]));
+        assert!(plain.same_style(&cases[3]));
+        assert_eq!(plain.attr_changes(&cases[3]), [(CALLOUT, None)]);
         for case in cases {
             let content = content_of(&case);
             let spec = KindSpec::of(&content);

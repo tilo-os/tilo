@@ -9,9 +9,15 @@ inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
 
 # A check that needs a particular node names it in `requires`: `arch=x86_64`, `os=macos`, a
 # device such as `/dev/kvm`, or a node label such as `disk-100g`.
-# Checks whose result can't depend on the node's architecture (formatting, and lints and
-# policy scripts that only read the sources) say `arch=any`, so the arm64 nodes take them
-# too. Tests, clippy and builds don't: what they compile is the node's own.
+# A check whose result doesn't depend on the node's architecture says `arch=any`, and t runs it
+# wherever it starts soonest, arm64 nodes included: formatting, lints and policy scripts, the
+# cargo families (tests pass on both architectures; check.yml tested every package on both),
+# and builds of architecture-independent output (wasm, web bundles). A check without an
+# architecture runs on the server's, x86_64. Pinned to one stay the checks that produce or
+# exercise that architecture's own artifacts (images, release binaries, VM guests, Android's
+# NDK), the ones that need software that only exists for x86_64 (Chrome for Testing, the
+# ci-fast image), and the tests that fail on aarch64 for reasons of the architecture (the
+# `test-x86_64` family, the goldens).
 
 # check.yml's workflow environment. Warnings fail through the per-target flags, which
 # Cargo joins with .cargo/config.toml's target rustflags (RUSTFLAGS would replace them).
@@ -33,8 +39,11 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 [[cargo]]
 name = "test"
 tool = "nextest"
+requires = ["arch=any"]
 wrapper = ["bash", "tools/ci/t-nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
+# Tested on x86_64 only, by the `test-x86_64` family below.
+exclude = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # Packages whose tests start sandboxes of their own (bubblewrap, unshare): in t's job
@@ -61,6 +70,7 @@ notes = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/sh
 os-actions = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
 pdf-viewer = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 runtime-bundle = ["tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "tools/apps/browser_runtime_release.py", "tools/apps/signal_runtime_fixture.py", "tools/apps/signal_provider_release.py", "tools/apps/signal_zero_runtime.py", "os/dev/cache-github-assets.sh", "tools/apps/pack-signal-provider.sh", "os/scripts/prepare-signal-provider.py", "os/signal-provider/java/**", "tools/tests/SignalProviderIdentityFixture.java", "tools/tests/SignalProviderProxyFixture.java", "os/scripts/stage-signal-runtime.py", "os/external-assets/signal-runtime.json", "os/external-assets/github-assets.tsv", "tools/apps/pack-runtime-package.sh", "scripts/browser/**", "apps/browser/chromium/**", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile"]
+settings = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs"]
 shell = ["apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "crates/sdk/ui-core/assets/fonts/**", "dist/VERSION", "docs/shell-navigation-keyboard-map.md", "docs/architecture/dictation-whistle-aot-review.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-image-120s.json", "tools/with-test-environment.sh", "tools/atspi_external_client.py", "scripts/headless-examples/**", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
 store = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 system-extension = ["os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"]
@@ -76,7 +86,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -91,11 +101,81 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+# END generated
+
+# The test family's packages whose tests fail on aarch64 for reasons of the architecture, as the
+# nightly arm64 workspace test shows every night: launcher's owned-service namespaces, store's
+# package import, tilo-vmd's slot provenance, shell's contents picker and tilo-sandbox's seccomp
+# filters (syscall numbers are the architecture's). Everything else as `test`.
+[[cargo]]
+name = "test-x86_64"
+tool = "nextest"
+requires = ["arch=x86_64"]
+wrapper = ["bash", "tools/ci/t-nextest.sh"]
+args = ["--locked", "--profile", "ci", "--tests"]
+packages = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
+inputs = [".config/nextest.toml", ".config/nextest-filters.toml", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+nested_sandboxes = ["shell", "launcher", "tilo-vmd"]
+# BEGIN generated by tools/ci/t_toml.py: test-x86_64-package-inputs
+[cargo.package_inputs]
+app-cli = ["crates/packaging/app-host/systemd/tilo-app-host.service"]
+collab-types = ["apps/*/surface.toml"]
+compat-service = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "os/Containerfile"]
+discord-worker = ["apps/discord/bridge/program.json"]
+disks = ["crates/system/block-devices/tests/fixtures/disks.json"]
+ebook = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+format-host = ["docs/app-model/formats.md"]
+greeter = ["os/usr/share/wayland-sessions/*.desktop"]
+imager = ["crates/system/block-devices/tests/fixtures/imager.json", "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner", "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract"]
+install = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
+installer = ["crates/system/block-devices/tests/fixtures/installer.json"]
+launcher = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml", "tools/with-test-environment.sh", "scripts/headless-examples/startup-frame-timeline.py", "scripts/headless-examples/_control.py", "crates/collab/collab-types/tests/net_host_vectors.txt", "os/usr/libexec/tilo-session"]
+legacy-vm = ["os/legacy-guest-snapshot.env"]
+local-model-service = ["os/usr/share/tilo/system-extensions/local-model-catalog.json", "os/usr/share/tilo/system-extensions/local-model-keys.json"]
+notes = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/shots/artifacts.json"]
+os-actions = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
+pdf-viewer = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+runtime-bundle = ["tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "tools/apps/browser_runtime_release.py", "tools/apps/signal_runtime_fixture.py", "tools/apps/signal_provider_release.py", "tools/apps/signal_zero_runtime.py", "os/dev/cache-github-assets.sh", "tools/apps/pack-signal-provider.sh", "os/scripts/prepare-signal-provider.py", "os/signal-provider/java/**", "tools/tests/SignalProviderIdentityFixture.java", "tools/tests/SignalProviderProxyFixture.java", "os/scripts/stage-signal-runtime.py", "os/external-assets/signal-runtime.json", "os/external-assets/github-assets.tsv", "tools/apps/pack-runtime-package.sh", "scripts/browser/**", "apps/browser/chromium/**", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile"]
+settings = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs"]
+shell = ["apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "crates/sdk/ui-core/assets/fonts/**", "dist/VERSION", "docs/shell-navigation-keyboard-map.md", "docs/architecture/dictation-whistle-aot-review.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-image-120s.json", "tools/with-test-environment.sh", "tools/atspi_external_client.py", "scripts/headless-examples/**", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
+store = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+system-extension = ["os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"]
+tilo-agent-participant = ["crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**"]
+tilo-app-cli = ["crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml", ".cargo/config.toml", "examples/apps/**", "examples/README.md", "docs/examples.md", "docs/developers/tasks/**", "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml", "rust-toolchain.toml", "Cargo.lock", "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py", "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh", "apps/*/Cargo.toml", "Cargo.toml", "crates/sdk/**", "crates/platform/**", "vendor/**", "crates/browser/tilo-browser-compute/**", "apps/calculator/tilo-app.toml", "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/music/**", "crates/doc/tilo-doc/**", "crates/system/accounts/**", "crates/browser/paint-stream/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-user-identity/**", "crates/dev/headless-schema/**", "crates/dev/test-env/**", "crates/dev/test-http/**", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/media/thumbnail/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/tilo-app-package/**", "crates/runtime/cli/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/session/desktop-model/**", "crates/system/account-custody/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/content/**", "crates/system/desktop-policy/**", "crates/system/durable-store/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-oauth/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/spellcheck/**", "crates/workspace-hack/**"]
+tilo-app-package = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
+tilo-app-template-smoke = ["crates/dev/tilo-app-cli/templates/**", "crates/dev/tilo-app-cli/src/lib.rs"]
+tilo-board-successor = ["os/usr/libexec/tilo-verified-update", "os/hardware/profiles/*.json", "os/dev/hardware_profile.py"]
+tilo-browser-peer = ["crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
+tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
+tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
+tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
+tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
+tilo-pdf = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-projector = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/**", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/**"]
+tilo-staging-reclaim = ["os/usr/lib/systemd/system/tilo-staging-reclaim.service", "os/usr/lib/systemd/system/tilo-staging-handoff.service", "os/usr/lib/systemd/system/tilo-installer-grow-root.service", "os/Containerfile.installer", "os/components.toml"]
+tilo-ui = ["apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs", "crates/sdk/tilo-app/src/framework/app.rs", "vendor/winit/src/platform_impl/quit_request.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/browser/paint-stream/tests/fixtures/**", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "tools/test-assets.py"]
+tilo-user-identity = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
+tilo-vm = ["apps/*/tilo-app.toml"]
+tilo-vm-protocol = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
+tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service", "os/usr/libexec/tilo-seat-session"]
+ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
+video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 [[cargo]]
 name = "clippy"
 tool = "clippy"
+requires = ["arch=any"]
 args = ["--locked", "--all-targets"]
 trailing = ["-D", "warnings"]
 # BEGIN generated by tools/ci/t_toml.py: clippy-package-inputs
@@ -118,6 +198,7 @@ notes = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/sh
 os-actions = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
 pdf-viewer = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 runtime-bundle = ["tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "tools/apps/browser_runtime_release.py", "tools/apps/signal_runtime_fixture.py", "tools/apps/signal_provider_release.py", "tools/apps/signal_zero_runtime.py", "os/dev/cache-github-assets.sh", "tools/apps/pack-signal-provider.sh", "os/scripts/prepare-signal-provider.py", "os/signal-provider/java/**", "tools/tests/SignalProviderIdentityFixture.java", "tools/tests/SignalProviderProxyFixture.java", "os/scripts/stage-signal-runtime.py", "os/external-assets/signal-runtime.json", "os/external-assets/github-assets.tsv", "tools/apps/pack-runtime-package.sh", "scripts/browser/**", "apps/browser/chromium/**", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile"]
+settings = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs"]
 shell = ["apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "crates/sdk/ui-core/assets/fonts/**", "dist/VERSION", "docs/shell-navigation-keyboard-map.md", "docs/architecture/dictation-whistle-aot-review.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-image-120s.json", "tools/with-test-environment.sh", "tools/atspi_external_client.py", "scripts/headless-examples/**", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
 store = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 system-extension = ["os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"]
@@ -133,7 +214,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -148,11 +229,13 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 [[cargo]]
 name = "check"
 tool = "check"
+requires = ["arch=any"]
 args = ["--locked", "--all-targets"]
 default = false
 # BEGIN generated by tools/ci/t_toml.py: check-package-inputs
@@ -175,6 +258,7 @@ notes = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/sh
 os-actions = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
 pdf-viewer = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 runtime-bundle = ["tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "tools/apps/browser_runtime_release.py", "tools/apps/signal_runtime_fixture.py", "tools/apps/signal_provider_release.py", "tools/apps/signal_zero_runtime.py", "os/dev/cache-github-assets.sh", "tools/apps/pack-signal-provider.sh", "os/scripts/prepare-signal-provider.py", "os/signal-provider/java/**", "tools/tests/SignalProviderIdentityFixture.java", "tools/tests/SignalProviderProxyFixture.java", "os/scripts/stage-signal-runtime.py", "os/external-assets/signal-runtime.json", "os/external-assets/github-assets.tsv", "tools/apps/pack-runtime-package.sh", "scripts/browser/**", "apps/browser/chromium/**", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile"]
+settings = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs"]
 shell = ["apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "crates/sdk/ui-core/assets/fonts/**", "dist/VERSION", "docs/shell-navigation-keyboard-map.md", "docs/architecture/dictation-whistle-aot-review.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-image-120s.json", "tools/with-test-environment.sh", "tools/atspi_external_client.py", "scripts/headless-examples/**", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
 store = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 system-extension = ["os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json"]
@@ -190,7 +274,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -205,6 +289,7 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 # The suite reads every blob and tests release contracts against HEAD. Its
@@ -296,11 +381,12 @@ python3 tools/perf/runtime_size_ratchet.py check-budget --base "$base"
 
 [[check]]
 name = "app-lints"
+requires = ["arch=any"]
 run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all"
 # BEGIN generated by tools/ci/t_toml.py: app-lints-reads
 cargo_packages = ["tilo-app-cli"]
 cargo_dev_dependencies = false
-inputs = ["Cargo.toml", "apps/**", "examples/apps/**", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs"]
+inputs = ["Cargo.toml", "apps/**", "examples/apps/**", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs"]
 # END generated
 cost = "minutes"
 env = { CARGO_INCREMENTAL = "0", CARGO_PROFILE_DEV_DEBUG = "0" }
@@ -353,6 +439,7 @@ cost = "minutes"
 # tilo-app the framework of a headless tool.
 [[check]]
 name = "portable"
+requires = ["arch=any"]
 run = """
 cargo check --locked -p tilo-ui --no-default-features --lib
 cargo check --locked -p tilo-app --no-default-features --lib
@@ -369,19 +456,20 @@ requires = ["arch=x86_64"]
 run = "bash tools/ci/clippy-android.sh"
 # BEGIN generated by tools/ci/t_toml.py: android-reads
 cargo_packages = ["calculator", "notes"]
-inputs = ["tools/ci/clippy-android.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", "tools/ci/__init__.py", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py", "tools/ci/qualified_native.py", "tools/ci/suites.py", "apps/browser/tilo-app.toml", "apps/settings/shots/artifacts.json", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "tools/font-catalog.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["tools/ci/clippy-android.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", "tools/ci/__init__.py", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py", "tools/ci/qualified_native.py", "tools/ci/suites.py", "apps/browser/tilo-app.toml", "apps/settings/shots/artifacts.json", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "tools/font-catalog.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "minutes"
 
 # Browser crates and their cfg(wasm32) code, then the browser's own wasm32 builds.
 [[check]]
 name = "wasm"
+requires = ["arch=any"]
 run = "bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 # BEGIN generated by tools/ci/t_toml.py: wasm-reads
 cargo_packages = ["tilo-browser-compute", "tilo-browser-runtime", "tilo-capture", "tilo-clipboard", "tilo-dialogs", "tilo-files", "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-rt", "tilo-secrets", "tilo-web-desktop"]
 cargo_dev_dependencies = false
-inputs = ["tools/ci/check-wasm.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", "tools/ci/__init__.py", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py", "tools/ci/qualified_native.py", "tools/ci/suites.py", "apps/browser/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "tools/font-catalog.py", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["tools/ci/check-wasm.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", "tools/ci/__init__.py", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py", "tools/ci/qualified_native.py", "tools/ci/suites.py", "apps/browser/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "tools/font-catalog.py", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "minutes"
 
@@ -389,11 +477,12 @@ cost = "minutes"
 # scripts/moq-browser, so it writes into its own copy of the sources.
 [[check]]
 name = "web-examples"
+requires = ["arch=any"]
 run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do printf ' example-%s' \"$(basename \"$d\")\"; done)"
 # BEGIN generated by tools/ci/t_toml.py: web-examples-reads
 cargo_packages = ["example-background-task", "example-bound-controls", "example-counter", "example-data-table", "example-graph-screens", "example-localized", "example-qr-code", "example-shared-checklist", "example-tree-browser", "example-virtual-list", "tilo-app-cli", "tilo-browser-runtime"]
 cargo_dev_dependencies = false
-inputs = ["examples/apps/**", "scripts/moq-browser/**", "tools/ci/build-web-examples.sh", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["examples/apps/**", "scripts/moq-browser/**", "tools/ci/build-web-examples.sh", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 writable_sources = true
 env = { npm_config_cache = "/tmp/npm-cache" }
@@ -429,19 +518,20 @@ env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 # BEGIN generated by tools/ci/t_toml.py: example-scenarios-reads
 cargo_packages = ["example-background-task", "example-bound-controls", "example-counter", "example-data-table", "example-graph-screens", "example-localized", "example-qr-code", "example-shared-checklist", "example-tree-browser", "example-virtual-list", "tilo-app-cli"]
 cargo_dev_dependencies = false
-inputs = ["examples/apps/**", "tools/ci/example-scenarios.sh", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["examples/apps/**", "tools/ci/example-scenarios.sh", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "minutes"
 
 # Every graphical app through the production-root native audit.
 [[check]]
 name = "certify"
+requires = ["arch=any"]
 run = "cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace"
 env = { TILO_REQUIRE_GPU = "1" }
 # BEGIN generated by tools/ci/t_toml.py: certify-reads
 cargo_packages = ["agent", "api-tester", "backups", "browser", "calculator", "calendar", "camera", "canvas", "chat", "chip-design", "clocks", "code-editor", "contacts", "containers", "db-client", "diffmerge", "discord", "disk-usage", "disks", "ebook", "example-background-task", "example-bound-controls", "example-counter", "example-data-table", "example-graph-screens", "example-localized", "example-qr-code", "example-shared-checklist", "example-tree-browser", "example-virtual-list", "feeds", "file-explorer", "firewall", "git-client", "hex-editor", "imager", "logs", "mail", "maps", "messages", "monitor", "music", "notes", "osk", "passwords", "pdf-viewer", "photos", "print-centre", "publisher", "remote", "scratchpad", "settings", "sheets", "shortcuts", "slides", "snippets", "speed-test", "store", "terminal", "themes", "thumbnails", "tilo-app-cli", "totp", "tube", "typst-editor", "video-editor", "video-player", "vpn", "weather", "web-search", "windows-app", "word-processor"]
 cargo_dev_dependencies = false
-inputs = ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "apps/disks/tests/fixtures/lsblk-drives.json", "apps/imager/tests/fixtures/lsblk-targets.json", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/install/tests/gc.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/block-devices/tests/fixtures/disks.json", "crates/system/block-devices/tests/fixtures/imager.json", "dist/session/tilo-session", "dist/session/tilo-session-runner", "dist/session/tilo.desktop", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/Containerfile", "os/tests/fixtures/internal-bundle-v2.json", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "apps/disks/tests/fixtures/lsblk-drives.json", "apps/imager/tests/fixtures/lsblk-targets.json", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/install/tests/gc.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/block-devices/tests/fixtures/disks.json", "crates/system/block-devices/tests/fixtures/imager.json", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "dist/session/tilo-session", "dist/session/tilo-session-runner", "dist/session/tilo.desktop", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/Containerfile", "os/tests/fixtures/internal-bundle-v2.json", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "minutes"
 
@@ -833,7 +923,7 @@ test -s "$TMPDIR/calculator.tapp"
 """
 # BEGIN generated by tools/ci/t_toml.py: sdk-linux-reads
 cargo_packages = ["calculator", "tilo-app-cli", "tilo-app-package-cli", "tilo-caps"]
-inputs = ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/*/Cargo.toml", "apps/agent/tilo-app.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "apps/music/**", "apps/thumbnails/tilo-app.toml", "crates/browser/paint-stream/**", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/collab/threshold-identity/**", "crates/collab/tilo-user-identity/**", "crates/dev/headless-schema/**", "crates/dev/test-env/**", "crates/dev/test-http/**", "crates/dev/ui-builder/Cargo.toml", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/media/thumbnail/**", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/tilo-app-package/**", "crates/platform/**", "crates/runtime/cli/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/sdk/**", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/session/desktop-model/**", "crates/system/account-custody/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/content/**", "crates/system/desktop-policy/**", "crates/system/durable-store/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-oauth/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/spellcheck/**", "crates/workspace-hack/**", "docs/developers/tasks/**", "docs/examples.md", "examples/README.md", "examples/apps/**", "os/dev/assemble-app-runtime.py", "os/dev/export-sdk-compiler.py", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/ci/rustc-sdk-consumer.sh", "tools/ci/rustc-thin-app-wrapper.sh", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/**", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/*/Cargo.toml", "apps/agent/tilo-app.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "apps/music/**", "apps/thumbnails/tilo-app.toml", "crates/browser/paint-stream/**", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/collab/threshold-identity/**", "crates/collab/tilo-user-identity/**", "crates/dev/headless-schema/**", "crates/dev/test-env/**", "crates/dev/test-http/**", "crates/dev/ui-builder/Cargo.toml", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/media/thumbnail/**", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/tilo-app-package/**", "crates/platform/**", "crates/runtime/cli/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/sdk/**", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/session/desktop-model/**", "crates/system/account-custody/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/content/**", "crates/system/desktop-policy/**", "crates/system/durable-store/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs/**", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-oauth/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/spellcheck/**", "crates/workspace-hack/**", "docs/developers/tasks/**", "docs/examples.md", "examples/README.md", "examples/apps/**", "os/dev/assemble-app-runtime.py", "os/dev/export-sdk-compiler.py", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/ci/rustc-sdk-consumer.sh", "tools/ci/rustc-thin-app-wrapper.sh", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/**", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "minutes"
 
@@ -857,6 +947,7 @@ python3 tools/ci/prepare_sdk_moq.py license "$web/calculator/bundle"
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+node --test crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs
 cargo run --locked -p tilo-agent-participant --example mounted-resource -- "$web/calculator/bundle"
 "$app" build apps/chat --platform web
 python3 tools/ci/prepare_sdk_moq.py license "$web/chat/bundle"
@@ -876,7 +967,7 @@ SHOTS_DIR=$TMPDIR/web-shots node crates/browser/tilo-web-desktop/scripts/navigat
 env = { CDP_PORT = "9333", TILO_WEB_SMOKE_SHARDS = "3" }
 # BEGIN generated by tools/ci/t_toml.py: sdk-web-reads
 cargo_packages = ["calculator", "chat", "tilo-agent-participant", "tilo-app-cli", "tilo-browser-compute", "tilo-browser-runtime", "tilo-web-desktop"]
-inputs = ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/**", "tools/web/**", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/**", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/legacy-guest-snapshot.env", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/**", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/legacy-guest-snapshot.env", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 writable_sources = true
 cost = "heavy"
@@ -905,7 +996,7 @@ node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs "$bundle" 
 # BEGIN generated by tools/ci/t_toml.py: sdk-web-size-reads
 cargo_packages = ["calculator", "tilo-app-cli", "tilo-browser-compute", "tilo-browser-runtime", "tilo-web-desktop"]
 cargo_dev_dependencies = false
-inputs = ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/**", "tools/web/**", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**", ".cargo/config.toml", "Cargo.lock", "Cargo.toml", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 writable_sources = true
 git = true
@@ -946,6 +1037,7 @@ default = false
 # Files' collaboration UX without a kernel FUSE mount.
 [[check]]
 name = "files-ux"
+requires = ["arch=any"]
 run = "cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1"
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
 cargo_packages = ["file-explorer"]
@@ -991,7 +1083,7 @@ TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test performance_gate -- --
 """
 # BEGIN generated by tools/ci/t_toml.py: real-fuse-reads
 cargo_packages = ["file-explorer", "fs-protocol", "shell", "tilo-fs", "tilo-relay", "tilo-runtime", "tilo-user-identity"]
-inputs = ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py", "apps/*/search/*.ftl", "apps/*/tilo-app.toml", "apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "crates/agent/agent-participant/tests/room_actions/encrypted_resource.rs", "crates/agent/agent-participant/tests/room_actions/feedback_journey.rs", "crates/agent/agent-participant/tests/room_actions/governed_agent.rs", "crates/agent/agent-participant/tests/room_actions/governed_sealed.rs", "crates/agent/agent-participant/tests/room_actions/resource_support.rs", "crates/agent/agent-participant/tests/room_actions/share_link.rs", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-peer/tests/support/mod.rs", "crates/browser/tilo-browser-peer/tests/support/steward.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/doc/fixtures/artifacts.json", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/install/tests/gc.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/session/greeter/locales/de-DE.ftl", "crates/session/greeter/locales/en-US.ftl", "dist/VERSION", "docs/architecture/dictation-whistle-aot-image-120s.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-review.json", "docs/shell-navigation-keyboard-map.md", "os/Containerfile", "os/legacy-guest-snapshot.env", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/systemd/system/tilo-device-key-init.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/libexec/tilo-session", "os/usr/share/tilo/fs-capabilities.json", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "scripts/headless-examples/**", "tools/atspi_external_client.py", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "tools/with-test-environment.sh", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
+inputs = ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py", "apps/*/search/*.ftl", "apps/*/tilo-app.toml", "apps/browser/tilo-app.toml", "apps/file-explorer/tilo-app.toml", "apps/store/fixtures/published/snapshot379.json.gz.b64", "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64", "crates/agent/agent-participant/tests/room_actions/encrypted_resource.rs", "crates/agent/agent-participant/tests/room_actions/feedback_journey.rs", "crates/agent/agent-participant/tests/room_actions/governed_agent.rs", "crates/agent/agent-participant/tests/room_actions/governed_sealed.rs", "crates/agent/agent-participant/tests/room_actions/resource_support.rs", "crates/agent/agent-participant/tests/room_actions/share_link.rs", "crates/browser/paint-stream/tests/fixtures/layers.scrolled.json", "crates/browser/paint-stream/tests/fixtures/layers.top.json", "crates/browser/paint-stream/tests/fixtures/layers.top.png.hex", "crates/browser/tilo-browser-peer/tests/support/call.rs", "crates/browser/tilo-browser-peer/tests/support/mod.rs", "crates/browser/tilo-browser-peer/tests/support/steward.rs", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/doc/fixtures/artifacts.json", "crates/packaging/app-host/systemd/tilo-app-host.service", "crates/packaging/install/tests/gc.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/ui-core/assets/fonts/**", "crates/sdk/ui-core/src/bound_dispatch/legacy_control_batch_tests.rs", "crates/sdk/ui-core/src/headless/activation_scene_consistency_tests.rs", "crates/sdk/ui-core/src/headless/owner_fifo_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_custody_tests.rs", "crates/sdk/ui-core/src/headless/owner_layout_demand_tests.rs", "crates/sdk/ui-core/src/headless/quiet_frame_tests.rs", "crates/sdk/ui-core/src/headless/replaced_composition_tests.rs", "crates/sdk/ui-core/src/headless/visual_persistence_tests.rs", "crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex", "crates/sdk/ui-core/tests/fixtures/test_image.png.hex", "crates/session/greeter/locales/de-DE.ftl", "crates/session/greeter/locales/en-US.ftl", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "dist/VERSION", "docs/architecture/dictation-whistle-aot-image-120s.json", "docs/architecture/dictation-whistle-aot-image.json", "docs/architecture/dictation-whistle-aot-review.json", "docs/shell-navigation-keyboard-map.md", "os/Containerfile", "os/legacy-guest-snapshot.env", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/systemd/system/tilo-device-key-init.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/libexec/tilo-session", "os/usr/share/tilo/fs-capabilities.json", "os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/hardware-trust.d/pci-recommendations.json", "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json", "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json", "scripts/headless-examples/**", "tools/atspi_external_client.py", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "tools/with-test-environment.sh", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/winit/src/platform_impl/quit_request.rs"]
 # END generated
 cost = "heavy"
 
@@ -2073,7 +2165,10 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["main", "stable"]
 
-# The web entry (web-entry.yml): the Tilo app on the web, deployed by digest.
+# The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
+# stable's receipt. A release carries the version of the image production serves, so tabs open on
+# it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
+# what stable signs and publishes. Main's development tags are the build as it is.
 [[check]]
 name = "image-web-entry-context"
 run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context"
@@ -2087,8 +2182,11 @@ default = false
 [[check]]
 name = "image-web-entry"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /target/publish/web-entry/context/Containerfile /target/publish/web-entry"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
+run = """
+bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /target/publish/web-entry/context/Containerfile /target/publish/web-entry --build-arg SOURCE_REVISION=$(cat /target/publish/web-entry/context/source-revision)
+bash crates/browser/tilo-browser-runtime/container/test-image.sh /target/publish/web-entry/image.oci.tar
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "crates/browser/tilo-browser-runtime/container/test-image.sh"]
 needs = ["image-web-entry-context"]
 outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry/digest"]
 requires = ["arch=x86_64"]
@@ -2097,12 +2195,26 @@ cost = "minutes"
 default = false
 
 [[check]]
+name = "carry-web-entry"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/web-entry-carry.sh /target/publish/web-entry /target/publish/web-entry/release"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "crates/browser/tilo-browser-runtime/container/carry.sh", "crates/browser/tilo-browser-runtime/container/Containerfile.carry", "crates/browser/tilo-browser-runtime/container/test-image.sh", "tools/ci/publish/web-entry-carry.sh"]
+needs = ["image-web-entry"]
+outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/web-entry/release/digest", "/target/publish/web-entry/release/receipt-extra.json"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "minutes"
+on = ["stable"]
+default = false
+cache = false
+
+[[check]]
 name = "sign-web-entry"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry/release"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
-needs = ["image-web-entry"]
-outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature", "/target/publish/web-entry/dry-run.pub"]
+needs = ["carry-web-entry"]
+outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/web-entry/release/signature", "/target/publish/web-entry/release/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
@@ -2114,10 +2226,11 @@ image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 needs = ["image-web-entry"]
-optional_needs = ["sign-web-entry"]
+optional_needs = ["sign-web-entry", "carry-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
 pointers = { web-entry = "/target/publish/web-entry/receipt.json" }
 id_token = ["registry.tilo.so"]
+env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 on = ["main", "stable"]
 
@@ -2313,13 +2426,21 @@ requires = ["arch=any"]
 on = ["main"]
 
 # The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
-# and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture.
-# Its canaries, signing and promotion stay with build-ci-builder.yml for now.
+# and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
+# joined into one index. The canaries below run inside each candidate before anything is signed
+# or published. Everyone pushes to main, so main publishes only development tags (`dev-<commit>`,
+# and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
+# by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
+# keys/cosign.pub comes from main. Stable signs the index and both
+# images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+# resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
+# cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
+# older toolchain.
 [[check]]
 name = "image-ci-builder-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/ci-builder.sh build x86_64 /target/publish/ci-builder/x86_64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh"]
 outputs = ["/target/publish/ci-builder/x86_64/image.oci.tar", "/target/publish/ci-builder/x86_64/digest"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -2333,7 +2454,7 @@ default = false
 name = "image-ci-builder-aarch64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/ci-builder.sh build aarch64 /target/publish/ci-builder/aarch64"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh"]
 outputs = ["/target/publish/ci-builder/aarch64/image.oci.tar", "/target/publish/ci-builder/aarch64/digest"]
 requires = ["arch=aarch64"]
 isolation = "vm"
@@ -2341,6 +2462,137 @@ cost = "heavy"
 cpus = 16
 memory = "32G"
 timeout_secs = 14400
+default = false
+
+[[check]]
+name = "image-ci-builder"
+run = "python3 tools/ci/publish/oci-index.py /target/publish/ci-builder/index /target/publish/ci-builder/x86_64/image.oci.tar /target/publish/ci-builder/aarch64/image.oci.tar"
+inputs = ["tools/ci/publish/oci-index.py"]
+needs = ["image-ci-builder-x86_64", "image-ci-builder-aarch64"]
+outputs = ["/target/publish/ci-builder/index/image.oci.tar", "/target/publish/ci-builder/index/digest"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
+name = "sign-ci-builder"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "sign-dev-ci-builder"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+on = ["main"]
+
+[[check]]
+name = "publish-ci-builder"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64 'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'
+bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64 'dev:dev-{commit}-aarch64' 'release:{commit}-aarch64'
+bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "rust-toolchain.toml"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64"]
+optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
+outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["main", "stable"]
+
+[[check]]
+name = "canary-ci-builder-cache-cold-x86_64"
+image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/x86_64/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+outputs = ["/target/publish/ci-builder/x86_64/canary/prefix"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "canary-ci-builder-cache-warm-x86_64"
+image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/x86_64/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+needs = ["canary-ci-builder-cache-cold-x86_64"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "canary-ci-builder-browser-x86_64"
+image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh browser"
+inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
+requires = ["arch=x86_64"]
+writable_sources = true
+cost = "heavy"
+cpus = 8
+memory = "16G"
+default = false
+
+[[check]]
+name = "canary-ci-builder-cache-cold-aarch64"
+image = { check = "image-ci-builder-aarch64", path = "/target/publish/ci-builder/aarch64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/aarch64/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+outputs = ["/target/publish/ci-builder/aarch64/canary/prefix"]
+requires = ["arch=aarch64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "canary-ci-builder-cache-warm-aarch64"
+image = { check = "image-ci-builder-aarch64", path = "/target/publish/ci-builder/aarch64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/aarch64/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+needs = ["canary-ci-builder-cache-cold-aarch64"]
+requires = ["arch=aarch64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "canary-ci-builder-browser-aarch64"
+image = { check = "image-ci-builder-aarch64", path = "/target/publish/ci-builder/aarch64/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh browser"
+inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
+requires = ["arch=aarch64"]
+writable_sources = true
+cost = "heavy"
+cpus = 8
+memory = "16G"
 default = false
 # END generated
 
@@ -2585,6 +2837,7 @@ secrets = ["TAPP_PUBLISHER_IDENTITY"]
 # a non-root user created in a throwaway container, which a check can't do yet.
 [[check]]
 name = "desktop-preflight"
+requires = ["arch=any"]
 run = """
 set -eu
 python3 scripts/check-install-contract.py
@@ -2796,6 +3049,10 @@ needs = ["rpm-snapshot"]
 outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-x86_64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-x86_64.txt"]
 requires = ["arch=x86_64"]
 cost = "heavy"
+# A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
+# runtime tree: the default 4 GiB guest ran out of memory.
+cpus = 4
+memory = "8G"
 default = false
 
 [[check]]
@@ -2808,6 +3065,10 @@ needs = ["rpm-snapshot"]
 outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-aarch64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-aarch64.txt"]
 requires = ["arch=aarch64"]
 cost = "heavy"
+# A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
+# runtime tree: the default 4 GiB guest ran out of memory.
+cpus = 4
+memory = "8G"
 default = false
 
 [[check]]
@@ -2882,9 +3143,14 @@ id_token = ["registry.tilo.so"]
 on = ["stable"]
 
 # BEGIN generated by tools/ci/t_toml.py: products-os-base
-# The frozen RPM snapshot's build half (tools/ci/publish/rpms-build.sh): every package the OS
-# Containerfiles name, resolved, signature-checked and laid out as a repository image, natively
-# per architecture. build-rpms.yml still signs and publishes the snapshot.
+# The frozen RPM snapshot (tools/ci/publish/rpms-build.sh): every package the OS Containerfiles
+# name, resolved, signature-checked and laid out as a repository image, natively per
+# architecture, joined into one index. Stable signs the index and both images, attests the
+# index's SLSA provenance (frozen-rpm-index/v1: both package sets and the base, which
+# os/dev/resolve-rpm-snapshot.sh and the OS build verify), both with a transparency log entry,
+# and publishes it as `set-<fingerprint>` once: a fingerprint already published is never moved.
+# Main publishes nothing, since the snapshot is signed; until the cutover build-rpms.yml
+# publishes main's.
 [[check]]
 name = "image-rpms-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2910,6 +3176,56 @@ cpus = 8
 memory = "16G"
 timeout_secs = 10800
 default = false
+
+[[check]]
+name = "image-rpms"
+run = "python3 tools/ci/publish/oci-index.py /target/publish/rpms/index /target/publish/rpms/x86_64/image.oci.tar /target/publish/rpms/aarch64/image.oci.tar"
+inputs = ["tools/ci/publish/oci-index.py"]
+needs = ["image-rpms-x86_64", "image-rpms-aarch64"]
+outputs = ["/target/publish/rpms/index/image.oci.tar", "/target/publish/rpms/index/digest"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
+name = "provenance-rpms"
+run = "bash tools/ci/publish/rpms-provenance.sh /target/publish/rpms"
+inputs = ["os/dev/rpm-snapshot-fingerprint.py", "os/dev/derive-rpm-package-set.py", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/layer-rpm-snapshot.py", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages", "tools/ci/publish/lib.sh", "tools/ci/publish/rpms-provenance.sh"]
+needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64"]
+outputs = ["/target/publish/rpms/index/provenance.json", "/target/publish/rpms/index/fingerprint", "/target/publish/rpms/x86_64/fingerprint", "/target/publish/rpms/aarch64/fingerprint"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
+name = "sign-rpms"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index
+bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "provenance-rpms"]
+outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json", "/target/publish/rpms/index/attestation.bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "publish-rpms"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/x86_64 'once:set-{fingerprint}-x86_64'
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64 'once:set-{fingerprint}-aarch64'
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/index 'once:set-{fingerprint}'
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "sign-rpms"]
+outputs = ["/target/publish/rpms/x86_64/receipt.json", "/target/publish/rpms/aarch64/receipt.json", "/target/publish/rpms/index/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["stable"]
 
 # The kernel buildroot (os/Containerfile.kernel-buildroot, tools/ci/publish/kernel-buildroot.sh):
 # the only build that resolves kernel build dependencies and the Fedora kernel SRPM from Fedora.
@@ -2971,11 +3287,17 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["stable"]
 
-# The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
-# fragment, built natively FROM the pinned signed buildroot, then booted under emulation with
-# its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
-# micro-VM step (kernel-acceptance-<arch>). No compiler cache reaches checks yet, so every build
-# compiles the whole kernel. build-kernel.yml still signs, publishes and pins it.
+# The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
+# natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
+# checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
+# (kernel-acceptance-<arch>). Stable
+# signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
+# commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+# both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
+# `kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+# nothing, since the OS build verifies the kernel's signature; until the cutover build-kernel.yml
+# publishes and pins main's. No compiler cache reaches checks yet, so every build compiles the
+# whole kernel.
 [[check]]
 name = "image-kernel-x86_64"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -3001,6 +3323,48 @@ cpus = 16
 memory = "24G"
 timeout_secs = 14400
 default = false
+
+[[check]]
+name = "provenance-kernel"
+run = "bash tools/ci/publish/kernel.sh provenance /target/publish/kernel"
+inputs = ["os/kernel-buildroot-snapshot.env", "tools/ci/publish/kernel.sh", "tools/ci/publish/lib.sh"]
+needs = ["image-kernel-x86_64", "image-kernel-aarch64"]
+outputs = ["/target/publish/kernel/x86_64/provenance.json", "/target/publish/kernel/aarch64/provenance.json"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
+name = "sign-kernel"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64
+bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64
+bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+needs = ["image-kernel-x86_64", "image-kernel-aarch64", "provenance-kernel", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
+outputs = ["/target/publish/kernel/x86_64/payload.json", "/target/publish/kernel/x86_64/signature", "/target/publish/kernel/x86_64/dry-run.pub", "/target/publish/kernel/x86_64/bundle.json", "/target/publish/kernel/aarch64/payload.json", "/target/publish/kernel/aarch64/signature", "/target/publish/kernel/aarch64/dry-run.pub", "/target/publish/kernel/aarch64/bundle.json", "/target/publish/kernel/x86_64/attestation.json", "/target/publish/kernel/x86_64/attestation.bundle.json", "/target/publish/kernel/aarch64/attestation.json", "/target/publish/kernel/aarch64/attestation.bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
+name = "publish-kernel"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'sha-{commit}-x86_64'
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'sha-{commit}-aarch64'
+bash tools/ci/publish/kernel.sh pins /target/publish/kernel
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel.sh"]
+needs = ["image-kernel-x86_64", "image-kernel-aarch64", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64", "sign-kernel"]
+outputs = ["/target/publish/kernel/x86_64/receipt.json", "/target/publish/kernel/aarch64/receipt.json", "/target/publish/kernel/pins.env"]
+pointers = { kernel = "/target/publish/kernel/pins.env" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["stable"]
 
 # The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
 # its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
@@ -3031,18 +3395,28 @@ default = false
 # END generated
 
 # The snapshots the OS builds FROM, pinned on main to what stable published and signed (the
-# `kernel-buildroot` and `legacy-guest` pointers publish-kernel-buildroot and
-# publish-legacy-guest set). Main is pushed to by everyone, so it never publishes these itself;
+# `kernel-buildroot`, `kernel` and `legacy-guest` pointers publish-kernel-buildroot,
+# publish-kernel and publish-legacy-guest set). Main is pushed to by everyone, so it never publishes these itself;
 # it pins stable's, and only where main would build the same thing (the inputs digest in the
-# pointer), after verifying the signature against keys/cosign.pub. t commits the pin file and
-# pushes it to main, as build-buildroots.yml and build-legacy-guest.yml open pull requests for
-# it. The pin files are not inputs, so the commit doesn't run them again.
+# pointer), after verifying the signature (and the kernel's provenance) against keys/cosign.pub.
+# t commits the pin file and pushes it to main, as build-buildroots.yml, build-kernel.yml and
+# build-legacy-guest.yml open pull requests for it. The pin files are not inputs, so the commit doesn't run them again.
 [[check]]
 name = "pin-kernel-buildroot"
 run = "bash tools/ci/publish/kernel-buildroot.sh pin"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-buildroot.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "os/dev/open-snapshot-pr.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 reads_pointers = ["stable:kernel-buildroot"]
 pushes = ["os/kernel-buildroot-snapshot.env"]
+requires = ["arch=any"]
+on = ["main"]
+default = false
+
+[[check]]
+name = "pin-kernel"
+run = "bash tools/ci/publish/kernel.sh pin"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/dev/verify-kernel-provenance.sh", "os/dev/kernel-build-environment.py", "os/dev/open-snapshot-pr.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+reads_pointers = ["stable:kernel"]
+pushes = ["os/kernel-snapshot.env"]
 requires = ["arch=any"]
 on = ["main"]
 default = false
@@ -3060,17 +3434,18 @@ default = false
 # BEGIN generated by tools/ci/t_toml.py: products-development-signing
 # The development signing tools proven natively on both architectures (os/tests/
 # development_signing_native.sh): a fixture image with private keys and a local registry,
-# whose tests nest Podman, so it runs as root in a micro-VM step. Run when asked for;
+# whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
+# what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
 # T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
 # be dispatched.
 [[check]]
 name = "development-signing-context-x86_64"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/x86_64"
-inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "Cargo.lock", "Cargo.toml", "crates/workspace-hack/**", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "crates/system/tilo-crypto/**"]
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source"]
+cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/x86_64/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
-default = false
 
 [[check]]
 name = "development-signing-x86_64"
@@ -3082,16 +3457,15 @@ isolation = "vm"
 cpus = 4
 memory = "16G"
 timeout_secs = 2700
-default = false
 
 [[check]]
 name = "development-signing-context-aarch64"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/aarch64"
-inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "Cargo.lock", "Cargo.toml", "crates/workspace-hack/**", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "crates/system/tilo-crypto/**"]
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source"]
+cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/aarch64/**"]
 requires = ["arch=aarch64"]
 cost = "heavy"
-default = false
 
 [[check]]
 name = "development-signing-aarch64"
@@ -3103,7 +3477,6 @@ isolation = "vm"
 cpus = 4
 memory = "16G"
 timeout_secs = 2700
-default = false
 # END generated
 
 # The Linux legacy VM guest's agent, which image-legacy-guest builds into the guest, and its
@@ -3451,12 +3824,24 @@ timeout_secs = 10800
 default = false
 
 [[check]]
+name = "provenance-fex-payload"
+run = "bash tools/ci/publish/fex-provenance.sh /target/publish/fex-payload /target/publish/fex-buildroot /target/publish/fex-x86-sdk"
+inputs = ["tools/ci/publish/fex-provenance.sh", "tools/ci/publish/lib.sh"]
+needs = ["image-fex-payload", "image-fex-buildroot", "image-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/provenance.json"]
+requires = ["arch=any"]
+default = false
+
+[[check]]
 name = "sign-fex-payload"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
-needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
-outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub"]
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
+bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+needs = ["image-fex-payload", "provenance-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
+outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub", "/target/publish/fex-payload/attestation.json"]
 id_token = ["tilo-dev-signing"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 requires = ["arch=any"]
@@ -3684,13 +4069,12 @@ default = false
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-extension-manifests
-# Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh, as
-# extension-manifests.yml): every day, and when dispatched with `--input images=…`, each
-# published OS image's native child resolves every extension inside itself, as root in a
-# micro-VM step and without credentials; `publish-extension-manifests` signs the manifests with
-# the extension-manifest key in KMS (not the OS release key) and publishes those that changed.
-# Mirrors drop superseded builds and publishers ship updates, so nothing is served from the
-# cache.
+# Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh): every
+# day, and when dispatched with `--input images=…`, each published OS image's native child
+# resolves every extension inside itself, as root in a micro-VM step and without credentials;
+# `publish-extension-manifests` signs the manifests with the extension-manifest key in KMS (not
+# the OS release key) and publishes those that changed. Mirrors drop superseded builds and
+# publishers ship updates, so nothing is served from the cache.
 [[check]]
 name = "extension-manifests-x86_64"
 run = "bash tools/ci/publish/extension-manifests.sh resolve x86_64 /target/extension-manifests/x86_64"
@@ -3708,6 +4092,7 @@ cache = false
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 
 [[check]]
 name = "extension-manifests-aarch64"
@@ -3726,6 +4111,7 @@ cache = false
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 
 [[check]]
 name = "publish-extension-manifests"
@@ -3742,4 +4128,5 @@ secrets = ["TILO_PACKAGES_TOKEN"]
 [check.dispatch_inputs]
 images = ""
 expected_content_sha256 = ""
+publish = "true"
 # END generated

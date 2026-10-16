@@ -575,7 +575,18 @@ mod tests {
 
     #[test]
     fn home_files_land_in_the_account_home() {
+        use std::os::unix::fs::MetadataExt;
         let (_mnt, etc, var) = disk();
+        // The files are handed to the login account: a no-op when the test
+        // runs as that account, and root's to do otherwise.
+        let account = login_account(&etc).unwrap();
+        if account.uid != fs::metadata(&var).unwrap().uid() {
+            tilo_test_env::require_capability!(
+                Chown,
+                tilo_test_env::chown_to(account.uid),
+                "the login account owns its home files"
+            );
+        }
         let staged = tempfile::tempdir().unwrap();
         fs::create_dir_all(staged.path().join("account-home")).unwrap();
         fs::write(staged.path().join("account-home/SETUP.md"), b"# Setup\n").unwrap();

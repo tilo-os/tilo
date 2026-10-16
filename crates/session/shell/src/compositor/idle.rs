@@ -184,6 +184,12 @@ pub struct SessionManager {
     /// Latched once the idle-suspend threshold fires, so `tick` emits [`SessionTransition::Suspend`]
     /// at most once per idle episode. Cleared by [`Self::note_activity`] (input after resume) and [`Self::cancel_suspend`] (a vetoed suspend request).
     suspended: bool,
+    /// The last tick at which something held the machine awake
+    /// (`INHIBIT_SUSPEND`: a keep-awake lease, a remote session, a download).
+    /// The idle-suspend period counts from the later of this and the last
+    /// input, so letting go of a hold starts a full period instead of
+    /// suspending the instant it ends.
+    suspend_held_at: Option<Instant>,
 }
 
 impl SessionManager {
@@ -196,6 +202,7 @@ impl SessionManager {
             panel: Panel::On,
             locked: false,
             suspended: false,
+            suspend_held_at: None,
         }
     }
 
@@ -306,9 +313,13 @@ impl SessionManager {
             self.locked = true;
             out.push(SessionTransition::Locked);
         }
+        let suspend_idle = now.saturating_duration_since(
+            self.last_activity
+                .max(self.suspend_held_at.unwrap_or(self.last_activity)),
+        );
         if !self.suspended
             && let Some(t) = self.config.suspend_timeout
-            && idle >= t
+            && suspend_idle >= t
         {
             self.suspended = true;
             out.push(SessionTransition::Suspend);
@@ -322,13 +333,18 @@ impl SessionManager {
     /// restarts from `now` and nothing dims, blanks, locks or suspends. A
     /// dim already showing when the inhibitor arrives is lifted (the video
     /// started, so the warning is moot); a blank is not — only input wakes
-    /// the panel. A suspend-only hold leaves dim, blank and lock alone.
+    /// the panel. A suspend-only hold leaves dim, blank and lock alone, but
+    /// the idle-suspend period restarts when it lets go: a machine kept awake
+    /// for hours is not "idle for hours" the moment the hold ends.
     pub fn tick_inhibited(
         &mut self,
         now: Instant,
         inhibitors: &tilo_power_mgmt::InhibitRegistry,
     ) -> Vec<SessionTransition> {
         let mut out = Vec::new();
+        if inhibitors.is_inhibited_for(tilo_power_mgmt::inhibit::INHIBIT_SUSPEND) {
+            self.suspend_held_at = Some(now);
+        }
         if inhibitors.is_inhibited_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE) {
             self.defer_idle(now);
             if !self.is_blanked() {
@@ -377,8 +393,10 @@ impl SessionManager {
         self.config.lock_timeout = timeout;
     }
 
-    /// Un-latch a pending suspend the caller decided **not** to act on (typically an inhibitor
-    /// held). Leaves the idle timer untouched, so `tick` re-emits [`SessionTransition::Suspend`] the moment the inhibitor releases, without waiting for fresh activity. No-op if none was latched.
+    /// Un-latch a pending suspend the caller decided **not** to act on (an inhibitor that
+    /// appeared after this tick's check). Leaves the idle timer untouched, so the next `tick`
+    /// re-emits [`SessionTransition::Suspend`] unless [`Self::tick_inhibited`] sees the hold and
+    /// restarts the period from it. No-op if none was latched.
     pub fn cancel_suspend(&mut self) {
         self.suspended = false;
     }
@@ -557,6 +575,41 @@ mod tests {
             session.tick_inhibited(t0 + Duration::from_secs(60), &registry),
             vec![SessionTransition::Blanked, SessionTransition::Locked],
             "keeping the machine awake is not a reason to leave the screen unlocked"
+        );
+    }
+
+    #[test]
+    fn letting_go_of_a_keep_awake_hold_starts_a_full_idle_period_before_suspending() {
+        // A machine held awake overnight (a VM, a remote session, an agent's
+        // lease) suspended the second the hold ended, because local idle
+        // time kept counting under the hold. That reads as a random suspend.
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
+        let hold = registry.acquire_for("Keep awake", tilo_power_mgmt::inhibit::INHIBIT_SUSPEND);
+        for minute in [15, 60, 600] {
+            assert!(
+                session
+                    .tick_inhibited(t0 + Duration::from_secs(minute * 60), &registry)
+                    .is_empty(),
+                "minute {minute}: a held machine never suspends"
+            );
+        }
+        drop(hold);
+        let released = t0 + Duration::from_secs(600 * 60 + 1);
+        assert!(
+            session.tick_inhibited(released, &registry).is_empty(),
+            "the moment the hold ends is not fifteen idle minutes"
+        );
+        assert!(
+            session
+                .tick_inhibited(released + Duration::from_secs(898), &registry)
+                .is_empty()
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(900), &registry),
+            vec![SessionTransition::Suspend],
+            "a full idle period after the hold, the machine suspends as configured"
         );
     }
 

@@ -11773,7 +11773,9 @@ pub fn run() {
         for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
-                // running); when inhibited, un-latch so it re-fires the instant the last inhibitor releases, no fresh input needed.
+                // running). `tick_inhibited` already restarts the period while a hold is
+                // seen; one taken since then un-latches here, and the period restarts
+                // from the hold's last tick once it lets go.
                 if inhibit_registry.is_inhibited() {
                     session.cancel_suspend();
                     tracing::debug!(

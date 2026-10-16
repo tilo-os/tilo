@@ -57,6 +57,7 @@ fn row(r: collab_capnp::action_directory_row::Builder<'_>) {
             descriptor: Some(descriptor),
             has_children: false,
             visibility: Some(RowVisibility {
+                governing_kind: Some(tilo_actions::OperationKind::View),
                 action: "a".into(),
                 contract,
             }),

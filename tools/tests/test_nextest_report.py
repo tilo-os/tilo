@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -86,6 +87,26 @@ class NextestReportTests(unittest.TestCase):
         self.assertIn("1 tests, 0 failed, 0 flaky", summary)
         self.assertNotIn("| Result |", summary)
         self.assertEqual(annotations, "")
+
+    def test_unavailable_report_or_summary_does_not_change_the_job_result(self) -> None:
+        with patch.object(report, "parse", side_effect=PermissionError("report denied")):
+            summary, _ = self.run_report(JUNIT)
+        self.assertIn("Unreadable JUnit report", summary)
+        for body in ('<testsuites>', '<?xml version="1.0" encoding="unsupported-encoding"?><testsuites/>'):
+            with self.subTest(body=body):
+                summary, _ = self.run_report(body)
+                self.assertIn("Unreadable JUnit report", summary)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            junit = root / "junit.xml"
+            junit.write_text(JUNIT)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+                # A directory at the summary path is an actual output failure,
+                # independent of the permissions the test process runs with.
+                code = report.main(["--label", "shard", "--summary", str(root), str(junit)])
+            self.assertEqual(code, 0)
+            self.assertIn("summary", stderr.getvalue())
 
     def test_missing_report_does_not_fail_the_job(self) -> None:
         summary, _ = self.run_report(None)

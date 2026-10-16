@@ -953,6 +953,15 @@ impl WallpaperService for ShellWallpaperService {
         }
         cleanup_wallpaper_cache(&self.cache_dir(), &records);
         clear_wallpaper_preview(&workspace_id, &staged.cache_file);
+        drop(records);
+        // A picture set for the desktop is what the desktop now shows, over
+        // a shipped one chosen before; Settings marks it as the person's own.
+        if targets.contains(&"background")
+            && let Err(error) =
+                settings_store::appearance::WALLPAPER.set(Some(tilo_wallpapers::CUSTOM.to_owned()))
+        {
+            tracing::warn!(%error, "could not record the person's own wallpaper as the chosen one");
+        }
         PortalResult::Success(())
     }
 

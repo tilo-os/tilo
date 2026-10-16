@@ -547,6 +547,14 @@ to its footer in the platform's order.
 Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
 `paint_backdrop` and `paint_actions`.
 
+**A tooltip is the smallest floating Panel.** Its `Caption` label stands
+`s2` in from the chip's sides and `s1` from its top and bottom; the chip
+hangs `rhythm.tight` off its control, keeps the floating Panel margin
+(`floating_surface::viewport_margin`) inside the window and is never wider
+than `metrics.panel_width_utility`, so a long hint wraps instead of running
+off the window. A tooltip names what a control does; it never repeats text
+the control or its row already shows.
+
 **Status has two homes.** What a person reads while working and expects to
 stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
 `chrome::status_bar`, which reserves its band (`status_bar::split`) so it

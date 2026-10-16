@@ -25,8 +25,30 @@ use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
 
 thread_local! {
+    static REPLAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static INVOKING: std::cell::RefCell<Option<ActionContext>> = const { std::cell::RefCell::new(None) };
     static OPEN_STEP: std::cell::Cell<Option<ActionId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the executor is reproducing an existing action rather than
+/// admitting a new invocation. Replay must reproduce document writes without
+/// issuing host-local approvals or other outside effects again.
+pub fn is_replaying() -> bool {
+    REPLAYING.with(std::cell::Cell::get)
+}
+
+struct ReplayScope(bool);
+
+impl ReplayScope {
+    fn enter() -> Self {
+        Self(REPLAYING.with(|replaying| replaying.replace(true)))
+    }
+}
+
+impl Drop for ReplayScope {
+    fn drop(&mut self) {
+        REPLAYING.with(|replaying| replaying.set(self.0));
+    }
 }
 
 /// Open the undo step the changes committed on this thread join until the
@@ -539,6 +561,7 @@ pub fn replay(
     env: &ActionEnvelope,
     registry: &ActionRegistry,
 ) -> Result<(), ActionError> {
+    let _replaying = ReplayScope::enter();
     let action = registry.decode(&env.action)?;
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {

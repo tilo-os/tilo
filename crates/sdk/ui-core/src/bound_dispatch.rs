@@ -3125,6 +3125,10 @@ pub struct CallbackBinding {
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
+    /// Executing device supplied by the component's HostContext, never its caller.
+    pub(crate) device_id: String,
+    /// Immutable local person supplied at host preparation, not the action author.
+    pub(crate) host_person: UserId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
@@ -4075,6 +4079,87 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
+thread_local! {
+    static EXECUTING_HOST_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };
+    static EXECUTING_HOST_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static EXECUTING_HOST_PERSON: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Identity of the checked component lifetime, not a caller-selected window ID.
+#[must_use]
+pub fn executing_host_scope() -> Option<uuid::Uuid> {
+    EXECUTING_HOST_SCOPE.with_borrow(|scope| *scope)
+}
+
+struct ExecutingHostScope(Option<uuid::Uuid>);
+impl ExecutingHostScope {
+    fn enter(scope: uuid::Uuid) -> Self {
+        Self(EXECUTING_HOST_SCOPE.replace(Some(scope)))
+    }
+}
+impl Drop for ExecutingHostScope {
+    fn drop(&mut self) {
+        EXECUTING_HOST_SCOPE.replace(self.0.take());
+    }
+}
+
+struct ExecutingHostPerson(Option<String>);
+impl ExecutingHostPerson {
+    fn enter(person: &UserId) -> Self {
+        Self(EXECUTING_HOST_PERSON.replace(Some(person.0.clone())))
+    }
+}
+impl Drop for ExecutingHostPerson {
+    fn drop(&mut self) {
+        EXECUTING_HOST_PERSON.replace(self.0.take());
+    }
+}
+
+/// The immutable local person of the executing checked component callback.
+/// Unavailable outside a callback; never derived from action context or a caller.
+#[must_use]
+pub fn executing_host_person() -> Option<String> {
+    EXECUTING_HOST_PERSON.with_borrow(Clone::clone)
+}
+
+/// Whether this callback is acting for its trusted local person. A delivered
+/// invocation must name that actual person's actor; participant identity and
+/// action attribution cannot confer access. Outside a callback access is denied.
+#[must_use]
+pub fn host_person_invocation_permitted() -> bool {
+    executing_host_person().is_some_and(|person| {
+        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.actor == person)
+    })
+}
+
+struct ExecutingHostDevice(Option<String>);
+impl ExecutingHostDevice {
+    fn enter(device: &str) -> Self {
+        Self(EXECUTING_HOST_DEVICE.replace(Some(device.to_owned())))
+    }
+}
+impl Drop for ExecutingHostDevice {
+    fn drop(&mut self) {
+        EXECUTING_HOST_DEVICE.replace(self.0.take());
+    }
+}
+
+/// The executing component's host device during a checked record callback.
+/// This is local host identity, not replicated action context or a caller's
+/// requested target device. Outside a component callback it is unavailable.
+#[must_use]
+pub fn executing_host_device() -> Option<String> {
+    EXECUTING_HOST_DEVICE.with_borrow(Clone::clone)
+}
+
+pub(crate) struct CallbackScopeGuard {
+    _wake: WakeScopeGuard,
+    _device: ExecutingHostDevice,
+    _person: ExecutingHostPerson,
+    _scope: ExecutingHostScope,
+    _actor: tilo_resource::action::RecordActorScope,
+}
+
 struct ActiveEntry;
 impl Drop for ActiveEntry {
     fn drop(&mut self) {
@@ -4446,11 +4531,22 @@ impl CallbackBinding {
             None => Ok(None),
         })
     }
-    pub(crate) fn enter(&self) -> Result<WakeScopeGuard, BoundDispatchError> {
+    pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
         self.check_record()?;
-        self.lifetime
+        let wake = self
+            .lifetime
             .enter_if_open()
-            .map_err(|_| BoundDispatchError::ClosedLifetime)
+            .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+        Ok(CallbackScopeGuard {
+            _wake: wake,
+            _device: ExecutingHostDevice::enter(&self.device_id),
+            _person: ExecutingHostPerson::enter(&self.host_person),
+            _scope: ExecutingHostScope::enter(self.lifetime_id),
+            _actor: tilo_resource::action::RecordActorScope::enter(
+                crate::invocation_scope::current_invoker()
+                    .map_or_else(|| self.author.0.clone(), |invoker| invoker.actor),
+            ),
+        })
     }
     pub(crate) fn with_document<R>(
         &self,
@@ -5078,7 +5174,7 @@ pub unsafe fn invoke_bound_node<R>(
 /// Enter a retained boundary for the complete duration of a tree walk.
 pub(crate) fn enter_widget(
     widget: &dyn Widget,
-) -> Result<Option<WakeScopeGuard>, BoundDispatchError> {
+) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
     widget
         .callback_binding()
         .map(|binding| binding.enter())
@@ -5175,7 +5271,7 @@ pub(crate) unsafe fn mutate_bound_node<R>(
 /// enforce their own entry when called by an unbound legacy traversal.
 pub(crate) fn enter_traversal<const BOUND: bool>(
     widget: &dyn Widget,
-) -> Result<Option<WakeScopeGuard>, BoundDispatchError> {
+) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
     if BOUND {
         enter_widget(widget)
     } else {

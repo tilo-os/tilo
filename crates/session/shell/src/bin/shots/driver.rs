@@ -1476,6 +1476,7 @@ impl ShellDriver {
             "qs-edit-drag" => self.scene_qs_edit(true),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
             "qs-compact" => self.scene_qs_compact(),
+            "qs-scrolled" => self.scene_qs_scrolled(),
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
             "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
@@ -1678,6 +1679,19 @@ impl ShellDriver {
             });
         });
         self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// Quick Settings in a window too short for its page, scrolled to the
+    /// end with the wheel: the tiles keep their size and the lower controls
+    /// come into view (compare `quick-settings` at the same size).
+    fn scene_qs_scrolled(&mut self) {
+        self.scene_quick_settings();
+        // The first paint sizes the page's scroll region, as the first
+        // frame does before any pointer event reaches it.
+        let _ = self.paint();
+        let panel = self.fb.host().quick_settings_rect_for_tests();
+        self.move_cursor(panel.center());
+        self.mouse_wheel(0.0, -40.0);
     }
 
     fn scene_qs_compact(&mut self) {
@@ -2736,6 +2750,7 @@ impl ShellDriver {
         "qs-edit-drag",
         "qs-hardware-wired",
         "qs-compact",
+        "qs-scrolled",
         "qs-wifi-drillin",
         "qs-wifi-long-labels",
         "qs-bt-drillin",

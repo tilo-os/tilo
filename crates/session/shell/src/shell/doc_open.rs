@@ -991,6 +991,9 @@ mod tests {
     fn chrome_with_workspace() -> Chrome {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
+        // Match session startup: launch gates wait for the tree's accepted
+        // policy revision before judging a document's newly granted read.
+        launcher::action_authority::follow_tree(&handle);
         ChromeState::new_with_handle(handle)
     }
 

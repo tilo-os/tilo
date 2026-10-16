@@ -31,6 +31,8 @@ runtime-engine = ["thin", "tilo-accounts-engine/thin"]
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
+# The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
+tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
@@ -120,6 +122,9 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Exercise the published Files surface against the production cloud service.
+file-explorer = { path = "../file-explorer" }
+zip.workspace = true
 # The platform adapter the native runner feeds, for the live-bus benchmark.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

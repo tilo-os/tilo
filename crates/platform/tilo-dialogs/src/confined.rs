@@ -68,6 +68,9 @@ pub fn encode_request(request: &PickRequest) -> String {
     match &request.kind {
         PickKind::Open { multiple: false } => record.append_pair("kind", "open"),
         PickKind::Open { multiple: true } => record.append_pair("kind", "open-multiple"),
+        PickKind::Directory if request.is_writable_directory() => {
+            record.append_pair("kind", "writable-folder")
+        }
         PickKind::Directory => record.append_pair("kind", "folder"),
         PickKind::Save { suggested_name } => record
             .append_pair("kind", "save")
@@ -105,6 +108,7 @@ pub fn decode_request(line: &str) -> io::Result<PickRequest> {
         Some("open") => PickRequest::open(&title, &accept),
         Some("open-multiple") => PickRequest::open_multiple(&title, &accept),
         Some("folder") => PickRequest::directory(&title, &accept),
+        Some("writable-folder") => PickRequest::writable_directory(&title, &accept),
         Some("save") => PickRequest::save(&title, &accept, &name),
         _ => return Err(invalid("a chooser request names no known kind")),
     };
@@ -624,6 +628,7 @@ mod tests {
             PickRequest::open("Open a\nbook", "Open & read"),
             PickRequest::open_multiple("Pick", "Add").filter(FileFilter::new("Img").glob("*.png")),
             PickRequest::directory("Folder", "Choose"),
+            PickRequest::writable_directory("Import into folder", "Import here"),
             PickRequest::save("Save", "Save", "notes=1&x.txt"),
         ];
         for request in requests {
@@ -632,6 +637,10 @@ mod tests {
             let decoded = decode_request(&line).unwrap();
             assert_eq!(encode_request(&decoded), line);
             assert_eq!(decoded.suggested_name(), request.suggested_name());
+            assert_eq!(
+                decoded.is_writable_directory(),
+                request.is_writable_directory()
+            );
         }
         assert!(decode_request("kind=format-disk").is_err());
 

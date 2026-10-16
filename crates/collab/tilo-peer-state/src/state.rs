@@ -1308,6 +1308,8 @@ impl StatePeer {
         match self.core.exact_admissions.get(&admission.key) {
             Some(id) if id == &admission.operation_id => Ok(Some(admission)),
             Some(_) => Err(AdmissionError::ConflictingSequence),
+            // A compaction folded it: decided, and ignored like a retry.
+            None if self.core.exact_admissions.covers(&admission.key) => Ok(Some(admission)),
             None => Ok(None),
         }
     }
@@ -1331,16 +1333,27 @@ impl StatePeer {
                 "admission candidate replaces namespace or downgrades native writer".into(),
             );
         }
+        // Evidence may only be kept exactly or folded under a mark that a
+        // compaction raised; marks never fall.
+        let index = &self.core.exact_admissions;
         for (key, id) in before.core.exact_admissions.iter() {
-            if self.core.exact_admissions.get(key) != Some(id) {
+            if index.get(key) != Some(id) && !index.covers(key) {
                 return Err("admission candidate discards exact evidence".into());
+            }
+        }
+        for (writer, mark) in before.core.exact_admissions.marks() {
+            if !index.covers(&writer.at(mark)) {
+                return Err("admission candidate lowers a compaction mark".into());
             }
         }
         Ok(self
             .core
             .exact_admissions
             .iter()
-            .filter(|(key, _)| before.core.exact_admissions.get(key).is_none())
+            .filter(|(key, _)| {
+                before.core.exact_admissions.get(key).is_none()
+                    && !before.core.exact_admissions.covers(key)
+            })
             .map(|(key, id)| DocumentAdmission {
                 key: key.clone(),
                 operation_id: *id,
@@ -2105,9 +2118,19 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =
             DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
+        let folded = (envelope.kind == OpKind::Compaction)
+            .then(|| sealed_compaction::covered(&envelope))
+            .transpose()?;
         Self::retain_sealed(&mut candidate, envelope)?;
         let primary = if self.core.admission_v5 {
             self.core.exact_admissions.insert(&admitted)?;
+            // The writes the compaction folded are in its snapshot now:
+            // their exact evidence becomes one mark per writer.
+            if let Some(folded) = folded {
+                self.core
+                    .exact_admissions
+                    .cover((&self.core.room, &route.app, &route.record), folded)?;
+            }
             InputDisposition::Accepted(admitted)
         } else {
             InputDisposition::MetadataOnly
@@ -3141,7 +3164,15 @@ impl StatePeer {
             // projection still requires every active prerequisite to be ready.
             peer.validate_media_bindings(&policy, false)?;
         }
-        for (key, _) in peer.core.exact_admissions.iter() {
+        // Every exact entry and every compaction mark lies within its
+        // route's watermark.
+        let index = &peer.core.exact_admissions;
+        let keys: Vec<_> = index
+            .iter()
+            .map(|(key, _)| key.clone())
+            .chain(index.marks().map(|(writer, mark)| writer.at(mark)))
+            .collect();
+        for key in &keys {
             let floor = peer
                 .core
                 .documents

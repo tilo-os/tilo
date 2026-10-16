@@ -310,6 +310,15 @@ pub trait Resource: Sized + 'static {
     /// from a screenshot.
     const READABLE: bool = false;
 
+    /// Whether this exact child is part of the public document projection
+    /// answered by `read_content`. Defaults to false even for readable parents.
+    /// This is a structural declaration, not a permission check: it must not
+    /// perform IO, inspect private view state, or probe by executing a read.
+    /// Eligibility must remain stable while the child's identity exists.
+    fn document_child(_state: &Self::State, _id: &str) -> bool {
+        false
+    }
+
     /// What the resource holds, as JSON a caller can act on: with no `item`,
     /// the resource itself (a notebook's pages); with `item`, the nested
     /// resource of that id from [`children`](Self::children) (one page's

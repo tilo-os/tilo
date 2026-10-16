@@ -20,6 +20,7 @@ pub(crate) struct ResourceOptions {
     seed: Option<syn::Path>,
     available: Option<syn::Path>,
     read_content: Option<syn::Path>,
+    document_child: Option<syn::Path>,
     /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
     read_content_in_doc: Option<syn::Path>,
     views: Option<syn::Path>,
@@ -38,7 +39,7 @@ pub(crate) struct ResourceOptions {
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `read_content_in_doc = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
@@ -55,6 +56,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         seed: None,
         available: None,
         read_content: None,
+        document_child: None,
         read_content_in_doc: None,
         views: None,
         version: None,
@@ -103,6 +105,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
             ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
+            ("document_child", Expr::Path(path)) => {
+                options.document_child = Some(path.path.clone());
+            }
             ("read_content_in_doc", Expr::Path(path)) => {
                 options.read_content_in_doc = Some(path.path.clone());
             }
@@ -1557,6 +1562,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
+    let document_child = options.document_child.as_ref().map(|path| {
+        quote! {
+            fn document_child(state: &Self, id: &str) -> bool {
+                #path(state, id)
+            }
+        }
+    });
     let views = options.views.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1953,6 +1965,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #locate
             #availability
             #read_content
+            #document_child
             #views
             #field_fn
 

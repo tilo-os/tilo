@@ -55,7 +55,7 @@ fn location_id(path: &Path) -> String {
 }
 
 /// The row id of a cloud account whose folder is not mounted: choosing it
-/// opens what is wrong with the account rather than a folder.
+/// opens its import browser or connection details rather than a folder.
 fn account_id(id: &str) -> String {
     format!("{ACCOUNT_PREFIX}{id}")
 }
@@ -76,7 +76,7 @@ struct Location {
     label: String,
     path: PathBuf,
     /// The account this row stands for, when its folder is not mounted: the
-    /// row then opens the account's state, and `path` is not a folder.
+    /// row then opens its import browser or account state; `path` is not a folder.
     account: Option<String>,
     /// A cloud account's short state when it is not well ("Offline", "Sign
     /// in"): its second line, with a dot.
@@ -99,6 +99,7 @@ pub struct Places {
     favorites: Vec<Favorite>,
     locations: Vec<Location>,
     active: PathBuf,
+    active_account: Option<String>,
 }
 
 impl Places {
@@ -135,6 +136,7 @@ impl Places {
             favorites: favs.borrow().favorites.clone(),
             locations,
             active,
+            active_account: None,
         }
     }
 
@@ -164,8 +166,8 @@ impl Places {
     /// Surface cloud accounts as locations after the workspaces. A mounted
     /// account opens its folder; one that is offline, syncing or needs
     /// attention says so on its second line with a status dot, and one whose
-    /// folder is not mounted opens what is wrong with it (so an account that
-    /// needs signing in is never invisible).
+    /// folder is not mounted opens its import browser or connection details
+    /// (so import accounts and accounts needing sign-in stay visible).
     #[must_use]
     pub fn with_remote_accounts(mut self, accounts: Vec<AccountPlace>) -> Self {
         let at = self
@@ -189,9 +191,23 @@ impl Places {
         self
     }
 
+    /// Select an unmounted account's browser instead of the last local folder.
+    #[must_use]
+    pub fn with_active_account(mut self, account: Option<String>) -> Self {
+        self.active_account = account;
+        self
+    }
+
     /// The row of the chosen place: the favourite for the current folder,
     /// else the fixed location that is it.
     pub fn selected_id(&self) -> Option<String> {
+        if let Some(account) = &self.active_account {
+            return self
+                .locations
+                .iter()
+                .find(|place| place.account.as_ref() == Some(account))
+                .map(|_| account_id(account));
+        }
         self.favorites
             .iter()
             .find(|favorite| favorite.path == self.active)
@@ -244,6 +260,7 @@ impl Places {
                     None => item,
                     Some(status) => {
                         let dot = match status {
+                            status if status == t("files-account-import-only") => RowStatus::Idle,
                             "Offline" => RowStatus::Idle,
                             "Syncing" => RowStatus::Active,
                             _ => RowStatus::Warning,
@@ -410,6 +427,59 @@ mod tests {
         let sections = places.sections();
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].id, LOCATIONS_SECTION);
+    }
+
+    #[test]
+    fn unmounted_import_account_has_an_account_navigation_row() {
+        let places =
+            Places::new(&new_store(Vec::new()), PathBuf::from("/")).with_remote_accounts(vec![
+                AccountPlace {
+                    id: "import-cloud".into(),
+                    label: "Import cloud".into(),
+                    mount: None,
+                    status: None,
+                },
+            ]);
+        let sections = places.sections();
+        let row = sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .find(|item| item.id == "account:import-cloud")
+            .expect("imports remain navigable without a mount");
+        assert!(row.status.is_none());
+        assert!(path_of_id(&row.id).is_none());
+    }
+
+    #[test]
+    fn import_browser_selects_account_instead_of_home() {
+        let store = new_store(vec![favorite("Home", "/home/u", FavKind::Home)]);
+        let places = Places::new(&store, PathBuf::from("/home/u")).with_remote_accounts(vec![
+            AccountPlace {
+                id: "drive".into(),
+                label: "Google Drive".into(),
+                mount: None,
+                status: None,
+            },
+        ]);
+        assert_eq!(places.selected_id().as_deref(), Some("fav:/home/u"));
+        let places = places.with_active_account(Some("drive".into()));
+        assert_eq!(places.selected_id().as_deref(), Some("account:drive"));
+        assert_eq!(
+            places.with_active_account(None).selected_id().as_deref(),
+            Some("fav:/home/u")
+        );
+    }
+
+    #[test]
+    fn synced_account_keeps_its_folder_selection() {
+        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/home/u/Drive"))
+            .with_remote_accounts(vec![AccountPlace {
+                id: "drive".into(),
+                label: "Google Drive".into(),
+                mount: Some(PathBuf::from("/home/u/Drive")),
+                status: None,
+            }]);
+        assert_eq!(places.selected_id().as_deref(), Some("loc:/home/u/Drive"));
     }
 
     /// Workspaces lead the locations; mounted cloud accounts follow them and

@@ -30,9 +30,10 @@ use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, ModelPath, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::device_read::Reading;
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
@@ -75,10 +76,16 @@ pub fn timezone_map(zones: &[String]) -> Vec<TimeZonePoint> {
         "/usr/share/zoneinfo/zone1970.tab",
         "/usr/share/zoneinfo/zone.tab",
     ];
-    TABLES
+    // `zone1970.tab` lists one zone per region of identical clocks since
+    // 1970; zones merged into another (Europe/Amsterdam into Brussels) are
+    // only in `zone.tab`. Reading both, the newer first, puts every zone the
+    // device accepts on the map, including the one it may be set to.
+    let tables: String = TABLES
         .iter()
-        .find_map(|path| fs::read_to_string(path).ok())
-        .map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    timezone_map_from_tab(zones, &tables)
 }
 
 fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
@@ -166,6 +173,110 @@ struct TimeZoneMap {
     hit_radius: f64,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
+    /// [`Self::land`]'s cache and the plot it was projected into.
+    land_plot: Rect,
+    land_path: BezPath,
+    /// The plot's inset inside the well, and the room below it for the
+    /// caption naming the hovered or chosen zone; theme spacing.
+    inset: f64,
+    caption: f64,
+}
+
+/// The latitudes drawn, in degrees: everything people live at, without the
+/// polar band that would take a third of an equirectangular map's height.
+const MAP_LATITUDES: std::ops::RangeInclusive<f64> = -58.0..=84.0;
+const MAP_SOUTH: f64 = *MAP_LATITUDES.start();
+const MAP_NORTH: f64 = *MAP_LATITUDES.end();
+/// The well's width over its height: the plot's own 360:142 degrees, less
+/// the caption's share.
+const MAP_ASPECT: f32 = 2.2;
+
+/// The land masses, from Natural Earth's 1:110m land polygons
+/// (`data/world-land.b64`, format and provenance in `data/README.md`).
+/// tzdata publishes where each zone's city is, but nothing installed
+/// describes the coastlines the cities sit on.
+const WORLD_LAND: &str = include_str!("../../data/world-land.b64");
+
+/// The value of base64 digit `c`, or `None` for padding and line breaks.
+const fn sextet(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c.wrapping_sub(b'A')),
+        b'a'..=b'z' => Some(c.wrapping_sub(b'a').wrapping_add(26)),
+        b'0'..=b'9' => Some(c.wrapping_sub(b'0').wrapping_add(52)),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// How many bytes standard, padded base64 `text` holds.
+const fn decoded_len(mut text: &[u8]) -> usize {
+    let mut digits = 0_usize;
+    while let [c, rest @ ..] = text {
+        if sextet(*c).is_some() {
+            digits = digits.wrapping_add(1);
+        }
+        text = rest;
+    }
+    digits.wrapping_mul(3) / 4
+}
+
+/// The `N` bytes of standard, padded base64 `text`; line breaks are
+/// skipped. Evaluated while compiling, so the app carries the bytes, not
+/// their base64 text and a decoder.
+const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
+    let mut out = [0_u8; N];
+    let mut slots: &mut [u8] = &mut out;
+    let mut bits = 0_u32;
+    let mut held = 0_u32;
+    while let [c, rest @ ..] = text {
+        text = rest;
+        let Some(value) = sextet(*c) else {
+            continue;
+        };
+        bits = bits.wrapping_shl(6) | u32::from_le_bytes([value, 0, 0, 0]);
+        held = held.wrapping_add(6);
+        if held >= 8 {
+            held = held.wrapping_sub(8);
+            let [byte, ..] = bits.wrapping_shr(held).to_le_bytes();
+            bits &= 1_u32.wrapping_shl(held).wrapping_sub(1);
+            if let [slot, tail @ ..] = slots {
+                *slot = byte;
+                slots = tail;
+            }
+        }
+    }
+    out
+}
+
+/// [`WORLD_LAND`]'s bytes.
+static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
+    decode_base64(WORLD_LAND.as_bytes());
+
+/// Walk [`WORLD_LAND`]: each ring is a little-endian `u16` point count, its
+/// first point as two `i16` (longitude, latitude) in tenths of a degree,
+/// then one `i8` pair per further point, the step from the point before.
+/// `visit` gets each point in degrees and whether it starts a ring.
+fn walk_world_land(mut visit: impl FnMut(f64, f64, bool)) {
+    let mut bytes = WORLD_LAND_BYTES.as_slice();
+    while let [n0, n1, x0, x1, y0, y1, rest @ ..] = bytes {
+        let count = usize::from(u16::from_le_bytes([*n0, *n1]));
+        let mut longitude = i32::from(i16::from_le_bytes([*x0, *x1]));
+        let mut latitude = i32::from(i16::from_le_bytes([*y0, *y1]));
+        let tenths = |value: i32| f64::from(value) / 10.0;
+        visit(tenths(longitude), tenths(latitude), true);
+        let steps = rest
+            .get(..count.saturating_sub(1).saturating_mul(2))
+            .unwrap_or(rest);
+        for step in steps.chunks_exact(2) {
+            if let [dx, dy] = *step {
+                longitude = longitude.saturating_add(i32::from(i8::from_le_bytes([dx])));
+                latitude = latitude.saturating_add(i32::from(i8::from_le_bytes([dy])));
+                visit(tenths(longitude), tenths(latitude), false);
+            }
+        }
+        bytes = rest.get(steps.len()..).unwrap_or_default();
+    }
 }
 
 impl TimeZoneMap {
@@ -182,6 +293,10 @@ impl TimeZoneMap {
             hit_radius: f64::from(ui::tokens::Metrics::BASE.min_pointer_target) / 2.0,
             action: None,
             rect: Rect::ZERO,
+            land_plot: Rect::ZERO,
+            land_path: BezPath::new(),
+            inset: f64::from(ui::tokens::Spacing::BASE.s2),
+            caption: f64::from(ui::tokens::Spacing::BASE.s8),
         }
     }
 
@@ -190,12 +305,28 @@ impl TimeZoneMap {
         self
     }
 
+    /// The equirectangular plot: one degree of longitude is as wide as one
+    /// degree of latitude is tall, centred in the well above the caption,
+    /// so the continents keep their shape at every window width.
     fn plot_rect(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + 10.0,
-            self.rect.y0 + 10.0,
-            (self.rect.x1 - 10.0).max(self.rect.x0 + 11.0),
-            (self.rect.y1 - 34.0).max(self.rect.y0 + 11.0),
+        let available = Rect::new(
+            self.rect.x0 + self.inset,
+            self.rect.y0 + self.inset,
+            (self.rect.x1 - self.inset).max(self.rect.x0 + self.inset + 1.0),
+            (self.rect.y1 - self.caption).max(self.rect.y0 + self.inset + 1.0),
+        );
+        let aspect = 360.0 / (MAP_NORTH - MAP_SOUTH);
+        let width = available.width().min(available.height() * aspect);
+        let height = width / aspect;
+        let x0 = available.center().x - width / 2.0;
+        let y0 = available.center().y - height / 2.0;
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    fn project(plot: Rect, longitude: f64, latitude: f64) -> Point {
+        Point::new(
+            plot.x0 + ((longitude + 180.0) / 360.0) * plot.width(),
+            plot.y0 + ((MAP_NORTH - latitude) / (MAP_NORTH - MAP_SOUTH)) * plot.height(),
         )
     }
 
@@ -203,11 +334,43 @@ impl TimeZoneMap {
         let Some(point) = self.points.get(index) else {
             return Point::ZERO;
         };
+        Self::project(self.plot_rect(), point.longitude(), point.latitude())
+    }
+
+    /// Whether the zone's city lies inside the drawn latitudes. Antarctic
+    /// stations fall south of the map and stay choosable in the selector.
+    fn on_map(&self, index: usize) -> bool {
+        self.points
+            .get(index)
+            .is_some_and(|point| MAP_LATITUDES.contains(&point.latitude()))
+    }
+
+    /// The coastlines of [`WORLD_LAND`] in plot coordinates. Rebuilt only
+    /// when the plot moves or resizes, not every frame.
+    fn land(&mut self) -> &BezPath {
         let plot = self.plot_rect();
-        Point::new(
-            plot.x0 + ((point.longitude() + 180.0) / 360.0) * plot.width(),
-            plot.y0 + ((90.0 - point.latitude()) / 180.0) * plot.height(),
-        )
+        if self.land_plot != plot {
+            self.land_plot = plot;
+            let mut path = BezPath::new();
+            // The data leaves out Antarctica, south of the plot; any other
+            // point is pinned inside it, so nothing draws over the well.
+            walk_world_land(|longitude, latitude, starts| {
+                let point = Self::project(plot, longitude, latitude.clamp(MAP_SOUTH, MAP_NORTH));
+                if starts {
+                    if !path.elements().is_empty() {
+                        path.close_path();
+                    }
+                    path.move_to(point);
+                } else {
+                    path.line_to(point);
+                }
+            });
+            if !path.elements().is_empty() {
+                path.close_path();
+            }
+            self.land_path = path;
+        }
+        &self.land_path
     }
 
     fn point_at(&self, position: Point) -> Option<usize> {
@@ -217,6 +380,7 @@ impl TimeZoneMap {
         self.points
             .iter()
             .enumerate()
+            .filter(|(index, _)| self.on_map(*index))
             .filter_map(|(index, _)| {
                 let projected = self.projected(index);
                 let distance = (projected.x - position.x).hypot(projected.y - position.y);
@@ -247,7 +411,7 @@ impl TimeZoneMap {
             .points
             .iter()
             .enumerate()
-            .filter(|(index, _)| *index != current)
+            .filter(|(index, _)| *index != current && self.on_map(*index))
             .filter_map(|(index, candidate)| {
                 let dx = candidate.longitude() - origin.longitude();
                 // Positive screen-y means south, hence the inversion.
@@ -305,10 +469,20 @@ impl Widget for TimeZoneMap {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
+        self.inset = f64::from(theme.tokens.spacing.s2);
+        self.caption = f64::from(theme.tokens.spacing.s8);
+        // The height follows the width, so the plot keeps the continents'
+        // proportions instead of squashing them into a fixed-height strip.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(theme.tokens.metrics.panel_width_utility * 11.0 / 20.0),
+                height: Dimension::auto(),
+            },
+            aspect_ratio: Some(MAP_ASPECT),
+            // Scales to any width, so it never sets its column's minimum.
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -345,28 +519,39 @@ impl Widget for TimeZoneMap {
 
         let plot = self.plot_rect();
         // Graticule lines are the same derived hairline as the well's edge,
-        // so they read as one surface's ruling rather than a second border.
-        let grid_color = theme.tokens.colors.border_standard;
+        // so they read as one surface's ruling rather than a second border;
+        // one path, under the land.
+        let mut graticule = BezPath::new();
         for longitude in [-120.0, -60.0, 0.0, 60.0, 120.0] {
-            let x = plot.x0 + ((longitude + 180.0) / 360.0) * plot.width();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                grid_color,
-                None,
-                &Line::new((x, plot.y0), (x, plot.y1)),
-            );
+            let x = Self::project(plot, longitude, 0.0).x;
+            graticule.move_to((x, plot.y0));
+            graticule.line_to((x, plot.y1));
         }
         for latitude in [-45.0, 0.0, 45.0] {
-            let y = plot.y0 + ((90.0 - latitude) / 180.0) * plot.height();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                grid_color,
-                None,
-                &Line::new((plot.x0, y), (plot.x1, y)),
-            );
+            let y = Self::project(plot, 0.0, latitude).y;
+            graticule.move_to((plot.x0, y));
+            graticule.line_to((plot.x1, y));
         }
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &graticule,
+        );
+
+        // Land is a tint of the well rather than a colour of its own, so the
+        // map reads in every theme and covers the graticule; the zone dots
+        // and the chosen city stay the strongest marks on it.
+        let land_fill = theme.tokens.colors.overlay_medium;
+        let land = self.land();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            land_fill,
+            None,
+            land,
+        );
 
         if self.points.is_empty() {
             text_renderer.draw_style(
@@ -381,7 +566,7 @@ impl Widget for TimeZoneMap {
         }
 
         let selected = self.selected_index();
-        for index in 0..self.points.len() {
+        for index in (0..self.points.len()).filter(|index| self.on_map(*index)) {
             let centre = self.projected(index);
             let is_selected = selected == Some(index);
             let is_active =
@@ -398,11 +583,18 @@ impl Widget for TimeZoneMap {
                 None,
                 &Circle::new(centre, radius),
             );
-            if is_active {
+            // A ring marks the city under the pointer or the keyboard and,
+            // in the text colour, the chosen one, so it can be found among
+            // the others.
+            if is_active || is_selected {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
-                    theme.border_focus,
+                    if is_active {
+                        theme.border_focus
+                    } else {
+                        theme.tokens.colors.text_primary
+                    },
                     None,
                     &Circle::new(centre, radius + 4.0),
                 );
@@ -619,6 +811,7 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+        crate::device_read::off_ui_thread();
         let mut status = os_actions::get_time_sync_status()?;
         if status.timezone.is_none() {
             status.timezone = timezone();
@@ -627,10 +820,12 @@ impl Clock for SystemClock {
     }
 
     fn ntp(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         os_actions::get_ntp()
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::list_timezones()
     }
 
@@ -645,10 +840,12 @@ impl Clock for SystemClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_ntp(enabled)
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_timezone(timezone)
     }
 }
@@ -674,14 +871,17 @@ impl Default for SampleClock {
 
 impl Clock for SampleClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+        crate::device_read::off_ui_thread();
         Ok(self.status.lock_recover().clone())
     }
 
     fn ntp(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         Ok(self.status.lock_recover().ntp_enabled.unwrap_or(true))
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
+        crate::device_read::off_ui_thread();
         Ok([
             "America/New_York",
             "Asia/Tokyo",
@@ -698,11 +898,13 @@ impl Clock for SampleClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         self.status.lock_recover().ntp_enabled = Some(enabled);
         Ok(())
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         self.status.lock_recover().timezone = Some(timezone.to_owned());
         Ok(())
     }
@@ -723,28 +925,90 @@ pub enum TimeDateEffect {
     },
 }
 
-/// What the Time & Date area keeps for the window: the device's clock, and
-/// where its last change stands.
+/// What the clock reports: timedated's status, the zones it accepts and
+/// where they lie on the map. `timedatectl` goes through the system bus,
+/// which can take up to a D-Bus timeout to answer, so this is read off the
+/// UI thread ([`Reading`]).
+#[derive(Clone)]
+struct ClockReading {
+    /// What timedated reports, or why it could not be asked.
+    status: Result<os_actions::TimeSyncStatus, String>,
+    /// Whether automatic time is on, as the status or the separate ask
+    /// said.
+    automatic: Option<bool>,
+    /// Why the automatic-time switch's position is unknown.
+    auto_error: Option<String>,
+    /// The zones to choose from, the configured one among them, or why the
+    /// list could not be read.
+    zones: Result<Vec<String>, String>,
+    points: Vec<TimeZonePoint>,
+}
+
+impl ClockReading {
+    fn read(clock: &dyn Clock) -> Self {
+        let status = clock.status();
+        // Automatic time is asked on its own when timedated's status did
+        // not say, whether or not the status could be read.
+        let mut automatic = status.as_ref().ok().and_then(|status| status.ntp_enabled);
+        let mut auto_error = None;
+        if automatic.is_none() {
+            match clock.ntp() {
+                Ok(enabled) => automatic = Some(enabled),
+                Err(error) => auto_error = Some(error),
+            }
+        }
+        let zones = clock.zones().map(|mut zones| {
+            if let Some(zone) = status
+                .as_ref()
+                .ok()
+                .and_then(|status| status.timezone.as_ref())
+                && !zones.contains(zone)
+            {
+                zones.push(zone.clone());
+                zones.sort();
+            }
+            zones
+        });
+        let points = zones.as_deref().map(timezone_map).unwrap_or_default();
+        Self {
+            status,
+            automatic,
+            auto_error,
+            zones,
+            points,
+        }
+    }
+}
+
+/// What the Time & Date area keeps for the window: the device's clock, what
+/// it last reported, and where its last change stands.
 pub struct TimeDateArea {
     clock: Arc<dyn Clock>,
+    /// What the clock last reported, read again off the UI thread whenever
+    /// the pane opens and after every change.
+    reading: Reading<ClockReading>,
     /// Why the last change failed, for the pane to show.
     notice: LocalState<Option<String>>,
-    /// Bumped by every change the clock took, so the pane reads it again.
-    applied: LocalState<u64>,
 }
 
 impl TimeDateArea {
     /// The area over this device's clock, or a stand-in for a capture.
+    /// Nothing is read until the pane opens.
     pub fn new(cx: &PaneCx) -> Self {
         let clock: Arc<dyn Clock> = if cx.reaches_devices() {
             Arc::new(SystemClock)
         } else {
             Arc::new(SampleClock::default())
         };
+        Self::over(clock)
+    }
+
+    fn over(clock: Arc<dyn Clock>) -> Self {
+        let read = Arc::clone(&clock);
         Self {
             clock,
+            reading: Reading::new(move || ClockReading::read(read.as_ref())),
             notice: LocalState::new(None),
-            applied: LocalState::new(0),
         }
     }
 }
@@ -761,8 +1025,9 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     let clock = Arc::clone(&app.time_date().clock);
-    Ok(cx.thread(
-        move |_| match effect {
+    Ok(crate::device_read::job(
+        cx,
+        move || match effect {
             TimeDateEffect::SetAutomaticTime { on } => clock
                 .set_ntp(on)
                 .map_err(|error| format!("automatic time could not be changed: {error}")),
@@ -780,7 +1045,8 @@ pub(crate) fn answer(
         },
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             let area = app.time_date();
-            area.applied.set(area.applied.get().wrapping_add(1));
+            // What the clock took is read off the UI thread too.
+            area.reading.refresh();
             match outcome {
                 Ok(()) => {
                     area.notice.set(None);
@@ -803,8 +1069,13 @@ pub struct TimeDatePane {
     locale: Followed<Locale>,
     notice: LocalState<Option<String>>,
     notice_shown: Option<String>,
-    applied: LocalState<u64>,
-    applied_seen: u64,
+    /// What the clock reports, read off the UI thread.
+    reading: Reading<ClockReading>,
+    /// The revision of `reading` taken in.
+    reading_seen: u64,
+    /// Whether a reading has landed; until then the rows say the clock is
+    /// being read.
+    read: bool,
     timezone: String,
     timezones: Vec<String>,
     timezone_points: Vec<TimeZonePoint>,
@@ -822,65 +1093,62 @@ pub struct TimeDatePane {
 }
 
 impl TimeDatePane {
-    /// The pane over `area`'s clock and `cx`'s locale. Every part the clock
-    /// could not read is kept as its failure and shown as one, never as a
-    /// default.
+    /// The pane over `area`'s clock and `cx`'s locale. It shows what the
+    /// clock last reported, or that it is being read, and reads it again
+    /// off the UI thread. Every part the clock could not read is kept as
+    /// its failure and shown as one, never as a default.
     pub fn new(cx: PaneCx, area: &TimeDateArea) -> Self {
         let locale = cx.follow::<Locale>();
-        let (mut timezones, timezones_error) = match area.clock.zones() {
-            Ok(zones) => (zones, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-        let applied_seen = area.applied.get();
-        let notice_shown = area.notice.get();
+        area.reading.refresh();
         let mut pane = Self {
             h24: matches!(locale.get().time_format, TimeStyle::H24),
             cx,
             clock: Arc::clone(&area.clock),
             locale,
             notice: area.notice.clone(),
-            notice_shown,
-            applied: area.applied.clone(),
-            applied_seen,
+            notice_shown: area.notice.get(),
+            reading: area.reading.clone(),
+            reading_seen: area.reading.revision(),
+            read: false,
             timezone: String::new(),
             timezones: Vec::new(),
             timezone_points: Vec::new(),
             sync_status: os_actions::TimeSyncStatus::default(),
             status_error: None,
-            timezones_error,
+            timezones_error: None,
             timezone_unknown: false,
             auto_error: None,
             composed: ui::widget::Composed::default(),
         };
-        pane.read_clock();
-        if !pane.timezone_unknown && !timezones.contains(&pane.timezone) {
-            timezones.push(pane.timezone.clone());
-            timezones.sort();
+        if let Some(reading) = area.reading.get() {
+            pane.adopt(reading);
         }
-        pane.timezone_points = timezone_map(&timezones);
-        pane.timezones = timezones;
         pane
     }
 
-    /// Read what the clock reports now.
-    fn read_clock(&mut self) {
-        (self.sync_status, self.status_error) = match self.clock.status() {
+    /// Show what the clock reported.
+    fn adopt(&mut self, reading: ClockReading) {
+        self.read = true;
+        (self.sync_status, self.status_error) = match reading.status {
             Ok(status) => (status, None),
             Err(error) => (os_actions::TimeSyncStatus::default(), Some(error)),
         };
-        self.auto_error = None;
-        if self.sync_status.ntp_enabled.is_none() {
-            match self.clock.ntp() {
-                Ok(enabled) => self.sync_status.ntp_enabled = Some(enabled),
-                Err(error) => self.auto_error = Some(error),
-            }
-        }
+        self.sync_status.ntp_enabled = reading.automatic;
+        self.auto_error = reading.auto_error;
         self.timezone_unknown = self.sync_status.timezone.is_none();
         self.timezone = self.sync_status.timezone.clone().unwrap_or_default();
+        (self.timezones, self.timezones_error) = match reading.zones {
+            Ok(zones) => (zones, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        self.timezone_points = reading.points;
     }
 
     /// The automatic-time switch, or why its position is unknown.
     fn auto_row(&self) -> Item {
+        if !self.read {
+            return value_row(&t("time-auto"), &t("time-reading"));
+        }
         match (&self.auto_error, self.sync_status.ntp_enabled) {
             (Some(error), _) => error_row(
                 &t("time-auto"),
@@ -895,6 +1163,9 @@ impl TimeDatePane {
 
     /// The zone chooser, or why there is nothing to choose from.
     fn zone_row(&self) -> Item {
+        if !self.read {
+            return value_row(&t("time-timezone"), &t("time-reading"));
+        }
         match &self.timezones_error {
             Some(error) => error_row(
                 &t("time-timezone"),
@@ -937,7 +1208,9 @@ impl TimeDatePane {
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
         let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
+        let map_note = if !self.read {
+            t("time-reading")
+        } else if mapped == 0 {
             t("time-map-empty")
         } else {
             t_args(
@@ -989,6 +1262,10 @@ impl TimeDatePane {
         let source = card(
             &t("time-source-title"),
             rows(match &self.status_error {
+                _ if !self.read => vec![
+                    value_row(&t("time-sync"), &t("time-reading")),
+                    note(&t("time-source-caption")),
+                ],
                 Some(error) => vec![
                     error_row(
                         &t("time-sync"),
@@ -1014,10 +1291,12 @@ impl TimeDatePane {
 
 impl Widget for TimeDatePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let applied = self.applied.get();
-        if applied != self.applied_seen {
-            self.applied_seen = applied;
-            self.read_clock();
+        let revision = self.reading.revision();
+        if revision != self.reading_seen {
+            self.reading_seen = revision;
+            if let Some(reading) = self.reading.get() {
+                self.adopt(reading);
+            }
             self.composed.invalidate();
         }
         let notice = self.notice.get();
@@ -1063,30 +1342,54 @@ mod tests {
         )
     }
 
-    /// tzdata parsing, map projection, keyboard access and non-empty timezones.
+    /// The packed land data decodes whole: every ring, every point on the
+    /// globe, nothing south of the map.
     #[test]
-    fn timezone_map_parses_projects_and_commits_known_zones() {
-        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
-        {
-            let points = fixture_points();
-            assert_eq!(
-                points
-                    .iter()
-                    .map(|point| point.id.as_str())
-                    .collect::<Vec<_>>(),
-                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
-            );
-            let new_york = &points[0];
-            assert_eq!(new_york.latitude_e6, 40_714_167);
-            assert_eq!(new_york.longitude_e6, -74_006_389);
-            assert!(
-                points.iter().all(|point| point.id != "Europe/London"),
-                "a coordinate-table entry not accepted by timedated must not enter the map"
-            );
-            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
-            assert_eq!(parse_iso6709_coordinate("garbage"), None);
-        }
+    fn the_packed_land_decodes_to_rings_on_the_globe() {
+        let (mut rings, mut points, mut northmost) = (0, 0, f64::MIN);
+        walk_world_land(|longitude, latitude, starts| {
+            rings += usize::from(starts);
+            points += 1;
+            assert!((-180.0..=180.0).contains(&longitude), "{longitude}");
+            assert!((-90.0..=90.0).contains(&latitude), "{latitude}");
+            northmost = northmost.max(latitude);
+        });
+        assert_eq!(rings, 119);
+        assert_eq!(points, 4_412);
+        assert!(northmost > 83.0, "Greenland's north coast is there");
+    }
 
+    /// A zone merged out of zone1970.tab (Amsterdam, only in zone.tab) still
+    /// gets its dot; a zone in both tables keeps zone1970.tab's coordinates.
+    #[test]
+    fn a_zone_merged_out_of_zone1970_is_still_on_the_map() {
+        // Case `a_zone_merged_out_of_zone1970_is_still_on_the_map`: the
+        // device's own zone (here Amsterdam, only in zone.tab) gets its dot;
+        // a zone in both tables keeps zone1970.tab's coordinates.
+        {
+            let zones = vec![
+                "Europe/Amsterdam".to_string(),
+                "Europe/Brussels".to_string(),
+            ];
+            let points = timezone_map_from_tab(
+                &zones,
+                "BE,LU,NL\t+5050+00420\tEurope/Brussels\n\
+                 NL\t+5222+00454\tEurope/Amsterdam\n\
+                 BE\t+0000+00000\tEurope/Brussels\n",
+            );
+            let brussels = points
+                .iter()
+                .find(|point| point.id == "Europe/Brussels")
+                .expect("Brussels is mapped");
+            assert_eq!(brussels.latitude_e6, 50_833_333);
+            assert!(points.iter().any(|point| point.id == "Europe/Amsterdam"));
+        }
+    }
+
+    /// The map draws the land, keeps its proportions and stays inside its
+    /// well at a narrow and a wide width.
+    #[test]
+    fn the_map_draws_the_land_in_proportion_at_every_width() {
         // Case `map_projects_points_inside_normal_and_narrow_layouts`.
         {
             for width in [280.0, 720.0] {
@@ -1112,17 +1415,74 @@ mod tests {
 
                 assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
                 assert!(
-                    (map.rect.height()
-                        - f64::from(
-                            Theme::dark().tokens.metrics.panel_width_utility * 11.0 / 20.0
-                        ))
-                    .abs()
-                        < 0.1
+                    (map.rect.height() - f64::from(width) / f64::from(MAP_ASPECT)).abs() < 0.5,
+                    "the map's height follows its width at {width}"
+                );
+                let plot = map.plot_rect();
+                assert!(
+                    (plot.width() / plot.height() - 360.0 / (MAP_NORTH - MAP_SOUTH)).abs() < 0.01,
+                    "a degree is as wide as it is tall at {width}: {plot:?}"
+                );
+                assert!(
+                    plot.width() > map.rect.width() * 0.75,
+                    "the plot uses the well at {width}: {plot:?} in {:?}",
+                    map.rect
                 );
                 for index in 0..map.points.len() {
                     assert!(map.plot_rect().contains(map.projected(index)));
                 }
+                // The user saw an empty grid: the map must draw the land the
+                // zones lie on, all of it inside the plot.
+                let land = map.land().clone();
+                let bounds = vello::kurbo::Shape::bounding_box(&land);
+                assert!(
+                    land.elements().len() > 1000,
+                    "the coastlines are drawn at {width}"
+                );
+                assert!(
+                    bounds.width() > plot.width() * 0.95 && bounds.height() > plot.height() * 0.9,
+                    "the land spans the plot at {width}: {bounds:?} in {plot:?}"
+                );
+                assert!(
+                    plot.inflate(0.01, 0.01).contains_rect(bounds),
+                    "no land outside the plot at {width}: {bounds:?} in {plot:?}"
+                );
+                // Berlin lies well inland.
+                let berlin = map
+                    .points
+                    .iter()
+                    .position(|point| point.id == "Europe/Berlin")
+                    .expect("fixture zone");
+                assert!(
+                    vello::kurbo::Shape::contains(&land, map.projected(berlin)),
+                    "Berlin's dot lies on the drawn land at {width}"
+                );
             }
+        }
+    }
+
+    /// tzdata parsing, keyboard access and non-empty timezones.
+    #[test]
+    fn timezone_map_parses_projects_and_commits_known_zones() {
+        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
+        {
+            let points = fixture_points();
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
+            );
+            let new_york = &points[0];
+            assert_eq!(new_york.latitude_e6, 40_714_167);
+            assert_eq!(new_york.longitude_e6, -74_006_389);
+            assert!(
+                points.iter().all(|point| point.id != "Europe/London"),
+                "a coordinate-table entry not accepted by timedated must not enter the map"
+            );
+            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
+            assert_eq!(parse_iso6709_coordinate("garbage"), None);
         }
 
         // Case `map_is_keyboard_accessible_and_only_offers_known_zones`.
@@ -1185,12 +1545,12 @@ mod tests {
     fn unreadable_time_settings_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let area = TimeDateArea {
-            clock: Arc::new(UnreadableClock),
-            notice: LocalState::new(None),
-            applied: LocalState::new(0),
-        };
-        let pane = TimeDatePane::new(cx, &area);
+        let area = TimeDateArea::over(Arc::new(UnreadableClock));
+        let mut pane = TimeDatePane::new(cx, &area);
+        // The reading may land before the pane notes the revision it saw,
+        // so wait for the reading itself, not for a later revision.
+        let reading = tilo_test_env::wait_for("the clock is read", || area.reading.get());
+        pane.adopt(reading);
         assert!(pane.timezone_unknown);
         let text = crate::widgets::announced_text(pane.build_composition().as_ref());
         let says = |needle: &str| text.iter().any(|line| line == needle);
@@ -1206,6 +1566,89 @@ mod tests {
         assert!(
             !text.iter().any(|line| line.contains(SAMPLE_TIMEZONE)),
             "{text:#?}"
+        );
+    }
+
+    /// A clock whose timedated does not answer until it is let go (or ten
+    /// seconds pass), as `timedatectl` does behind a filtered system bus
+    /// that holds the call until the D-Bus timeout.
+    struct StalledClock(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledClock {
+        fn wait(&self) {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open && std::time::Instant::now() < deadline {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+        }
+    }
+
+    impl Clock for StalledClock {
+        fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+            self.wait();
+            SampleClock::default().status()
+        }
+        fn ntp(&self) -> Result<bool, String> {
+            self.wait();
+            Ok(true)
+        }
+        fn zones(&self) -> Result<Vec<String>, String> {
+            self.wait();
+            SampleClock::default().zones()
+        }
+        fn now(&self, h24: bool) -> (String, String) {
+            SampleClock::default().now(h24)
+        }
+        fn set_ntp(&self, _: bool) -> Result<(), String> {
+            self.wait();
+            Ok(())
+        }
+        fn set_timezone(&self, _: &str) -> Result<(), String> {
+            self.wait();
+            Ok(())
+        }
+    }
+
+    /// Opening Time & Date while timedated takes its time is answered and
+    /// drawn at once: the pane says the clock is being read, and shows the
+    /// zone once timedated answers.
+    #[test]
+    fn a_stalled_timedated_never_holds_the_window() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.set_time_date(TimeDateArea::over(Arc::new(StalledClock(stalled))));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::TimeDate);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "opening the pane waited {answered:?} on timedated"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("time-reading")), "{frame}");
+        assert!(!frame.contains(SAMPLE_TIMEZONE), "{frame}");
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(SAMPLE_TIMEZONE))),
+            "the zone timedated reports is shown"
         );
     }
 
@@ -1229,8 +1672,15 @@ mod tests {
             },
         ))
         .unwrap();
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Europe/Berlin"), "{frame}");
+        // The clock is read off the UI thread: the pane shows the zone once
+        // the reading lands.
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Europe/Berlin"))),
+            "the zone the clock took is shown"
+        );
         assert!(
             app.effect(&SettingsEffect::from(TimeDateEffect::SetTimeZone {
                 zone: "Mars/Olympus_Mons".into(),

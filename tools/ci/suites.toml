@@ -579,6 +579,10 @@ suites = [
   "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
 ]
 
+[[unrequired]]
+suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
+reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
+
 [[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
@@ -979,8 +983,24 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
+package = "settings"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+]
+readers = [
+  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings/tests/cloud_ux.rs",
+]
+
+[[cargo]]
 package = "tilo-fs"
 inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
@@ -989,6 +1009,8 @@ inputs = [
 readers = [
   "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
   "crates/system/fs/tests/exact_share_process_fuse.rs",
+  "crates/system/fs/tests/cloud_mount.rs",
+  "crates/system/fs/tests/cloud_mount/import.rs",
 ]
 
 [[cargo]]
@@ -1075,6 +1097,11 @@ package = "tilo-font-catalog"
 # helper reads the fonts through it.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
 readers = ["crates/sdk/font-catalog/build.rs"]
+
+[[cargo]]
+package = "word-processor"
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/word-processor/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
@@ -1260,8 +1287,7 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
-reason = "needs the built web entry image"
-workflow = "web-entry.yml"
+reason = "needs the built web entry image: t's image-web-entry check runs it, and carry-web-entry on the release"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
@@ -1412,43 +1438,35 @@ reason = "needs rootless Podman"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
-reason = "needs the disposable root native container with Cosign"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
-reason = "needs the disposable root native container with Cosign and Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign and Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
-reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
-reason = "needs Podman, Cosign and a TLS registry"
-workflow = "ci-development-signing.yml"
+reason = "needs Podman, Cosign and a TLS registry: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -1468,8 +1486,7 @@ reason = "driver for a running FluxCast server"
 
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -1603,8 +1620,7 @@ reason = "asserts preserved sparse holes, which the container overlay root of th
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
-reason = "needs a root-owned /usr/local/bin/tilo-crypto"
-workflow = "ci-development-signing.yml"
+reason = "needs a root-owned /usr/local/bin/tilo-crypto: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/test_kernel_checkpoint_make.py"

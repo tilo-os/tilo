@@ -88,8 +88,9 @@ impl StatePeer {
         selected: [u8; 32],
     ) -> Result<LocalDocument, String> {
         let local = self.local_document_parts(message, selected).map_err(err)?;
-        if self.core.exact_admissions.get(&local.admission.key)
-            != Some(&local.admission.operation_id)
+        let index = &self.core.exact_admissions;
+        if index.get(&local.admission.key) != Some(&local.admission.operation_id)
+            && !index.covers(&local.admission.key)
         {
             return Err("original publication has no exact retained admission".into());
         }
@@ -270,6 +271,10 @@ impl PeerOutbox<'_> {
         match self.peer.core.exact_admissions.get(&local.admission.key) {
             Some(id) if id == &local.admission.operation_id => Ok(Some(local.admission)),
             Some(_) => Err(AdmissionError::ConflictingSequence),
+            // Folded into a compaction's snapshot: admitted.
+            None if self.peer.core.exact_admissions.covers(&local.admission.key) => {
+                Ok(Some(local.admission))
+            }
             None => Ok(None),
         }
     }

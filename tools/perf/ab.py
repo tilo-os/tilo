@@ -483,7 +483,8 @@ def run_browser(ctx: RunContext) -> list[record.Record]:
                                           require_clean=False)
 
 
-# The release desktop bundle as web-entry.yml builds it: the shipped profile,
+# The release desktop bundle as the web entry image's context builds it
+# (tools/ci/publish/web-entry-context.sh): the shipped profile,
 # not the A/B job's thin-LTO release environment, which the wasm profiles
 # would inherit. build.sh records the tree dirty when `git status` lists
 # anything; ab.py refuses tracked changes, and the untracked A/B output in

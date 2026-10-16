@@ -61,7 +61,10 @@ profile. Authorization and the capability gate stay on; Notes is the
 person's own notebook, so no step asks for consent. The compositor, its
 profile and its socket are removed on exit, whatever happens. Against a
 running desktop (`--socket`, e.g. a VM's admin-control.sock) nothing is
-seeded and Notes must already be open.
+seeded, and the task never touches the notebook a person already has: every
+Notes window in a workspace opens that workspace's notebook, so the run first
+creates a workspace of its own (a new room), opens Notes there and only acts
+on Notes rows of that room and record (`scratch_notes.py`).
 """
 
 from __future__ import annotations
@@ -89,8 +92,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
     TERMINAL, BenchError, Connection, answer_of, receipt_state, request, spawned)
-
-NOTES_APP = "so.tilo.notes"
+from scratch_notes import NOTES_APP, ScratchNotes, ScratchRoomError, open_scratch_notes  # noqa: E402
 # Generous: each answer leaves as soon as its invocation or listing settles.
 WAIT_MS = 5000
 # How long a search may wait for the apps' directory pages to complete it
@@ -212,6 +214,13 @@ class NotesTask:
     # The step of every tool call this model issued, in order.
     steps: list[str] = field(default_factory=list)
     retries: int = 0
+    # The run's own notebook against a running desktop; Notes rows of any
+    # other notebook are never chosen. None on a seeded throwaway desktop.
+    notes: ScratchNotes | None = None
+
+    def visible(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """What the model may act on: every row but another notebook's Notes rows."""
+        return [r for r in rows if self.notes is None or not notes_row(r) or self.notes.owns(r)]
 
     def prompt(self) -> str:
         return (f"Create a note titled {self.title!r} with the body {self.body!r} in Notes, "
@@ -234,7 +243,7 @@ class NotesTask:
             self.retries += 1
             return [self.call(self.LISTING[step], retry=True)]
         if step == "discover":
-            rows = rows_of(last)
+            rows = self.visible(rows_of(last))
             found = [r for r in rows if notes_row(r) and operation_of(r) == "new-page"]
             if not found:
                 raise PolicyError(f"no Notes new-page among {len(rows)} rows: {describe_rows(rows)}")
@@ -243,13 +252,13 @@ class NotesTask:
             check_succeeded(last, "create")
             return [self.call("locate")]
         if step == "locate":
-            row = self.body_action(rows_of(last))
+            row = self.body_action(self.visible(rows_of(last)))
             return [self.call("write", row, {text_param(row): self.body})]
         if step == "write":
             check_succeeded(last, "write")
             return [self.call("search")]
         if step == "search":
-            rows = rows_of(last)
+            rows = self.visible(rows_of(last))
             # The phrase is in one block of one note, so the hit is that
             # block's `open` ("Reveal block"), or a row naming the phrase.
             hits = [r for r in rows if self.phrase in str(r.get("title", ""))
@@ -689,6 +698,30 @@ def wait_for_notes(conn: Connection, timeout: float, diagnostics: Path | None = 
                      f"'New note' listed {len(rows)}: {describe_rows(rows)}\n{seen}")
 
 
+def open_own_notebook(conn: Connection, name: str, timeout: float) -> ScratchNotes:
+    """A workspace of the run's own with Notes open in it, over the control socket."""
+    def state() -> dict[str, Any]:
+        _, line = conn.round_trip(request({"op": "state_dump"}))
+        reply = answer_of(line, "state_dump")
+        return reply.get("state", reply) if isinstance(reply, dict) else {}
+
+    def invoke(provider: str, action: str, args: dict[str, Any]) -> Any:
+        _, line = conn.round_trip(request({"op": "actions_invoke", "provider": provider,
+                                           "id": action, "args": args, "wait_ms": WAIT_MS}))
+        answer = answer_of(line, f"{provider} {action}")
+        settled(answer, f"{provider} {action}")
+        return answer
+
+    def rows() -> list[dict[str, Any]]:
+        listing, _ = Tools(conn, split=False).enumerate(NOTES_APP, "own-notebook")
+        return listing["actions"]
+
+    try:
+        return open_scratch_notes(state, invoke, rows, name, timeout)
+    except ScratchRoomError as error:
+        raise BenchError(str(error)) from error
+
+
 def describe_desktop(conn: Connection, path: Path | None) -> str:
     """What the desktop shows, for a run that could not find its subject: the
     whole listing, the drawn targets and the state dump (to `path` in full)."""
@@ -827,8 +860,12 @@ def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], 
 
     try:
         log = getattr(args, "log", None)
-        wait_for_notes(conn, args.startup_timeout,
-                       log.with_name(log.stem + ".probes.json") if log else None)
+        notes = None
+        if args.own_notebook:
+            notes = open_own_notebook(conn, f"Agent bench {tag}", args.startup_timeout)
+        else:
+            wait_for_notes(conn, args.startup_timeout,
+                           log.with_name(log.stem + ".probes.json") if log else None)
         model = FakeModel(respond, args.think_ms, args.tokens_per_s)
         client = ModelClient(model.port)
         runs: list[TaskRun] = []
@@ -839,7 +876,7 @@ def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], 
             phrase = f"agentbench{tag}n{index:03d}"
             task["value"] = NotesTask(title=f"Agent bench {tag} {index:03d}",
                                       body=f"Benchmark body {phrase} written by a scripted agent.",
-                                      phrase=phrase)
+                                      phrase=phrase, notes=notes)
             tools = Tools(conn, split, listing_wait_ms=getattr(args, "listing_wait_ms", LISTING_WAIT_MS))
             try:
                 run = run_task(client, tools, task["value"].prompt(), steps=task["value"].steps)
@@ -864,7 +901,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("--socket", help="a running desktop's control socket, Notes open")
+    target.add_argument("--socket", help="a running desktop's control socket; the run opens "
+                        "Notes in a new workspace of its own")
     target.add_argument("--spawn", type=Path, metavar="SHELL",
                         help="start this compositor headless on a seeded Notes desktop")
     parser.add_argument("--seeder", type=Path,
@@ -892,6 +930,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.transport is None:
         args.transport = ("test-control socket, headless compositor" if args.spawn
                           else "control socket")
+    # Only the seeded throwaway desktop's notebook is the bench's; on any
+    # running desktop the notebooks belong to a person.
+    args.own_notebook = not args.spawn
     env = record.load_env(args.env_json) if args.env_json else None
     try:
         if args.spawn:

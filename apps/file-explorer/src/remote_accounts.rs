@@ -1,14 +1,15 @@
 //! Read-only projection of the canonical external accounts that can provide
 //! files.  Settings owns setup and credential custody; the storage daemon's
-//! cloud service mounts each enabled account at `~/Remote/<label>` and
-//! reports its health. Files owns neither: it shows each account as the
-//! folder the service mounts, with the reported health as a badge.
+//! cloud service mounts sync accounts at `~/Remote/<label>` and reports
+//! their health. Import accounts instead open a remote browser without a
+//! mount. Files owns neither credentials nor the mounted folders.
 //!
 //! This projection never opens [`accounts::SecretVault`] and never talks to
 //! the server, so it is safe to expose to people, search, and agents.
 
 use std::path::{Path, PathBuf};
 
+use accounts::cloud_types::{FilesMode, files_mode};
 use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore, AccountTypeId};
 use serde_json::Value;
 
@@ -30,9 +31,33 @@ pub struct RemoteAccount {
     pub label: String,
     pub host: String,
     pub health: RemoteAccountHealth,
+    /// Whether the account opens a sync folder or the remote import browser.
+    pub files_mode: FilesMode,
     /// Where the cloud service mounts the account (`~/Remote/<label>`).
     /// The folder exists only while the account is mounted.
     pub mount: Option<PathBuf>,
+}
+
+impl RemoteAccount {
+    pub fn is_import(&self) -> bool {
+        self.files_mode == FilesMode::Import
+    }
+
+    /// Import sources never advertise background synchronization.
+    pub fn badge(&self) -> Option<String> {
+        if self.is_import()
+            && matches!(
+                self.health,
+                RemoteAccountHealth::Healthy
+                    | RemoteAccountHealth::NeverChecked
+                    | RemoteAccountHealth::Syncing
+            )
+        {
+            Some(crate::i18n::t("files-account-import-only"))
+        } else {
+            self.health.badge().map(str::to_owned)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,16 +170,22 @@ pub fn load_in(config_root: &Path, home: Option<&Path>) -> Vec<RemoteAccount> {
 pub const MOUNTS_DIR: &str = "Remote";
 
 /// Name each account's folder exactly as the cloud service does: every
-/// file account's label (enabled or not), made unique in account-id order.
+/// sync file account's label (enabled or not), unique in account-id order.
+/// Import accounts never reserve a folder name or receive a mount.
 fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore, root: &Path) {
     let labels: Vec<(&str, &str)> = store
         .all()
         .iter()
+        .filter(|account| files_mode(account) == Some(FilesMode::Sync))
         .filter(|account| is_file_account(account))
         .map(|account| (account.id.as_str(), account.display_name.as_str()))
         .collect();
     let names = cloud_source::tree::mount_names(&labels);
     for account in projected.iter_mut() {
+        if account.is_import() {
+            account.mount = None;
+            continue;
+        }
         account.mount = names
             .iter()
             .find(|(id, _)| id == account.id.as_str())
@@ -185,6 +216,7 @@ fn is_file_account(account: &Account) -> bool {
 }
 
 fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<RemoteAccount> {
+    let files_mode = files_mode(account)?;
     let kind = match account.type_id.as_str() {
         WEBDAV_TYPE => RemoteAccountKind::WebDav,
         NEXTCLOUD_TYPE => RemoteAccountKind::Nextcloud,
@@ -236,6 +268,7 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
         label,
         host,
         health,
+        files_mode,
         mount: None,
     })
 }
@@ -295,6 +328,47 @@ pub fn account_of_resource(resource: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_accounts_are_visible_without_mounts_or_reserved_mount_names() {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = accounts::AccountStore::new();
+        for (id, mode) in [("a-import", "import"), ("b-sync", "sync")] {
+            let mut account = Account::new(id, WEBDAV_TYPE);
+            account.display_name = "Cloud".into();
+            account.config = serde_json::json!({
+                "server_url": "https://files.example/dav",
+                "files_mode": mode,
+            });
+            store.upsert(account);
+        }
+        store.save_in(root.path()).unwrap();
+
+        let loaded = load_in(root.path(), Some(home.path()));
+        assert_eq!(loaded.len(), 2);
+        let import = loaded.iter().find(|account| account.is_import()).unwrap();
+        assert_eq!(import.id.as_str(), "a-import");
+        assert_eq!(import.mount, None);
+        let sync = loaded.iter().find(|account| !account.is_import()).unwrap();
+        assert_eq!(sync.mount, Some(home.path().join("Remote/Cloud")));
+        assert!(
+            load_in(root.path(), None)
+                .iter()
+                .all(|account| account.mount.is_none())
+        );
+    }
+
+    #[test]
+    fn unknown_files_modes_are_not_projected() {
+        let mut account = Account::new("cloud", GOOGLE_DRIVE_TYPE);
+        account.config = serde_json::json!({"files_mode": "unknown"});
+        assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
+        account.config = serde_json::json!({});
+        let legacy = from_account(&account, &AccountSyncStatusStore::default()).unwrap();
+        assert_eq!(legacy.files_mode, FilesMode::Sync);
+        assert!(!legacy.is_import());
+    }
 
     #[test]
     fn remote_links_use_cloud_daemon_names_when_oauth_provider_labels_collide() {

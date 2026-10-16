@@ -11,6 +11,10 @@
 //!   is a checklist item.
 //! - A line equal to `---` is a divider.
 //! - A line beginning with `> ` is a block quote.
+//! - A quote opened by an alert marker line, `> [!NOTE]`, `> [!TIP]`,
+//!   `> [!IMPORTANT]`, `> [!WARNING]` or `> [!CAUTION]` (GitHub-flavoured
+//!   Markdown's alerts), is a callout of that kind; its text is the quoted
+//!   lines after the marker.
 //! - A line beginning with ` ``` ` opens a fenced code block; the
 //!   matching closing fence terminates it. **v0.1 limitation**: code
 //!   block body is single-line per block.
@@ -91,6 +95,10 @@ pub enum BlockSpec {
     },
     Paragraph(InlineText),
     Quote(InlineText),
+    Callout {
+        kind: ui::widget::CalloutKind,
+        text: InlineText,
+    },
     Heading {
         level: u8,
         text: InlineText,
@@ -694,6 +702,17 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             blocks.push(BlockSpec::divider());
             continue;
         }
+        if let Some(kind) = line
+            .strip_prefix('>')
+            .and_then(ui::widget::CalloutKind::from_marker)
+        {
+            let body = take_quoted_lines(&mut lines);
+            blocks.push(BlockSpec::Callout {
+                kind,
+                text: parse_inline(&body),
+            });
+            continue;
+        }
         let joined = join_hard_breaks(line, &mut lines);
         let line = joined.as_str();
         if let Some(rest) = line.strip_prefix("> ") {
@@ -768,6 +787,27 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
     blocks
 }
 
+/// The quoted lines that follow an alert marker, as one text: a line ending
+/// in a hard break (two spaces) or an empty one breaks the text there, any
+/// other line continues it after a space, as GitHub wraps a quote.
+fn take_quoted_lines(lines: &mut std::iter::Peekable<std::str::Split<'_, char>>) -> String {
+    let mut body = String::new();
+    let mut hard_break = None;
+    while let Some(quoted) = lines.peek().and_then(|next| next.strip_prefix('>')) {
+        let quoted = quoted.strip_prefix(' ').unwrap_or(quoted);
+        let (content, breaks) = quoted
+            .strip_suffix("  ")
+            .map_or((quoted, quoted.is_empty()), |content| (content, true));
+        if let Some(previous) = hard_break {
+            body.push(if previous { '\n' } else { ' ' });
+        }
+        body.push_str(content);
+        hard_break = Some(breaks);
+        let _ = lines.next();
+    }
+    body
+}
+
 // Hard line breaks belong to a single text block. Continuation indentation is
 // presentation syntax, not text, and is removed before parsing inline marks.
 fn join_hard_breaks<'a>(
@@ -809,6 +849,16 @@ fn join_hard_breaks<'a>(
 
 fn serialize_hard_breaks(text: &InlineText, continuation: &str) -> String {
     serialize_inline(text).replace('\n', &format!("  \n{continuation}"))
+}
+
+/// A callout as a GitHub alert: its marker line, then its quoted text.
+fn serialize_callout(out: &mut String, kind: ui::widget::CalloutKind, text: &InlineText) {
+    out.push_str("> ");
+    out.push_str(&kind.marker());
+    if !text.text.is_empty() {
+        out.push_str("\n> ");
+        out.push_str(&serialize_hard_breaks(text, "> "));
+    }
 }
 
 /// Inverse of [`parse`]. Always emits a trailing newline.
@@ -859,6 +909,7 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                 out.push_str("> ");
                 out.push_str(&serialize_hard_breaks(t, "> "));
             }
+            BlockSpec::Callout { kind, text } => serialize_callout(&mut out, *kind, text),
             BlockSpec::Heading { level, text } => {
                 let prefix = match *level {
                     1 => "# ",
@@ -922,6 +973,7 @@ fn block_from_kind(kind: ui::widget::BlockKind, text: &str) -> ui::widget::Block
     match kind {
         BlockKind::Paragraph => Block::paragraph(text),
         BlockKind::Quote => Block::quote(text),
+        BlockKind::Callout(kind) => Block::callout(kind, text),
         BlockKind::Heading(level) => Block::heading(level, text),
         BlockKind::Bullet { indent } => Block::bullet(indent, text),
         BlockKind::Numbered { indent } => Block::numbered(indent, text),
@@ -939,6 +991,10 @@ fn spec_from_kind(kind: &ui::widget::BlockKind, inline: InlineText) -> Option<Bl
     match kind {
         BlockKind::Paragraph => Some(BlockSpec::Paragraph(inline)),
         BlockKind::Quote => Some(BlockSpec::Quote(inline)),
+        BlockKind::Callout(kind) => Some(BlockSpec::Callout {
+            kind: *kind,
+            text: inline,
+        }),
         BlockKind::Heading(level) => Some(BlockSpec::Heading {
             level: *level,
             text: inline,
@@ -1015,6 +1071,7 @@ pub(crate) fn expanded_rows(
             }
             BlockSpec::Paragraph(text) => (BlockKind::Paragraph, text),
             BlockSpec::Quote(text) => (BlockKind::Quote, text),
+            BlockSpec::Callout { kind, text } => (BlockKind::Callout(*kind), text),
             BlockSpec::Heading { level, text } => (BlockKind::Heading(*level), text),
             BlockSpec::Bullet { indent, text } => (BlockKind::Bullet { indent: *indent }, text),
             BlockSpec::Numbered { indent, text } => (BlockKind::Numbered { indent: *indent }, text),
@@ -1112,6 +1169,7 @@ where
         }
         let (BlockSpec::Paragraph(inline)
         | BlockSpec::Quote(inline)
+        | BlockSpec::Callout { text: inline, .. }
         | BlockSpec::Heading { text: inline, .. }
         | BlockSpec::Bullet { text: inline, .. }
         | BlockSpec::Numbered { text: inline, .. }
@@ -1409,6 +1467,49 @@ Last paragraph.
             inline.marks[0].mark,
             Mark::Transclusion(id) if id == target
         ));
+    }
+
+    #[test]
+    fn every_github_alert_round_trips_as_its_callout() {
+        use ui::widget::{BlockKind, CalloutKind};
+        let through_blocks = |md: &str| serialize(&blocks_to_specs(&specs_to_blocks(&parse(md))));
+        for (marker, kind) in [
+            ("NOTE", CalloutKind::Note),
+            ("TIP", CalloutKind::Tip),
+            ("IMPORTANT", CalloutKind::Important),
+            ("WARNING", CalloutKind::Warning),
+            ("CAUTION", CalloutKind::Caution),
+        ] {
+            let markdown = format!("> [!{marker}]\n> Mind the **gap**  \n> twice\n\nAfter\n");
+            let parsed = parse(&markdown);
+            let BlockSpec::Callout {
+                kind: parsed_kind,
+                text,
+            } = &parsed[0]
+            else {
+                panic!("{marker} is a callout: {parsed:?}");
+            };
+            assert_eq!(*parsed_kind, kind);
+            assert_eq!(text.text, "Mind the gap\ntwice");
+            assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
+            assert_eq!(parsed[1], BlockSpec::paragraph("After"));
+            assert_eq!(serialize(&parsed), markdown, "{marker}");
+            assert_eq!(
+                specs_to_blocks(&parsed)[0].kind,
+                BlockKind::Callout(kind),
+                "{marker}"
+            );
+            assert_eq!(through_blocks(&markdown), markdown, "{marker}");
+        }
+        // An empty callout keeps its marker; GitHub's soft-wrapped lines
+        // join with a space; a plain quote stays a quote.
+        assert_eq!(through_blocks("> [!TIP]\n"), "> [!TIP]\n");
+        let wrapped = parse("> [!note]\n> one\n> two\n");
+        assert!(matches!(
+            &wrapped[0],
+            BlockSpec::Callout { kind: CalloutKind::Note, text } if text.text == "one two"
+        ));
+        assert!(matches!(parse("> [!NOPE] x\n")[0], BlockSpec::Quote(_)));
     }
 
     #[test]

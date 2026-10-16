@@ -1414,3 +1414,48 @@ fn a_strip_running_past_its_display_never_widens_the_desktop_around_it() {
         }
     }
 }
+
+/// Print opens Capture Studio on the focused display, at that display's own
+/// size: its picker bars along that display's top and bottom edges. Spread
+/// over the whole desktop of a 2x panel beside a 1x monitor, the bars were
+/// centred on the combined width and hung from its tallest edge, on the
+/// monitor and below the panel's bottom, while the panel only greyed.
+#[test]
+fn capture_studio_opens_on_the_focused_display() {
+    let mut desk = Desk::fixture("mixed-scale-offset");
+    for (display, group) in [(0, ON_PRIMARY[0]), (1, ON_SECOND[0]), (0, ON_PRIMARY[1])] {
+        desk.focus(group);
+        assert_eq!(
+            desk.focused_display(),
+            Some(display),
+            "focus is on {display}"
+        );
+        assert!(
+            desk.fb
+                .host_mut()
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot),
+            "Print opens the studio"
+        );
+        desk.settle();
+        let studio = desk
+            .fb
+            .widget_registry()
+            .get("shell.capture-studio")
+            .copied()
+            .expect("the studio is a target");
+        let expected = desk.display(display);
+        assert!(
+            (studio.x0 - expected.x0).abs() < 0.5
+                && (studio.y0 - expected.y0).abs() < 0.5
+                && (studio.width() - expected.width()).abs() < 0.5
+                && (studio.height() - expected.height()).abs() < 0.5,
+            "the studio {studio:?} covers display {display} {expected:?}"
+        );
+        desk.dispatch(
+            &ui::synthetic_input::named_key(NamedKey::Escape),
+            ModifiersState::empty(),
+        );
+        desk.settle();
+        assert!(!desk.fb.host().capture_studio_open(), "Escape closes it");
+    }
+}

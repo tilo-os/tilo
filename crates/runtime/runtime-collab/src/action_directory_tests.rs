@@ -75,6 +75,7 @@ fn action_row() -> ActionDirectoryRow {
         action: Some(descriptor.action.clone()),
         has_children: false,
         visibility: Some(RowVisibility {
+            governing_kind: Some(OperationKind::Effect),
             action: descriptor.action.clone(),
             contract,
         }),
@@ -93,6 +94,7 @@ fn container_row() -> ActionDirectoryRow {
         descriptor: None,
         has_children: true,
         visibility: Some(RowVisibility {
+            governing_kind: Some(tilo_actions::OperationKind::View),
             action: "open".into(),
             contract: ActionContract::view(),
         }),
@@ -230,6 +232,25 @@ fn a_malformed_visibility_contract_refuses_the_page() {
         message.contains("`files.root`/``") && message.contains("visibility contract"),
         "{message}"
     );
+}
+
+#[test]
+fn visibility_governing_kind_is_optional_for_legacy_publishers_but_never_guessed() {
+    let decoded = round_trip(&page(vec![container_row()]), |mut rows| {
+        rows.reborrow().get(0).set_visibility_governing_kind("");
+    })
+    .unwrap();
+    assert_eq!(
+        decoded.rows[0].visibility.as_ref().unwrap().governing_kind,
+        None
+    );
+    let error = round_trip(&page(vec![container_row()]), |mut rows| {
+        rows.reborrow()
+            .get(0)
+            .set_visibility_governing_kind("public-read");
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("governing kind"), "{error}");
 }
 
 #[test]

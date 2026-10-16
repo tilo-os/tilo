@@ -2,7 +2,9 @@
 //! 2x2 table) in the word processor, save it as `.docx`, reopen, and verify the
 //! structure (block kinds, text, inline marks) round-tripped through the `tilo-doc`
 //! `DocxCodec` + the editor's file I/O — exactly as the integrated app does.
-//! Mirrors `e2e_odt.rs` for the Microsoft Word format.
+//! Mirrors `e2e_odt.rs` for the Microsoft Word format. Frozen external and
+//! LibreOffice-authored inputs below also exercise the production framework host,
+//! typed resource edits, Save As and a fresh application launch (not just codecs).
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +13,9 @@ use word_processor::WpFormat;
 use word_processor::actions::{MarkVal, RegionKind, RichTextAction, Span};
 
 use crate::support::{apply, last_block, launched, open, save_as, snapshot};
+
+#[path = "e2e_docx/compatibility.rs"]
+mod compatibility;
 
 fn temp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();

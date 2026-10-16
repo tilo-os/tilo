@@ -36,6 +36,8 @@ fs-protocol = { path = "../../crates/system/fs-protocol" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+# Credential-free cloud browsing and independent streamed imports.
+tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 # Share- and recipient-control frames.
 wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"] }

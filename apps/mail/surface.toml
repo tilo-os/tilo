@@ -30,7 +30,7 @@ fields = [
   { path = "draft.html_body", type = "Option<String>" },
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
-  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:1ce89d3350d639da" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:228bfc4bf4f5e079" },
   { path = "outbox", type = "Outbox<Outgoing>" },
   { path = "server", type = "Outbox<ServerUpdate>" },
 ]

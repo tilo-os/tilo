@@ -18,25 +18,78 @@ use std::sync::{Mutex, PoisonError};
 use super::sys;
 use crate::job::spec::{IdBlock, IdMap};
 
-/// The ids an idmapped mount translates: the files' owner on the host and
-/// whom the job shows them as (its own host ids).
+/// The ids an idmapped mount translates: the files' owner on the host, the
+/// job's own id in its namespace, and the job's block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Translation {
     owner_uid: u32,
     owner_gid: u32,
-    job_uid: u32,
-    job_gid: u32,
+    inside_uid: u32,
+    inside_gid: u32,
+    block: IdBlock,
 }
 
 impl Translation {
     fn of(ids: &IdMap, block: IdBlock) -> Option<Self> {
-        Some(Self {
+        // The job's own ids must be in its block (checked when planning).
+        (ids.inside_uid < block.count && ids.inside_gid < block.count).then_some(Self {
             owner_uid: ids.outside_uid,
             owner_gid: ids.outside_gid,
-            job_uid: block.uid.checked_add(ids.inside_uid)?,
-            job_gid: block.gid.checked_add(ids.inside_gid)?,
+            inside_uid: ids.inside_uid,
+            inside_gid: ids.inside_gid,
+            block,
         })
     }
+}
+
+/// The map of an idmapped mount, as `uid_map` takes it: every id on disk
+/// below `count` shows as the job's id of the same number (host id
+/// `first + k`), so files and ACL entries of any of the job's users keep
+/// their owner across jobs; but the files' owner on the host shows as the
+/// job's own id (`inside`), and the id `inside` on disk takes the owner's
+/// place, so the map stays one to one. An owner at or past `count` takes
+/// `inside`'s place, which then has no mapping.
+fn map_lines(owner: u32, inside: u32, first: u32, count: u32) -> String {
+    use std::fmt::Write as _;
+    // (disk id, host id, length), in order of disk id.
+    let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+    let identity = |from: u32, to: u32, ranges: &mut Vec<(u32, u32, u32)>| {
+        if from < to {
+            ranges.push((from, first.saturating_add(from), to.saturating_sub(from)));
+        }
+    };
+    if owner == inside {
+        identity(0, count, &mut ranges);
+    } else {
+        // The ids on disk that leave the identity: `owner` (if in range)
+        // and `inside`.
+        let mut special = vec![inside];
+        if owner < count {
+            special.push(owner);
+        }
+        special.sort_unstable();
+        let mut at = 0;
+        for k in special {
+            identity(at, k, &mut ranges);
+            if k == inside {
+                if owner < count {
+                    ranges.push((inside, first.saturating_add(owner), 1));
+                }
+            } else {
+                ranges.push((owner, first.saturating_add(inside), 1));
+            }
+            at = k.saturating_add(1);
+        }
+        identity(at, count, &mut ranges);
+        if owner >= count {
+            ranges.push((owner, first.saturating_add(inside), 1));
+        }
+    }
+    let mut lines = String::new();
+    for (disk, host, len) in ranges {
+        let _ = writeln!(lines, "{disk} {host} {len}");
+    }
+    lines
 }
 
 /// User namespaces that carry each translation, kept for the process's
@@ -99,11 +152,11 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
     let made = (|| {
         std::fs::write(
             format!("/proc/{pid}/uid_map"),
-            format!("{} {} 1\n", t.owner_uid, t.job_uid),
+            map_lines(t.owner_uid, t.inside_uid, t.block.uid, t.block.count),
         )?;
         std::fs::write(
             format!("/proc/{pid}/gid_map"),
-            format!("{} {} 1\n", t.owner_gid, t.job_gid),
+            map_lines(t.owner_gid, t.inside_gid, t.block.gid, t.block.count),
         )?;
         let ns = std::fs::File::open(format!("/proc/{pid}/ns/user"))?;
         Ok(OwnedFd::from(ns))
@@ -163,4 +216,38 @@ pub fn tree(path: &Path, userns: BorrowedFd<'_>) -> io::Result<OwnedFd> {
         return Err(io::Error::last_os_error());
     }
     Ok(fd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_lines;
+
+    #[test]
+    fn a_root_owner_and_a_root_job_map_the_block_as_it_is() {
+        assert_eq!(map_lines(0, 0, 100_000, 65536), "0 100000 65536\n");
+    }
+
+    #[test]
+    fn a_root_owner_and_a_nested_job_swap_their_two_ids() {
+        assert_eq!(
+            map_lines(0, 1000, 100_000, 65536),
+            "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n"
+        );
+    }
+
+    #[test]
+    fn an_owner_past_the_block_takes_the_jobs_place() {
+        assert_eq!(
+            map_lines(70_000, 0, 100_000, 65536),
+            "1 100001 65535\n70000 100000 1\n"
+        );
+    }
+
+    #[test]
+    fn an_owner_inside_the_block_swaps_with_a_root_job() {
+        assert_eq!(
+            map_lines(1000, 0, 100_000, 65536),
+            "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n"
+        );
+    }
 }

@@ -530,6 +530,9 @@ struct ActionDirectoryRow {
   # Bounded declarative metadata. The shell parses this into its own themed
   # primitives; application drawing code never crosses this boundary.
   resourcePresentationJson @9 :Text;
+  # Empty for legacy publishers. Resource-only rows retain the operation
+  # governing disclosure, not just its Read policy contract.
+  visibilityGoverningKind @10 :Text;
 }
 
 struct ActionDirectoryPage {

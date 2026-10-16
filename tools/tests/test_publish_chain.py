@@ -5,6 +5,7 @@ the dry-run mode (TILO_PUBLISH_DRY_RUN), so nothing reaches a registry or KMS.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -88,9 +89,28 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["sign-cand"]["id_token"], ["tilo-dev-signing"])
         self.assertEqual(c["sign-cand"]["env"], {"K": "dev", "TILO_DEV_SIGNING": "1"})
         self.assertIn("sign-cand", c["publish-cand"]["needs"])
+        # Beside a release: main's candidates get sign-dev-<name>, stable keeps the release key.
+        c = checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
+                    "release": ["sha-{commit}"], "dev_signed": True, "tlog": True,
+                    "build": {"run": "build {out}"}})
+        self.assertEqual(c["sign-dev-both"]["on"], ["main"])
+        self.assertEqual(c["sign-dev-both"]["id_token"], ["tilo-dev-signing"])
+        self.assertNotIn("TILO_SIGN_TLOG", c["sign-dev-both"]["env"])
+        self.assertEqual(c["sign-both"]["on"], ["stable"])
+        self.assertEqual(c["sign-both"]["id_token"], ["sts.amazonaws.com"])
+        self.assertEqual(c["publish-both"]["optional_needs"], ["sign-both", "sign-dev-both"])
+        self.assertNotIn("sign-both", c["publish-both"]["needs"])
         with self.assertRaises(products.ProductError):
-            checks({"family": "f", "name": "both", "repository": "r/both", "dev": ["{commit}"],
-                    "release": ["sha-{commit}"], "dev_signed": True, "build": {"run": "build {out}"}})
+            checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["sha-{commit}"],
+                    "dev_signed": True, "build": {"run": "build {out}"}})
+        # Development provenance is attested with the development key, without a log entry.
+        c = checks({"family": "f", "name": "cand", "repository": "r/cand", "dev": ["{commit}"],
+                    "dev_signed": True, "build": {"run": "build {out}"},
+                    "provenance": {"run": "prov {dir}", "needs": ["image-other"]}})
+        self.assertEqual(c["provenance-cand"]["needs"], ["image-cand", "image-other"])
+        self.assertIn("oci-attest.sh r/cand /target/publish/cand", c["sign-cand"]["run"])
+        self.assertIn("provenance-cand", c["sign-cand"]["needs"])
+        self.assertNotIn("/target/publish/cand/attestation.bundle.json", c["sign-cand"]["outputs"])
 
     def test_release_only_products_need_their_signature(self):
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
@@ -115,6 +135,41 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["publish-m"]["needs"], ["image-m"])
         self.assertIn("/target/publish/m/index 'sha-{commit}'", c["publish-m"]["run"])
 
+    def test_an_index_with_children_signs_and_publishes_each_image(self):
+        c = checks({"family": "f", "name": "b", "repository": "r/b", "dev": ["dev-{commit}"],
+                    "release": ["{commit}", "{rust}"], "arches": ["x86_64", "aarch64"], "index": True,
+                    "children": True, "gates": ["canary"], "build": {"run": "b {arch} {out}"}})
+        sign = c["sign-b"]["run"].splitlines()
+        self.assertEqual([line.rsplit(" ", 1)[1] for line in sign],
+                         ["/target/publish/b/x86_64", "/target/publish/b/aarch64", "/target/publish/b/index"])
+        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary"])
+        publish = c["publish-b"]["run"].splitlines()
+        self.assertEqual(publish[0], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/x86_64 "
+                                     "'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'")
+        self.assertEqual(publish[2], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/index "
+                                     "'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'")
+        self.assertIn("/target/publish/b/aarch64/receipt.json", c["publish-b"]["outputs"])
+        with self.assertRaisesRegex(products.ProductError, "children are an index's"):
+            checks({"family": "f", "name": "x", "repository": "r", "dev": ["t"], "children": True,
+                    "arches": ["x86_64", "aarch64"], "build": {"run": "b"}})
+
+    def test_provenance_is_written_without_secrets_and_attested_when_signing(self):
+        c = checks({"family": "f", "name": "k", "repository": "r/k", "release": ["sha-{commit}-{arch}"],
+                    "arches": ["x86_64", "aarch64"], "tlog": True, "build": {"run": "b {arch} {out}"},
+                    "provenance": {"run": "prov {dir}", "inputs": ["x"]}})
+        prov = c["provenance-k"]
+        self.assertEqual(prov["needs"], ["image-k-x86_64", "image-k-aarch64"])
+        self.assertEqual(prov["outputs"], ["/target/publish/k/x86_64/provenance.json",
+                                           "/target/publish/k/aarch64/provenance.json"])
+        self.assertNotIn("id_token", prov)
+        self.assertNotIn("on", prov)
+        self.assertIn("provenance-k", c["sign-k"]["needs"])
+        self.assertEqual(c["sign-k"]["run"].count("oci-attest.sh"), 2)
+        self.assertIn("/target/publish/k/aarch64/attestation.json", c["sign-k"]["outputs"])
+        with self.assertRaisesRegex(products.ProductError, "needs tlog"):
+            checks({"family": "f", "name": "k", "repository": "r/k", "release": ["t"],
+                    "build": {"run": "b"}, "provenance": {"run": "p"}})
+
     def test_per_architecture_publications_without_an_index(self):
         c = checks({"family": "f", "name": "p", "repository": "r/p", "release": ["sha-{commit}-{arch}"],
                     "arches": ["x86_64", "aarch64"], "build": {"run": "b {arch} {out}"}})
@@ -122,6 +177,51 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("/target/publish/p/x86_64 'sha-{commit}-x86_64'", run)
         self.assertIn("/target/publish/p/aarch64 'sha-{commit}-aarch64'", run)
         self.assertEqual(c["sign-p"]["run"].count("oci-sign.sh"), 2)
+
+    def test_a_derived_release_is_signed_and_published_in_place_of_the_build(self):
+        c = checks({"family": "f", "name": "web", "repository": "r/web", "dev": ["dev-{commit}"],
+                    "release": ["sha-{commit}"],
+                    "build": {"containerfile": "x/Containerfile", "test": ["test {out}/image.oci.tar"]},
+                    "release_build": {"name": "carry-web", "run": "carry {out} {dir}/release",
+                                      "inputs": ["carry.sh"], "outputs": ["{dir}/release/extra.json"],
+                                      "cache": False, "cpus": 4}})
+        self.assertEqual(sorted(c), ["carry-web", "image-web", "publish-web", "sign-web"])
+        carry = c["carry-web"]
+        self.assertEqual(carry["run"], "carry /target/publish/web /target/publish/web/release")
+        self.assertEqual(carry["needs"], ["image-web"])
+        self.assertEqual(carry["on"], ["stable"])
+        self.assertEqual(carry["outputs"], ["/target/publish/web/release/image.oci.tar",
+                                            "/target/publish/web/release/digest",
+                                            "/target/publish/web/release/extra.json"])
+        self.assertIn("carry.sh", carry["inputs"])
+        self.assertEqual((carry["isolation"], carry["cache"], carry["cpus"], carry["default"]),
+                         ("vm", False, 4, False))
+        self.assertNotIn("id_token", carry)
+        sign = c["sign-web"]
+        self.assertEqual(sign["needs"], ["carry-web"])
+        self.assertEqual(sign["run"], "bash tools/ci/publish/oci-sign.sh r/web /target/publish/web/release")
+        # t keys a need of an uncached step by what that step produced this run, so a cached
+        # signature is only ever over the same derived image.
+        self.assertNotIn("cache", sign)
+        publish = c["publish-web"]
+        # Main publishes the build it tested; stable waits for the derived image and its signature.
+        self.assertEqual(publish["needs"], ["image-web"])
+        self.assertEqual(publish["optional_needs"], ["sign-web", "carry-web"])
+        self.assertEqual(publish["env"], {"TILO_RELEASE_OUT": "/target/publish/web/release"})
+        self.assertIn("oci-publish.sh any r/web /target/publish/web 'dev:dev-{commit}'", publish["run"])
+        self.assertEqual(publish["outputs"], ["/target/publish/web/receipt.json"])
+        c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
+                    "build": {"run": "b {out}"}, "release_build": {"name": "derive-rel", "run": "d"}})
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel"])
+        for bad, why in (({"dev": ["t"]}, "without release tags"),
+                         ({"release": ["t"], "arches": ["x86_64", "aarch64"]}, "one architecture"),
+                         ({"release": ["t"], "anonymous": True}, "not a derived release")):
+            with self.assertRaisesRegex(products.ProductError, why):
+                checks({"family": "f", "name": "x", "repository": "r", "build": {"run": "b"},
+                        "release_build": {"name": "d", "run": "d"}, **bad})
+        with self.assertRaisesRegex(products.ProductError, "may not set"):
+            checks({"family": "f", "name": "x", "repository": "r", "release": ["t"], "build": {"run": "b"},
+                    "release_build": {"name": "d", "run": "d", "on": ["main"]}})
 
     def test_products_without_tags_are_only_built(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "build": {"run": "b {out}"}})
@@ -217,6 +317,18 @@ echo "cosign $*" >> "$FAKE_LOG"
 case $1 in
   generate-key-pair) : > cosign.key; echo pub > cosign.pub ;;
   sign-blob) prev=; for a; do [ "$prev" = --output-signature ] && echo sig > "$a"; prev=$a; done ;;
+  attest-blob) python3 - "$@" <<'PY'
+import base64, json, sys
+args = sys.argv[1:]
+value = lambda flag: args[args.index(flag) + 1]
+statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1",
+             "subject": [{"name": args[-1].rsplit("/", 1)[-1], "digest": {"sha256": value("--hash")}}],
+             "predicate": json.load(open(value("--predicate")))}
+payload = base64.b64encode(json.dumps(statement, separators=(",", ":")).encode()).decode()
+print(json.dumps({"payloadType": "application/vnd.in-toto+json", "payload": payload,
+                  "signatures": [{"keyid": "", "sig": "c2ln"}]}, separators=(",", ":")))
+PY
+  ;;
 esac
 '''
 
@@ -241,7 +353,7 @@ class ScriptTests(unittest.TestCase):
         (self.tmp / "scratch").mkdir()
 
     @staticmethod
-    def archive(path: Path) -> str:
+    def archive(path: Path, config: bytes = b'{"architecture":"amd64","os":"linux"}') -> str:
         blobs = {}
 
         def blob(data: bytes) -> str:
@@ -249,7 +361,7 @@ class ScriptTests(unittest.TestCase):
             blobs[digest] = data
             return digest
 
-        config = blob(b'{"architecture":"amd64","os":"linux"}')
+        config = blob(config)
         manifest = json.dumps({"schemaVersion": 2, "config": {"digest": config, "size": 1}, "layers": []},
                               separators=(",", ":")).encode()
         digest = blob(manifest)
@@ -304,6 +416,38 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(self.receipt()["signed"])
         self.assertIn("cosign verify-blob", self.log.read_text())
 
+    def test_a_derived_release_publishes_its_own_archive_with_the_receipt_in_out(self):
+        release = self.tmp / "release"
+        release.mkdir()
+        derived = self.archive(release / "image.oci.tar", b'{"architecture":"amd64","os":"linux","derived":1}')
+        self.assertNotEqual(derived, self.digest)
+        (release / "digest").write_text(derived + "\n")
+        (release / "receipt-extra.json").write_text('{"replaces":"r.example/img@sha256:1","carriedVersion":"abc"}\n')
+        self.env["TILO_RELEASE_OUT"] = str(release)
+        # Main publishes the build, unsigned, whatever the release directory holds.
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["digest"], self.digest)
+        # Stable publishes the derived image with its own signature, not the build's, and records
+        # what the step added.
+        self.signed()
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="stable")
+        self.assertIn("signed only", result.stderr)
+        (release / "payload.json").write_text((self.out / "payload.json").read_text().replace(self.digest, derived))
+        (release / "signature").write_text("sig")
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = self.receipt()
+        self.assertEqual((receipt["digest"], receipt["image"]), (derived, f"r.example/img@{derived}"))
+        self.assertEqual((receipt["replaces"], receipt["carriedVersion"]), ("r.example/img@sha256:1", "abc"))
+        self.assertFalse((release / "receipt.json").exists())
+        (release / "receipt-extra.json").write_text('{"a": 1}\n{"b": 2}\n')
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertIn("one JSON object on one line", result.stderr)
+        (release / "image.oci.tar").unlink()
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertIn("did not run", result.stderr)
+
     def test_a_signature_over_another_image_is_refused(self):
         (self.out / "payload.json").write_text('{"critical":{"identity":{"docker-reference":"r.example/other"}}}')
         (self.out / "signature").write_text("sig")
@@ -328,6 +472,69 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("release:{version}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["1.2.3"])
+
+    def test_rust_tags_name_the_pinned_toolchain(self):
+        self.signed()
+        channel = re.search(r'^channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(), re.M)[1]
+        result = self.publish("release:{commit}", "release:{rust}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], [COMMIT, channel])
+
+    def provenance(self, digest: str | None = None) -> None:
+        (self.out / "provenance.json").write_text(json.dumps({
+            "buildDefinition": {"internalParameters": {"expectedReleaseDigest": digest or self.digest},
+                                "resolvedDependencies": [{"uri": "git+ssh://code.tilo.so/tilo/tilo@{commit}"}]},
+            "runDetails": {"builder": {"id": "t"}}}))
+
+    def test_provenance_is_attested_for_the_build_and_attached(self):
+        self.provenance()
+        for script in ("oci-sign.sh", "oci-attest.sh"):
+            result = self.run_script(script, "r.example/img", str(self.out), ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((self.out / "attestation.json").read_text())
+        statement = json.loads(base64.b64decode(envelope["payload"]))
+        self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
+        self.assertIn(f"tilo@{COMMIT}", json.dumps(statement["predicate"]))
+        self.assertNotIn("awskms", self.log.read_text())
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+
+    def test_development_provenance_is_attested_on_main_only(self):
+        self.provenance()
+        env = {"TILO_DEV_SIGNING": "1"}
+        for script in ("oci-sign.sh", "oci-attest.sh"):
+            result = subprocess.run(["bash", str(PUBLISH / script), "r.example/img", str(self.out)],
+                                    env={**self.env, **env, "T_REF": "main"}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.out / "attestation.json").exists())
+        self.assertFalse((self.out / "attestation.bundle.json").exists())
+        result = self.publish("dev:{commit}", ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+        result = subprocess.run(["bash", str(PUBLISH / "oci-attest.sh"), "r.example/img", str(self.out)],
+                                env={**self.env, **env, "T_REF": "stable"}, capture_output=True, text=True)
+        self.assertIn("attests main's candidates only", result.stderr)
+
+    def test_provenance_of_another_image_is_refused(self):
+        self.provenance("sha256:" + "1" * 64)
+        self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
+        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="stable")
+        self.assertIn("not for " + self.digest, result.stderr)
+        result = self.run_script("oci-attest.sh", "r.example/img", str(self.out), ref="main")
+        self.assertIn("only releases are attested", result.stderr)
+
+    def test_once_tags_never_move(self):
+        self.signed()
+        (self.out / "fingerprint").write_text("ab" * 32 + "\n")
+        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["set-" + "ab" * 32])
+        result = self.publish("release:once:set-{fingerprint}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is published already", result.stdout)
+        self.assertTrue(self.receipt()["existing"])
+        self.assertEqual(self.receipt()["digest"], self.digest)
 
     def test_an_archive_that_is_not_the_build_is_refused(self):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")

@@ -49,7 +49,7 @@ pub fn build(
             }
         });
     list.set_filter(query);
-    Box::new(list)
+    list.into_widget()
 }
 
 /// The sections of the list, in render order.

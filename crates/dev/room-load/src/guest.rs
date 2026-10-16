@@ -57,6 +57,9 @@ pub struct Shared {
     pub sent: std::sync::Mutex<Vec<String>>,
 }
 
+/// Posts one historian has sent and not yet seen committed.
+const HISTORY_IN_FLIGHT: usize = 8;
+
 /// The chat record every guest writes, in the last room it joined.
 pub const CHAT_RECORD: &str = "general";
 /// The field of the chat record a guest's message sets.
@@ -186,6 +189,75 @@ pub async fn admit(
         }
     }
     Ok((key, cert, joined.rooms))
+}
+
+/// One guest who wrote the room's chat before the run's guests arrive: it
+/// joins, posts `count` messages as fast as its page sends them, waits until
+/// each is committed, and leaves. The chat's long history a later guest is
+/// sent when it joins.
+///
+/// # Errors
+///
+/// It was not admitted, not ready, or its posts were not all committed in
+/// time.
+pub async fn historian(shared: Arc<Shared>, index: usize, count: usize) -> Result<(), String> {
+    let name = format!("Historian {index}");
+    let request = serde_json::json!({ "userPublicKey": "", "displayName": name });
+    let (key, cert, rooms) = admit(&shared, "/join", request, &name).await?;
+    let peer = PeerHandle::start(
+        PeerConfig {
+            host: Host::Https(shared.relay.clone()),
+            cert,
+            host_cert: shared.host_cert.clone(),
+            revocations: RevocationList::new(),
+            watching: false,
+        },
+        Arc::new(key),
+        Arc::new(MemoryPeerStore::default()),
+    );
+    for room in &rooms {
+        peer.join(room.workspace_id)?;
+    }
+    let route = rooms
+        .last()
+        .map(|room| DocumentRoute {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: room.room.clone(),
+            record: CHAT_RECORD.into(),
+        })
+        .ok_or("no room")?;
+    let deadline = Instant::now() + Duration::from_secs(3600);
+    let (mut ready, mut committed, mut sent) = (0usize, 0usize, 0usize);
+    while committed < count {
+        for event in peer.drain() {
+            match event {
+                PeerEvent::Ready { .. } => ready += 1,
+                PeerEvent::Committed { .. } => committed += 1,
+                _ => {}
+            }
+        }
+        if Instant::now() > deadline {
+            peer.close();
+            return Err(format!(
+                "{name}: {committed} of {count} posts committed in time"
+            ));
+        }
+        // A few in flight at a time: a page with hundreds outstanding sends them
+        // all again on every reconnect, and the host spends itself on copies.
+        while ready >= rooms.len() && sent < count && sent < committed + HISTORY_IN_FLIGHT {
+            let (message, hash) = chat_message(0, shared.args.chat_bytes).ok_or("a message")?;
+            peer.publish(route.clone(), &DocumentMutation::Incremental(message))?;
+            shared
+                .sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(hash);
+            sent += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    peer.close();
+    Ok(())
 }
 
 /// Run one guest until the run stops.

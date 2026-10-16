@@ -1,3 +1,52 @@
+#[test]
+fn directory_disclosure_prefers_document_reads_to_private_views() {
+    let view = ActionSpec::operation(
+        "render",
+        "Private window",
+        OperationKind::View,
+        COUNTER_TYPE,
+        &CounterAction::Bump,
+    )
+    .unwrap();
+    let read = ActionSpec::operation(
+        "read",
+        "Read document",
+        OperationKind::View,
+        COUNTER_TYPE,
+        &CounterAction::Bump,
+    )
+    .unwrap()
+    .reads_document();
+    let resource = Resource::new("readable", "test.document", "Document")
+        .with_action(view)
+        .with_action(read);
+    let (app, _) = declared_directory(0);
+    let row = app.directory_resource_row(&resource, "", true).unwrap();
+    assert_eq!(row.visibility.as_ref().unwrap().action, "read");
+    let resources = vec![resource];
+    let descriptors = tilo_actions::door::survey(&resources);
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| None,
+    );
+    assert_eq!(
+        snapshot.roots[0].visibility.as_ref().unwrap().action,
+        "read"
+    );
+    // An explicit private disclosure binding must never be replaced by a
+    // different action merely because that action is remotely readable.
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| Some(tilo_actions::ActionAddress::new("readable", "render")),
+    );
+    assert_eq!(
+        snapshot.roots[0].visibility.as_ref().unwrap().action,
+        "render"
+    );
+}
+
 // No bounded page or exact-resource override: this is the ordinary app declaration API.
 struct DeclaredDirectory {
     calls: std::rc::Rc<Cell<usize>>,
@@ -316,8 +365,12 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             root.rows[0].descriptor.as_ref().unwrap().operation_kind,
             tilo_actions::OperationKind::Effect
         );
-        let contract = &root.rows[0].visibility.as_ref().unwrap().contract;
-        assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
+        let visibility = root.rows[0].visibility.as_ref().unwrap();
+        assert_eq!(
+            visibility.governing_kind,
+            Some(tilo_actions::OperationKind::Effect)
+        );
+        assert_eq!(visibility.contract.kind, tilo_actions::ActionKind::Undoable);
     }
 
     // Case `directory_snapshot_parent_merges_exact_provider_extensions_without_duplicates`.
@@ -349,6 +402,13 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             ]
         );
         assert_eq!(rows[0].resource_label, "Published label");
+        for row in &rows {
+            let visibility = row.visibility.as_ref().unwrap();
+            assert!(visibility.governing_kind.is_some());
+            if let Some(descriptor) = &row.descriptor {
+                assert_eq!(visibility.governing_kind, Some(descriptor.operation_kind));
+            }
+        }
         let contract = &rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(contract.kind, tilo_actions::ActionKind::Read);
         let revision = app.action_directory_revision();
