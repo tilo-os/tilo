@@ -537,16 +537,18 @@ mod tests {
         });
 
         // A layout-only write: the watch stays armed and unwoken, unless
-        // another test of this process announced meanwhile.
+        // another test of this process announced meanwhile. An announcement
+        // counts the epoch up before it wakes, so whether one came is read
+        // after the wait: read before it, one landing during the wait woke
+        // the watch and failed the test in a parallel run.
         let before = watch.arm();
         handle.write().desktop.external_revision = 9;
         drop(handle.try_write().expect("nobody holds the tree"));
-        if tilo_identity_host::policy_change::epoch() == before {
-            assert!(
-                wakes.recv_timeout(Duration::from_millis(200)).is_err(),
-                "a write that changed no policy woke the watch"
-            );
-        }
+        let woke = wakes.recv_timeout(Duration::from_millis(200)).is_ok();
+        assert!(
+            !woke || tilo_identity_host::policy_change::epoch() != before,
+            "a write that changed no policy woke the watch"
+        );
 
         // A new owner: announced.
         let _ = watch.arm();
