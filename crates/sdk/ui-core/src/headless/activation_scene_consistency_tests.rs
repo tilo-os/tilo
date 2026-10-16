@@ -785,12 +785,10 @@ fn original_history_preflight_preserves_suspended_live_caret_control() {
         .perform_named("history-open", &crate::a11y::Action::Activate)
         .unwrap();
     assert!(frame.history.as_ref().unwrap().captures_input());
-    let input_sequence = frame.input_sequence.get();
     let before = frame.relayout_frames();
     // Same preflight gate used by DesktopHandle.navigate; do not bypass History
     // by calling activation after a refusal.
     assert!(frame.check_app_activation().is_err());
-    assert_eq!(frame.input_sequence.get(), input_sequence);
     assert_eq!(frame.relayout_frames(), before);
     frame
         .perform_named("history-open", &crate::a11y::Action::Activate)

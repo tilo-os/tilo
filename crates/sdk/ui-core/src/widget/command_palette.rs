@@ -2608,13 +2608,13 @@ impl crate::widget::controls::ActionControls for CommandPalette {
 }
 
 impl CommandPalette {
-    /// For hosts rendering the palette as a free-floating overlay.
-    /// `handle_event` ignores the taffy tree + node id, so a throwaway
-    /// single-leaf tree drives the exact same logic.
-    pub fn handle_overlay_key(
+    /// Drive `handle_event` without a layout: it ignores the taffy tree +
+    /// node id, so a throwaway single-leaf tree runs the exact same logic.
+    #[cfg(test)]
+    fn handle_overlay_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
@@ -2627,7 +2627,7 @@ impl CommandPalette {
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers,
+                modifiers: &modifiers,
                 state: state.reborrow(),
                 path,
                 handled: &mut handled,
@@ -2898,7 +2898,7 @@ mod tests {
 
             assert!(p.handle_overlay_key(
                 &crate::synthetic_input::cursor_moved(row.center().x, row.center().y),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -2909,7 +2909,7 @@ mod tests {
             );
             assert!(p.handle_overlay_key(
                 &crate::synthetic_input::mouse_press(),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -3269,7 +3269,7 @@ mod tests {
                     "東京".into(),
                     Some(("東".len(), "東".len())),
                 )),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
@@ -3295,7 +3295,7 @@ mod tests {
 
             assert!(palette.handle_overlay_key(
                 &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-                &modifiers,
+                modifiers,
                 &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
