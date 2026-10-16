@@ -234,7 +234,12 @@ pub(in crate::state) fn restore(
         None
     };
     if let Some(exact) = &core.exact_admissions {
-        for (key, _) in exact.iter() {
+        let keys: Vec<_> = exact
+            .iter()
+            .map(|(key, _)| key.clone())
+            .chain(exact.marks().map(|(writer, mark)| writer.at(mark)))
+            .collect();
+        for key in &keys {
             let floor = core
                 .documents
                 .iter()

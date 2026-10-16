@@ -290,6 +290,7 @@ impl StatePeer {
                 .exact_admissions
                 .get(&local.admission.key)
                 .is_some()
+            || self.core.exact_admissions.covers(&local.admission.key)
         {
             return Err(
                 "recovery projection must be a reserved transmission, not a local admission".into(),
