@@ -77,7 +77,9 @@ Agent runtime -> Tilo action/resource gateway -> collaboration broker -> app
 does not decide Tilo permissions or own downloads. Provider profiles store a
 stable id, label, endpoint kind, base URL, model alias, enabled state and a
 reference to a secret in the accounts vault. Agents connect only to the Tilo
-gateway; provider credentials never enter their sandbox.
+gateway; provider credentials never enter their sandbox. Existing host-side
+OpenAI-compatible planners can opt in to [request presets](agent-model-presets.md);
+these provider hints do not change credentials, context selection or authority.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
