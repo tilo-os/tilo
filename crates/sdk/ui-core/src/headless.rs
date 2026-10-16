@@ -399,8 +399,6 @@ pub struct FrameHarness {
     pending_app_activation: Option<crate::application::InstanceId>,
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
-    input_sequence: std::cell::Cell<u64>,
-    observed_input_owner: std::cell::RefCell<Option<String>>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
@@ -1560,8 +1558,6 @@ impl FrameHarness {
             active_input_instance: None,
             pending_app_activation: None,
             saved_instance_focus: HashMap::new(),
-            input_sequence: std::cell::Cell::new(0),
-            observed_input_owner: std::cell::RefCell::new(None),
             focus_before_trap: None,
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
@@ -4438,8 +4434,6 @@ impl FrameHarness {
             }
         }
         self.set_focused(target);
-        self.input_sequence
-            .set(self.input_sequence.get().wrapping_add(1));
         self.remember_app_focus();
         self.pending_app_activation = Some(instance);
         self.relayout();
@@ -4533,58 +4527,6 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// Mount-local token for asynchronous input. Includes changes that do not
-    /// pass through explicit activation (pointer, semantics, modal, removal).
-    pub fn input_ownership_sequence(&self) -> u64 {
-        let owner = if self.global_search_query().is_some() {
-            Some("system-search".into())
-        } else if self.caller_palette.palette.is_some() {
-            Some("caller-palette".into())
-        } else {
-            self.focused.and_then(|node| {
-                self.inspect_node(node, |widget| {
-                    fn focused_semantics(node: &crate::a11y::AccessNode, keys: &mut Vec<String>) {
-                        if node.state.focused {
-                            if let Some(key) = node
-                                .action_target
-                                .as_ref()
-                                .or(node.semantic_key.as_ref())
-                                .or(node.name.as_ref())
-                            {
-                                keys.push(key.clone());
-                            }
-                        }
-                        for child in &node.children {
-                            focused_semantics(child, keys);
-                        }
-                    }
-                    let semantics = widget.accessibility();
-                    let control = widget
-                        .test_id()
-                        .map(str::to_owned)
-                        .or_else(|| semantics.as_ref().and_then(|a| a.semantic_key.clone()))
-                        .unwrap_or_else(|| widget.name().to_owned());
-                    let mut focused = Vec::new();
-                    if let Some(semantics) = semantics {
-                        focused_semantics(&semantics, &mut focused);
-                    }
-                    let control = format!("{control}:{focused:?}");
-                    self.bindings.binding_for(node).map_or_else(
-                        || control.clone(),
-                        |binding| format!("{}:{control}", binding.lifetime_id),
-                    )
-                })
-                .ok()
-            })
-        };
-        if *self.observed_input_owner.borrow() != owner {
-            *self.observed_input_owner.borrow_mut() = owner;
-            self.input_sequence
-                .set(self.input_sequence.get().wrapping_add(1));
-        }
-        self.input_sequence.get()
-    }
-
     /// The taffy node holding keyboard focus, if any.
     pub fn focused(&self) -> Option<NodeId> {
         self.drain_component_wakes();
@@ -4606,8 +4548,6 @@ impl FrameHarness {
     fn set_focused(&mut self, node: Option<NodeId>) {
         if self.focused != node {
             self.remember_app_focus();
-            self.input_sequence
-                .set(self.input_sequence.get().wrapping_add(1));
         }
         if self.active_input_instance.is_some()
             && let Some(binding) = node.and_then(|node| self.bindings.binding_for(node))
@@ -12552,32 +12492,6 @@ mod tests {
             driver.inspection().root.semantics.unwrap().value.as_deref(),
             Some("unchanged")
         );
-    }
-
-    #[test]
-    fn input_ownership_token_changes_for_control_focus_but_not_passive_layout() {
-        let mut driver = FrameHarness::new_with_controlled_inputs(
-            State::new(),
-            Box::new(
-                Column::new()
-                    .push(Box::new(TextInput::local().with_id("first")))
-                    .push(Box::new(TextInput::local().with_id("second"))),
-            ),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
-        );
-        driver
-            .perform_named("first", &crate::a11y::Action::Focus)
-            .unwrap();
-        let first = driver.input_ownership_sequence();
-        driver.relayout();
-        assert_eq!(driver.input_ownership_sequence(), first);
-        driver
-            .perform_named("second", &crate::a11y::Action::Focus)
-            .unwrap();
-        assert_ne!(driver.input_ownership_sequence(), first);
     }
 
     #[test]

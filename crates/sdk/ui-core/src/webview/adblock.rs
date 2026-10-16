@@ -15,17 +15,6 @@
 use adblock::FilterSet;
 use adblock::lists::ParseOptions;
 
-pub struct CompiledFilter {
-    /// Ready for `WebViewCommand::SetContentFilter` /
-    /// `webkit_user_content_filter_store_save()`.
-    pub json: std::sync::Arc<String>,
-    pub rule_count: usize,
-    /// Filters with no content-blocker equivalent (`WebKit`'s declarative
-    /// format cannot express every `EasyList` construct — scriptlets, some
-    /// regex filters, `$redirect`, …).
-    pub skipped: usize,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum AdblockError {
     #[error("filter lists produced no convertible rules")]
@@ -34,37 +23,6 @@ pub enum AdblockError {
     Conversion,
     #[error("serialising content-blocker rules failed: {0}")]
     Serialise(#[from] serde_json::Error),
-}
-
-/// # Errors
-///
-/// Returns [`AdblockError::Conversion`] if adblock-rust's content-blocking
-/// conversion fails, [`AdblockError::Empty`] if `lists` produces no rule
-/// convertible to `WebKit`'s declarative format, and
-/// [`AdblockError::Serialise`] if the compiled rules fail to serialise to
-/// JSON.
-pub fn compile_filter_lists<'a>(
-    lists: impl IntoIterator<Item = &'a str>,
-) -> Result<CompiledFilter, AdblockError> {
-    // `true` = keep the parsed filters' debug info — the content-blocking
-    // conversion refuses to run without it (needs the raw filter text).
-    let mut set = FilterSet::new(true);
-    for list in lists {
-        set.add_filter_list(list, ParseOptions::default());
-    }
-    let (rules, skipped) = set
-        .into_content_blocking()
-        .map_err(|()| AdblockError::Conversion)?;
-    if rules.is_empty() {
-        return Err(AdblockError::Empty);
-    }
-    let rule_count = rules.len();
-    let json = serde_json::to_string(&rules)?;
-    Ok(CompiledFilter {
-        json: std::sync::Arc::new(json),
-        rule_count,
-        skipped: skipped.len(),
-    })
 }
 
 /// `WebKit` rejects a single content-rule list over this many rules with
@@ -83,8 +41,8 @@ pub struct ChunkedFilter {
     pub skipped: usize,
 }
 
-/// Same compilation as [`compile_filter_lists`], split into chunks of at
-/// most `max_rules_per_chunk` rules each.
+/// Compile `lists` into `WebKit` content-blocker JSON, split into chunks of
+/// at most `max_rules_per_chunk` rules each.
 ///
 /// # Errors
 ///
@@ -135,11 +93,13 @@ example.org##.sponsored
     fn adblock_rules_compile_to_chunked_json_filters() {
         // phase: compiles_network_and_cosmetic_rules_to_json
         {
-            let compiled = compile_filter_lists([FIXTURE]).expect("fixture compiles");
+            let compiled =
+                compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
             assert!(compiled.rule_count >= 3, "got {}", compiled.rule_count);
+            assert_eq!(compiled.chunks.len(), 1, "under the cap is one filter");
+            let json = &compiled.chunks[0];
 
-            let parsed: serde_json::Value =
-                serde_json::from_str(&compiled.json).expect("valid JSON");
+            let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
             let rules = parsed.as_array().expect("JSON array of rules");
             assert_eq!(rules.len(), compiled.rule_count);
 
@@ -150,8 +110,7 @@ example.org##.sponsored
                             .as_str()
                             .is_some_and(|f| f.contains("ads\\.example\\.com"))
                 }),
-                "expected a block rule for ads.example.com in {}",
-                compiled.json
+                "expected a block rule for ads.example.com in {json}"
             );
             assert!(
                 rules.iter().any(|r| {
@@ -166,7 +125,7 @@ example.org##.sponsored
         // phase: empty_input_is_an_error
         {
             assert!(matches!(
-                compile_filter_lists([""]),
+                compile_filter_lists_chunked([""], 10_000),
                 Err(AdblockError::Empty)
             ));
         }
@@ -188,12 +147,6 @@ example.org##.sponsored
                 total += n;
             }
             assert_eq!(total, compiled.rule_count, "chunks must cover every rule");
-        }
-        // phase: single_chunk_when_under_cap
-        {
-            let compiled =
-                compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
-            assert_eq!(compiled.chunks.len(), 1);
         }
     }
 }

@@ -2156,30 +2156,6 @@ impl TabBar {
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
-    /// Shifts the bar's whole painted region — background, pills, hit rects —
-    /// right by `px`, after `apply_layout` has already fit the row. A host
-    /// drawing its own control over the bar's left corner (e.g. an overlay
-    /// sidebar's hamburger toggle) reserves room for it here, rather than
-    /// teaching the fit itself about a chip this widget doesn't know exists.
-    /// No-op past a `px` that would collapse the bar.
-    pub fn inset_left(&mut self, px: f64) {
-        if px <= 0.0 || self.rect.width() <= px {
-            return;
-        }
-        let shift = vello::kurbo::Vec2::new(px, 0.0);
-        self.rect = Rect::new(self.rect.x0 + px, self.rect.y0, self.rect.x1, self.rect.y1);
-        for r in self
-            .tab_rects
-            .iter_mut()
-            .chain(self.close_rects.iter_mut())
-            .chain(self.close_hit_rects.iter_mut())
-            .chain(self.max_rects.iter_mut())
-            .chain(self.search_rects.iter_mut())
-        {
-            *r = shift_rect(*r, shift);
-        }
-        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
-    }
     /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)` so
     /// integration tests in other crates (which link the release-shaped lib) can
     /// resolve the chip from live geometry, matching `WindowGroup::bar_for_tests`.
@@ -6205,54 +6181,6 @@ mod tests {
             assert!(
                 b.close_affordance_visible_for_tests(1, &theme),
                 "a chip that is still painted must still have a pill body under it",
-            );
-        }
-    }
-
-    #[test]
-    fn inset_left_shifts_every_rect_until_it_exceeds_the_bar() {
-        // Case `inset_left_shifts_the_bar_and_every_cached_rect_together`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            let before_bar = b.bar_rect();
-            let before_tab0 = b.tab_rects()[0];
-            let before_close0 = b.close_rects[0];
-
-            b.inset_left(40.0);
-
-            assert_eq!(
-                b.bar_rect(),
-                Rect::new(
-                    before_bar.x0 + 40.0,
-                    before_bar.y0,
-                    before_bar.x1,
-                    before_bar.y1
-                ),
-                "the left edge moves in, the right edge does not",
-            );
-            assert_eq!(
-                b.tab_rects()[0],
-                before_tab0 + vello::kurbo::Vec2::new(40.0, 0.0),
-                "every pill must move with the bar, not just its background",
-            );
-            assert_eq!(
-                b.close_rects[0],
-                before_close0 + vello::kurbo::Vec2::new(40.0, 0.0),
-                "cached hit rects must move too, or a click would land on the \
-             wrong pill after an inset",
-            );
-        }
-
-        // Case `inset_left_is_a_no_op_past_the_bars_own_width`.
-        {
-            let mut b = bar_with_laid_out_rects();
-            let before = b.bar_rect();
-            b.inset_left(before.width() + 1.0);
-            assert_eq!(
-                b.bar_rect(),
-                before,
-                "an inset that would collapse the bar must be refused, not \
-             produce a negative-width rect",
             );
         }
     }

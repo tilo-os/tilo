@@ -655,20 +655,6 @@ impl WindowGroup {
         }
     }
 
-    /// The same eased factor `draw` uses for alpha, scale and offset.
-    pub fn spawn_anim_t(&self) -> f32 {
-        let Some(started) = self.spawned_at else {
-            return 1.0;
-        };
-        let elapsed = started.elapsed();
-        if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
-            return 1.0;
-        }
-        let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
-        let eased = 1.0 - (1.0 - raw).powi(3);
-        f32_of_f64(eased)
-    }
-
     pub fn start_closing(&mut self) {
         if self.closing_at.is_some() {
             return;
@@ -1403,29 +1389,6 @@ impl WindowGroup {
             return true;
         }
         self.bar.set_active(id);
-        true
-    }
-
-    pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
-        let n = self.bar.tabs().len();
-        if n < 2 || dir.signum() == 0 {
-            return false;
-        }
-        let cur = self.bar.active_id();
-        let Some(idx) = self.bar.tabs().iter().position(|t| t.id == cur) else {
-            return false;
-        };
-        let new_idx = if dir.signum() > 0 {
-            // Wrap forward: past the last tab goes to the first.
-            idx.checked_add(1).filter(|&i| i < n).unwrap_or(0)
-        } else {
-            // Wrap backward: before the first tab goes to the last.
-            idx.checked_sub(1).unwrap_or_else(|| n.saturating_sub(1))
-        };
-        let Some(new_id) = self.bar.tabs().get(new_idx).map(|t| t.id) else {
-            return false;
-        };
-        self.bar.set_active(new_id);
         true
     }
 
@@ -3696,7 +3659,7 @@ mod tests {
         }
         assert_eq!(drained.get(), 3, "the inactive tab's flag is still drained");
 
-        assert!(g.cycle_active_tab(1));
+        assert!(g.set_active_tab(2));
         assert!(
             g.take_structure_dirty(),
             "selecting the tab builds its layout"
@@ -4186,8 +4149,8 @@ mod tests {
                 "a built group with no tab switch stays clean",
             );
 
-            // Same as the wheel-cycle / click path: mutates `active_id` only.
-            assert!(g.cycle_active_tab(1), "cycle must change the active tab");
+            // Same as the click path: mutates `active_id` only.
+            assert!(g.set_active_tab(2), "the second tab is a live target");
             assert!(
                 g.take_structure_dirty(),
                 "active-tab switch must report structure dirty so the new tile gets a node",
@@ -4997,16 +4960,16 @@ mod tests {
         // Case `spawn_animation_advances_eased_progress_over_time`.
         {
             let mut g = make_group();
-            // No spawn in flight — accessor pins to 1.0.
+            // No spawn in flight — the drawn alpha pins to 1.0.
             assert_eq!(
-                g.spawn_anim_t(),
+                g.fade_transform_params().0,
                 1.0,
                 "idle group reports finished progress"
             );
 
             // First frame: elapsed ~0, so eased progress is near zero.
             g.start_spawn_animation();
-            let t_start = g.spawn_anim_t();
+            let t_start = g.fade_transform_params().0;
             assert!(
                 t_start < 0.05,
                 "first-frame spawn progress must be near zero, got {t_start}",
@@ -5016,7 +4979,7 @@ mod tests {
             // so we expect well past 0.5. Backdate the timestamp instead of
             // sleeping so the test doesn't waste real time.
             g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS / 2));
-            let t_mid = g.spawn_anim_t();
+            let t_mid = g.fade_transform_params().0;
             assert!(
                 t_mid > 0.5 && t_mid < 1.0,
                 "mid-spawn progress must be past half but not yet complete, got {t_mid}",
@@ -5025,7 +4988,7 @@ mod tests {
             // Past the duration: pins to 1.0.
             g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
             assert_eq!(
-                g.spawn_anim_t(),
+                g.fade_transform_params().0,
                 1.0,
                 "after the spawn window elapses, progress pins to 1.0",
             );
