@@ -22,6 +22,28 @@ def make_runtime(root: Path, version: str = ABI) -> Path:
 
 
 class AssembleAppCollectionTests(unittest.TestCase):
+    def test_empty_or_missing_catalog_cannot_produce_a_successful_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = make_runtime(root)
+            for plan in ({}, {"catalog": []}):
+                with self.subTest(plan=plan), self.assertRaisesRegex(ValueError, "nonempty"):
+                    assemble_app_collection.assemble(plan, "x86_64", root, runtime, "abc")
+
+    def test_duplicate_app_names_or_identities_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = make_runtime(root)
+            app = {"name": "notes", "version": "1", "id": "so.tilo.notes",
+                   "runtime": "tilo-runtime/2026.07"}
+            for other in (dict(app), dict(app, name="other")):
+                (root / "notes-1-x86_64.tapp").write_bytes(b"notes")
+                if other["name"] != app["name"]:
+                    (root / "other-1-x86_64.tapp").write_bytes(b"other")
+                with self.subTest(other=other), self.assertRaisesRegex(ValueError, "duplicate"):
+                    assemble_app_collection.assemble(
+                        {"catalog": [app, other]}, "x86_64", root, runtime, "abc")
+
     def test_collection_requires_the_exact_versioned_architecture_and_tapp_set(self):
         with self.subTest(phase='requires exact versioned architecture set'):
             plan = {
