@@ -3752,6 +3752,69 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
     );
 }
 
+/// A committed read that arrives while the person is mid-word must not wait
+/// for their next input: its delivery turn holds every action queued behind
+/// it, so an idle window with an unfinished word stalled the room. The merge
+/// closes the word as its own step, keeping it, and applies at once.
+#[cfg(feature = "broker-transport")]
+#[test]
+fn native_owned_committed_read_applies_over_an_unfinished_word() {
+    let mut fixture = RoutedOwners::new();
+    let id = fixture.bindings[0].checkout.id.clone();
+    let route = fixture.bindings[0].broker_route().unwrap();
+    let mut remote = fixture.records.read_checked(&id, Clone::clone).unwrap();
+    let base = remote.base_heads();
+    let local_base = base.clone();
+    remote.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+    remote.put(ROOT, "remote-key", "remote").unwrap();
+    remote.commit();
+    let read =
+        crate::collaboration::CommittedDocument::for_test(remote.save_after(&base), Some(base));
+    fixture
+        .records
+        .with_action_state(&id, |doc, _, _| {
+            doc.put(ROOT, "local-draft", "unfinished").unwrap();
+        })
+        .unwrap();
+
+    fixture
+        .app
+        .queue_committed_document(route.clone(), read.clone());
+
+    assert!(
+        read.was_applied(),
+        "the committed read merged without waiting for further input"
+    );
+    assert!(fixture.app.committed_documents.is_empty());
+    assert_eq!(fixture.value(0, "remote-key").as_deref(), Some("remote"));
+    assert_eq!(
+        fixture.value(0, "local-draft").as_deref(),
+        Some("unfinished"),
+        "the unfinished word is kept"
+    );
+    // Every change this device publishes names its action, or the identity
+    // service refuses to sign it.
+    let unnamed = fixture
+        .records
+        .read_checked(&id, |doc| {
+            assert_eq!(doc.pending_ops(), 0, "the word is a finished step");
+            doc.get_changes(&local_base)
+                .into_iter()
+                .filter(|change| change.actor_id().to_bytes() != b"committed-peer")
+                .filter(|change| {
+                    collab_types::ChangeClaim::of_change(
+                        change.hash().0,
+                        change.message().map(String::as_str),
+                        Vec::new(),
+                    )
+                    .is_err()
+                })
+                .count()
+        })
+        .unwrap();
+    assert_eq!(unnamed, 0, "the closed word names its action");
+}
+
 #[test]
 fn native_history_entry_pointer_captures_before_discard() {
     let probe =

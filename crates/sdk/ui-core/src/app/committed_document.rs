@@ -116,7 +116,16 @@ impl App {
                             .as_ref()
                             .is_some_and(|sync| sync.published_through(before))
                     });
-                    let applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
+                    let mut applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
+                    if applied.is_none() {
+                        // A merge is an action boundary, as an undo or a save
+                        // is: the word still being typed becomes its own step.
+                        // Waiting for the person's next boundary instead held
+                        // this history, and every action queued behind its
+                        // delivery turn, for as long as the window sat idle.
+                        owner.close_open_step(&mut self.state.doc);
+                        applied = owner.merge_remote(mutation).map_err(|e| e.to_string())?;
+                    }
                     // Committed history is already held by the owner that
                     // served it; republishing it as this replica's
                     // Incremental would be a pure echo, one more owner
@@ -154,6 +163,17 @@ impl App {
                         lacks_base = true;
                         return Ok(None);
                     }
+                    let merged = self
+                        .state
+                        .merge_remote_committed(mutation)
+                        .map_err(|e| e.to_string())?;
+                    if merged.is_some() {
+                        return Ok(merged);
+                    }
+                    // Unfinished typing is closed as the step it is, as for
+                    // an owned document above, rather than deferring the
+                    // merge until the next input event.
+                    self.commit_action();
                     return self
                         .state
                         .merge_remote_committed(mutation)
