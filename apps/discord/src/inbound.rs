@@ -312,7 +312,19 @@ pub fn plan_deleted(
         return plan;
     };
     match mapped.origin {
-        Origin::Discord => plan.deletes.push(mapped.tilo.clone()),
+        // Each attachment after the first is a separate Chat message, but
+        // all copies share the same Discord id and must disappear together.
+        Origin::Discord => plan.deletes.extend(
+            guild
+                .map
+                .iter()
+                .filter(|m| {
+                    m.kind == MappedKind::Message
+                        && m.origin == Origin::Discord
+                        && m.discord == event.message_id
+                })
+                .map(|m| m.tilo.clone()),
+        ),
         Origin::Tilo => {
             let moderator = event
                 .executor
