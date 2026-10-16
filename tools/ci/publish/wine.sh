@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The build halves of the x86 Windows guest (docs/windows-compatibility.md): traditional Wine
-# rebuilt with Mock for x86-64 and i686, paired, signed with a key made for the run, and
-# assembled into the guest. The steps run as root in micro-VM steps whose userspace is the
+# The build halves of the Wine the x86 Windows guest installs (docs/windows-compatibility.md):
+# traditional Wine rebuilt with Mock for x86-64 and i686 and paired; windows-guest.sh signs the
+# pair and assembles the guest. The steps run as root in micro-VM steps whose userspace is the
 # wine-tools image built in the same run (image-wine-tools), so Mock, podman and the
 # producer scripts run directly instead of in containers of a Docker daemon. They hold no
 # secrets and push nothing: each image goes into an OCI archive with its digest beside it
@@ -12,7 +12,6 @@
 #        wine.sh resolve TARGET OUT
 #        wine.sh build TARGET OUT
 #        wine.sh pair OUT
-#        wine.sh guest OUT
 # TARGET is x86_64 or i686. Inputs are at the paths the checks put them (/target/windows-compat).
 set -euo pipefail
 here=$(dirname -- "${BASH_SOURCE[0]}")
@@ -94,7 +93,7 @@ producer() { runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/wine-mock-p
 # Mock compiles with this many jobs; resolution records it and the build must match.
 jobs=16
 
-cmd=${1:?usage: wine.sh source|resolve|build|pair|guest ...}
+cmd=${1:?usage: wine.sh source|resolve|build|pair ...}
 shift
 mkdir -p "$work"
 case $cmd in
@@ -162,64 +161,6 @@ case $cmd in
     import_tree "$work" wine-paired localhost/wine-paired:build
     archive localhost/wine-paired:build "$out" "$registry/wine-paired" > "$out/evidence/image.txt"
     cp "$work/wine-paired/paired-contract.json" "$out/evidence/"
-    ;;
-  guest)
-    # os/dev/run-development-windows-guest.py's packaging, with podman instead of a daemon:
-    # sign the pair with a key made for this run, then resolve the guest's RPMs and assemble it.
-    out=${1:?usage: wine.sh guest OUT}
-    rm -rf "$out"
-    mkdir -p "$out/evidence"
-    buildroot=$(runtime)
-    load "$tools_out" "$registry/wine-tools" >/dev/null
-    pair=$(load "$inputs/wine-paired" "$registry/wine-paired")
-    WINDOWS_GUEST_BUILDROOT_REF=$buildroot WINE_PAIR_REF=$pair \
-      python3 "$repo_root/os/dev/run-development-windows-guest.py" --validate-only
-    build() {
-      local tag=$1 recipe=$2 context=$3
-      shift 3
-      p build --pull=never --network=host --format oci --timestamp 0 --platform linux/amd64 \
-        -t "$tag" -f "$recipe" "$@" "$context" >&2
-    }
-    # The signer: private GnuPG state exists only in this container, which has no network.
-    build localhost/windows-guest-signing:build "$repo_root/os/Containerfile.windows-guest-tools" "$repo_root" \
-      --build-arg "WINDOWS_GUEST_BUILDROOT_REF=$buildroot"
-    container=$(p create "$pair" /unused)
-    mkdir -p "$work/pair" "$work/export"
-    p cp "$container:/wine-paired/." "$work/pair/"
-    p rm "$container" >/dev/null
-    receipt=$(p run --rm --network=none -v "$repo_root/os/dev:/tilo-dev:ro" -v "$work/pair:/wine-paired:ro" \
-      -v "$work/export:/export" --entrypoint sh localhost/windows-guest-signing:build -euc '
-        cp -a /tilo-dev/. /tilo/
-        python3 /tilo/development-wine-repository.py sign --pair /wine-paired --pair-reference "$1" \
-          --pin /tilo/wine-source.json --output /export/signed-wine
-      ' signer "$pair")
-    [[ -n $receipt ]] || die 'the development Wine signer failed'
-    key=$(printf '%s' "$receipt" | python3 -c 'import json, sys; print(json.load(sys.stdin)["public_key_sha256"])')
-    [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'the signer returned no public key digest'
-    printf '%s\n' "$receipt" > "$out/evidence/signing-receipt.json"
-    printf 'FROM scratch\nCOPY signed-wine /signed-wine\n' > "$work/Containerfile.signed-wine"
-    build localhost/development-wine:build "$work/Containerfile.signed-wine" "$work/export"
-    wine=$(archive localhost/development-wine:build "$out/development-wine" "$registry/tilo-development-wine")
-    args=(--build-arg "WINDOWS_GUEST_BUILDROOT_REF=$buildroot" --build-arg "DEVELOPMENT_WINE_REF=$wine"
-          --build-arg "DEVELOPMENT_WINE_KEY_SHA256=$key")
-    build localhost/windows-guest-rpms:build "$repo_root/os/Containerfile.windows-guest-rpms" "$repo_root" "${args[@]}"
-    rpms=$(archive localhost/windows-guest-rpms:build "$out/rpms" "$registry/tilo-development-windows-guest-rpms")
-    python3 "$repo_root/os/dev/fetch-windows-guest-assets.py" "$work/assets"
-    build localhost/windows-guest:build "$repo_root/os/Containerfile.windows-guest" "$repo_root" "${args[@]}" \
-      --build-arg "WINDOWS_GUEST_RPMS_REF=$rpms" --build-context "github-assets=$work/assets"
-    guest=$(archive localhost/windows-guest:build "$out/guest" "$registry/tilo-development-windows-guest")
-    printf '%s\n' "$guest" > "$out/evidence/guest-reference.txt"
-    python3 - "$out/evidence" "$buildroot" "$pair" "$wine" "$key" "$rpms" "$guest" <<'EOF'
-import json, sys
-from pathlib import Path
-evidence, buildroot, pair, wine, key, rpms, guest = sys.argv[1:]
-inputs = {"WINDOWS_GUEST_BUILDROOT_REF": buildroot, "WINE_PAIR_REF": pair, "DEVELOPMENT_WINE_REF": wine,
-          "DEVELOPMENT_WINE_KEY_SHA256": key, "WINDOWS_GUEST_RPMS_REF": rpms}
-# This receipt proves assembly only, never Windows application acceptance.
-Path(evidence, "result.json").write_text(json.dumps({
-    "schema": 1, "development_only": True, "reference": guest,
-    "runtime_acceptance_verified": False, "inputs": inputs}, indent=2) + "\n")
-EOF
     ;;
   *) die "unknown command $cmd" ;;
 esac
