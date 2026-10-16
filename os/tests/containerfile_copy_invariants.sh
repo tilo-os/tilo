@@ -214,7 +214,11 @@ containerfile="$repo/os/Containerfile"
 # (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
-expected_contract=4fae4e01857a54f73efb172537ae5b9c5cb3d97a4fc7d688325d83a89257b67c
+# The desktop's wallpapers and their credits arrive from the os-wallpapers
+# stage, which fetches the files the tilo-wallpapers catalog pins: two
+# intentional payload rows, /usr/share/backgrounds/tilo and
+# /usr/share/licenses/tilo-wallpapers, each with a COPY of its own.
+expected_contract=7fd09c7c182aef608455c9f7ae67c0fb7367563d308fb3ede3b542d289bbe7c2
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
