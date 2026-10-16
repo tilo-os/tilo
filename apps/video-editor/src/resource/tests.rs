@@ -459,6 +459,35 @@ fn trim_actions_reach_the_requested_timeline_time_at_every_speed() {
 }
 
 #[test]
+fn trimming_a_reversed_clip_keeps_the_surviving_source_frames() {
+    for rate in [0.5, 1.0, 2.0] {
+        let (mut project, clip) = one_clip();
+        project.clip_mut(clip).unwrap().start = 10.0;
+        project.set_speed_linked(clip, rate, true);
+        let original = project.clip(clip).unwrap().clone();
+        let tail = original.end() - 3.0;
+        let mut replica = holding(&project);
+        replica
+            .apply(Project::TRIM_HEAD.with((id(clip), 12.0)))
+            .unwrap();
+        let state = replica.state().unwrap();
+        let head_trimmed = state.clip(clip).unwrap();
+        assert_eq!(head_trimmed.start, 12.0);
+        assert_eq!(head_trimmed.in_point, original.in_point);
+        assert_eq!(head_trimmed.out_point, 30.0 - 2.0 * rate);
+        assert_eq!(head_trimmed.source_time(13.0), original.source_time(13.0));
+        replica
+            .apply(Project::TRIM_TAIL.with((id(clip), tail)))
+            .unwrap();
+        let state = replica.state().unwrap();
+        let trimmed = state.clip(clip).unwrap();
+        assert_eq!(trimmed.end(), tail);
+        assert_eq!(trimmed.in_point, 3.0 * rate);
+        assert_eq!(trimmed.source_time(13.0), original.source_time(13.0));
+    }
+}
+
+#[test]
 fn linked_actions_refuse_to_change_a_locked_partner() {
     let (mut project, clip) = one_clip();
     let track = Uuid::new_v4();
