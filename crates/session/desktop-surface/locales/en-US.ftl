@@ -156,9 +156,9 @@ a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
 a11y-shell-activity-agent-review = Agent task review
 a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } audit events
 a11y-shell-activity-task-latest = latest: { $latest }
-activity-view-catch-up = Catch up
+activity-view-catch-up = What's new
 activity-view-tasks = Tasks
-activity-view-explore = Explore
+activity-view-explore = History
 activity-view-replay = Replay
 activity-title-catch-up = While you were away
 activity-title-tasks = Task Center
@@ -241,7 +241,7 @@ activity-brief-underlying = { $count } underlying { $count ->
         [one] action
        *[other] actions
     }
-activity-brief-open-explorer = Open this work session in Explorer →
+activity-brief-open-explorer = Open this work session in History →
 activity-brief-show-affected = Show affected resources and actions
 activity-browse-by = Browse by
 activity-more-lenses = More lenses…
@@ -324,17 +324,15 @@ activity-replay-no-workspace = The workspace did not exist at this checkpoint
 activity-replay-empty-window = Empty window
 activity-replay-layout-not-recorded = Window sizes and selected tabs were not recorded
 activity-presence-trail = Presence trail
-activity-tasks-subtitle = { $workspace } · { $active } active { $active ->
-        [one] task
-       *[other] tasks
-    } · { $agents } assigned { $agents ->
-        [one] agent
-       *[other] agents
+activity-tasks-subtitle = { $workspace } · { $active ->
+        [0] nothing open
+        [one] 1 open task
+       *[other] { $active } open tasks
     }
-activity-tasks-tagline = Native workspace tasks · model optional · every action auditable
+activity-tasks-tagline = What people and agents are doing in this workspace
 activity-tasks-pending = Tasks are waiting for current edits to finish
 activity-tasks-empty = No tasks yet
-activity-tasks-empty-hint = Create one manually, or attach the resource selected in Explore.
+activity-tasks-empty-hint = Create one here, or ask an agent from any app.
 activity-task-new = + New task
 activity-task-queue = WORKSPACE QUEUE
 activity-task-composer-title = Create work without leaving the desktop
