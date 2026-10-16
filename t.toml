@@ -2208,6 +2208,7 @@ outputs = ["/target/publish/ci-fast/image.oci.tar", "/target/publish/ci-fast/dig
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
+memory = "8G"
 default = false
 
 [[check]]
@@ -2235,6 +2236,7 @@ outputs = ["/target/publish/ci-control/image.oci.tar", "/target/publish/ci-contr
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
+memory = "8G"
 default = false
 
 [[check]]
@@ -2347,6 +2349,8 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-run.sh", "os/tests/ci
 needs = ["image-ci-fast", "image-ci-control"]
 requires = ["arch=x86_64"]
 cost = "minutes"
+# It unpacks both multi-GB images; a micro-VM step can't grow past what it reserves.
+memory = "8G"
 default = false
 
 # ---------------------------------------------------------------------------
