@@ -1057,7 +1057,27 @@ pub trait NearbyTransferServices: Send + Sync {
 
     /// Forgets every handle issued to `peer_id`.
     fn disconnect(&self, peer_id: u64);
+
+    /// Resolves once what a [`runtime_collab::NearbyTransferCommand::Snapshot`]
+    /// would show `context` may have changed since `after` (0 at first, then
+    /// the value the previous wait returned), with the value to wait from
+    /// next. It names nothing: the endpoint asks for a snapshot, which the
+    /// host checks as it checks every command. `None` when the host cannot
+    /// say when its state changes; the broker then answers unimplemented.
+    fn changed(
+        &self,
+        context: &NearbyTransferRequestContext,
+        after: u64,
+    ) -> Option<NearbyTransferChange> {
+        let _ = (context, after);
+        None
+    }
 }
+
+/// A wait for Nearby Send's next change, as [`NearbyTransferServices::changed`]
+/// returns it.
+pub type NearbyTransferChange =
+    std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'static>>;
 
 /// A descriptor source sealed to the kernel-attested local process.
 pub(crate) type SelectedDescriptorSource =

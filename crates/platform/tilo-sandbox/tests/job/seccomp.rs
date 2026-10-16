@@ -69,9 +69,14 @@ fn only_a_job_allowed_nested_sandboxes_starts_one_and_netfilter_stays_closed() {
         "a standard job started a sandbox: {out}"
     );
 
+    // Not root inside: without a range of ids the job's root holds no
+    // capability, and only another id may map itself in a namespace of its
+    // own without `CAP_SETFCAP`.
     let (status, out) = run(|s| {
         shell(s, nest);
         s.allow_nested_sandboxes();
+        s.ids.inside_uid = 1000;
+        s.ids.inside_gid = 1000;
     });
     assert!(status.success() && out.contains("nested"), "{out}");
 
@@ -88,6 +93,8 @@ for name, proto in (("route", 0), ("netfilter", 12), ("xfrm", 6)):
     let (status, out) = run(|s| {
         shell(s, probe);
         s.allow_nested_sandboxes();
+        s.ids.inside_uid = 1000;
+        s.ids.inside_gid = 1000;
     });
     if out.contains("python3: not found") || out.contains("No such file") {
         eprintln!("skipped the netlink probe: no python3 in the host root: {out}");
