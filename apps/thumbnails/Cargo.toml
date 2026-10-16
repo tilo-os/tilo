@@ -32,5 +32,27 @@ hex.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
+# A compute worker, its catalogue and its launcher sandbox (bubblewrap plus
+# the Landlock shim) exist on Linux only.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The production worker, catalogue and launcher sandbox the job runs through.
+tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+# The in-sandbox shim the test binary serves, and job cancellation.
+launcher = { path = "../../crates/packaging/launcher" }
+# Installs the packed tapp where the worker's catalogue reads it.
+package-store = { path = "../../crates/packaging/package-store", features = ["store"] }
+# Bakes and signs the runtime build the package names.
+runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
+# The worker and launcher read the device's stores from the environment.
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+# The packaged entrypoint run by the production compute worker under the
+# real launcher sandbox. Its own `main`, because the launcher re-enters the
+# running executable as its in-sandbox Landlock shim.
+[[test]]
+name = "worker"
+path = "tests/worker.rs"
+harness = false
+
 [lints]
 workspace = true
