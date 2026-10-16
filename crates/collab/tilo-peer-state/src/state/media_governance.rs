@@ -1,56 +1,12 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::facades::{PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
-    BTreeMap, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc,
-    RevocationList, Role, Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin,
-    err, now_ns, room,
+    BTreeMap, DeviceCert, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Role,
+    Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, now_ns, room,
 };
 use room::media::{self, RoomMediaV1};
 
-/// Proof of one exact monotone, signature-verified security metadata delta.
-/// Private fingerprints prevent a caller from reusing it for another candidate.
-#[derive(Debug)]
-pub struct VerifiedSecurityMetadataOnly {
-    before: [u8; 32],
-    after: [u8; 32],
-}
-impl VerifiedSecurityMetadataOnly {
-    /// Check that `after` differs from `before` only in verified security metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any other state changed.
-    pub fn validate(&self, before: &StatePeer, after: &StatePeer) -> Result<(), String> {
-        let checked = before.media().verify_security_metadata_only(after)?;
-        if checked.before != self.before || checked.after != self.after {
-            return Err("verified security metadata proof does not bind this turn".into());
-        }
-        Ok(())
-    }
-}
-
 impl StatePeer {
-    /// Stable proof input across independently restored peers. Only watermark
-    /// map iteration order is normalized; signed payloads and all other durable
-    /// fields remain byte-for-byte inputs. This is never a storage export.
-    fn canonical_security_metadata_state(&self) -> Result<Vec<u8>, String> {
-        let bytes = self.durable()?;
-        let sort_watermarks = |value: &mut DurableV4| {
-            for document in &mut value.base.documents {
-                document.watermarks.sort_unstable_by_key(|entry| entry.0);
-            }
-        };
-        if self.core.admission_v5 {
-            let mut value: DurableV5<'_> = postcard::from_bytes(&bytes).map_err(err)?;
-            sort_watermarks(&mut value.base);
-            postcard::to_allocvec(&value).map_err(err)
-        } else {
-            let mut value: DurableV4 = postcard::from_bytes(&bytes).map_err(err)?;
-            sort_watermarks(&mut value);
-            postcard::to_allocvec(&value).map_err(err)
-        }
-    }
-
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.require_governance_writer(key, now)?;
         let member = self.permissions(self.core.authority.device_public_key, now)?;
@@ -209,37 +165,6 @@ impl PeerGovernanceMut<'_> {
     }
 }
 impl PeerMediaGovernance<'_> {
-    /// Project independently observed verified revocations onto this committed
-    /// baseline. Volatile deferred input and every other observed field remain
-    /// outside the durable metadata turn. The caller must separately validate
-    /// the live receive delta before using this projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the observed revocations cannot be projected onto this baseline.
-    pub fn project_verified_security_metadata(
-        self,
-        observed: &StatePeer,
-    ) -> Result<(StatePeer, VerifiedSecurityMetadataOnly), String> {
-        if self.peer.core.room != observed.core.room
-            || self.peer.core.authority != observed.core.authority
-        {
-            return Err("security metadata projection has a different pinned authority".into());
-        }
-        let mut projected = self.peer.clone();
-        for entry in observed.core.revocations.iter() {
-            projected
-                .core
-                .revocations
-                .insert(entry.clone())
-                .map_err(err)?;
-        }
-        // This also verifies root/target binding against the stored room and
-        // requires a strict monotone delta that suspends existing media or
-        // changes the verified security basis when media is not configured.
-        let proof = self.verify_security_metadata_only(&projected)?;
-        Ok((projected, proof))
-    }
     /// Data publication allows room-first missing Chat; media readiness does not.
     ///
     /// # Errors
@@ -260,87 +185,6 @@ impl PeerMediaGovernance<'_> {
             }
         }
         Ok(())
-    }
-    /// Verify an exact metadata-only delta. No document, receipt, pending input,
-    /// coverage, admission, certificate or checkpoint scheduling change is allowed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `candidate` changes anything other than security metadata.
-    pub fn verify_security_metadata_only(
-        self,
-        candidate: &StatePeer,
-    ) -> Result<VerifiedSecurityMetadataOnly, String> {
-        let room = candidate.core.room_doc.as_deref().ok_or("missing room")?;
-        let policy = candidate.validate_present_media_policy()?;
-        let basis = media::security_basis(room, &candidate.revocations()).map_err(err)?;
-        if let Some(policy) = policy {
-            if basis == policy.authorization_basis {
-                return Err("security metadata does not suspend media".into());
-            }
-        } else {
-            let before_basis = media::security_basis(
-                self.peer.core.room_doc.as_deref().ok_or("missing room")?,
-                &self.peer.revocations(),
-            )
-            .map_err(err)?;
-            if basis == before_basis {
-                return Err("security metadata does not change the verified security basis".into());
-            }
-        }
-        let mut union = self.peer.core.revocations.clone();
-        for entry in candidate.core.revocations.iter() {
-            union.insert(entry.clone()).map_err(err)?;
-        }
-        let entries = |list: &RevocationList| {
-            let mut values = list.iter().cloned().collect::<Vec<_>>();
-            values.sort_by_key(|entry| entry.revoked_device_public_key);
-            values
-        };
-        if entries(&union) != entries(&candidate.core.revocations)
-            || entries(&union) == entries(&self.peer.core.revocations)
-        {
-            return Err(
-                "security metadata must strictly extend the verified revocation union".into(),
-            );
-        }
-        let mut expected = self.peer.clone();
-        expected.core.revocations = union;
-        let before = self.peer.canonical_security_metadata_state()?;
-        let after = candidate.canonical_security_metadata_state()?;
-        let channels_unchanged = self.peer.core.documents.iter().all(|(route, old)| {
-            candidate.core.documents.get(route).is_some_and(|new| {
-                let a = &old.channel;
-                let b = &new.channel;
-                a.attestations == b.attestations
-                    && a.authorised_signers == b.authorised_signers
-                    && a.identity_attestations == b.identity_attestations
-                    && a.accepted_trust_roots == b.accepted_trust_roots
-                    && a.artifacts == b.artifacts
-                    && a.artifact_apps == b.artifact_apps
-                    && a.artifact_records == b.artifact_records
-                    && a.room == b.room
-                    && a.grants == b.grants
-                    && a.artifact_classifications == b.artifact_classifications
-                    && a.channel_min_clearance == b.channel_min_clearance
-                    && a.last_seq_per_author == b.last_seq_per_author
-                    && a.op_log == b.op_log
-                    && a.max_in_memory_ops == b.max_in_memory_ops
-                    && a.redacted_ops == b.redacted_ops
-                    && a.original_envelopes == b.original_envelopes
-                    && old.covered_snapshot == new.covered_snapshot
-            })
-        });
-        if expected.canonical_security_metadata_state()? != after
-            || self.peer.core.checkpoint_times != candidate.core.checkpoint_times
-            || !channels_unchanged
-        {
-            return Err("suspended turn changed more than verified security metadata".into());
-        }
-        Ok(VerifiedSecurityMetadataOnly {
-            before: *blake3::hash(&before).as_bytes(),
-            after: *blake3::hash(&after).as_bytes(),
-        })
     }
     /// Resolve the exact admitted Chat binding of a call channel.
     ///

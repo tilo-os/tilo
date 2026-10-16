@@ -163,41 +163,6 @@ impl IdentityRecord {
     pub fn public_key(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.threshold_identity.group_public_key)
     }
-
-    /// Checks the key material against every stored public invariant; a
-    /// mismatch is refused rather than silently loaded.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError::DecodeFailed`] if
-    /// the stored secret isn't 32 bytes, or
-    /// [`IdentityFlowError::PublicKeyMismatch`] if the derived public key
-    /// doesn't match the recorded one.
-    pub fn into_threshold_identity(self) -> Result<ThresholdIdentity, IdentityFlowError> {
-        let ti = self.threshold_identity;
-        if !ti.single_device {
-            let identity =
-                ThresholdIdentity::from_device_secret(&ti.secret_bytes, ti.total_shares)?;
-            if identity.group_public_key().as_bytes() != &ti.group_public_key
-                || identity.threshold != ti.threshold
-                || identity.this_share_index != ti.share_index
-            {
-                return Err(IdentityFlowError::PublicKeyMismatch);
-            }
-            return Ok(identity);
-        }
-        let seed: [u8; 32] = ti.secret_bytes.as_slice().try_into().map_err(|_| {
-            IdentityFlowError::DecodeFailed(format!(
-                "identity secret must be 32 bytes, got {}",
-                ti.secret_bytes.len()
-            ))
-        })?;
-        let identity = ThresholdIdentity::from_single_device_seed(&seed);
-        if identity.group_public_key().as_bytes() != &ti.group_public_key {
-            return Err(IdentityFlowError::PublicKeyMismatch);
-        }
-        Ok(identity)
-    }
 }
 
 /// The shell wires the disk-backed implementation; tests use
@@ -398,27 +363,6 @@ impl PairingPayload {
         postcard::from_bytes(&bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("round1 postcard: {e}")))
     }
-}
-
-/// `SHA512("tilo-pair-code-v1" || nonce)` truncated mod `1_000_000`.
-/// ~16M collision space is fine for a short-lived pairing window: the
-/// code is the seed, not the authentication — a wrong code just fails
-/// the downstream MAC check.
-pub fn derive_pairing_code(nonce: &[u8; 16]) -> u32 {
-    let mut hasher = Sha512::new();
-    hasher.update(b"tilo-pair-code-v1");
-    hasher.update(nonce);
-    let digest = hasher.finalize();
-    // `digest` is a 64-byte SHA-512 output, so the first 4 bytes always
-    // exist; the fallback is unreachable in practice.
-    let truncated = digest
-        .first_chunk::<4>()
-        .map_or(0, |b| u32::from_be_bytes(*b));
-    truncated % 1_000_000
-}
-
-pub fn format_pairing_code(code: u32) -> String {
-    format!("{code:06}")
 }
 
 /// `SHA-512("tilo-pair-mac-v1" || nonce)` truncated to 32 bytes — the
@@ -1869,103 +1813,6 @@ pub fn build_attestation_from_invite(
     Ok(ChannelEvent::AttestationIssued(ra))
 }
 
-/// Recovery-verify challenge: pick three random word positions from a
-/// 24-word mnemonic and store the expected answers.
-#[derive(Clone, Debug)]
-pub struct RecoveryChallenge {
-    /// 1-indexed positions the user must type back.
-    pub positions: [usize; 3],
-    expected: [String; 3],
-}
-
-/// Looks up the (1-indexed) mnemonic word at `position`, without a raw
-/// index expression: guards the underflow on `position - 1` and the
-/// out-of-range lookup as two explicit `Result` paths instead.
-fn word_at(words: &[&str], position: usize) -> Result<String, IdentityFlowError> {
-    let idx = position.checked_sub(1).ok_or_else(|| {
-        IdentityFlowError::DecodeFailed(format!("recovery position must be >= 1, got {position}"))
-    })?;
-    words.get(idx).map(|w| (*w).to_string()).ok_or_else(|| {
-        IdentityFlowError::DecodeFailed(format!("recovery position {position} out of range"))
-    })
-}
-
-impl RecoveryChallenge {
-    /// Picks three distinct positions in 1..=24.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError::DecodeFailed`] if `mnemonic` isn't
-    /// exactly 24 words.
-    pub fn from_mnemonic(mnemonic: &str) -> Result<Self, IdentityFlowError> {
-        let words: Vec<&str> = mnemonic.split_whitespace().collect();
-        if words.len() != 24 {
-            return Err(IdentityFlowError::DecodeFailed(format!(
-                "mnemonic must be exactly 24 words, got {}",
-                words.len()
-            )));
-        }
-        // Fisher–Yates directly on the OS RNG; no `rand` dependency needed.
-        let mut positions: Vec<usize> = (1..=24).collect();
-        let mut rng = UnwrapErr(SysRng);
-        for i in (1..positions.len()).rev() {
-            let j = (rng.next_u32() as usize)
-                .checked_rem(i.saturating_add(1))
-                .unwrap_or(0);
-            positions.swap(i, j);
-        }
-        let picked: [usize; 3] = match positions.get(0..3) {
-            Some([a, b, c]) => [*a, *b, *c],
-            _ => {
-                return Err(IdentityFlowError::DecodeFailed(
-                    "failed to select recovery positions".to_string(),
-                ));
-            }
-        };
-        let expected = [
-            word_at(&words, picked[0])?,
-            word_at(&words, picked[1])?,
-            word_at(&words, picked[2])?,
-        ];
-        Ok(Self {
-            positions: picked,
-            expected,
-        })
-    }
-
-    /// Deterministic constructor for tests.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IdentityFlowError::DecodeFailed`] if `mnemonic` isn't
-    /// exactly 24 words, or if any of `positions` is out of range.
-    pub fn at_positions(mnemonic: &str, positions: [usize; 3]) -> Result<Self, IdentityFlowError> {
-        let words: Vec<&str> = mnemonic.split_whitespace().collect();
-        if words.len() != 24 {
-            return Err(IdentityFlowError::DecodeFailed(format!(
-                "mnemonic must be exactly 24 words, got {}",
-                words.len()
-            )));
-        }
-        let expected = [
-            word_at(&words, positions[0])?,
-            word_at(&words, positions[1])?,
-            word_at(&words, positions[2])?,
-        ];
-        Ok(Self {
-            positions,
-            expected,
-        })
-    }
-
-    pub fn check(&self, answers: &[&str; 3]) -> bool {
-        self.expected
-            .iter()
-            .zip(answers.iter())
-            .all(|(expected, answer)| answer.trim().eq_ignore_ascii_case(expected))
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityFlowError {
     #[error("identity-flow encoding failed: {0}")]
@@ -1999,7 +1846,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pairing_code_and_mac_known_answers_and_wire_bytes() {
+    fn pairing_mac_known_answers_and_wire_bytes() {
         /// Pairing-broker frames cross two devices that may run different builds:
         /// a big-endian `u32` length, then postcard, at most 256 KiB.
         fn pairing_broker_wire_bytes_are_pinned() {
@@ -2019,11 +1866,10 @@ mod tests {
             assert!(PAIRING_FRAMING.read(&mut &[0_u8, 4, 0, 1][..]).is_err());
         }
 
-        /// Pairing codes and MACs cross two devices that may run different
+        /// Pairing MACs cross two devices that may run different
         /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.
-        fn pairing_code_and_mac_match_known_answers() {
+        fn pairing_mac_matches_known_answers() {
             let nonce = [7_u8; 16];
-            assert_eq!(derive_pairing_code(&nonce), 206_239);
             let key = derive_pairing_mac_key(&nonce);
             assert_eq!(
                 hex::encode(key),
@@ -2038,86 +1884,8 @@ mod tests {
             assert!(verify_pairing_mac(&key, b"kat-payload", &mac));
         }
 
-        fn pairing_code_derivation_is_deterministic() {
-            let nonce = [0x42u8; 16];
-            let a = derive_pairing_code(&nonce);
-            let b = derive_pairing_code(&nonce);
-            assert_eq!(a, b);
-            assert!(a < 1_000_000);
-        }
-
-        fn pairing_code_differs_per_nonce() {
-            let a = derive_pairing_code(&[1u8; 16]);
-            let b = derive_pairing_code(&[2u8; 16]);
-            assert_ne!(a, b, "different nonce should produce different code");
-        }
-
-        fn pairing_code_format_pads_to_6_digits() {
-            assert_eq!(format_pairing_code(0), "000000");
-            assert_eq!(format_pairing_code(42), "000042");
-            assert_eq!(format_pairing_code(999_999), "999999");
-        }
-
         pairing_broker_wire_bytes_are_pinned();
-        pairing_code_and_mac_match_known_answers();
-        pairing_code_derivation_is_deterministic();
-        pairing_code_differs_per_nonce();
-        pairing_code_format_pads_to_6_digits();
-    }
-
-    fn fixture_mnemonic() -> String {
-        // 24 distinct BIP39 words for deterministic verification.
-        "ability abandon able about above absent absorb abstract absurd \
-         abuse access accident account accuse achieve acid acoustic acquire \
-         across act action actor actress actual"
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    #[test]
-    fn recovery_challenge_positions_and_answer_matching() {
-        fn recovery_challenge_distinct_positions() {
-            let m = fixture_mnemonic();
-            for _ in 0..16 {
-                let c = RecoveryChallenge::from_mnemonic(&m).unwrap();
-                assert_ne!(c.positions[0], c.positions[1]);
-                assert_ne!(c.positions[1], c.positions[2]);
-                assert_ne!(c.positions[0], c.positions[2]);
-                for p in &c.positions {
-                    assert!((1..=24).contains(p));
-                }
-            }
-        }
-
-        fn recovery_challenge_accepts_correct_words() {
-            let m = fixture_mnemonic();
-            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-            let words: Vec<&str> = m.split_whitespace().collect();
-            assert!(c.check(&[words[0], words[11], words[23]]));
-        }
-
-        fn recovery_challenge_rejects_wrong_word() {
-            let m = fixture_mnemonic();
-            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-            let words: Vec<&str> = m.split_whitespace().collect();
-            assert!(!c.check(&[words[0], "wrong", words[23]]));
-        }
-
-        fn recovery_challenge_case_insensitive() {
-            let m = fixture_mnemonic();
-            let c = RecoveryChallenge::at_positions(&m, [1, 12, 24]).unwrap();
-            let words: Vec<&str> = m.split_whitespace().collect();
-            let upper0 = words[0].to_ascii_uppercase();
-            let upper11 = words[11].to_ascii_uppercase();
-            let upper23 = words[23].to_ascii_uppercase();
-            assert!(c.check(&[upper0.as_str(), upper11.as_str(), upper23.as_str()]));
-        }
-
-        recovery_challenge_distinct_positions();
-        recovery_challenge_accepts_correct_words();
-        recovery_challenge_rejects_wrong_word();
-        recovery_challenge_case_insensitive();
+        pairing_mac_matches_known_answers();
     }
 
     #[test]
@@ -2538,30 +2306,6 @@ mod tests {
                 .expect("a ceremony identity must be able to sign for itself");
         }
 
-        /// A record read back from disk rebuilds an identity that signs
-        /// under the same public key.
-        fn identity_record_round_trips_back_into_a_signing_identity() {
-            use collab_types::verify_event;
-
-            let mut rng = UnwrapErr(SysRng);
-            let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-            let rec =
-                IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], tilo_clock::wall())
-                    .unwrap();
-            let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
-
-            let revived = back.into_threshold_identity().unwrap();
-            assert_eq!(
-                revived.group_public_key().as_bytes(),
-                id.group_public_key().as_bytes()
-            );
-
-            let payload: Vec<u8> = b"signed after a disk round-trip".to_vec();
-            let sig = revived.sign(&payload, &mut rng).unwrap();
-            verify_event(&payload, &sig, id.group_public_key())
-                .expect("revived identity must sign");
-        }
-
         fn identity_record_rejects_unknown_schema() {
             let body = r#"{
             "display_name": "x",
@@ -2600,7 +2344,6 @@ mod tests {
 
         identity_record_json_round_trip();
         ceremony_minted_record_signs_for_its_own_recorded_public_key();
-        identity_record_round_trips_back_into_a_signing_identity();
         identity_record_rejects_unknown_schema();
         memory_store_round_trip();
     }

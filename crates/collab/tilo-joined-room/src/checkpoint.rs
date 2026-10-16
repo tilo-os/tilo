@@ -590,6 +590,7 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// Absent custody, denied current route, missing content or failed publication.
+    #[cfg(test)]
     pub fn bind_checkpoint_name(
         &self,
         room: RoomId,

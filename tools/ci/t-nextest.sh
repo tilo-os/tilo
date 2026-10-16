@@ -14,6 +14,13 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
+# The builder's Fedora RPM provides the real executable, not a mutable browser
+# cache in HOME (test-env gives each run a fresh HOME). Keep explicit overrides
+# and leave other platforms to their existing browser discovery.
+if [[ $(uname -s) == Linux ]]; then
+    export CHROME="${CHROME:-/usr/lib64/chromium-browser/chromium-browser}"
+fi
+
 tested=" "
 explicit=0
 nextest=0

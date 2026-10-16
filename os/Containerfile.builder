@@ -170,6 +170,14 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && jsign --help >/dev/null; \
     fi
 
+# Native browser tests use Fedora's signed Chromium RPM, not a per-job download.
+# Bypass its desktop launcher: tests supply their own flags and fresh profiles.
+# Keep this late so browser updates do not rebuild the cross toolchains.
+ENV CHROME=/usr/lib64/chromium-browser/chromium-browser
+RUN dnf install -y --setopt=install_weak_deps=False chromium \
+    && dnf clean all && rm -rf /var/cache/dnf \
+    && test -x "$CHROME" && "$CHROME" --version
+
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env

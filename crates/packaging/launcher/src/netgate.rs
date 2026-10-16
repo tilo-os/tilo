@@ -117,7 +117,7 @@
 
 use std::future::Future;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -1159,44 +1159,16 @@ fn no_addresses() -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, "name resolved to no addresses")
 }
 
-/// Resolve and connect, dropping any candidate address that turns out
-/// to be this device unless the policy named the host exactly.
 /// Connect an already parsed destination after applying the exact same
-/// post-DNS device-local protection used by [`NetGate`].  Other confined
-/// transports must use this (or [`connect_upstream_async`]) rather than
-/// resolving a permitted name themselves.
+/// post-DNS device-local protection used by [`NetGate`], dropping any
+/// candidate address that turns out to be this device unless the policy
+/// named the host exactly. Other confined transports must use this rather
+/// than resolving a permitted name themselves.
 ///
 /// # Errors
 ///
 /// Returns an error if DNS resolution fails, every resolved address is
 /// rejected by policy, or no permitted address can be connected to.
-pub fn connect_upstream(dest: &Destination, policy: &EgressPolicy) -> io::Result<TcpStream> {
-    let addrs: Vec<SocketAddr> = match dest {
-        Destination::Domain(host, port) => (host.as_str(), *port).to_socket_addrs()?.collect(),
-        Destination::Addr(ip, port) => vec![SocketAddr::new(*ip, *port)],
-    };
-    let key = dest.host_key();
-    let mut last = no_addresses();
-    for addr in addrs {
-        if let Err(e) = admit_resolved(addr, &key, policy) {
-            last = e;
-            continue;
-        }
-        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(s) => return Ok(s),
-            Err(e) => last = e,
-        }
-    }
-    Err(last)
-}
-
-/// [`connect_upstream`] for async callers: the same resolution after the
-/// policy decision and the same device-local protection, without holding
-/// a thread through the connect.
-///
-/// # Errors
-///
-/// As [`connect_upstream`].
 pub async fn connect_upstream_async(
     dest: &Destination,
     policy: &EgressPolicy,
@@ -1285,6 +1257,7 @@ fn serve_relay_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpStream;
 
     fn v(hosts: &[&str]) -> Vec<String> {
         hosts.iter().map(std::string::ToString::to_string).collect()
@@ -1956,10 +1929,18 @@ mod tests {
             });
 
             let dest = Destination::Domain("localhost".to_string(), port);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let connect = |policy: &EgressPolicy| {
+                runtime
+                    .block_on(connect_upstream_async(&dest, policy))
+                    .map(|stream| stream.into_std().unwrap())
+            };
 
             let suffix = EgressPolicy::from_grants([".localhost"]);
-            let err = connect_upstream(&dest, &suffix)
-                .expect_err("a suffix grant must not reach this device");
+            let err = connect(&suffix).expect_err("a suffix grant must not reach this device");
             assert_eq!(
                 err.raw_os_error(),
                 Some(libc::ENETUNREACH),
@@ -1967,8 +1948,9 @@ mod tests {
             );
 
             let exact = EgressPolicy::from_grants(["localhost"]);
-            let mut stream = connect_upstream(&dest, &exact)
-                .expect("an exact grant for a device-local host must reach it");
+            let mut stream =
+                connect(&exact).expect("an exact grant for a device-local host must reach it");
+            stream.set_nonblocking(false).unwrap();
             let mut buf = Vec::new();
             stream
                 .read_to_end(&mut buf)

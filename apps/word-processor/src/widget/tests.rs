@@ -1115,8 +1115,8 @@ fn character_marks_shape_their_spans() {
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "hello world");
         select_range(&mut wp, 0, 5);
-        wp.model_mut()
-            .set_highlight(&mut edits(&mut state.doc), "#fff35c");
+        let yellow = crate::actions::MarkVal::Str("#fff35c".into());
+        wp.dispatch_set_mark_value(&mut edits(&mut state.doc), "highlight", yellow);
         wp.refresh_blocks(&state.doc);
         let b = wp
             .blocks
@@ -2992,7 +2992,7 @@ fn long_documents_paginate_across_discrete_pages() {
             "Second paragraph still on page one.",
         );
         // Ctrl+Enter behaviour: split + mark the new block to break before.
-        wp.model_mut().insert_page_break(&mut edits(&mut state.doc));
+        wp.page_break_via_action(&mut edits(&mut state.doc));
         wp.model_mut().insert_str(
             &mut edits(&mut state.doc),
             "This paragraph is forced onto page two.",
@@ -4684,7 +4684,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.inner.caret.offset = 0;
         wp.inner.set_anchor();
         wp.inner.caret.offset = 5;
-        wp.inner.toggle_mark(&mut edits(&mut state.doc), "strong");
+        wp.dispatch_toggle_mark(&mut edits(&mut state.doc), "strong");
         wp.inner.caret.offset = 0;
         wp.inner.clear_anchor();
         wp.inner.set_anchor();
@@ -5950,11 +5950,9 @@ fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     wp.sync(&state.doc, &state.root);
     let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
         wp.model_mut().insert_str(&mut edits(&mut st.doc), text);
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut st.doc), "heading", Some(level), None);
+        wp.dispatch_paragraph_style(&mut edits(&mut st.doc), "heading", Some(level), None);
         wp.model_mut().enter(&mut edits(&mut st.doc));
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut st.doc), "paragraph", None, None);
+        wp.dispatch_paragraph_style(&mut edits(&mut st.doc), "paragraph", None, None);
     };
     add_heading(&mut wp, &mut state, "Introduction", 1);
     for i in 0..30 {
@@ -7009,12 +7007,10 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         // First block: a level-1 heading "Title".
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Title");
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut state.doc), "heading", Some(1), None);
+        wp.dispatch_paragraph_style(&mut edits(&mut state.doc), "heading", Some(1), None);
         wp.model_mut().enter(&mut edits(&mut state.doc));
         // Second block: a body paragraph.
-        wp.model_mut()
-            .set_paragraph_style(&mut edits(&mut state.doc), "paragraph", None, None);
+        wp.dispatch_paragraph_style(&mut edits(&mut state.doc), "paragraph", None, None);
         wp.model_mut()
             .insert_str(&mut edits(&mut state.doc), "Body text here");
         wp.sync(&state.doc, &state.root);
@@ -7115,8 +7111,7 @@ fn the_accessibility_tree_mirrors_the_document_structure() {
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
         wp.sync(&state.doc, &state.root);
-        wp.model_mut()
-            .insert_table(&mut edits(&mut state.doc), 2, 2);
+        wp.insert_table_via_action(&mut edits(&mut state.doc), 2, 2);
         wp.sync(&state.doc, &state.root);
 
         let tree = wp.accessibility_tree();

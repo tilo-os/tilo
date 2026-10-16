@@ -1327,8 +1327,7 @@ impl WordProcessorWidget {
     // ---- document outline / navigation pane -------------------------------
 
     /// The document outline: one entry per `heading` block (in document order),
-    /// derived from the live block set. Mirrors `WordProcessor::headings`, but the
-    /// widget reads its already-materialized `self.blocks` so it works mid-frame
+    /// derived from the already-materialized `self.blocks` so it works mid-frame
     /// without re-materializing the doc. Excludes generated TOC lines.
     pub(super) fn outline_entries(&self) -> Vec<crate::word_processor::Heading> {
         self.blocks
