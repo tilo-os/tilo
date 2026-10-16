@@ -530,25 +530,34 @@ fn sign_collaboration_op(
         let allows = |node: &tilo_action_policy::TreePath, kind| {
             workspace.answer_at(&principal_id, node, kind, unix_now()) == Answer::Allow
         };
-        Some(
-            collab_types::decide_op(
-                &op,
-                &record,
-                None,
-                None,
-                &collab_types::Surfaces::process(),
-                &allows,
-            )
-            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
-        )
+        Some(collab_types::decide_op(
+            &op,
+            &record,
+            None,
+            None,
+            &collab_types::Surfaces::process(),
+            &allows,
+        ))
     });
-    let allowed = match decided {
+    let decided = match decided {
         None => return Response::Denied("workspace is not available".into()),
         Some(None) => return Response::Denied("identity is not a workspace member".into()),
-        Some(Some(allowed)) => allowed,
+        Some(Some(decided)) => decided,
     };
-    if !allowed {
-        return Response::Denied("workspace role or capability denies this document action".into());
+    // Name the refusal: an app told only "denied" cannot tell a missing
+    // grant from a change it failed to name.
+    match decided {
+        Ok(collab_types::Receipt::Admit) => {}
+        Ok(collab_types::Receipt::Hold) => {
+            return Response::Denied(
+                "the app's surface is not here to decide this document action".into(),
+            );
+        }
+        Err(refusal) => {
+            return Response::Denied(format!(
+                "workspace role or capability denies this document action: {refusal}"
+            ));
+        }
     }
     let signing_bytes = match op.signing_bytes() {
         Ok(bytes) => bytes,
