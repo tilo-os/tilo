@@ -545,143 +545,6 @@ impl WordProcessor {
         ])
     }
 
-    /// Assign a style id to every block in the selection (or the caret's block).
-    /// Empty clears it, reverting to the kind-derived default style.
-    pub fn set_block_style(&mut self, state: &mut ui::widget::Edits<'_>, style_id: &str) {
-        if self.containers.is_none() {
-            return;
-        }
-        let targets = self
-            .selection_blocks(state)
-            .into_iter()
-            .map(|(id, _, _)| id)
-            .collect::<Vec<_>>();
-        let targets = if targets.is_empty() {
-            vec![self.caret.block.clone()]
-        } else {
-            targets
-        };
-        if targets.is_empty() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetBlockAttr {
-            region: self.action_region(),
-            blocks: targets,
-            key: "style".into(),
-            value: crate::actions::AttrVal::Str(style_id.to_string()),
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    /// Delete a **custom** paragraph style: remove it from the document's style
-    /// container and clear the `style` attr of every block that referenced it (so
-    /// those blocks fall back to their kind-derived default). Built-in styles are
-    /// never deletable — the call is a no-op and returns `false`. Returns `true`
-    /// when the style existed and was removed.
-    pub fn delete_style(&mut self, state: &mut ui::widget::Edits<'_>, style_id: &str) -> bool {
-        if StyleSheet::is_builtin(style_id) {
-            return false;
-        }
-        let Some(containers) = self.containers.clone() else {
-            return false;
-        };
-        if !tilo_doc::model::style_ids(state, &containers)
-            .iter()
-            .any(|s| s == style_id)
-        {
-            return false;
-        }
-        // Blocks that explicitly reference the doomed style must lose the ref so
-        // they render against the built-in default instead of a dangling id.
-        let orphans: Vec<String> = tilo_doc::model::materialize(state, &containers)
-            .blocks
-            .iter()
-            .filter(|b| b.str_attr("style") == Some(style_id))
-            .map(|b| b.id.clone())
-            .collect();
-        let action = crate::actions::RichTextAction::DeleteStyle {
-            style: style_id.to_string(),
-            fallback_blocks: orphans,
-        };
-        self.apply_rich(state, action)
-    }
-
-    /// Duplicate the paragraph style `style_id` under a fresh `customN` id,
-    /// naming it "`<name>` copy", and persist it into the document's style
-    /// container. Returns the new style id (or `None` if the source is unknown).
-    /// The caller decides whether to also apply it to the caret block.
-    pub fn duplicate_style(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        style_id: &str,
-    ) -> Option<String> {
-        let mut sheet = self.stylesheet(state);
-        let mut props = sheet.styles.get(style_id)?.clone();
-        let new_id = sheet.fresh_custom_id();
-        props.name = format!("{} copy", props.name);
-        sheet.styles.insert(new_id.clone(), props);
-        self.set_stylesheet(state, &sheet);
-        Some(new_id)
-    }
-
-    /// Set the explicit display size (px) of an `image` block, recording `width`
-    /// and `height` attrs the renderer/exporter honour. Values are floored to a
-    /// sane minimum so an image can never be scaled to nothing.
-    pub fn set_image_size(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block_id: &str,
-        width: f64,
-        height: f64,
-    ) {
-        if self.containers.is_none() {
-            return;
-        }
-        let w = num::i64_of_f64(width.round().clamp(16.0, 4000.0));
-        let h = num::i64_of_f64(height.round().clamp(16.0, 4000.0));
-        if self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetImageSize {
-            block: block_id.to_string(),
-            width: w,
-            height: h,
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    /// Toggle a mirror flip on an `image` block: `horizontal` flips the
-    /// `flip_h` attr (mirror left↔right), otherwise the `flip_v` attr (mirror
-    /// top↔bottom). Returns the new flip state for that axis.
-    pub fn flip_image(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block_id: &str,
-        horizontal: bool,
-    ) -> bool {
-        let Some(containers) = self.containers.clone() else {
-            return false;
-        };
-        let key = if horizontal { "flip_h" } else { "flip_v" };
-        let cur = tilo_doc::model::materialize(state, &containers)
-            .blocks
-            .iter()
-            .find(|b| b.id == block_id)
-            .is_some_and(|b| b.flag(key));
-        let next = !cur;
-        if self.ids.is_none() {
-            return next;
-        }
-        let action = crate::actions::RichTextAction::SetBlockAttr {
-            region: self.action_region(),
-            blocks: vec![block_id.to_string()],
-            key: key.into(),
-            value: crate::actions::AttrVal::Bool(next),
-        };
-        let _ = self.apply_rich(state, action);
-        next
-    }
-
     /// The explicit `(width, height)` display size of an `image` block, if both
     /// attrs are set. Lets the panel seed its resize field from the live doc.
     pub fn image_size(&self, state: &AutoCommit, block_id: &str) -> Option<(f64, f64)> {
@@ -696,61 +559,6 @@ impl WordProcessor {
             _ => None,
         };
         Some((num("width")?, num("height")?))
-    }
-
-    /// Insert a rich fragment at the caret (replacing the selection), preserving
-    /// marks + paragraph styles.
-    pub fn insert_rich(&mut self, state: &mut ui::widget::Edits<'_>, blocks: &[ClipBlock]) {
-        if blocks.is_empty() {
-            self.delete_selection(state);
-            return;
-        }
-        let (start, end) = self.selection_span(state).unwrap_or_else(|| {
-            let caret = self.caret.clone();
-            (caret.clone(), caret)
-        });
-        let len = self.block_len(state, &start.block);
-        let was_empty = if start.block == end.block {
-            start.offset == 0 && end.offset >= len
-        } else {
-            start.offset == 0
-        };
-        let adopt_first = was_empty
-            && blocks
-                .first()
-                .is_some_and(|b| b.kind != "cell" && b.kind != "fidelity");
-        let action = crate::actions::paste_fragment_action(
-            self.action_region(),
-            crate::actions::SelectionTarget {
-                start_block: start.block.clone(),
-                start: start.offset,
-                end_block: end.block,
-                end: end.offset,
-            },
-            blocks.to_vec(),
-            adopt_first,
-        );
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        let order = self.ordered_blocks(state);
-        let Some(pos) = order.iter().position(|id| id == &start.block) else {
-            return;
-        };
-        let last = pos + blocks.len() - 1;
-        let Some(block) = order.get(last) else {
-            return;
-        };
-        let added = blocks.last().map_or(0, |block| block.text.chars().count());
-        self.caret = Caret {
-            block: block.clone(),
-            offset: if blocks.len() == 1 {
-                start.offset + added
-            } else {
-                added
-            },
-        };
-        self.selection_anchor = None;
     }
 
     fn selected_block_ids(&self, state: &AutoCommit) -> Vec<String> {
@@ -816,25 +624,6 @@ impl WordProcessor {
             kind: kind.to_string(),
             level,
             ordered,
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    fn set_block_attr(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        blocks: Vec<String>,
-        key: &str,
-        value: crate::actions::AttrVal,
-    ) {
-        if self.containers.is_none() || self.ids.is_none() || blocks.is_empty() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetBlockAttr {
-            region: self.action_region(),
-            blocks,
-            key: key.to_string(),
-            value,
         };
         let _ = self.apply_rich(state, action);
     }
@@ -978,12 +767,6 @@ impl WordProcessor {
             also_clear: Vec::new(),
         };
         let _ = self.apply_rich(state, action);
-    }
-
-    /// Set the font size (pt) over the selection (per-run), or the caret block.
-    /// Stored as a `size` Int run mark (the codec contract's character format).
-    pub fn set_font_size(&mut self, state: &mut ui::widget::Edits<'_>, size: i64) {
-        self.set_mark_value(state, "size", &tilo_doc::document::MarkValue::Int(size));
     }
 
     /// Set the font family (`sans` | `serif` | `mono`) over the selection
@@ -1141,7 +924,8 @@ impl WordProcessor {
 
     /// The blocks a paragraph-style change targets — the selection (or caret
     /// block), minus table cells (a cell keeps its `cell` kind).
-    pub fn paragraph_style_targets(&self, state: &AutoCommit) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn paragraph_style_targets(&self, state: &AutoCommit) -> Vec<String> {
         let Some(containers) = self.containers.as_ref() else {
             return Vec::new();
         };
@@ -1192,88 +976,6 @@ impl WordProcessor {
         (ranges, on)
     }
 
-    /// Toggle a boolean run mark over the selection (per-run), or — with no
-    /// selection — the whole caret block. `clears` is a sibling mark removed
-    /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually
-    /// exclusive. Returns nothing; reads/writes happen in document order.
-    fn toggle_exclusive_run_mark(
-        &self,
-        state: &mut ui::widget::Edits<'_>,
-        name: &str,
-        clears: &str,
-    ) {
-        let ranges = self.font_ranges(state);
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let on = self.mark_over_ranges(state, &ranges, name);
-        let spans = Self::mark_spans(&ranges);
-        if spans.is_empty() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans,
-            name: name.to_string(),
-            value: if on {
-                None
-            } else {
-                Some(crate::actions::MarkVal::Bool(true))
-            },
-            also_clear: if on {
-                Vec::new()
-            } else {
-                vec![clears.to_string()]
-            },
-        };
-        let _ = self.apply_rich(state, action);
-    }
-
-    /// Toggle the `super` (superscript) run mark over the selection / caret block,
-    /// clearing any `sub` mark on the same range (the pair is mutually exclusive).
-    pub fn toggle_super(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.toggle_exclusive_run_mark(state, "super", "sub");
-    }
-
-    /// Toggle the `sub` (subscript) run mark over the selection / caret block,
-    /// clearing any `super` mark on the same range (mutually exclusive).
-    pub fn toggle_sub(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.toggle_exclusive_run_mark(state, "sub", "super");
-    }
-
-    /// Set the paragraph line-spacing multiplier (1.0 = single) on every block in
-    /// the selection (or the caret block). Stored as the `line_spacing` Float
-    /// block attr; the layout pass feeds it to `RichTextLayout::shape` as the
-    /// `line_height_mult`. A multiplier of `1.0` clears the attr (the default).
-    pub fn set_line_spacing(&mut self, state: &mut ui::widget::Edits<'_>, mult: f64) {
-        self.set_block_attr(
-            state,
-            self.selected_block_ids(state),
-            "line_spacing",
-            crate::actions::AttrVal::Float(mult),
-        );
-    }
-
-    /// The line-spacing multiplier on the caret's block (the `line_spacing` Float
-    /// attr), or `1.0` when unset. Drives the toolbar's cycling control.
-    pub fn caret_line_spacing(&self, state: &AutoCommit) -> f64 {
-        let Some(c) = self.containers.as_ref() else {
-            return 1.0;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .map_or(1.0, |b| match b.attrs.get("line_spacing") {
-                // A non-finite or non-positive value (a malformed import, or a
-                // remote peer's action) is not a usable multiplier — fall back
-                // like an unset attr rather than propagating it.
-                Some(tilo_doc::AttrVal::Float(f)) if f.is_finite() && *f > 0.0 => *f,
-                Some(tilo_doc::AttrVal::Int(n)) if *n > 0 => num::f64_of_i64(*n),
-                _ => 1.0,
-            })
-    }
-
     // ---- ruler: per-block indents + tab stops --------------------------------
     // The horizontal ruler edits three per-paragraph block attrs (so they merge
     // field-by-field and survive save/reload): `indent` (left/hanging indent px,
@@ -1281,55 +983,6 @@ impl WordProcessor {
     // the paragraph's first line only — a v1 layout limitation), and `tab_stops`
     // (a comma-separated px-position list, since tilo-doc's attr map stores only
     // scalars).
-
-    /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
-    /// when absent. Shared by the indent getters below.
-    fn block_num_attr(&self, state: &AutoCommit, block: &str, key: &str) -> f64 {
-        let Some(c) = self.containers.as_ref() else {
-            return 0.0;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == block)
-            .map_or(0.0, |b| match b.attrs.get(key) {
-                Some(tilo_doc::AttrVal::Float(f)) => *f,
-                Some(tilo_doc::AttrVal::Int(n)) => num::f64_of_i64(*n),
-                _ => 0.0,
-            })
-    }
-
-    /// The left / hanging indent (px) of an arbitrary block — the `indent` attr,
-    /// `0.0` when unset.
-    pub fn block_indent(&self, state: &AutoCommit, block: &str) -> f64 {
-        self.block_num_attr(state, block, "indent")
-    }
-
-    /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
-    pub fn set_block_indent(&mut self, state: &mut ui::widget::Edits<'_>, block: &str, px: f64) {
-        self.set_block_attr(
-            state,
-            vec![block.to_string()],
-            "indent",
-            crate::actions::AttrVal::Float(px.max(0.0)),
-        );
-    }
-
-    /// Set the first-line indent (px) on `block`. May be negative (a hanging
-    /// indent draws the first line back toward the margin).
-    pub fn set_block_first_line_indent(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        px: f64,
-    ) {
-        self.set_block_attr(
-            state,
-            vec![block.to_string()],
-            "first_line_indent",
-            crate::actions::AttrVal::Float(px),
-        );
-    }
 
     /// The tab stops (px positions from the left text margin) of an arbitrary
     /// block, sorted ascending. Empty when the `tab_stops` attr is unset/blank.
@@ -1350,33 +1003,6 @@ impl WordProcessor {
     /// Tab stops on the caret's block (convenience for the widget).
     pub fn caret_tab_stops(&self, state: &AutoCommit) -> Vec<f64> {
         self.block_tab_stops(state, &self.caret.block.clone())
-    }
-
-    /// Replace `block`'s tab stops with `stops` (deduplicated + sorted). An empty
-    /// list clears the attr to the empty string.
-    pub fn set_block_tab_stops(
-        &mut self,
-        state: &mut ui::widget::Edits<'_>,
-        block: &str,
-        stops: &[f64],
-    ) {
-        if self.containers.is_none() {
-            return;
-        }
-        let mut v: Vec<f64> = stops.iter().copied().filter(|p| *p >= 0.0).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-        let encoded = v
-            .iter()
-            .map(|p| format!("{p:.1}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        self.set_block_attr(
-            state,
-            vec![block.to_string()],
-            "tab_stops",
-            crate::actions::AttrVal::Str(encoded),
-        );
     }
 
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
@@ -1544,21 +1170,6 @@ impl WordProcessor {
             return true;
         }
         false
-    }
-
-    /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
-    pub fn insert_multiline(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
-        let normalized = text.replace('\r', "");
-        let mut first = true;
-        for line in normalized.split('\n') {
-            if !first {
-                self.enter(state);
-            }
-            if !line.is_empty() {
-                self.insert_str(state, line);
-            }
-            first = false;
-        }
     }
 
     /// Reconcile caret state without authoring document changes.
@@ -1765,21 +1376,6 @@ impl WordProcessor {
         let _ = self.apply_rich(state, action);
     }
 
-    /// Insert a page-number field at the caret in the active region. Works in the
-    /// body too (renders as a `field` mark; the body renderer substitutes it).
-    pub fn insert_page_number(&mut self, state: &mut ui::widget::Edits<'_>) {
-        self.delete_selection(state);
-        let block = self.caret.block.clone();
-        let idx = self.caret.offset;
-        let action = crate::actions::insert_page_number_action(self.action_region(), &block, idx);
-        if !self.apply_rich(state, action) {
-            return;
-        }
-        // The placeholder occupies one character.
-        self.caret.offset = idx + 1;
-        self.clear_anchor();
-    }
-
     // ---- read helpers ------------------------------------------------------
 
     fn block_len(&self, state: &AutoCommit, block: &str) -> usize {
@@ -1793,7 +1389,8 @@ impl WordProcessor {
     }
 
     /// Ordered block texts (empty blocks render as empty strings).
-    pub fn block_texts(&self, state: &AutoCommit) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn block_texts(&self, state: &AutoCommit) -> Vec<String> {
         let Some(c) = self.containers.as_ref() else {
             return vec![];
         };
@@ -1891,52 +1488,6 @@ impl WordProcessor {
         let ordered = b.is_some_and(|b| b.flag("ordered"));
         let level = b.and_then(|b| b.int_attr("level"));
         (kind, ordered, level)
-    }
-
-    /// On a space typed right after a markdown-ish line prefix in a plain
-    /// paragraph, convert the block's style and consume the prefix. Returns true
-    /// if it transformed (caller then skips inserting the space).
-    pub fn autoformat_on_space(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let Some(c) = self.containers.clone() else {
-            return false;
-        };
-        let block = self.caret.block.clone();
-        if self.block_meta(state, &block).0 != "paragraph" {
-            return false;
-        }
-        let text = tilo_doc::model::block_text(state, &c, &block).unwrap_or_default();
-        let prefix: String = text.chars().take(self.caret.offset).collect();
-        let (kind, level, ordered): (&str, Option<i64>, Option<bool>) = match prefix.as_str() {
-            "-" | "*" | "+" => ("list_item", None, Some(false)),
-            "1." | "1)" => ("list_item", None, Some(true)),
-            "#" => ("heading", Some(1), None),
-            "##" => ("heading", Some(2), None),
-            "###" => ("heading", Some(3), None),
-            _ => return false,
-        };
-        let prefix_len = prefix.chars().count();
-        let cleared = crate::actions::RichTextAction::SpliceText {
-            region: self.action_region(),
-            block: block.clone(),
-            at: 0,
-            del: prefix_len,
-            ins: String::new(),
-        };
-        if !self.apply_rich(state, cleared) {
-            return false;
-        }
-        let styled = crate::actions::RichTextAction::SetParagraphStyle {
-            region: self.action_region(),
-            blocks: vec![block],
-            kind: kind.to_string(),
-            level,
-            ordered,
-        };
-        if !self.apply_rich(state, styled) {
-            return false;
-        }
-        self.caret.offset = 0;
-        true
     }
 
     /// Select the whitespace-delimited word under the caret (double-click).
@@ -2864,9 +2415,8 @@ mod tests {
         }
     }
 
-    /// Inline colour and font-size marks, highlight and toggled marks apply to the selection; super and sub
-    /// are mutually exclusive; line spacing writes and reads back; alignment applies across selected
-    /// paragraphs and cells; set align and paragraph style.
+    /// Inline colour and font-size marks, highlight and toggled marks apply to the selection; alignment
+    /// applies across selected paragraphs and cells; set align and paragraph style.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2883,7 +2433,7 @@ mod tests {
             wp.set_anchor();
             wp.caret.offset = 5;
             wp.set_text_color(&mut Edits::lend(&mut state), "#ff0000");
-            wp.set_font_size(&mut Edits::lend(&mut state), 24);
+            wp.set_mark_value(&mut Edits::lend(&mut state), "size", &MarkValue::Int(24));
             wp.set_font_family(&mut Edits::lend(&mut state), "serif");
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
@@ -2938,73 +2488,6 @@ mod tests {
             assert!(
                 !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
                 "highlight cleared"
-            );
-        }
-
-        // Phase: super_and_sub_are_mutually_exclusive.
-        {
-            let (mut wp, mut state) = bound();
-            wp.insert_str(&mut Edits::lend(&mut state), "x2");
-            // Select "2".
-            wp.caret.offset = 1;
-            wp.set_anchor();
-            wp.caret.offset = 2;
-            wp.toggle_super(&mut Edits::lend(&mut state));
-            let c = wp.containers.clone().unwrap();
-            assert!(
-                tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
-                "super applied"
-            );
-            assert!(
-                !tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-                "no sub yet"
-            );
-
-            // Re-select and toggle sub: it must clear super (mutual exclusion).
-            wp.caret.offset = 1;
-            wp.set_anchor();
-            wp.caret.offset = 2;
-            wp.toggle_sub(&mut Edits::lend(&mut state));
-            assert!(
-                tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-                "sub applied"
-            );
-            assert!(
-                !tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
-                "super cleared"
-            );
-
-            // Toggling sub again removes it (off).
-            wp.caret.offset = 1;
-            wp.set_anchor();
-            wp.caret.offset = 2;
-            wp.toggle_sub(&mut Edits::lend(&mut state));
-            assert!(
-                !tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
-                "sub toggled off"
-            );
-        }
-
-        // Phase: line_spacing_writes_block_attr_and_reads_back.
-        {
-            let (mut wp, mut state) = bound();
-            wp.insert_str(&mut Edits::lend(&mut state), "a paragraph");
-            assert!(
-                (wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9,
-                "default 1.0 when unset"
-            );
-            wp.set_line_spacing(&mut Edits::lend(&mut state), 2.0);
-            let c = wp.containers.as_ref().unwrap();
-            let snap = tilo_doc::model::materialize(&state, c);
-            match snap.blocks[0].attrs.get("line_spacing") {
-                Some(tilo_doc::AttrVal::Float(f)) => {
-                    assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored");
-                }
-                other => panic!("expected line_spacing Float attr, got {other:?}"),
-            }
-            assert!(
-                (wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9,
-                "caret reads 2.0 back"
             );
         }
 
@@ -3110,9 +2593,8 @@ mod tests {
         }
     }
 
-    /// Multi-block selection copy and delete; multiline insert splits into paragraphs; rich copy/paste
-    /// preserves formatting; Markdown prefixes autoformat; Enter continues and exits lists; Backspace at list
-    /// start unlists.
+    /// Multi-block selection copy and delete; rich copy/paste preserves formatting; Enter continues and
+    /// exits lists; Backspace at list start unlists.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3150,16 +2632,6 @@ mod tests {
             assert!(!wp.has_selection());
         }
 
-        // Phase: insert_multiline_splits_into_paragraphs.
-        {
-            let (mut wp, mut state) = bound();
-            wp.insert_multiline(&mut Edits::lend(&mut state), "alpha\nbeta\ngamma");
-            assert_eq!(
-                wp.block_texts(&state),
-                vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
-            );
-        }
-
         // Phase: rich_copy_paste_preserves_formatting.
         {
             let (mut wp, mut state) = bound();
@@ -3188,7 +2660,19 @@ mod tests {
             // paste rich at the end → the pasted run keeps its bold
             wp.clear_anchor();
             wp.move_end(&state);
-            wp.insert_rich(&mut Edits::lend(&mut state), &blocks);
+            let at = wp.caret.clone();
+            let paste = crate::actions::paste_fragment_action(
+                wp.action_region(),
+                crate::actions::SelectionTarget {
+                    start_block: at.block.clone(),
+                    start: at.offset,
+                    end_block: at.block,
+                    end: at.offset,
+                },
+                blocks,
+                false,
+            );
+            assert!(wp.apply_rich(&mut Edits::lend(&mut state), paste));
             let c = wp.containers.clone().unwrap();
             let block = wp.caret.block.clone();
             assert_eq!(wp.current_text(&state), "hello worldhello");
@@ -3198,45 +2682,10 @@ mod tests {
             );
         }
 
-        // Phase: autoformat_markdown_prefixes.
-        {
-            let (mut wp, mut state) = bound();
-            wp.insert_str(&mut Edits::lend(&mut state), "-");
-            assert!(
-                wp.autoformat_on_space(&mut Edits::lend(&mut state)),
-                "'- ' autoformatted"
-            );
-            let b = wp.caret.block.clone();
-            let (kind, ordered, _) = wp.block_meta(&state, &b);
-            assert_eq!(kind, "list_item");
-            assert!(!ordered, "dash → bullet");
-            assert_eq!(wp.current_text(&state), "", "prefix consumed");
-            assert_eq!(wp.caret.offset, 0);
-
-            // "## " → heading 2
-            wp.set_paragraph_style(&mut Edits::lend(&mut state), "paragraph", None, None);
-            wp.move_end(&state);
-            wp.insert_str(&mut Edits::lend(&mut state), "##");
-            assert!(wp.autoformat_on_space(&mut Edits::lend(&mut state)));
-            let b = wp.caret.block.clone();
-            let (kind, _, level) = wp.block_meta(&state, &b);
-            assert_eq!(kind, "heading");
-            assert_eq!(level, Some(2));
-
-            // No false positive in the middle of text.
-            let (mut wp2, mut s2) = bound();
-            wp2.insert_str(&mut Edits::lend(&mut s2), "a-");
-            assert!(
-                !wp2.autoformat_on_space(&mut Edits::lend(&mut s2)),
-                "mid-line dash not autoformatted"
-            );
-        }
-
         // Phase: enter_continues_and_exits_lists.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut Edits::lend(&mut state), "-");
-            wp.autoformat_on_space(&mut Edits::lend(&mut state));
+            wp.set_paragraph_style(&mut Edits::lend(&mut state), "list_item", None, Some(false));
             wp.insert_str(&mut Edits::lend(&mut state), "first");
             wp.enter(&mut Edits::lend(&mut state));
             let b = wp.caret.block.clone();
@@ -3257,8 +2706,7 @@ mod tests {
         // Phase: backspace_at_list_start_unlists.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut Edits::lend(&mut state), "-");
-            wp.autoformat_on_space(&mut Edits::lend(&mut state));
+            wp.set_paragraph_style(&mut Edits::lend(&mut state), "list_item", None, Some(false));
             wp.insert_str(&mut Edits::lend(&mut state), "item");
             wp.move_home();
             wp.backspace(&mut Edits::lend(&mut state));
@@ -3859,7 +3307,10 @@ mod tests {
             let (mut wp, mut state) = bound();
             wp.focus_region(&mut Edits::lend(&mut state), Region::Footer);
             wp.insert_str(&mut Edits::lend(&mut state), "Page ");
-            wp.insert_page_number(&mut Edits::lend(&mut state));
+            let at = wp.caret.clone();
+            let field =
+                crate::actions::insert_page_number_action(wp.action_region(), &at.block, at.offset);
+            assert!(wp.apply_rich(&mut Edits::lend(&mut state), field));
 
             let c = wp.containers.as_ref().unwrap();
             let fv = tilo_doc::model::materialize_region(&state, c, Region::Footer);

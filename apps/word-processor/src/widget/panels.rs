@@ -418,8 +418,8 @@ impl WordProcessorWidget {
     // ---- horizontal ruler ----------------------------------------------------
 
     /// The caret paragraph's left/hanging indent (px), read from the cached block
-    /// views (the `indent` block attr). `0.0` when unset. Mirrors the model's
-    /// `block_indent` so the draw pass (which has no `state`) can read it.
+    /// views (the `indent` block attr), so the draw pass (which has no
+    /// `state`) can read it. `0.0` when unset.
     fn caret_block_indent(&self) -> f64 {
         self.block_num_attr_view(&self.inner.caret.block, "indent")
     }
