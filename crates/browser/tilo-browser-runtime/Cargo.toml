@@ -50,6 +50,8 @@ web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "console"] }
 # The certified peer over HTTPS (no iroh in the bundle), its live codec and
 # the toolkit transport.
 tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["toolkit"] }
+# Which records a join does not replay, so a mount asks for them.
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
