@@ -921,13 +921,12 @@ default = false
 [[matrix]]
 family = "extension-manifests"
 about = """
-Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh, as
-extension-manifests.yml): every day, and when dispatched with `--input images=…`, each
-published OS image's native child resolves every extension inside itself, as root in a
-micro-VM step and without credentials; `publish-extension-manifests` signs the manifests with
-the extension-manifest key in KMS (not the OS release key) and publishes those that changed.
-Mirrors drop superseded builds and publishers ship updates, so nothing is served from the
-cache."""
+Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh): every
+day, and when dispatched with `--input images=…`, each published OS image's native child
+resolves every extension inside itself, as root in a micro-VM step and without credentials;
+`publish-extension-manifests` signs the manifests with the extension-manifest key in KMS (not
+the OS release key) and publishes those that changed. Mirrors drop superseded builds and
+publishers ship updates, so nothing is served from the cache."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 fields = { dispatch_inputs = { images = "", expected_content_sha256 = "" } }
 

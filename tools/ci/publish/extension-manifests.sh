@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Downloadable system-extension manifests (tools/extensions, os/usr/share/tilo/system-extensions/
-# README.md, "Downloaded system extensions") for the published OS images, as
-# extension-manifests.yml makes them.
+# README.md, "Downloaded system extensions") for the published OS images: t's
+# extension-manifests-{x86_64,aarch64} checks resolve them, publish-extension-manifests signs
+# and publishes them.
 #
 #   extension-manifests.sh resolve ARCH OUT   resolve every extension inside each published
 #                                             OS image's ARCH child, natively: the image's own
