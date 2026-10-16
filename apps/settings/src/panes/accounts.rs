@@ -556,14 +556,14 @@ struct AccountDraft {
 }
 
 struct ProbeJob {
-    receiver: std::sync::mpsc::Receiver<Result<String, String>>,
+    receiver: crate::channel::Receiver<Result<String, String>>,
     deadline: ui::time::Instant,
 }
 
 impl ProbeJob {
     const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    fn new(receiver: std::sync::mpsc::Receiver<Result<String, String>>) -> Self {
+    fn new(receiver: crate::channel::Receiver<Result<String, String>>) -> Self {
         Self {
             receiver,
             deadline: ui::time::now() + Self::DEADLINE,
@@ -573,11 +573,11 @@ impl ProbeJob {
     fn poll(&self, stopped: &str) -> Option<Result<String, String>> {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(stopped.into())),
-            Err(std::sync::mpsc::TryRecvError::Empty) if ui::time::now() >= self.deadline => {
+            Err(crate::channel::TryRecvError::Disconnected) => Some(Err(stopped.into())),
+            Err(crate::channel::TryRecvError::Empty) if ui::time::now() >= self.deadline => {
                 Some(Err(t("accounts-timeout")))
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(crate::channel::TryRecvError::Empty) => None,
         }
     }
 }
@@ -2059,7 +2059,7 @@ impl AccountsPane {
                 Ok((account, secret)) => {
                     draft.assigned_id = Some(account.id.clone());
                     let tester = std::sync::Arc::clone(&self.account_tester);
-                    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                    let (sender, receiver) = crate::channel::sync_channel(1);
                     std::thread::spawn(move || {
                         let _ = sender.send(tester.test(&account, &secret));
                     });
@@ -2145,7 +2145,7 @@ impl AccountsPane {
                 secret.password = password.trim().to_string();
                 let tester = std::sync::Arc::clone(&self.account_tester);
                 let candidate = secret.clone();
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                let (sender, receiver) = crate::channel::sync_channel(1);
                 std::thread::spawn(move || {
                     let _ = sender.send(tester.test(&account, &candidate));
                 });

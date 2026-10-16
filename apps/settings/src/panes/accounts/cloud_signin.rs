@@ -12,7 +12,6 @@
 //! too and validates its mailbox before either service account is saved.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
@@ -20,6 +19,7 @@ use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OA
 use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
+use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::t;
 use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
 
@@ -66,7 +66,7 @@ impl Outcome {
 
 enum Cancel {
     Loopback(LoopbackCancel),
-    Channel(mpsc::Sender<()>),
+    Channel(std::sync::mpsc::Sender<()>),
 }
 
 enum Stage {
@@ -392,7 +392,7 @@ impl SignInFlow {
             return;
         };
         let cancel = Cancel::Loopback(canceller);
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
@@ -439,7 +439,7 @@ impl SignInFlow {
             };
             return;
         }
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
@@ -478,9 +478,9 @@ impl SignInFlow {
             self.message = Some(error.to_string());
             return;
         }
-        let (url_sender, urls) = mpsc::sync_channel(1);
-        let (sender, result) = mpsc::sync_channel(1);
-        let (stop, cancel) = mpsc::channel();
+        let (url_sender, urls) = channel::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
+        let (stop, cancel) = std::sync::mpsc::channel();
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
@@ -530,7 +530,7 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
@@ -568,7 +568,7 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
@@ -719,9 +719,9 @@ impl SignInFlow {
         if let Some(receiver) = urls.take() {
             match receiver.recv_timeout(remaining()) {
                 Ok(url) => *launch = Some(self.opener.open(&url)),
-                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+                Err(channel::RecvTimeoutError::Timeout) => return false,
                 // The worker failed before learning a URL; its outcome follows.
-                Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(channel::RecvTimeoutError::Disconnected) => {}
             }
         }
         match result.recv_timeout(remaining()) {

@@ -9,7 +9,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use tracing::warn;
@@ -18,6 +17,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ProgressBar, Row, Text, Widget};
 use ui::{LocalState, WakeHandle};
 
+use crate::channel::{self, Receiver, TryRecvError};
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
 use crate::effects::effect;
 use crate::host::PaneCx;
@@ -1150,7 +1150,7 @@ impl UpdatesModel {
         }
         let runner = Arc::clone(&self.codec_runner);
         let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         if std::thread::Builder::new()
             .name("tilo-codec-pack".into())
             .spawn(move || {
@@ -1866,7 +1866,7 @@ impl UpdatesModel {
         let details_provider = Arc::clone(&self.details_provider);
         let control = Arc::clone(&self.control);
         let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         if std::thread::Builder::new()
             .name("tilo-update-check".into())
             .spawn(move || {
@@ -1904,7 +1904,7 @@ impl UpdatesModel {
         }
         let control = Arc::clone(&self.control);
         let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         if std::thread::Builder::new()
             .name("tilo-firmware-refresh".into())
             .spawn(move || {
@@ -2543,7 +2543,7 @@ mod tests {
 
     #[test]
     fn a_request_the_helper_has_not_picked_up_reads_as_starting() {
-        let (release, gate) = mpsc::channel::<()>();
+        let (release, gate) = channel::channel::<()>();
         let gate = Mutex::new(gate);
         let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
             Arc::new(CodecPackStatus::default),
@@ -2932,9 +2932,9 @@ mod tests {
         target: Mutex<Option<String>>,
         set_fails: bool,
         rollback_fails: bool,
-        check_gate: Mutex<Option<mpsc::Receiver<()>>>,
+        check_gate: Mutex<Option<channel::Receiver<()>>>,
         check_fails: bool,
-        refresh_gate: Mutex<Option<mpsc::Receiver<()>>>,
+        refresh_gate: Mutex<Option<channel::Receiver<()>>>,
         refresh_fails: Mutex<bool>,
         check_calls: Mutex<u32>,
         gate_timed_out: std::sync::atomic::AtomicBool,
@@ -2974,18 +2974,18 @@ mod tests {
             self
         }
         /// Hold every update check until the returned sender releases it.
-        fn gate_checks(&self) -> mpsc::Sender<()> {
-            let (release, gate) = mpsc::channel();
+        fn gate_checks(&self) -> channel::Sender<()> {
+            let (release, gate) = channel::channel();
             *self.check_gate.lock().unwrap() = Some(gate);
             release
         }
         /// Hold every firmware refresh until the returned sender releases it.
-        fn gate_refreshes(&self) -> mpsc::Sender<()> {
-            let (release, gate) = mpsc::channel();
+        fn gate_refreshes(&self) -> channel::Sender<()> {
+            let (release, gate) = channel::channel();
             *self.refresh_gate.lock().unwrap() = Some(gate);
             release
         }
-        fn wait_at(&self, gate: &Mutex<Option<mpsc::Receiver<()>>>) {
+        fn wait_at(&self, gate: &Mutex<Option<channel::Receiver<()>>>) {
             if let Some(gate) = gate.lock().unwrap().as_ref()
                 && gate.recv_timeout(GATE_TIMEOUT).is_err()
             {

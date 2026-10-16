@@ -15,7 +15,6 @@
 //! nothing the gateway could call.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::cloud_projects::{self, CloudProject};
 use account_custody::{
@@ -31,6 +30,7 @@ use ui::LocalState;
 use ui::widget::{Button, Row, TextInput};
 
 use super::agent_models::AgentModelsEffect;
+use crate::channel::{self, Receiver, TryRecvError};
 use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
@@ -188,7 +188,7 @@ impl VertexSetup {
             return;
         };
         let launch = opener.open(authorization.url());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let custodian = custodian.clone();
         let grant = grant_id(&self.profile_id);
         std::thread::spawn(move || {
