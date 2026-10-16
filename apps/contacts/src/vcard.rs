@@ -476,7 +476,13 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
             let addr = Address {
                 id: Uuid::new_v4(),
                 label: collect_types(line),
-                street: g(2),
+                // The model has one delivery field. Keep PO boxes and extended
+                // addresses there rather than silently throwing them away.
+                street: (0..3)
+                    .map(g)
+                    .filter(|part| !part.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 city: g(3),
                 region: g(4),
                 postal: g(5),
@@ -533,6 +539,35 @@ fn strip_uri(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All delivery lines must survive import, including a PO-box-only card.
+    #[test]
+    fn regression_import_preserves_postal_delivery_lines() {
+        for (adr, street) in [
+            ("PO Box 42;;;;;;", "PO Box 42"),
+            (
+                ";Suite 5;10 Main Street;London;;;UK",
+                "Suite 5\n10 Main Street",
+            ),
+            (
+                "PO Box 42;Building B;10 Main Street;London;;;UK",
+                "PO Box 42\nBuilding B\n10 Main Street",
+            ),
+        ] {
+            let report = parse_vcards_report(&format!(
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nADR;TYPE=work:{adr}\r\nEND:VCARD\r\n"
+            ));
+            assert_eq!(report.skipped_cards, 0);
+            assert_eq!(report.contacts.len(), 1, "postal-only cards are contacts");
+            let contact = &report.contacts[0];
+            assert_eq!(contact.addresses.len(), 1);
+            assert_eq!(contact.addresses[0].street, street);
+            for version in [VCardVersion::V3, VCardVersion::V4] {
+                let reimported = parse_vcards(&to_vcard(contact, version));
+                assert_eq!(reimported[0].addresses[0].street, street);
+            }
+        }
+    }
 
     fn sample() -> Contact {
         Contact {
