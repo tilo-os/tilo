@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 import importlib.util
 from pathlib import Path
@@ -251,38 +252,44 @@ class Publish(unittest.TestCase):
 
 class SigningAuthority(unittest.TestCase):
     """The extension-manifest role trusts tilo/tilo main with one OIDC audience;
-    AWS cannot tell workflows apart, so only this workflow may request it."""
+    AWS cannot tell checks apart, so only the manifest publisher may request it."""
 
     def test_sign_only_planner_rejects_ambiguous_or_unpinned_inputs(self):
-        workflow = (REPO / ".forgejo/workflows/extension-manifests.yml").read_text()
-        plan = workflow.split("        id: plan\n", 1)[1].split("\n  resolve:", 1)[0]
-        program = textwrap.dedent(plan.split("        run: |\n", 1)[1])
+        script = REPO / "tools/ci/publish/extension-manifests.sh"
+        arch = os.uname().machine
         digest = "registry.tilo.so/tilo/tilo-ci@sha256:" + "ab" * 32
-        for images, expected in [("", "ef" * 32), (digest, ""),
+        for images, expected in [("", "ef" * 32),
                                  ("registry.tilo.so/tilo/tilo-ci:latest", "ef" * 32),
                                  (f"{digest} {digest}", "ef" * 32), (digest, "malformed")]:
             with self.subTest(images=images, expected=expected):
                 with tempfile.TemporaryDirectory() as root:
                     sentinel = Path(root) / "skopeo-called"
-                    fake = Path(root) / "skopeo"
-                    fake.write_text(f"#!/bin/sh\ntouch '{sentinel}'\nexit 1\n")
-                    fake.chmod(0o755)
-                    result = subprocess.run(["bash", "-c", program], capture_output=True, text=True,
-                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
-                             "INPUT_IMAGES": images, "INPUT_PUBLISH": "false",
-                             "EXPECTED_CONTENT_SHA256": expected})
+                    for tool, body in (("skopeo", f"touch '{sentinel}'\nexit 1\n"), ("dnf", "exit 0\n")):
+                        fake = Path(root) / tool
+                        fake.write_text(f"#!/bin/sh\n{body}")
+                        fake.chmod(0o755)
+                    out = Path(root) / "out"
+                    result = subprocess.run(["bash", str(script), "resolve", arch, str(out)],
+                        capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "TMPDIR": root,
+                             "T_INPUT_IMAGES": images, "T_INPUT_EXPECTED_CONTENT_SHA256": expected})
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("qualification requires one immutable image", result.stdout)
+                    self.assertIn("qualification requires one immutable image", result.stderr)
                     self.assertFalse(sentinel.exists(), "invalid qualification must not pull an image")
+                    self.assertFalse(out.exists())
 
-    def test_only_the_manifest_workflow_requests_the_extension_audience(self):
-        workflows = REPO / ".forgejo/workflows"
-        users = sorted(p.name for p in workflows.glob("*.y*ml") if "tilo-extension-manifests" in p.read_text())
-        self.assertEqual(users, ["extension-manifests.yml"])
-        text = (workflows / "extension-manifests.yml").read_text()
-        self.assertIn("TILO_SIGNING_AUDIENCE: tilo-extension-manifests", text)
-        self.assertNotIn("secrets.COSIGN_KEY_REF", text, "the OS release key never signs a manifest")
-        self.assertNotIn("secrets.AWS_SIGNING_ROLE_ARN", text)
+    def test_only_the_manifest_publisher_requests_the_extension_audience(self):
+        checks = tomllib.loads((REPO / "t.toml").read_text())["check"]
+        users = sorted(c["name"] for c in checks if "tilo-extension-manifests" in c.get("id_token", []))
+        self.assertEqual(users, ["publish-extension-manifests"])
+        (publisher,) = (c for c in checks if c["name"] == "publish-extension-manifests")
+        env = publisher["env"]
+        self.assertEqual(env["TILO_SIGNING_AUDIENCE"], "tilo-extension-manifests")
+        self.assertTrue(env["COSIGN_KEY_REF"].endswith(":alias/tilo-extension-manifests"), env)
+        self.assertTrue(env["AWS_SIGNING_ROLE_ARN"].endswith(":role/TiloTExtensionManifestSigner"), env)
+        text = repr(publisher)
+        self.assertNotIn("alias/tilo-release-signing", text, "the OS release key never signs a manifest")
+        self.assertNotIn("TiloTReleaseSigner", text)
 
 if __name__ == "__main__":
     unittest.main()

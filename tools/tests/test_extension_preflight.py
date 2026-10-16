@@ -1,10 +1,12 @@
-"""Run the actual workflow preflight with no network or signing credentials."""
+"""Run the real publish-mode preflight of tools/ci/publish/extension-manifests.sh with no
+network or signing credentials: the script and its library run from a scratch tree whose KMS
+setup, Cosign and manifest publisher are fakes."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -15,18 +17,22 @@ PINNED = "public key fixture\n"
 
 class ExtensionPreflight(unittest.TestCase):
     def run_preflight(self, output, status):
-        workflow = (REPO / ".forgejo/workflows/extension-manifests.yml").read_text()
-        step = workflow.split("      - name: Sign and publish each resolved manifest\n", 1)[1]
-        program = textwrap.dedent(step.split("        run: |\n", 1)[1].split("      - uses:", 1)[0])
-        # Run through the real preflight, stopping before manifest publication.
-        program = program.split("mapfile -t manifests", 1)[0] + "touch advanced\n"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "tools/ci/publish").mkdir(parents=True)
+            for name in ("extension-manifests.sh", "lib.sh"):
+                shutil.copy(REPO / "tools/ci/publish" / name, root / "tools/ci/publish" / name)
             (root / "keys").mkdir()
             (root / "keys/extensions.pub").write_text(PINNED)
             (root / "os/dev").mkdir(parents=True)
             # Identity provisioning is external to this reporting regression.
             (root / "os/dev/configure-cosign-kms.sh").write_text("trap 'touch identity-cleaned' EXIT\n")
+            # Publication is the next stage: reaching it is what the preflight guards.
+            (root / "tools/extensions").mkdir()
+            (root / "tools/extensions/publish.sh").write_text("touch advanced\n")
+            manifests = root / "manifests"
+            manifests.mkdir()
+            (manifests / "media-codecs.json").write_text("{}\n")
             binary = root / "bin"
             binary.mkdir()
             cosign = binary / "cosign"
@@ -39,30 +45,33 @@ class ExtensionPreflight(unittest.TestCase):
                 + f"sys.exit({status})\n"
             )
             cosign.chmod(0o755)
-            runner = root / "runner"
-            runner.mkdir()
+            dnf = binary / "dnf"
+            dnf.write_text("#!/bin/sh\nexit 0\n")
+            dnf.chmod(0o755)
+            scratch = root / "scratch"
+            scratch.mkdir()
             result = subprocess.run(
-                ["bash", "-c", program], cwd=root, capture_output=True, text=True,
-                env={"PATH": f"{binary}:{os.environ['PATH']}", "RUNNER_TEMP": str(runner),
+                ["bash", str(root / "tools/ci/publish/extension-manifests.sh"), "publish", str(manifests)],
+                cwd=root, capture_output=True, text=True,
+                env={"PATH": f"{binary}:{os.environ['PATH']}", "TMPDIR": str(scratch),
                      "COSIGN_KEY_REF": "awskms:///fixture"},
             )
-            self.assertTrue((root / "identity-cleaned").exists(), "preserve identity cleanup in the parent shell")
+            self.assertTrue((root / "identity-cleaned").exists(), "preserve identity cleanup in the script's shell")
             self.assertEqual((root / "keys/extensions.pub").read_text(), PINNED)
-            self.assertEqual(list(runner.iterdir()), [], "preflight must clean temporary key files")
             return result, (root / "advanced").exists()
 
     def test_retrieval_failure_is_not_reported_as_key_mismatch(self):
         result, advanced = self.run_preflight("", 1)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("InvalidIdentityToken", result.stderr)
-        self.assertIn("could not retrieve", result.stdout + result.stderr)
+        self.assertIn("could not read the extension-manifest public key", result.stderr)
         self.assertNotIn("does not match", result.stdout + result.stderr)
         self.assertFalse(advanced)
 
     def test_failed_retrieval_with_matching_partial_output_still_stops(self):
         result, advanced = self.run_preflight(PINNED, 1)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not retrieve", result.stdout + result.stderr)
+        self.assertIn("could not read the extension-manifest public key", result.stderr)
         self.assertNotIn("does not match", result.stdout + result.stderr)
         self.assertFalse(advanced)
 
