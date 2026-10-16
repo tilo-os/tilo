@@ -16,6 +16,10 @@ pub type SealCheckpoint<'a> =
 /// epoch, with delta retention.
 pub type SealDelta<'a> = SealCheckpoint<'a>;
 
+/// Writes a sealed history must hold before it is compacted to make room in
+/// a full exact admission index: fewer would fold little for the work.
+pub(super) const PRESSED_HISTORY: usize = 64;
+
 impl StatePeer {
     /// Compact `record`'s sealed history as the key holder of its channel
     /// and supersede it here, returning the compaction to publish.
@@ -302,6 +306,12 @@ impl StatePeer {
     /// new writes are refused.
     #[must_use]
     pub fn sealed_records_to_compact(&self) -> Vec<(String, String)> {
+        // Every sealed write leaves exact admission evidence until a
+        // compaction folds it into its writer's mark. Many records each
+        // short of their own bound (the parts of a chained record) fill the
+        // room's index all the same: once it is half full, every record with
+        // a history worth folding is due.
+        let pressed = self.core.exact_admissions.pressed();
         self.core
             .documents
             .iter()
@@ -309,6 +319,7 @@ impl StatePeer {
                 let bytes = document.sealed.bytes();
                 document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
                     || bytes >= super::MAX_SEALED_BYTES / 4 * 3
+                    || (pressed && document.sealed.len() >= PRESSED_HISTORY)
             })
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect()

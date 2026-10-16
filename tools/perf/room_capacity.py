@@ -248,6 +248,9 @@ def row(run: dict[str, Any]) -> dict[str, Any]:
         "egress_mbit_s": host.get("egress_bytes_per_s", 0.0) * 8 / 1e6,
         "driver_cores": host["driver_cpu_cores_avg"],
         "machine_cores": host["machine_cores"],
+        # Guests that opened the chat's first part, which a join does not
+        # replay once later parts exist.
+        "scrollback": report.get("scrollback") or {},
         # Where the host's time went (tilo_relay::timing), per phase.
         "timings": report.get("timings") or {},
     }
@@ -360,6 +363,12 @@ def markdown(summary: dict[str, Any]) -> str:
             f"| {r['spectator_join_p99_ms']:.0f} | {r['cpu_cores']:.2f} ({r['busiest_thread_cores']:.2f}) "
             f"| {r['rss_mib_peak']} "
             f"| {r['egress_mbit_s']:.1f} | {r['driver_cores']:.1f} |")
+    for r in summary["rows"]:
+        back = r.get("scrollback") or {}
+        if back.get("count"):
+            lines.append(f"- {r['name']}: {back['count']} guests scrolled back to the chat's first part, "
+                         f"opened in {back['p50_ms']:.0f} / {back['p99_ms']:.0f} ms (p50 / p99), "
+                         f"{back['frames']} frames in all")
     lines += timing_lines(summary["rows"])
     d = summary["derived"]
     if not d:

@@ -798,6 +798,56 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     );
 }
 
+/// Many records each short of their own bound fill the room's exact
+/// admission index all the same: once it is half full, every sealed history
+/// worth folding is due, and compacting it frees the index.
+#[test]
+fn a_half_full_admission_index_makes_every_sealed_history_due() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    for index in 0..super::sealed_compaction::PRESSED_HISTORY {
+        let next = write(
+            &f.host,
+            &f.other,
+            &keys,
+            &author.edit("value", &index.to_string()),
+            now,
+        );
+        admit(&mut f.host, &f.other, next, now);
+    }
+    assert!(f.host.sealed_records_to_compact().is_empty());
+    let mut sequence = 0;
+    while !f.host.core.exact_admissions.pressed() {
+        sequence += 1;
+        f.host
+            .core
+            .exact_admissions
+            .insert(&crate::admission::DocumentAdmission {
+                key: crate::admission::AdmissionKey {
+                    room: ROOM.into(),
+                    app: APP.into(),
+                    record: "elsewhere".into(),
+                    author: [9; 32],
+                    sequence,
+                },
+                operation_id: [1; 32],
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        f.host.sealed_records_to_compact(),
+        vec![(APP.to_owned(), RECORD.to_owned())]
+    );
+    let before = f.host.core.exact_admissions.len();
+    mint(&mut f.host, &keys, &f.owner, now).unwrap();
+    assert!(
+        f.host.core.exact_admissions.len() < before,
+        "the compaction folded the record's evidence"
+    );
+}
+
 #[test]
 fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
     let f = fixture();
