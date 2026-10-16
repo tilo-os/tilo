@@ -479,9 +479,10 @@ impl Refresh {
                 items.push(installed_flatpak_to_item(id, version));
             }
         }
-        if let Some(reference) = &state.opened_ref
-            && !items.iter().any(|item| item.id == reference.app_id)
-        {
+        if let Some(reference) = &state.opened_ref {
+            // Opening a reference is an explicit source/branch choice. A
+            // catalogue response must not silently install a different offer.
+            items.retain(|item| item.id != reference.app_id);
             let version = state
                 .installed
                 .iter()
@@ -623,6 +624,42 @@ mod tests {
         })
         .unwrap();
         app.inspect_catalogue(Some("so.tilo.mail")).unwrap()
+    }
+
+    #[test]
+    fn refreshing_preserves_the_opened_reference_over_catalogue_offers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("editor.flatpakref");
+        std::fs::write(
+            &path,
+            "[Flatpak Ref]\nName=org.example.Editor\nTitle=Editor\nBranch=beta\nUrl=https://example.org/repo/\n",
+        )
+        .unwrap();
+        let mut state = super::super::tests::state_with_items(
+            vec![super::super::tests::item("so.tilo.editor", "Editor")],
+            crate::search::StoreDirectory::default(),
+        );
+        let opened = super::super::open_reference(Some(path), None, &mut state).unwrap();
+        let mut refresh = Refresh::start(&state, None);
+        let record = serde_json::from_value(serde_json::json!({
+            "flatpakAppId": "org.example.Editor", "name": "Editor",
+            "currentReleaseVersion": "1.0"
+        }))
+        .unwrap();
+        refresh.apply(&mut state, Response::Popular(Ok(vec![record])));
+        refresh.rebuild(&mut state);
+        let item = state
+            .base_items
+            .iter()
+            .find(|item| item.id == opened.id)
+            .expect("an explicitly opened reference survives native name deduplication");
+        assert_eq!(item.install_ref_path, opened.install_ref_path);
+        assert_eq!(item.latest_version(), "beta");
+        assert_eq!(
+            item.source_url.as_deref(),
+            Some("https://example.org/repo/")
+        );
+        assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
     }
 
     #[test]
