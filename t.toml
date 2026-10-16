@@ -3049,13 +3049,16 @@ cpus = 16
 memory = "32G"
 default = false
 
+# As root in a micro-VM step with a /dev/kvm of its own: the guest boots under KVM nested in it.
 [[check]]
 name = "legacy-guest-e2e"
-run = "bash tools/ci/publish/legacy-guest.sh e2e /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest.sh", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
+run = "bash tools/ci/publish/legacy-guest-e2e.sh /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest-e2e.sh", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
 needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 8
+memory = "16G"
 timeout_secs = 5400
 default = false
 
