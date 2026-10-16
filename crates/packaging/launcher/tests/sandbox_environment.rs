@@ -82,6 +82,7 @@ fn manifest() -> ManifestView {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        opens_secondary: false,
         continuity: launcher::manifest::ContinuityContract::default(),
     }
 }

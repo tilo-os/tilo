@@ -88,6 +88,9 @@ pub struct ManifestView {
     pub opens_mime: Vec<String>,
     /// Normalized URI schemes (without `:`) declared by the package.
     pub opens_schemes: Vec<String>,
+    /// `[providers].secondary`: another app claiming the same resource is
+    /// its default.
+    pub opens_secondary: bool,
     /// Signed minimum handoff-fidelity facets. Legacy manifests default to
     /// framework presentation state.
     pub continuity: ContinuityContract,
@@ -161,6 +164,7 @@ impl TryFrom<Manifest> for ManifestView {
             .map(|mime| mime.trim().to_ascii_lowercase())
             .filter(|mime| valid_mime(mime))
             .collect();
+        let opens_secondary = providers.secondary;
         let opens_schemes = providers
             .schemes
             .into_iter()
@@ -184,6 +188,7 @@ impl TryFrom<Manifest> for ManifestView {
             opens_ext,
             opens_mime,
             opens_schemes,
+            opens_secondary,
             continuity,
         })
     }

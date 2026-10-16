@@ -1457,6 +1457,12 @@ impl LaunchSession {
     }
 
     pub(crate) fn push(&self, event: LaunchEvent) {
+        if matches!(
+            event.kind,
+            LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
+        ) {
+            super::doc_open::forget_unpresented_documents(self, &event.package_id);
+        }
         lock(&self.0.events).push(event);
     }
 
@@ -2153,6 +2159,7 @@ pub fn host_app_candidates(
                 package_id,
                 display_name: host.name.clone(),
                 resources,
+                secondary: false,
             })
         })
         .collect()
@@ -2306,6 +2313,7 @@ fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::App
                         .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
                 )
                 .collect(),
+            secondary: app.opens_secondary,
         })
         .collect()
 }
@@ -5378,8 +5386,9 @@ pub fn expire_pending_placements() -> Vec<String> {
 }
 
 fn expire_pending_placements_at(now: Instant) -> Vec<String> {
+    let session = LaunchSession::current();
     let mut expired = Vec::new();
-    lock(&LaunchSession::current().pending).retain(|note| {
+    lock(&session.pending).retain(|note| {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
@@ -5390,12 +5399,15 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
             expired.push(note.key.clone());
         }
         if !keep {
-            lock(&LaunchSession::current().launch_history)
+            lock(&session.launch_history)
                 .event(note.launch_metric_id, launch_history::Phase::Retired);
             tilo_startup_metrics::launch_failed(note.launch_metric_id);
         }
         keep
     });
+    for package_id in &expired {
+        super::doc_open::forget_unpresented_documents(&session, package_id);
+    }
     expired
 }
 
@@ -6873,6 +6885,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             };
             let cmd = build_launch_command(
@@ -6923,6 +6936,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             };
             let cmd = build_launch_command(
@@ -7027,6 +7041,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             };
             let room = RoomId::new();
@@ -7092,6 +7107,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             };
             assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
@@ -7378,6 +7394,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             });
             // full package id, trailing component, case-insensitivity
@@ -7418,6 +7435,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
             offers: Vec::new(),
         }
     }

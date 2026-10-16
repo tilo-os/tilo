@@ -6080,6 +6080,7 @@ mod permissions_pane_tests {
                     package_id: "so.tilo.viewer".into(),
                     display_name: "Viewer".into(),
                     resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+                    secondary: false,
                 }];
                 let rows = default_app_rows(pane, &candidates);
                 let row = rows.first().expect("a narrow policy row fits");
@@ -6180,6 +6181,7 @@ mod default_app_authority_tests {
             package_id: id.into(),
             display_name: id.into(),
             resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+            secondary: false,
         }
     }
 

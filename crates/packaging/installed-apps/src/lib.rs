@@ -42,6 +42,9 @@ pub struct InstalledApp {
     pub opens_mime_types: Vec<String>,
     /// Normalized URI schemes from `[providers].schemes`.
     pub opens_uri_schemes: Vec<String>,
+    /// `[providers].secondary`: another app claiming the same resource is
+    /// the default for it.
+    pub opens_secondary: bool,
     /// The signed manifest's `[[offers]]`: actions the app offers while it
     /// is not running, which the action catalogue lists for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
@@ -84,6 +87,7 @@ impl InstalledApp {
             opens_extensions: manifest.opens_ext.clone(),
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
+            opens_secondary: manifest.opens_secondary,
             offers,
         })
     }
@@ -494,6 +498,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             }
         };
