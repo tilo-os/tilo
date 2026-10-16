@@ -3318,9 +3318,9 @@ on = ["dispatch"]
 
 # The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
 # (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
-# resolves its build dependencies with the network, then rebuilds Wine from that bundle alone,
-# offline. Every image is an archive named by the digest it is published with, so the contracts
-# the steps write name what is published.
+# resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
+# that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
+# by the digest it is published with, so the contracts the steps write name what is published.
 [[check]]
 name = "wine-resolve-x86_64"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
@@ -3337,6 +3337,21 @@ timeout_secs = 3600
 default = false
 
 [[check]]
+name = "wine-build-x86_64"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh build x86_64 /target/windows-compat/wine-build-x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-x86_64"]
+outputs = ["/target/windows-compat/wine-build-x86_64/**"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
+default = false
+
+[[check]]
 name = "wine-resolve-i686"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
 run = "bash tools/ci/publish/wine.sh resolve i686 /target/windows-compat/wine-resolve-i686"
@@ -3349,6 +3364,21 @@ cost = "heavy"
 cpus = 4
 memory = "8G"
 timeout_secs = 3600
+default = false
+
+[[check]]
+name = "wine-build-i686"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh build i686 /target/windows-compat/wine-build-i686"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-i686"]
+outputs = ["/target/windows-compat/wine-build-i686/**"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
 default = false
 
 [[check]]
