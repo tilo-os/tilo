@@ -137,7 +137,16 @@ fn operations_at(catalogue: &Catalogue, subject: &tilo_actions::SelectionSubject
         })
         .collect();
     if offers.is_empty() {
-        return if subject.anchor.place.is_some() || !subject.anchor.items.is_empty() {
+        // Only operations this agent may use are offered, so a selected range
+        // with none that acts at a place in it is one it may not change. Said
+        // plainly, the model reports that rather than hunting for another way
+        // to rewrite the text.
+        return if subject.anchor.place.is_some() {
+            "No operation you may use acts at a place in this resource, so you cannot change \
+             the selected text itself. Do not look for another way to rewrite it: if the \
+             request asks to change it, say so in your reply and give the result there.\n"
+                .into()
+        } else if !subject.anchor.items.is_empty() {
             "When an operation takes a place (usually its `at` parameter), pass exactly the \
              selected place.\n"
                 .into()
@@ -350,6 +359,20 @@ mod tests {
         );
         assert!(!prompt.contains("set-block-text"));
         assert!(prompt.contains("not a limit"));
+    }
+
+    #[test]
+    fn a_selected_range_with_no_operation_at_a_place_is_said_to_be_unchangeable() {
+        let words = subject(
+            SelectionAnchor::of_text("the opening sentence").at(SelectionPlace::range("b1", 0, 20)),
+        );
+        let prompt = task_request(&run(Some(words)), &Catalogue::default());
+        assert!(
+            prompt.contains("you cannot change the selected text itself"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("say so in your reply"));
+        assert!(!prompt.contains("To change the selection, use"));
     }
 
     #[test]
