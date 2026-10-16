@@ -856,29 +856,39 @@ mod command_path_tests {
             "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
 
-        // Production AboutToWait also drains Nearby Send. An unchanged
-        // snapshot used to set `structure_dirty` and commit at ~0.5 Hz;
-        // together with the 750ms metadata wake that was ~1.8 paint/s.
+        // Nearby Send used to ask every 2s; now only on an announced change.
+        assert!(
+            !widget.take_collab_requests().iter().any(|request| matches!(
+                request,
+                ui::collaboration::CollabRequest::NearbyTransferCommand { .. }
+            )),
+            "an idle Files window must not ask Nearby Send anything"
+        );
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferChanged,
+        );
         let request_id = widget
             .take_collab_requests()
             .iter()
             .find_map(|request| match request {
-                ui::collaboration::CollabRequest::NearbyTransferCommand { request_id, .. } => {
-                    Some(*request_id)
-                }
-                _ => None,
-            });
-        if let Some(request_id) = request_id {
-            ui::widget::Collaborative::handle_collab_event(
-                &mut widget,
-                &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                ui::collaboration::CollabRequest::NearbyTransferCommand {
                     request_id,
-                    result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
-                        snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
-                    }),
-                },
-            );
-        }
+                    command: ui::collaboration::NearbyTransferCommand::Snapshot,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .expect("an announced change asks for a snapshot");
+        ui::widget::Collaborative::handle_collab_event(
+            &mut widget,
+            &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
+                    snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
+                }),
+            },
+        );
         let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
         ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
@@ -2558,7 +2568,9 @@ mod command_path_tests {
         );
         let resources = crate::files_app::published::tree(&widget, &document);
         assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
-        widget.nearby_send.poll_if_due(ui::time::now());
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferChanged);
         let request_id = widget
             .nearby_send
             .take_requests()
@@ -5900,12 +5912,11 @@ mod injected_startup_tests {
             startup(&child),
             deferred_services(),
         );
-        widget.nearby_send.poll_if_due(ui::time::now());
-        // Nearby Send's first poll leaves its snapshot in flight, which sets no
-        // deadline at all (its reply is an event); nothing may be due yet.
+        // Nearby Send asks nothing until the shell announces a change, so it
+        // sets no deadline; nothing may be due yet.
         assert!(
             Widget::next_wake_deadline(&widget).is_none_or(|deadline| deadline > ui::time::now()),
-            "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
+            "the completed-reply branch, rather than Nearby Send, must supply the immediate wake"
         );
         widget
             .request_deferred_document_open(
