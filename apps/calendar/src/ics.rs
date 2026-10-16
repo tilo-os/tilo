@@ -463,10 +463,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
 }
 
 fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
-    // Tilo resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
-    // task exported by Tilo can be imported repeatedly without becoming a new
-    // task. Non-UUID external UIDs still import safely with an author-minted
-    // id; they cannot be used as an Automerge object key in this model.
+    // Keep the same identity on repeated imports, including external UIDs.
     let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut due: Option<NaiveDate> = None;
@@ -577,7 +574,24 @@ fn parse_recurrence_id(line: &ContentLine) -> Option<(NaiveDate, Option<NaiveTim
 }
 
 fn parse_uid(value: &str) -> Option<Id> {
-    value.trim().split('@').next()?.parse().ok()
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(id) = value.split('@').next().and_then(|part| part.parse().ok()) {
+        return Some(id);
+    }
+    // A detached occurrence carries its master's UID, not necessarily a
+    // UUID. Both components must resolve to the same resource identity.
+    let hash = |key| {
+        let mut hasher = fnv::FnvHasher::with_key(key);
+        std::hash::Hasher::write(&mut hasher, b"calendar-uid:");
+        std::hash::Hasher::write(&mut hasher, value.as_bytes());
+        std::hash::Hasher::finish(&hasher)
+    };
+    Some(Uuid::from_u128(
+        (u128::from(hash(0xcbf2_9ce4_8422_2325)) << 64) | u128::from(hash(0x0102_0304_0506_0708)),
+    ))
 }
 
 fn timezone_from_property(line: &ContentLine) -> String {
@@ -720,6 +734,21 @@ pub fn sample_ics(today: NaiveDate) -> String {
 mod tests {
     use super::*;
     use chrono::Timelike as _;
+
+    #[test]
+    fn external_uids_preserve_detached_occurrences_and_import_identity() {
+        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:follow-up@example.com\r\nSUMMARY:Follow up\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let (events, tasks) = parse(payload);
+        let (again, tasks_again) = parse(payload);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, again[0].id);
+        assert_eq!(tasks[0].id, tasks_again[0].id);
+        assert_ne!(events[0].id, tasks[0].id);
+        assert_eq!(events[0].occurrence_overrides.len(), 1);
+        let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
+    }
 
     #[test]
     fn export_envelope_and_event_task_all_day_round_trips() {
