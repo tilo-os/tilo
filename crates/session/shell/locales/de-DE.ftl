@@ -2813,3 +2813,11 @@ search-kw-settings-updates = aktualisierung, aktualisieren, systemupdate, firmwa
 search-settings-page-about = Info
 search-settings-page-about-subtitle = Geräteidentität und Übertragung
 search-kw-settings-about = info, über, gerätename, hostname, version, systeminformationen, seriennummer, hardware, identität
+
+storage-app-name = Speicher
+storage-volume-home = deine Dateien
+storage-volume-system = das System
+storage-low-title = Der Speicher ist fast voll
+storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
+storage-full-title = Der Speicher ist voll
+storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.

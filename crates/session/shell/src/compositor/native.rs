@@ -4418,6 +4418,20 @@ fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
+fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
+    let notices = crate::shell::storage_notice::drain();
+    if notices.is_empty() {
+        return false;
+    }
+    frame_builder.with_chrome(|chrome| {
+        for notice in notices {
+            chrome.push_notification_full(notice);
+        }
+        chrome.bump();
+    });
+    true
+}
+
 /// Start XDG autostart entries once per login, as soon as there is a
 /// workspace to attribute them to (and whose X11 display they may use).
 fn run_autostart_once(frame_builder: &FrameBuilder) {
@@ -9795,6 +9809,7 @@ pub fn run() {
     }
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
+    crate::shell::storage_notice::start(Arc::clone(&session_wake));
     crate::app_icons::set_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
@@ -11384,6 +11399,7 @@ pub fn run() {
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
+        session_changed |= post_storage_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {
             published.follow(

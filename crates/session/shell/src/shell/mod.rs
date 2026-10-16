@@ -32,6 +32,7 @@ pub mod channel_policy;
 pub mod chrome_state;
 pub mod closed_tabs;
 pub mod codec_pack_notice;
+pub mod storage_notice;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
