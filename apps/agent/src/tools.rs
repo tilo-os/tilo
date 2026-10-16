@@ -772,13 +772,16 @@ pub fn parameter_signature(offer: &Offer) -> String {
     format!("{{{params}}}")
 }
 
+/// The prefix of a host (non-Tilo) application's id in the catalogue.
+const HOST_APP_PREFIX: &str = "host:";
+
 /// The published operations, compactly, for the first turn (of the task loop
 /// and of a plan decision): enough to invoke or plan the common ones directly
 /// without a discovery round trip. Every id shown is revealed. Every
-/// application gets its share (document operations first,
-/// then view, then the rest), and every open — how a closed application is
-/// started — is always shown; a cut summary says how to reach what it left
-/// out.
+/// running application gets its share (document operations first, then
+/// view, then the rest) of the first half; the opens — how a closed
+/// application is started — follow, Tilo's applications first; a cut
+/// summary says how to reach what it left out.
 pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
     let rank = |offer: &&Offer| match offer.descriptor.kind {
         _ if opened_app(offer).is_some() => 0,
@@ -796,27 +799,9 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
     for offers in per_app.values_mut() {
         offers.sort_by_key(rank);
     }
-    let mut shown: Vec<&Offer> = catalogue
-        .offers
-        .iter()
-        .filter(|offer| opened_app(offer).is_some())
-        .collect();
-    let mut depth = 0;
-    while shown.len() < most {
-        let mut any = false;
-        for offers in per_app.values() {
-            if let Some(offer) = offers.get(depth) {
-                any = true;
-                if opened_app(offer).is_none() && shown.len() < most {
-                    shown.push(offer);
-                }
-            }
-        }
-        if !any {
-            break;
-        }
-        depth += 1;
-    }
+    // Round-robin over the applications' own operations (opens aside),
+    // `depth` deep so far, until `shown` holds `until`.
+    let shown = summarised(catalogue, &per_app, most);
     if shown.is_empty() {
         return "No application publishes an operation you may perform right now.\n".into();
     }
@@ -867,10 +852,59 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
         let _ = writeln!(
             s,
             "… and {rest} more; ask `{LIST_OPERATIONS}` (by application, kind, resource or \
-             search) to reach them."
+             search) to reach them, or `{LIST_APPLICATIONS}` for the applications there are."
         );
     }
     s
+}
+
+/// The offers [`catalogue_summary`] shows, at most `most`: the running
+/// applications' own operations take the first half, so the opens of
+/// everything installed (a desktop lists every host application too) cannot
+/// crowd them out; the opens follow, Tilo's applications before the host's,
+/// whose windows publish nothing once open; what is left goes to more of
+/// the running applications.
+fn summarised<'a>(
+    catalogue: &'a Catalogue,
+    per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+    most: usize,
+) -> Vec<&'a Offer> {
+    fn fill<'a>(
+        per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+        shown: &mut Vec<&'a Offer>,
+        depth: &mut usize,
+        until: usize,
+    ) {
+        while shown.len() < until {
+            let mut any = false;
+            for offers in per_app.values() {
+                if let Some(offer) = offers.get(*depth) {
+                    any = true;
+                    if opened_app(offer).is_none() && shown.len() < until {
+                        shown.push(offer);
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+            *depth += 1;
+        }
+    }
+    let mut shown: Vec<&'a Offer> = Vec::new();
+    let mut depth = 0;
+    fill(per_app, &mut shown, &mut depth, most.div_ceil(2));
+    let mut opens: Vec<&Offer> = catalogue
+        .offers
+        .iter()
+        .filter(|offer| opened_app(offer).is_some())
+        .collect();
+    opens
+        .sort_by_key(|offer| opened_app(offer).is_some_and(|app| app.starts_with(HOST_APP_PREFIX)));
+    let room = most.saturating_sub(shown.len());
+    shown.extend(opens.into_iter().take(room));
+    fill(per_app, &mut shown, &mut depth, most);
+    shown
 }
 
 /// What one [`INVOKE`] did, as the model reads it.
@@ -1568,6 +1602,50 @@ mod tests {
             none.contains("one of desktop, files, word-processor"),
             "{none}"
         );
+    }
+
+    /// The opens of everything installed, host applications included, do
+    /// not crowd what a running application can do out of the summary:
+    /// a web search started beside the agent stays listed however many
+    /// applications could be opened, and Tilo's opens come before the
+    /// host's.
+    #[test]
+    fn opens_do_not_crowd_out_what_is_running() {
+        let mut catalogue = Catalogue {
+            offers: vec![offer(
+                "so.tilo.web-search",
+                "web.search:default",
+                "web.search",
+                "search",
+                "Search the web",
+                InputSpec::None,
+            )],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let open = |app: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.kind = tilo_actions::OperationKind::Effect;
+            open
+        };
+        for n in 0..40 {
+            catalogue.offers.push(open(&format!("host:app-{n}")));
+        }
+        catalogue.offers.push(open("so.tilo.notes"));
+        let summary = catalogue_summary(&catalogue, &mut Revealed::new(), 10);
+        assert!(summary.contains("web.search:default#search"), "{summary}");
+        assert!(
+            summary.contains("desktop:app:so.tilo.notes#open"),
+            "{summary}"
+        );
+        assert!(summary.contains("list_applications"), "{summary}");
     }
 
     /// An open next to an application that already publishes operations
