@@ -8,12 +8,18 @@
 #
 # check.yml's `wasm` job runs it with the examples tools/ci/affected_packages.py
 # selects. The bundles build into one target directory, so the runtime and
-# the toolkit compile once and each example only links its own bundle.
+# the toolkit compile once, with the first example, and each later example
+# only links its own bundle. What follows the link (wasm-bindgen over a
+# development module of about 215 MB, then the page assets) takes 30-50 s on
+# one core per example, against 3-5 s of cargo, so the later examples run
+# WEB_EXAMPLE_JOBS (default 4) at a time; their cargo steps take turns on the
+# build directory's lock.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 tool_started=$SECONDS
-cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
+# Not --quiet: cargo then reports when it waits for a lock another build holds.
+cargo build --locked -p tilo-app-cli --bin tilo-app
 printf 'TILO_BUILD_TIMING phase=web-build-tool elapsed_seconds=%s\n' "$((SECONDS - tool_started))"
 tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
 pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-runtime/Cargo.toml)
@@ -48,14 +54,32 @@ printf 'TILO_WEB_MOQ_BUILDS=1 examples=%s\n' "${#apps[@]}"
 
 out=${CARGO_TARGET_DIR:-$PWD/target}/web-examples
 mkdir -p "$out"
-for app in "${apps[@]}"; do
+build_example() {
+  local app=$1 example_started=$SECONDS
   echo "== examples/apps/$app"
-  example_started=$SECONDS
-  "$tilo_app" build --json --platform web "examples/apps/$app" >"$out-$app.json"
+  "$tilo_app" build --json --platform web "examples/apps/$app" >"$out-$app.json" || return
   printf 'TILO_BUILD_TIMING phase=web-example-%s elapsed_seconds=%s\n' "$app" "$((SECONDS - example_started))"
   node -e '
 const build = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).result;
 require("fs").copyFileSync(process.argv[2], require("path").join(build.output, "media-moq-library.LICENSE.txt"));
 console.log(`${build.app_id}: ${build.module_bytes} byte bundle module, ${build.output}/${build.entry}`);
 ' "$out-$app.json" "$PWD/crates/browser/tilo-browser-runtime/web/media-moq-library.LICENSE.txt"
+}
+
+# The first example compiles what they all share, on every core.
+build_example "${apps[0]}"
+jobs=${WEB_EXAMPLE_JOBS:-4}
+for app in "${apps[@]:1}"; do
+  while (($(jobs -rp | wc -l) >= jobs)); do wait -n || true; done
+  (if build_example "$app" >"$out-$app.log" 2>&1; then echo 0; else echo 1; fi >"$out-$app.status") &
 done
+wait
+failed=()
+for app in "${apps[@]:1}"; do
+  cat "$out-$app.log"
+  [[ $(cat "$out-$app.status") == 0 ]] || failed+=("$app")
+done
+if ((${#failed[@]})); then
+  echo "web build failed: ${failed[*]}" >&2
+  exit 1
+fi
