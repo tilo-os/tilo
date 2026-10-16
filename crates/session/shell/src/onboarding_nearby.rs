@@ -756,9 +756,13 @@ mod tests {
     }
 
     fn poll_until_over(pairing: &mut NearbyPairing) -> NearbyEvent {
+        poll_until_over_at(pairing, None)
+    }
+
+    fn poll_until_over_at(pairing: &mut NearbyPairing, now: Option<Instant>) -> NearbyEvent {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            match pairing.poll(Instant::now()) {
+            match pairing.poll(now.unwrap_or_else(Instant::now)) {
                 NearbyEvent::Idle | NearbyEvent::Code(_) => {}
                 event => return event,
             }
@@ -1101,7 +1105,11 @@ mod tests {
             };
             assert_eq!(pairing.poll(now), NearbyEvent::Idle);
             assert_eq!(
-                pairing.poll(now + FINAL_LOOK_GRACE - Duration::from_millis(1)),
+                pairing.poll(
+                    (now + FINAL_LOOK_GRACE)
+                        .checked_sub(Duration::from_millis(1))
+                        .expect("instant before grace expires"),
+                ),
                 NearbyEvent::Idle
             );
             assert_eq!(
@@ -1125,7 +1133,10 @@ mod tests {
             let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
             let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
             pairing.child.as_mut().expect("child").wait().expect("exit");
-            assert_eq!(pairing.poll(Instant::now()), NearbyEvent::Idle);
+            // Hold the polling clock within grace while the real worker runs;
+            // scheduling delay is not the timeout behavior this test proves.
+            let now = Instant::now();
+            assert_eq!(pairing.poll(now), NearbyEvent::Idle);
             let record = joined_record(&fixture, [7; 32]);
             runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
                 .expect("active identity");
@@ -1134,7 +1145,7 @@ mod tests {
             }
             release.send(()).expect("release reader during grace");
             assert_eq!(
-                poll_until_over(&mut pairing),
+                poll_until_over_at(&mut pairing, Some(now)),
                 if valid {
                     NearbyEvent::Joined(MintedIdentity {
                         fingerprint: hex::encode([7; 32]),
