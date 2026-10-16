@@ -12,6 +12,12 @@ set -euo pipefail
 arch=${1:?usage: package-lane.sh amd64|arm64}
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
+# t runs this as a micro-VM step in the builder image, as root in a guest of its own; the
+# builder carries no container engine, so the guest installs Podman from Fedora first.
+if ! command -v docker >/dev/null && ! command -v podman >/dev/null \
+    && [[ $(id -u) == 0 ]] && command -v dnf >/dev/null; then
+  dnf -y -q install --setopt=install_weak_deps=False podman >/dev/null
+fi
 engine=docker
 if ! command -v docker >/dev/null && command -v podman >/dev/null; then
   # run-package-job.sh speaks Docker's CLI, which podman takes as it is.

@@ -78,19 +78,33 @@ static LAUNCHES: Mutex<Vec<PendingLaunch>> = Mutex::new(Vec::new());
 /// The `tracing` target of the compositor's per-launch timing lines.
 pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
 
+/// The `tracing` target of the compositor's Xwayland bridge lines: a
+/// workspace's X display bound, the bridge started for its first client, the
+/// scale it announced, its exit or idle stop, each with how long it had been
+/// up. A handful of lines per X11 app session.
+pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
+
+/// Targets the session log keeps at `info` whatever the base filter: rare
+/// lines that time an app's open, and the only record of the compositor's and
+/// launcher's share of it before the app's own clock starts.
+const ALWAYS_LOGGED: [&str; 2] = [LAUNCH_LATENCY_TARGET, XWAYLAND_TARGET];
+
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
 /// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
-/// with the launch-latency lines always on. They are a few lines per app open,
-/// and the only record of how long the compositor and the launcher took before
-/// the app's own clock starts; a filter that names the target keeps its choice.
+/// with the launch-latency and Xwayland bridge lines always on. A filter that
+/// names one of those targets keeps its choice for it.
 #[must_use]
 pub fn log_directives(rust_log: Option<&str>) -> String {
     let base = rust_log.map(str::trim).filter(|value| !value.is_empty());
-    match base {
-        Some(value) if value.contains(LAUNCH_LATENCY_TARGET) => value.to_owned(),
-        Some(value) => format!("{value},{LAUNCH_LATENCY_TARGET}=info"),
-        None => format!("error,{LAUNCH_LATENCY_TARGET}=info"),
+    let mut directives = base.unwrap_or("error").to_owned();
+    for target in ALWAYS_LOGGED {
+        if !base.is_some_and(|value| value.contains(target)) {
+            directives.push(',');
+            directives.push_str(target);
+            directives.push_str("=info");
+        }
     }
+    directives
 }
 
 /// The pending-launch table. A panic while holding it leaves plain data, so a
@@ -1023,18 +1037,25 @@ mod tests {
 
     #[test]
     fn launch_latency_lines_survive_the_default_session_filter() {
-        assert_eq!(log_directives(None), "error,tilo::launch_latency=info");
+        assert_eq!(
+            log_directives(None),
+            "error,tilo::launch_latency=info,tilo::xwayland=info"
+        );
         assert_eq!(
             log_directives(Some("  ")),
-            "error,tilo::launch_latency=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info"
         );
         assert_eq!(
             log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info"
+            "warn,tilo::launch_latency=info,tilo::xwayland=info"
         );
         assert_eq!(
             log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off"
+            "info,tilo::launch_latency=off,tilo::xwayland=info"
+        );
+        assert_eq!(
+            log_directives(Some("tilo::xwayland=debug")),
+            "tilo::xwayland=debug,tilo::launch_latency=info"
         );
     }
 

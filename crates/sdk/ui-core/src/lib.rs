@@ -266,6 +266,7 @@ pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
+pub mod shared_selection;
 pub mod shell_tabs;
 mod standalone_history;
 mod standalone_history_host;

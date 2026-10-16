@@ -413,6 +413,84 @@ impl super::ShellOverlayHost {
         !self.agent_quick_composer.is_open() && self.agent_markers.pointer_at(point)
     }
 
+    /// Public fixture for the offscreen shots driver: the agent composer
+    /// beside a selection, idle, typed, answered or following a run. No
+    /// session, agent or task is created.
+    /// # Errors
+    /// Requires the debug environment gate and a known fixture phase.
+    #[cfg(debug_assertions)]
+    pub fn seed_agent_composer_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
+        use crate::shell::agent_quick_composer::{
+            AgentQuickComposerOrigin, ComposerOwner, ComposerRun, ComposerTask, ComposerTurn,
+            RunPhase,
+        };
+        use crate::shell::i18n::t;
+        if std::env::var_os("TILO_UI_DEBUG").is_none() {
+            return Err("agent composer shots require TILO_UI_DEBUG and a debug build");
+        }
+        let viewport = self.overlay_area();
+        // Where a selected line of a document sits in the shots desktop.
+        let selection = vello::kurbo::Rect::new(
+            viewport.x0 + viewport.width() * 0.42,
+            viewport.y0 + viewport.height() * 0.34,
+            viewport.x0 + viewport.width() * 0.58,
+            viewport.y0 + viewport.height() * 0.34 + 44.0,
+        );
+        self.agent_quick_composer.open(
+            ComposerOwner {
+                room: "shots-room".into(),
+                agent: "scribe".into(),
+                person: "shots-person".into(),
+                identity_revision: 0,
+            },
+            "scribe",
+            AgentQuickComposerOrigin {
+                marker: selection,
+                protected: selection,
+                context: t("agent-quick-shots-context"),
+            },
+            viewport,
+        );
+        self.agent_quick_composer.set_about_selection(true);
+        let asked = |key: &str| ComposerTurn {
+            agent: false,
+            text: t(key),
+        };
+        let run = |phase| ComposerRun {
+            task: ComposerTask {
+                task_id: "task:shots".into(),
+                run_epoch: 1,
+                revision: 0,
+                label: t("agent-quick-shots-task"),
+            },
+            phase,
+        };
+        let (draft, conversation, followed) = match phase {
+            "agent-composer" => (String::new(), Vec::new(), None),
+            "agent-composer-typed" => (t("agent-quick-shots-draft"), Vec::new(), None),
+            "agent-composer-answer" => (
+                String::new(),
+                vec![
+                    asked("agent-quick-shots-question"),
+                    ComposerTurn {
+                        agent: true,
+                        text: t("agent-quick-shots-answer"),
+                    },
+                ],
+                None,
+            ),
+            "agent-composer-working" => (
+                t("agent-quick-shots-steer"),
+                vec![asked("agent-quick-shots-request")],
+                Some(run(RunPhase::Working)),
+            ),
+            _ => return Err("unknown agent composer phase"),
+        };
+        self.agent_quick_composer
+            .stage_for_shots(&draft, conversation, followed);
+        Ok(())
+    }
+
     pub(crate) fn agent_quick_composer_open(&self) -> bool {
         self.agent_quick_composer.is_open()
     }

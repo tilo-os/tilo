@@ -223,9 +223,14 @@ Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
 ## HTTP endpoint
 
 A hosted machine (for example a provider's per-user VM) exposes the same tools
-over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon; a
-non-loopback address also requires `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose
-contents callers present as `Authorization: Bearer …`:
+over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon,
+with `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose nonempty contents callers
+present as `Authorization: Bearer …`. A token is required on loopback too:
+every process and account on the machine can reach a loopback port. Requests
+without the token cannot create, use or delete a session, drive `/watch`, or
+manage viewer invitations. Local assistants can use the owner-only Unix socket
+with `--connect` instead; inside a Tilo login that still selects the desktop's
+agent door, never an accidental standalone daemon:
 
 ```sh
 TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \

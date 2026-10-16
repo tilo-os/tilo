@@ -57,6 +57,13 @@ const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// Center work. Keeping this fixed prevents a task title or agent id from
 /// becoming an executable/package selector.
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
+/// Signed headless services started beside a workspace agent, because the
+/// agent acts only by invoking published actions and these publish actions it
+/// needs (looking things up on the web) that no window offers. A service is
+/// never launched on demand, so it has to be running before a task needs it.
+/// Fixed for the same reason as [`WORKSPACE_AGENT_PACKAGE_ID`]; one that is
+/// not installed is skipped and the agent works without its actions.
+pub const AGENT_COMPANION_PACKAGE_IDS: &[&str] = &["so.tilo.web-search"];
 
 #[cfg(any(test, target_os = "linux"))]
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
@@ -2434,6 +2441,38 @@ pub fn build_workspace_agent_command(
     command
 }
 
+/// Build the sandboxed, display-less launch of one agent companion service
+/// ([`AGENT_COMPANION_PACKAGE_IDS`]) in `room`. Like the agent it gets the
+/// workspace's identity and no capability file; unlike the agent it is an
+/// ordinary app connection, not a managed agent, so it publishes under its
+/// own package id.
+pub fn build_agent_companion_command(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+) -> LaunchCommand {
+    let mut command = build_launch_command_for(
+        app,
+        launcher_bin,
+        None,
+        room,
+        &LaunchExtras {
+            capabilities_file: None,
+            identity_path,
+            render_node: None,
+            document: None,
+            uri: None,
+        },
+    );
+    command.args.push("--service".into());
+    command.args.push("--".into());
+    command
+        .args
+        .extend(["--workspace".into(), room.to_string()]);
+    command
+}
+
 /// The launch-command inputs beyond core app identity, grouped so
 /// [`build_launch_command_for`] stays under clippy's argument-count
 /// budget. `capabilities_file` is `None` when nothing was granted (no
@@ -2773,9 +2812,21 @@ pub fn launch_workspace_agent(
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
         })?;
+    if !is_headless_collab_service(&app)? {
+        return Err(LaunchError::NotAManagedService {
+            package_id: app.package_id,
+        });
+    }
+    execute_workspace_agent(app, agent_id, workspace)
+}
+
+/// Whether `app`'s signed manifest describes a headless service that needs
+/// the collaboration broker: `kind = "service"`, a `cli` entrypoint and a
+/// required `collab` service — the only shape started without a window.
+fn is_headless_collab_service(app: &InstalledApp) -> Result<bool, LaunchError> {
     let manifest = launcher::manifest::read_manifest(&app.manifest_path).map_err(|error| {
         LaunchError::RegistryUnreadable {
-            detail: format!("reading the workspace-agent manifest: {error}"),
+            detail: format!("reading the {} manifest: {error}", app.package_id),
         }
     })?;
     let requires_collaboration = manifest
@@ -2783,15 +2834,9 @@ pub fn launch_workspace_agent(
         .services
         .get(launcher::services::COLLAB_SERVICE)
         .is_some_and(launcher::manifest::ServiceReq::is_required);
-    if manifest.kind != launcher::manifest::KIND_SERVICE
-        || manifest.entrypoint.cli_bin().is_none()
-        || !requires_collaboration
-    {
-        return Err(LaunchError::NotAManagedService {
-            package_id: app.package_id,
-        });
-    }
-    execute_workspace_agent(app, agent_id, workspace)
+    Ok(manifest.kind == launcher::manifest::KIND_SERVICE
+        && manifest.entrypoint.cli_bin().is_some()
+        && requires_collaboration)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2818,17 +2863,104 @@ fn execute_workspace_agent(
     .map_err(|error| LaunchError::IdentityUnavailable {
         detail: error.to_string(),
     })?;
-    let command = build_workspace_agent_command(
+    // Companions first, and named to the agent, so it plans its first run
+    // only once their actions are published instead of without them.
+    let companions =
+        start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
+    let mut command = build_workspace_agent_command(
         &app,
         &launcher_bin,
         workspace.room,
         identity_path.as_deref(),
         agent_id,
     );
+    for companion in companions {
+        command
+            .args
+            .extend(["--companion".into(), companion.into()]);
+    }
+    if let Some(provider) = workspace_agent_provider() {
+        command.args.extend(["--provider".into(), provider]);
+    }
     if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
     Ok(app)
+}
+
+/// Start the [`AGENT_COMPANION_PACKAGE_IDS`] not already running in `room`,
+/// and answer the companions running there now: started, or already up.
+/// A companion that is missing, malformed or fails to start costs the agent
+/// its actions, not its launch, so failures are logged and skipped.
+#[cfg(target_os = "linux")]
+fn start_agent_companions(
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+) -> Vec<&'static str> {
+    let apps = match installed_apps() {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::warn!(%error, "cannot list installed apps for the agent's companions");
+            return Vec::new();
+        }
+    };
+    let room_id = room.to_string();
+    let mut running = Vec::new();
+    for package_id in AGENT_COMPANION_PACKAGE_IDS {
+        let Some(app) = apps.iter().find(|app| app.package_id == *package_id) else {
+            continue;
+        };
+        if verified_workspaces_for_app(package_id).contains(&room_id) {
+            running.push(*package_id);
+            continue;
+        }
+        match is_headless_collab_service(app) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    package_id,
+                    "agent companion is not a headless broker service"
+                );
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(package_id, %error, "cannot read the agent companion's manifest");
+                continue;
+            }
+        }
+        let command = build_agent_companion_command(app, launcher_bin, room, identity_path);
+        match spawn_detached(app.clone(), command, None) {
+            Ok(()) => running.push(*package_id),
+            Err(detail) => {
+                tracing::warn!(package_id, %detail, "could not start the agent companion");
+            }
+        }
+    }
+    running
+}
+
+/// The desktop's default model for a workspace agent, as the nonsecret
+/// selection the agent plans with: profile, model and protocol only. The
+/// agent cannot read Settings from its sandbox, so without this it has no
+/// model and plans by keyword alone; the model gateway keeps the endpoint
+/// and the credential.
+#[cfg(target_os = "linux")]
+fn workspace_agent_provider() -> Option<String> {
+    provider_selection(agent_provider_config::ProviderConfig::load().active_profile()?)
+}
+
+/// `profile`'s default model as the agent's `--provider` selection, or
+/// `None` while the profile names no default model to plan with.
+#[cfg(any(test, target_os = "linux"))]
+fn provider_selection(profile: &agent_provider_config::ProviderProfile) -> Option<String> {
+    let model = profile.default_model.as_ref()?;
+    serde_json::to_string(&serde_json::json!({
+        "profile_id": profile.id,
+        "model_id": model,
+        "protocol": profile.protocol,
+    }))
+    .ok()
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the
@@ -4958,6 +5090,21 @@ pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
         .any(|note| note.matches(app_id) && note.claimed_by.is_none())
 }
 
+/// Whether any launch bound to a saved tab still waits for its window.
+/// Session restore starts the next saved window only after this clears:
+/// cold starts that run together compete for CPU, disk and memory, so
+/// every one of them comes up late. The same failure and expiry paths as
+/// [`has_unclaimed_launch`] retire a note that never maps.
+pub(crate) fn has_unclaimed_restore_launch() -> bool {
+    lock(&LaunchSession::current().pending).iter().any(|note| {
+        note.claimed_by.is_none()
+            && matches!(
+                note.placement,
+                crate::shell::tab_binding::Placement::IntoTab(_)
+            )
+    })
+}
+
 /// Saved tabs with a live placement in this session. A mapped note stays
 /// valid through the existing claim grace; no deadline or placement is changed.
 pub(crate) fn pending_restore_tabs() -> std::collections::HashSet<u64> {
@@ -6925,12 +7072,67 @@ mod tests {
             );
         }
 
+        fn agent_companion_command_is_a_headless_service_in_the_room() {
+            let app = InstalledApp {
+                package_id: "so.tilo.web-search".into(),
+                display_name: "Web Search".into(),
+                localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
+                category: None,
+                version: "0.1.0".into(),
+                manifest_path: PathBuf::from("/apps/web-search/manifest.toml"),
+                payload_root: PathBuf::from("/apps/web-search"),
+                has_gui: false,
+                opens_extensions: Vec::new(),
+                opens_mime_types: Vec::new(),
+                opens_uri_schemes: Vec::new(),
+            };
+            assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
+            let room = RoomId::new();
+            let command = build_agent_companion_command(
+                &app,
+                Path::new("/usr/bin/tilo-launcher"),
+                room,
+                Some(Path::new("/run/user/1000/tilo/identity.json")),
+            );
+            assert!(!command.args.iter().any(|arg| arg == "--wayland-socket"));
+            assert!(!command.args.iter().any(|arg| arg == "--capabilities"));
+            // An ordinary app connection publishing under its own id, not a
+            // second managed agent.
+            assert_eq!(command.managed_agent_id, None);
+            let separator = command
+                .args
+                .iter()
+                .position(|arg| arg == "--")
+                .expect("service argv has an explicit separator");
+            assert_eq!(
+                command
+                    .args
+                    .get(separator.wrapping_sub(1))
+                    .map(String::as_str),
+                Some("--service")
+            );
+            assert_eq!(
+                command.args.get(separator.saturating_add(1)..),
+                Some(["--workspace".to_string(), room.to_string()].as_slice())
+            );
+            let room_string = room.to_string();
+            assert_eq!(
+                command
+                    .service_identity
+                    .as_ref()
+                    .map(|identity| (identity.app_id.as_str(), identity.workspace_id.as_str())),
+                Some(("so.tilo.web-search", room_string.as_str()))
+            );
+        }
+
         launch_command_carries_manifest_payload_and_display();
         launch_command_omits_the_render_node_when_none_resolved();
         launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted();
         launch_command_names_the_capability_file_when_one_was_written();
         launch_command_names_the_workspace_selected_identity();
         workspace_agent_command_is_headless_fixed_package_service_argv();
+        agent_companion_command_is_a_headless_service_in_the_room();
     }
 
     /// What the spawned launcher's environment will say about a variable.
@@ -8504,5 +8706,27 @@ mod tests {
         files_launch_receives_only_the_staged_projection_path();
         #[cfg(target_os = "linux")]
         runtime_files_never_wait_for_the_disk();
+    }
+
+    /// A launched workspace agent cannot read Settings from its sandbox, so
+    /// the desktop hands it the default model as exactly the nonsecret
+    /// selection the agent accepts, and nothing while no model is chosen.
+    #[test]
+    fn a_workspace_agent_is_handed_the_default_model_selection_only() {
+        let mut profile = agent_provider_config::ProviderProfile::hosted(
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        );
+        assert_eq!(provider_selection(&profile), None);
+        profile.default_model = Some("google/gemini-4-argon".into());
+        let selection: serde_json::Value =
+            serde_json::from_str(&provider_selection(&profile).expect("a selection")).unwrap();
+        assert_eq!(
+            selection,
+            serde_json::json!({
+                "profile_id": profile.id,
+                "model_id": "google/gemini-4-argon",
+                "protocol": profile.protocol,
+            })
+        );
     }
 }

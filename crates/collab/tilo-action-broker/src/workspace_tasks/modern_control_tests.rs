@@ -16,6 +16,7 @@ fn task(id: &str, agent: &str, route: WorkspaceTaskRoute) -> WorkspaceTask {
         route,
         status: WorkspaceTaskStatus::InProgress,
         resource: None,
+        subject: None,
         created_at: 1,
         updated_at: 2,
         audit: Vec::new(),
@@ -143,6 +144,62 @@ fn queue_keeps_the_full_instruction_distinct_from_its_public_title() {
         }) if title == "Review proposal" && retained == instruction && assigned_agent == "scribe"
     ));
     assert!(action_ids(&snapshot()).contains(&(COLLECTION.into(), "queue".into())));
+}
+
+#[test]
+fn queue_about_a_selection_carries_its_subject_and_attaches_nothing() {
+    let subject = serde_json::json!({
+        "app_id": "so.tilo.files",
+        "app_label": "Files",
+        "resource": {"id": "files:folder/reports", "kind": "files.folder", "label": "Reports"},
+        "anchor": {
+            "items": [{"item": "q1.pdf"}, {"item": "q2.pdf"}],
+            "excerpt": "- q1.pdf\n- q2.pdf"
+        }
+    });
+    let queue = |subject: &serde_json::Value| {
+        envelope(
+            COLLECTION,
+            "queue",
+            Some(serde_json::json!({
+                "title": "Summarize these",
+                "instruction": "Summarize the selected reports",
+                "assigned_agent": "scribe",
+                "planning": "model",
+                "subject_json": subject.to_string(),
+            })),
+        )
+    };
+    let Some(WorkspaceTaskCommand::QueueInstructionAbout {
+        instruction,
+        subject: about,
+        route: WorkspaceTaskRoute::Model,
+        ..
+    }) = command(&queue(&subject)).unwrap()
+    else {
+        panic!("a queue about a selection keeps the selection")
+    };
+    assert_eq!(instruction, "Summarize the selected reports");
+    assert_eq!(about.resource.id, "files:folder/reports");
+    assert_eq!(
+        about.anchor.items,
+        [
+            tilo_actions::SelectionPlace::item("q1.pdf"),
+            tilo_actions::SelectionPlace::item("q2.pdf")
+        ]
+    );
+
+    for forged in [
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"place":{"item":"b","start":9,"end":2}}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"lease":"x"}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"excerpt":"x"},"scope":"room"}),
+    ] {
+        assert!(
+            command(&queue(&forged)).is_err(),
+            "{forged} must be refused"
+        );
+    }
 }
 
 #[test]

@@ -5852,6 +5852,22 @@ impl RoomActivityPane {
                     actions.push(TaskAction::CancelRun);
                 }
             }
+            // A reviewed run reaches its agent only once that agent
+            // subscribes, so an offline assigned agent must be startable
+            // here too: approving alone would wait for it forever.
+            if self.host.mutations_available()
+                && !self.feed_coverage.pending_tree
+                && !task.status.is_finished()
+                && task.route != WorkspaceTaskRoute::Manual
+                && let Some(agent) = task.assigned_agent.as_deref()
+                && !self.agent_is_live(agent)
+                && !matches!(
+                    self.agent_startup_state(agent),
+                    Some(AgentStartup::Starting { .. })
+                )
+            {
+                actions.insert(1, TaskAction::StartAgent);
+            }
             return actions;
         }
         let mut actions = task_actions(task);

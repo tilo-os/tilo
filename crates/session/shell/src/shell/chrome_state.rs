@@ -636,6 +636,16 @@ impl std::fmt::Debug for RecordsWake {
     }
 }
 
+/// The display a fullscreen covers on a desktop spread across displays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FullscreenDisplay {
+    /// The compositor's id for the display.
+    pub output: u32,
+    /// Whether it is the primary display, which carries the full top bar
+    /// and the wheel.
+    pub primary: bool,
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -795,6 +805,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// On a desktop spread across displays, the display a presented
+    /// fullscreen covers. The other displays keep their chrome and their
+    /// windows. `None` on one display, where a fullscreen covers it all.
+    fullscreen_display: Option<FullscreenDisplay>,
     /// Whether the active strip alone fills the work area, the others
     /// collapsed: while agents drive this compositor, so the strip an agent
     /// works in is the whole screen it sees and clicks. NOT persisted.
@@ -1004,6 +1018,7 @@ impl ChromeState {
             user_fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            fullscreen_display: None,
             single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
@@ -1287,6 +1302,44 @@ impl ChromeState {
 
     pub(crate) fn set_fullscreen_presentation(&mut self, presented: bool) {
         self.fullscreen_presentation = presented;
+    }
+
+    /// Record which display the presented fullscreen covers, on a desktop
+    /// spread across displays; `None` when it covers the whole desktop.
+    pub(crate) fn set_fullscreen_display(&mut self, display: Option<FullscreenDisplay>) {
+        self.fullscreen_display = display;
+    }
+
+    /// The display a presented fullscreen covers on a desktop spread across
+    /// displays; `None` when it covers the whole desktop.
+    pub(crate) fn fullscreen_display(&self) -> Option<FullscreenDisplay> {
+        self.fullscreen_display
+    }
+
+    /// Whether what [`Self::is_fullscreen`] presents covers the primary
+    /// display, where the full top bar and the wheel live. A fullscreen on
+    /// another display leaves both in place.
+    pub fn presentation_covers_primary(&self) -> bool {
+        self.fullscreen_presentation
+            && self
+                .fullscreen_display
+                .is_none_or(|display| display.primary)
+    }
+
+    /// Whether a presented fullscreen (not an expanded group) covers the
+    /// primary display: the full top bar steps aside.
+    pub fn fullscreen_covers_primary(&self) -> bool {
+        self.fullscreen_group().is_some() && self.presentation_covers_primary()
+    }
+
+    /// Whether a presented fullscreen covers the display `output`, so the
+    /// chrome drawn on that display steps aside.
+    pub fn fullscreen_covers_display(&self, output: u32) -> bool {
+        self.fullscreen_group().is_some()
+            && self.fullscreen_presentation
+            && self
+                .fullscreen_display
+                .is_none_or(|display| display.output == output)
     }
 
     pub fn maximized_group(&self) -> Option<u64> {

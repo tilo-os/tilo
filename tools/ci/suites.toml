@@ -1265,8 +1265,7 @@ workflow = "web-entry.yml"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-workflow = "room-service-image.yml"
+reason = "needs the built room-service image: t's image-room-service check runs it"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
@@ -1560,8 +1559,7 @@ reason = "needs a privileged node for nested Podman: t's development-signing-<ar
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image"
-workflow = "build-release-tools.yml"
+reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"

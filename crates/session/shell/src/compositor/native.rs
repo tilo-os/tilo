@@ -1492,18 +1492,25 @@ fn revalidate_native_agent_markers(
                 })
                 .is_some_and(|identity| identity.agent_key == marker.agent)
     });
+    // A composer opened on a selection stands beside no marker, so only the
+    // agent's admission (the identity revision) and suppression close it.
+    let about_selection = frame
+        .host_mut()
+        .agent_quick_composer_mut()
+        .about_selection();
     if let Some(owner) = frame.host_mut().agent_quick_composer_mut().owner().cloned()
         && (suppressed
-            || !current.values().any(|source| {
-                source.launch.workspace_id == owner.room
-                    && source
-                        .agents
-                        .get(&owner.agent)
-                        .and_then(|actor| {
-                            broker.as_ref()?.certified_marker_agent(&owner.room, actor)
-                        })
-                        .is_some_and(|identity| identity.agent_key == owner.agent)
-            })
+            || !about_selection
+                && !current.values().any(|source| {
+                    source.launch.workspace_id == owner.room
+                        && source
+                            .agents
+                            .get(&owner.agent)
+                            .and_then(|actor| {
+                                broker.as_ref()?.certified_marker_agent(&owner.room, actor)
+                            })
+                            .is_some_and(|identity| identity.agent_key == owner.agent)
+                })
             || broker
                 .as_ref()
                 .and_then(|source| source.identity_revision(&owner.room))
@@ -2306,6 +2313,19 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SelectionCapable => {
+                    frame_builder
+                        .host_mut()
+                        .note_selection_capable(connection, &app_id);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection } => {
+                    // The app id is the launcher's: a selection is only ever
+                    // credited to the app that holds it, and only while it
+                    // is focused.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_ask_agent(&app_id, selection);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
                     // offer its own windows' pages.
@@ -2340,6 +2360,9 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);
+                frame_builder
+                    .host_mut()
+                    .forget_selection_capable(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -2366,6 +2389,17 @@ fn pump_floating_surface_service(
                 changed = true;
             }
         }
+    }
+    // The ask-agent chord asks the focused app for its selection, or opens
+    // the composer itself once that app had its moment to answer.
+    for connection in frame_builder
+        .host_mut()
+        .route_ask_agent_chord(Instant::now())
+    {
+        service.send(
+            connection,
+            &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
+        );
     }
     // Apps whose pages someone started or stopped watching.
     for (connection, watched) in state.paint_watch_changes() {
@@ -4464,10 +4498,27 @@ fn run_autostart_once(frame_builder: &FrameBuilder) {
 /// compositor can mint an external xdg-activation token before the child is
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
-fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+fn launch_queued_host_apps(
+    state: &mut State,
+    frame_builder: &mut FrameBuilder,
+    wake: &crate::session_runtime::Wake,
+) -> bool {
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
+        let reopened = {
+            let chrome = frame_builder.chrome();
+            let tree = chrome.tree();
+            crate::shell::host_apps::reopen_from_tray(
+                &request,
+                crate::tray::global(),
+                &tree,
+                Arc::clone(wake),
+            )
+        };
+        if reopened {
+            continue;
+        }
         tracing::info!(
             target: "shell::compositor::host_launch",
             desktop_id = %request.app.desktop_id,
@@ -4983,7 +5034,7 @@ fn execute_planned_action(
         }
         PlannedAction::Touchpad(edge) => {
             if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
-                apply_shell_gesture(fb, gesture);
+                apply_shell_gesture(fb, gesture, Instant::now());
             }
         }
         PlannedAction::KeyboardKey { key, pressed } => {
@@ -10226,8 +10277,12 @@ pub fn run() {
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
-    // verbose aggregate line for development runs.
-    let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // verbose aggregate line for development runs. A profile the admin
+    // starts (`metrics::profile`) times the same phases for its duration,
+    // recording every span instead of logging the slow ones.
+    let loop_timing_env = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // Set at the top of every tick.
+    let mut loop_timing: bool;
     // A developer override: every painted frame takes as long as on a slow
     // machine, so per-frame layout steps see real long frame times.
     let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
@@ -10241,6 +10296,7 @@ pub fn run() {
                 if elapsed > pump_slowest.1 {
                     pump_slowest = ($name, elapsed);
                 }
+                metrics::profile::record_phase($name, elapsed, None);
                 pump_checkpoint = now;
             }
         }};
@@ -10251,7 +10307,8 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                metrics::profile::record_phase($name, elapsed, None);
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={}",
                         $name,
@@ -10268,12 +10325,14 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                let items: usize = $count;
+                metrics::profile::record_phase($name, elapsed, Some(items));
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={} items={}",
                         $name,
                         elapsed.as_micros(),
-                        $count
+                        items
                     );
                 }
                 value
@@ -10388,7 +10447,9 @@ pub fn run() {
         let iter_t0 = Instant::now();
         crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
+        metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
+        loop_timing = loop_timing_env || metrics::profile::active();
         // A setting this loop changed that the settings worker could not store
         // went back to its previous value: say so (one atomic load when none did).
         if settings_store::deferred_failure_pending() {
@@ -11227,11 +11288,11 @@ pub fn run() {
                             .set_zones(input_capture_zones(backend.outputs()));
                     }
                 }
-                BackendEvent::ShellGesture(action) => {
+                BackendEvent::ShellGesture(action, at) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_shell_gesture(&mut frame_builder, action);
+                        apply_shell_gesture(&mut frame_builder, action, at);
                         session_changed = true;
                     }
                 }
@@ -11409,7 +11470,7 @@ pub fn run() {
         crate::shell::launcher::expire_pending_placements();
         session_changed |=
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
-        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
+        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);
@@ -13025,7 +13086,7 @@ pub fn run() {
             .checked_sub(t_input_done)
             .unwrap_or_default();
         metrics.mark_pump(pump_total);
-        if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
+        if loop_timing_env && pump_slowest.1 > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-PUMP slowest={} elapsed={:?}",
                 pump_slowest.0, pump_slowest.1
@@ -14096,9 +14157,7 @@ pub fn run() {
         );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
-        if (loop_timing || t_work_done > Duration::from_millis(100))
-            && t_work_done > Duration::from_millis(100)
-        {
+        if t_work_done > Duration::from_millis(100) {
             client_steps.mark("idle_callbacks");
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?} ({})",
@@ -14183,6 +14242,7 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                ("profile-end", metrics::profile::deadline()),
                 (
                     "app-action-authority",
                     crate::shell::launcher::action_authority::next_deadline(),
@@ -14199,6 +14259,10 @@ pub fn run() {
                     peer_sync
                         .as_ref()
                         .and_then(|network| network.next_deadline()),
+                ),
+                (
+                    "ask-agent",
+                    frame_builder.host().ask_agent_deadline(park_now),
                 ),
                 (
                     "dictation-service",
@@ -14437,6 +14501,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
+        | crate::shell::osd::OsdKind::NoAgent
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
@@ -18138,6 +18203,69 @@ mod tests {
         ));
     }
 
+    /// Profiling the live compositor is the device admin's alone: the
+    /// development test-control socket, the agent socket, an agent acting
+    /// over the admin socket and a locked session are all refused before
+    /// anything is recorded.
+    #[test]
+    fn compositor_profiling_is_refused_to_all_but_the_unlocked_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let start = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"profile-start@session-diagnostics", "args":{"seconds":5}});
+        let mut as_agent = start.clone();
+        as_agent["agent"] = serde_json::json!("peer");
+        for (agent_socket, admin, request) in [
+            (false, false, &start),
+            (true, false, &start),
+            (false, true, &as_agent),
+        ] {
+            let (server, client) = UnixStream::pair().unwrap();
+            let mut writer = client.try_clone().unwrap();
+            let mut reader = BufReader::new(client);
+            let mut conn = TestControlConn::new(server, agent_socket).unwrap();
+            conn.admin = admin;
+            writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+            pump_test_control_conn(
+                &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+            );
+            assert!(
+                matches!(
+                    socket_response(&mut reader),
+                    test_control::Response::Err { code, .. } if code == "not_permitted"
+                ),
+                "agent socket {agent_socket}, admin {admin}, request {request}"
+            );
+        }
+        let _ = session.request_lock(Instant::now());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        conn.admin = true;
+        writer.write_all(format!("{start}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(
+                socket_response(&mut reader),
+                test_control::Response::Err { .. }
+            ),
+            "a locked session refuses the owner too"
+        );
+        assert!(
+            !crate::compositor::metrics::profile::active(),
+            "no refused request started a profile"
+        );
+    }
+
     /// A driver's request often lands after its connection was accepted and
     /// found empty. The accepted stream must then wake an otherwise idle
     /// loop itself, rather than leave the request for an unrelated event.
@@ -19926,24 +20054,24 @@ fn feed_touchpad_edge(
     }
 }
 
-/// Perform the navigation a claimed touchpad gesture resolved to — a second
-/// way to ask for something the shell already does, not a parallel model.
+/// Perform the navigation a claimed touchpad gesture, reported `at`,
+/// resolved to — a second way to ask for something the shell already does,
+/// not a parallel model.
 fn apply_shell_gesture(
     frame_builder: &mut FrameBuilder,
     action: crate::compositor::backend::drm::gestures::GestureAction,
+    at: Instant,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
     match action {
         GestureAction::StripPanUpdate { travel, began } => {
             frame_builder
                 .host_mut()
-                .update_active_strip_pan(travel, began);
+                .update_active_strip_pan(travel, began, at);
             return;
         }
-        GestureAction::StripPanEnd { .. } => {
-            frame_builder
-                .host_mut()
-                .end_active_strip_pan(Instant::now());
+        GestureAction::StripPanEnd { cancelled } => {
+            frame_builder.host_mut().end_active_strip_pan(at, cancelled);
             return;
         }
         _ => {}
@@ -20418,7 +20546,11 @@ mod gesture_wireup_tests {
             });
             let before = fb.chrome().tree().desktop.active;
             // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
-            apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchWorkspace(-1),
+                std::time::Instant::now(),
+            );
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
@@ -20440,7 +20572,11 @@ mod gesture_wireup_tests {
             });
             let workspace = fb.chrome().tree().desktop.active;
             let (_, focused) = fb.chrome().strip_focus();
-            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchStrip(1),
+                std::time::Instant::now(),
+            );
             assert_eq!(
                 fb.chrome().strip_focus().1,
                 focused + 1,
@@ -20456,18 +20592,34 @@ mod gesture_wireup_tests {
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert!(fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::HideOverview,
+                std::time::Instant::now(),
+            );
             assert!(!fb.chrome().overlays.overview);
         }
         // Phase `showing_an_already_open_overview_is_a_no_op`.
         {
             // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
             let mut fb = builder();
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             let revision = fb.chrome().revision;
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert_eq!(fb.chrome().revision, revision);
         }
     }

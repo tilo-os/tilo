@@ -30,17 +30,16 @@ PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
 # What every build, signing and publishing check reads besides the product's own inputs.
 BUILD_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
 COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh",
-                 "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+                 "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
 SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh", *COSIGN_INPUTS]
 PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
-# Signing and publishing read only what the build produced, so any architecture would do, but a
-# check holding an identity token runs as a micro-VM step, and t finds no guest kernel for
-# `arch=any`: they run on x86_64, where the most micro-VM capacity is.
-CREDENTIAL_REQUIRES = ["arch=x86_64"]
+# Signing and publishing read only what the build produced, so they run on any architecture (as
+# micro-VM steps, since they hold credentials, booting the guest of the node they land on).
+CREDENTIAL_REQUIRES = ["arch=any"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out", "dispatch"}
+                "dir", "out", "dispatch", "dev_signed"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -229,7 +228,7 @@ class Product:
                 "default": False,
             }))
         # A product with no tags is built and tested only (its publication isn't on t yet).
-        if self.release:
+        if self.release or self.data.get("dev_signed"):
             out.append(check(self.sign()))
         if self.dev or self.release:
             out.append(check(self.publish()))
@@ -280,7 +279,15 @@ class Product:
         return result
 
     def sign(self) -> dict[str, Any]:
-        env = dict(self.defaults["signing_env"])
+        # `dev_signed`: a product that publishes development candidates only signs them with the
+        # development key (alias/tilo-dev-signing, role TiloTDevSigner, main only), which no
+        # release verification accepts, so a candidate still says it is main's build.
+        dev = bool(self.data.get("dev_signed"))
+        if dev and (self.release or not self.dev):
+            raise ProductError(f"{self.name}: dev_signed is for products with development tags only")
+        env = dict(self.defaults["dev_signing_env" if dev else "signing_env"])
+        if dev:
+            env["TILO_DEV_SIGNING"] = "1"
         if self.data.get("tlog"):
             env["TILO_SIGN_TLOG"] = "1"
         outputs = []
@@ -298,10 +305,10 @@ class Product:
             "inputs": SIGN_INPUTS,
             "needs": [*self.last, *self.gates],
             "outputs": outputs,
-            "id_token": ["sts.amazonaws.com"],
+            "id_token": ["tilo-dev-signing" if dev else "sts.amazonaws.com"],
             "env": env,
             "requires": CREDENTIAL_REQUIRES,
-            "on": self.release_on,
+            "on": self.dev_on if dev else self.release_on,
         }
 
     def publish(self) -> dict[str, Any]:
@@ -340,7 +347,8 @@ class Product:
             "image": self.defaults["skopeo"],
             "run": lines[0] if len(lines) == 1 else "\n".join(lines) + "\n",
             "inputs": dedupe([*inputs, *spec.get("inputs", [])]),
-            "needs": [*self.last, *self.gates, *([f"sign-{self.name}"] if channel == "release" else [])],
+            "needs": [*self.last, *self.gates,
+                      *([f"sign-{self.name}"] if channel == "release" or self.data.get("dev_signed") else [])],
             "outputs": dedupe([*outputs, *spec.get("outputs", [])]),
             "id_token": ["registry.tilo.so"],
             "requires": CREDENTIAL_REQUIRES,

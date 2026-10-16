@@ -39,6 +39,17 @@ class TTomlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             t_toml.render(marked.replace(": a", ": b"), blocks)
 
+    def test_cargo_checks_reach_normal_dependencies_and_their_own_dev_dependencies(self):
+        def package(name, *deps):
+            return {"name": name, "manifest_path": f"/w/{name}/Cargo.toml",
+                    "dependencies": [{"name": dep, "kind": kind, "path": f"/w/{dep}"} for dep, kind in deps]}
+        packages = {p["name"]: p for p in (
+            package("top", ("lib", None), ("helper", "dev")),
+            package("lib", ("base", "build"), ("lib-test-only", "dev")),
+            package("helper"), package("base"), package("lib-test-only"))}
+        self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=False), {"top", "lib", "base"})
+        self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=True), {"top", "lib", "base", "helper"})
+
     def test_suite_inputs_cover_directories(self):
         self.assertEqual(t_toml.glob("os/"), "os/**")
         self.assertEqual(t_toml.glob("apps/*.rs"), "apps/*.rs")

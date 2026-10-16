@@ -492,6 +492,40 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     }
 }
 
+/// A caller with no screen reads a chapter block by block, by the indices a
+/// passage names, and the book it is in; a chapter the book lacks is refused.
+#[test]
+fn a_chapter_reads_block_by_block() {
+    let mut app = app_with_sample();
+    let doc = library_doc();
+    let book = app.library[0].clone();
+    let payload = crate::actions::effect_payload(&crate::resource::BooksEffect::ReadChapter {
+        book: book.id.clone(),
+        chapter: Some(0),
+    });
+    let ui::framework::Effected::Done(output) = app
+        .start_effect(tilo_actions::InvocationId::new(), &payload, &doc)
+        .unwrap()
+    else {
+        panic!("a read answers at once");
+    };
+    let read = output.value.unwrap();
+    assert_eq!(read["title"], book.title.as_str());
+    assert_eq!(read["author"], book.author.as_str());
+    let blocks = read["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), book.chapters[0].blocks.len());
+    assert_eq!(blocks[0]["block"], 0);
+    assert_eq!(blocks[0]["text"], book.chapters[0].blocks[0].plain_text());
+    let missing = crate::actions::effect_payload(&crate::resource::BooksEffect::ReadChapter {
+        book: book.id.clone(),
+        chapter: Some(usize::MAX),
+    });
+    assert!(
+        app.start_effect(tilo_actions::InvocationId::new(), &missing, &doc)
+            .is_err()
+    );
+}
+
 fn app_with_math_sample() -> BooksApp {
     let mut app = app_with_sample();
     let chapter = r#"<body xmlns="http://www.w3.org/1999/xhtml">

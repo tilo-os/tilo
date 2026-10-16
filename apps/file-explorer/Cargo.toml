@@ -57,6 +57,9 @@ icu_locale = "2.3.0"
 # manager can show each workspace file's sync/hydration state, and performs
 # no-replace renames, private staging and trash management.
 host-fs = { path = "../../crates/system/host-fs" }
+# Reading a PDF's text, through the portable engine. Document formats are
+# Writer's: it links the codecs and converts files.
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true

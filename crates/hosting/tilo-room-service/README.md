@@ -249,15 +249,15 @@ longer than 15 s is dropped. Calls never hold up a reply.
 
 ## Build and run
 
-The image is built by `.forgejo/workflows/room-service-image.yml`: the CI
-builder compiles `tilo-relay` (feature `agents`), `tilo-room-service` and
-the desktop bundle, and BuildKit assembles
-`container/Containerfile` from those outputs (`bin/`, `assets/`). Pushes to
-main and manual runs publish `registry.tilo.so/tilo/room-service:sha-<commit>`
-and a digest receipt (`room-service-image-receipt`: repository, tag, digest,
-source revision, platform and the build run); deployments pin the digest.
-`container/test-image.sh` is the image's smoke test. Run it on a branch with
-`fgj workflow run room-service-image.yml -R tilo/tilo --ref <branch>`.
+The image is built by t's `image-room-service-context` and `image-room-service`
+checks (`tools/ci/products.toml`, docs/publishing-on-t.md): the context step compiles
+`tilo-relay` (feature `agents`), `tilo-room-service` and the desktop bundle, and buildah
+assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
+`container/test-image.sh` smoke-tests the archive. Main publishes
+`registry.tilo.so/tilo/room-service:dev-<commit>`, stable the signed
+`sha-<commit>` with a digest receipt (repository, digest, tags, source revision) that sets the
+`room-service` pointer; deployments pin the digest. Build and test it from your tree with
+`t test image-room-service`.
 
 Production pins this image and the web entry together, from one main
 commit, in the infra repository. `tools/release/cloud_promotion.py` plans

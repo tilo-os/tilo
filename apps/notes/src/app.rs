@@ -3011,6 +3011,26 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
             PresencePayload::Arrived,
         ))
     }
+
+    /// What the person selected in the open note's body, in that body's
+    /// rich-text resource: the editor gives the block and characters (the
+    /// place the body's `replace-range` takes), and the note names which
+    /// body it is, since every note's body is a resource of the same kind.
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        let page = self.main.page_id()?;
+        let mut selection = self.main.editor().shared_selection()?;
+        selection.resource = Some(tilo_actions::ActionResource {
+            id: crate::actions::body_resource_id(page),
+            kind: <tilo_document::RichText as ui::tilo_resource::Resource>::KIND.to_owned(),
+            label: self
+                .main
+                .title()
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or(crate::notebook::UNTITLED)
+                .to_owned(),
+        });
+        Some(selection)
+    }
 }
 
 impl ui::resources::PublishesResources for NotesApp {}

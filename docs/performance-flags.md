@@ -263,7 +263,7 @@ separate from headless and nested-window results.
 | `TILO_FRAME_SUMMARY` | Unset; path | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings. |
 | `TILO_FRAME_WARMUP_MS` | `1500`; trimmed u64 | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled. |
 | `TILO_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. |
-| `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
+| `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. On a running desktop, a [profile](#profiling-the-running-desktop) records every phase without a restart. |
 | `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
 | `TILO_TEST_FRAME_STALL_MS` | Unset; `80` or `50-130` (ms, at most 2000) | Developer override (debug or `dev-overrides` builds only; release builds ignore it): blocks the loop after every painted frame, a fresh delay from the range each frame, so layout springs, animations and configures run at a slow machine's frame times. Invalid values warn and are ignored. `os/dev/test-slow-frame-launch.sh` opens apps under it. |
@@ -294,6 +294,46 @@ The driver uses `TILO_TEST_CONTROL` for its local input-control socket. That is
 test infrastructure, not an optimization flag. `present_async` in traces
 distinguishes input-to-queued from synchronous input-to-present; neither an
 offscreen GPU fence nor a queue submission proves a physical page flip.
+
+### Profiling the running desktop
+
+The image sets `kernel.yama.ptrace_scope = 3` and `kernel.perf_event_paranoid = 3`
+(`os/usr/lib/sysctl.d/60-tilo-hardening.conf`), so neither `perf` nor a
+debugger can attach to the compositor, and that stays so. Instead the device
+admin asks the compositor to profile itself, without a restart or an
+environment variable, through the owner-only `session-diagnostics` actions on
+the admin control socket:
+
+```bash
+sock="$XDG_RUNTIME_DIR/tilo-session/admin-control.sock"
+tilo-control --socket "$sock" actions invoke session-diagnostics profile-start@session-diagnostics --args-json '{"seconds":30}'
+# ... reproduce the problem ...
+tilo-control --socket "$sock" actions invoke session-diagnostics profile-stop@session-diagnostics
+tilo-control --socket "$sock" actions invoke session-diagnostics inspect@session-diagnostics   # "profile": state and last path
+```
+
+`seconds` defaults to 30 and may be 1 to 600; the profile ends by itself
+then, or earlier at `profile-stop`. Only one records at a time. Like the
+other session diagnostics, these actions answer only on the device admin's
+own unlocked session socket: the development test-control socket, the agent
+socket, a sandboxed or launched app, another account and an agent acting
+over the admin socket are refused with `not_permitted`.
+
+Each profile is a private (0700/0600) directory
+`$XDG_STATE_HOME/tilo/profiles/compositor-<unix-seconds>/`; the newest eight
+are kept. It reuses the loop's own instruments:
+
+| File | Contents |
+| --- | --- |
+| `frames.csv` | One row per loop tick, the `TILO_FRAME_TRACE` columns (`--resummarize` above reads it). |
+| `phases.csv` | `seq,phase,elapsed_us,items`: every pump phase and checkpoint `TILO_LOOP_TIMING` times, joined to `frames.csv` on `seq`. `TILO_LOOP_TIMING` alone logs only slow ones. |
+| `threads.csv` | `t_us,tid,thread,cpu_us`: CPU each thread used since the previous sample, read from `/proc/self/task` every 50 ms by the profile's own `compositor-profile` thread (which appears in it). Presenter, GPU and worker threads show here, not only the loop. |
+| `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-phase count/total/max, per-thread CPU totals. Written last; the profile is complete once it exists. |
+
+While no profile records, the loop pays one atomic load per tick. Rows are
+handed to writer threads once a second, so a profile never puts the loop in
+the disk's queue. Nothing records application content: the trace names
+which app ids committed frames, which is why the files are private.
 
 ### Projector capture workload
 

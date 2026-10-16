@@ -7,6 +7,8 @@ buildah = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b35
 skopeo = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 # The release key in KMS and the role that may sign with it, for stable and v* tags only.
 signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+# The development key and the role that may sign with it, for main only (`dev_signed`).
+dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing" }
 
 # ---------------------------------------------------------------------------
 # Services, deployed by digest from a receipt.
@@ -14,14 +16,14 @@ signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:a
 [[product]]
 family = "services"
 name = "room-service"
-about = "The room service (room-service-image.yml): deployed by digest from stable's receipt."
+about = "The room service: tested before it is published, deployed by digest from stable's receipt."
 repository = "registry.tilo.so/tilo/room-service"
 dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
 
 [product.context]
 run = "bash tools/ci/publish/room-service-context.sh {dir}/context"
-inputs = ["Cargo.lock", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+inputs = ["Cargo.lock", "os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 outputs = ["{dir}/context/**"]
 # The release bundle records the commit it was built from (git rev-parse, git status).
 git = true
@@ -30,7 +32,14 @@ cost = "heavy"
 [product.build]
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/hosting/tilo-room-service/container/test-image.sh {out}/image.oci.tar $(cat {dir}/context/source-revision)"]
+inputs = ["crates/hosting/tilo-room-service/container/test-image.sh"]
 cost = "minutes"
+
+# Stable's receipt is what cloud-promotion promotes.
+[product.publish]
+pointers = { room-service = "{dir}/receipt.json" }
 
 [[product]]
 family = "services"
@@ -51,6 +60,9 @@ cost = "heavy"
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
 cost = "minutes"
+
+[product.publish]
+pointers = { web-entry = "{dir}/receipt.json" }
 
 [[product]]
 family = "services"
@@ -116,6 +128,8 @@ gates = ["image-ci-fast-smoke"]
 containerfile = "os/Containerfile.ci-fast"
 inputs = ["os/Containerfile.ci-fast"]
 cost = "heavy"
+# It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
+memory = "8G"
 
 [[product]]
 family = "ci-images"
@@ -131,6 +145,7 @@ build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/ima
 needs = ["image-ci-fast"]
 inputs = ["os/Containerfile.ci-control"]
 cost = "minutes"
+memory = "8G"
 
 [[product]]
 family = "ci-images"
@@ -383,6 +398,8 @@ rm -rf /target/windows/winget && cp -r "$root/winget" /target/windows/winget
 needs = ["package/windows-x86_64", "package/windows-aarch64"]
 inputs = ["apps/imager/packaging/generate-winget.py", "apps/imager/packaging/validate-winget.py"]
 outputs = ["/target/windows/winget/*"]
+# Python over the two installers: the manifests are the same from any node.
+requires = ["arch=any"]
 default = false
 cpus = 1
 memory = "2G"
@@ -444,8 +461,8 @@ run = "bash tools/apps/t-release.sh sign {arch} /target/apps-release/{arch} /tar
 needs = ["apps-build-{arch}"]
 outputs = ["/target/apps-release/{arch}/signed/**"]
 requires = ["{node}"]
-# The release sequence is the commit's time.
-git = true
+# The release sequence is the commit's time, read without Git (t-release.sh commit_epoch): on
+# x86_64 a micro-VM step has no room for a Git disk beside its needs' outputs.
 secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 on = ["stable"]
 cost = "minutes"
@@ -458,9 +475,8 @@ outputs = ["/target/apps-release/channel/channel.json"]
 # The collections an OS build takes its apps from, per reference: `stable:app-collection`.
 pointers = { app-collection = "/target/apps-release/channel/channel.json" }
 requires = ["arch=x86_64"]
-# Assembles the collections under release/ and dist/app-collections/, and reads the commit's time.
+# Assembles the collections under release/ and dist/app-collections/.
 writable_sources = true
-git = true
 secrets = ["REGISTRY_TOKEN"]
 on = ["stable"]
 cost = "minutes"
@@ -471,7 +487,6 @@ run = "bash tools/apps/t-release.sh submit /target/apps-release/x86_64/signed /t
 needs = ["sign-apps-x86_64", "sign-apps-aarch64", "publish-apps"]
 requires = ["arch=x86_64"]
 writable_sources = true
-git = true
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 on = ["stable"]
 cost = "minutes"
@@ -496,6 +511,10 @@ writable_sources = true
 git = true
 timeout_secs = 14400
 cost = "heavy"
+# The lanes build one after another, TILO_CARGO_JOBS (6) compilers at a time; fat-LTO links
+# peak at several GiB each, and the guest is OOM-killed beyond what it reserves.
+cpus = 8
+memory = "32G"
 default = false
 
 [[matrix.check]]
@@ -507,6 +526,8 @@ needs = ["desktop-package-amd64", "desktop-package-arm64"]
 outputs = ["/target/publish/desktop/payload.json"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 secrets = ["REGISTRY_TOKEN"]
+# A check holding a secret runs as a micro-VM step, which t boots on x86_64 only for now.
+requires = ["arch=x86_64"]
 on = ["stable"]
 comment = """
 The OS desktop payload from stable: the Fedora lanes' payloads as immutable generic packages,
@@ -617,9 +638,10 @@ default = false
 # ---------------------------------------------------------------------------
 # Windows compatibility payloads (build-windows-compat.yml): development candidates for Windows
 # apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF)
-# from the receipts, or from the `fex-payload-candidate` pointer. Building them takes long, so
-# main publishes them only when asked: `t dispatch publish-fex-payload --ref main` builds the
-# FEX chain and pushes it.
+# from the receipts, or from the `fex-payload-candidate` and `windows-guest-candidate` pointers.
+# Building them takes long, so main publishes them only when asked: `t dispatch
+# publish-fex-payload --ref main` and `t dispatch publish-windows-guest --ref main` build each
+# chain and push it.
 
 [[product]]
 family = "windows-compat"
@@ -665,12 +687,12 @@ about = """
 The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
 verified with its submodules, compiled offline on aarch64 in the toolchain above against the
 x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
-them first. Unsigned: the release key signs for stable and v* tags only, and the payload is a
-development candidate."""
+them first. A development candidate: signed with the development key, never the release key."""
 repository = "registry.tilo.so/tilo/tilo-fex-payload-candidate"
 arches = ["aarch64"]
 dev = ["{commit}"]
 dispatch = true
+dev_signed = true
 gates = ["publish-fex-buildroot", "publish-fex-x86-sdk"]
 after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.json > {dir}/reference"
 
@@ -717,8 +739,11 @@ about = """
 The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
 (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
 resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
-that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
-by the digest it is published with, so the contracts the steps write name what is published."""
+that bundle alone, offline, into the RPMs and their contract; image-wine-paired merges the two
+targets' RPMs into the pair the guest installs; image-windows-guest signs the pair with a key
+made for the run and assembles the guest (tools/ci/publish/windows-guest.sh). Every image is an
+archive named by the digest it is published with, so the contracts the steps write name what
+is published."""
 each = [{ arch = "x86_64", target = "x86_64" }, { arch = "x86_64", target = "i686" }]
 fields = { image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }, isolation = "vm", requires = ["arch=x86_64"], default = false }
 
@@ -754,3 +779,122 @@ cost = "heavy"
 cpus = 16
 memory = "32G"
 timeout_secs = 14400
+
+[[matrix.check]]
+name = "image-wine-paired"
+run = "bash tools/ci/publish/wine.sh pair /target/windows-compat/wine-paired"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-build-x86_64", "wine-build-i686"]
+outputs = ["/target/windows-compat/wine-paired/**"]
+cost = "minutes"
+cpus = 2
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix.check]]
+name = "image-windows-guest"
+run = "bash tools/ci/publish/windows-guest.sh /target/windows-compat/windows-guest"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/windows-guest.sh", "os/Containerfile.windows-guest-tools", "os/Containerfile.windows-guest-rpms", "os/Containerfile.windows-guest", "os/dev/run-development-windows-guest.py", "os/dev/development-wine-repository.py", "os/dev/windows-guest-packages.txt", "os/dev/windows_guest_contract.py", "os/dev/resolve-windows-guest-rpms.sh", "os/dev/build-windows-guest.sh", "os/dev/validate-windows-guest.py", "os/dev/install-windows-guest-dxvk.py", "os/dev/fetch-windows-guest-assets.py", "os/dev/wine-source.json", "os/external-assets/github-assets.tsv", ".containerignore"]
+needs = ["image-wine-paired"]
+outputs = ["/target/windows-compat/windows-guest/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cost = "heavy"
+cpus = 8
+memory = "16G"
+timeout_secs = 5400
+
+[[matrix.check]]
+name = "publish-windows-guest"
+comment = """
+Pushes every image the guest names, in the order they name each other, and the guest last:
+dispatched on main only (`t dispatch publish-windows-guest --ref main`)."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+set -e
+w=/target/windows-compat
+for target in x86_64 i686; do
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-resolution $w/wine-build-$target/resolution "candidate-{commit}-$target"
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-rpms $w/wine-build-$target/rpms "candidate-{commit}-$target"
+done
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-paired $w/wine-paired 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-wine $w/windows-guest/development-wine 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest-rpms $w/windows-guest/rpms 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest $w/windows-guest/guest 'candidate-{commit}'
+sed -n 's/.*"image":"\\([^"]*\\)".*/\\1/p' $w/windows-guest/guest/receipt.json > $w/windows-guest/guest/reference
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["publish-wine-tools", "wine-build-x86_64", "wine-build-i686", "image-wine-paired", "image-windows-guest"]
+outputs = ["/target/windows-compat/wine-build-*/*/receipt.json", "/target/windows-compat/wine-paired/receipt.json", "/target/windows-compat/windows-guest/*/receipt.json", "/target/windows-compat/windows-guest/guest/reference"]
+pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix]]
+family = "os"
+about = """
+The OS image (os/Containerfile, tools/ci/publish/os-image.sh), built natively per architecture
+as root in a micro-VM step: `t test os-image-x86_64` builds what a development VM runs from
+your tree, as Build / OS dev did (no LTO, the apps and desktop of the commit, the image only,
+its UKI sealing a placeholder composefs digest) and leaves it as an OCI archive (`t outputs`).
+Its inputs are what os/Containerfile copies from the repository; a cold build compiles for
+about an hour without a compiler cache, so it runs only when asked."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "os-image-{arch}"
+run = "bash tools/ci/publish/os-image.sh build {arch} /target/publish/os/{arch}"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "keys/**", "docs/developers/tasks/**", "scripts/**", "tools/apps/**", "tools/policy/**", "tools/protocols/**", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/font-catalog.py", "tools/atspi_external_client.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
+outputs = ["/target/publish/os/{arch}/image.oci.tar", "/target/publish/os/{arch}/digest", "/target/publish/os/{arch}/revision"]
+# The image is labelled with its commit.
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 10800
+default = false
+
+[[matrix]]
+family = "extension-manifests"
+about = """
+Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh, as
+extension-manifests.yml): every day, and when dispatched with `--input images=…`, each
+published OS image's native child resolves every extension inside itself, as root in a
+micro-VM step and without credentials; `publish-extension-manifests` signs the manifests with
+the extension-manifest key in KMS (not the OS release key) and publishes those that changed.
+Mirrors drop superseded builds and publishers ship updates, so nothing is served from the
+cache."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+fields = { dispatch_inputs = { images = "", expected_content_sha256 = "" } }
+
+[[matrix.check]]
+name = "extension-manifests-{arch}"
+run = "bash tools/ci/publish/extension-manifests.sh resolve {arch} /target/extension-manifests/{arch}"
+inputs = ["tools/extensions/**"]
+outputs = ["/target/extension-manifests/{arch}/**"]
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+cache = false
+on = ["schedule:40 4 * * *", "dispatch"]
+default = false
+
+[[matrix.check]]
+name = "publish-extension-manifests"
+run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/x86_64 /target/extension-manifests/aarch64"
+inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub"]
+needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
+# The extension-manifest key, not the OS release key: devices verify manifests only against
+# keys/extensions.pub. Its role trusts only this audience, which no other check asks for.
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
+id_token = ["tilo-extension-manifests"]
+# Generic packages take no identity token.
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["arch=any"]
+cache = false
+on = ["schedule:40 4 * * *", "dispatch"]

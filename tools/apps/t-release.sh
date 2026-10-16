@@ -62,6 +62,21 @@ cargo_jobs() {
   printf '%s' "$jobs"
 }
 
+# The commit's time in seconds, which the release sequence and the packages' timestamps are.
+# The trusted steps on x86_64 run without Git (t's x86 micro-VMs have no room for a Git disk
+# beside the needs' outputs), so it comes from the forge, which serves the public history.
+commit_epoch() {
+  local date
+  if git rev-parse --verify --quiet "$T_COMMIT^{commit}" >/dev/null 2>&1; then
+    git show -s --format=%ct "$T_COMMIT"
+    return
+  fi
+  date=$(curl --fail --silent --show-error --proto '=https' --retry 3 \
+    "https://code.tilo.so/api/v1/repos/tilo/tilo/git/commits/$T_COMMIT?stat=false&verification=false&files=false" \
+    | jq -er '.commit.committer.date') || die "could not read $T_COMMIT's time from the forge"
+  date -d "$date" +%s
+}
+
 # The publication environment publish-collections.sh reads, for this trusted run.
 publication_env() {
   local signed
@@ -71,7 +86,8 @@ publication_env() {
     [[ -f $signed/index.json ]] || die "$signed holds no signed collection"
     cp -r "$signed" "release/$(jq -er .architecture "$signed/index.json")"
   done
-  export VERSION="0.0.0-$T_COMMIT" COLLECTION=default COMPLETE=true \
+  TILO_SOURCE_EPOCH=$(commit_epoch)
+  export TILO_SOURCE_EPOCH VERSION="0.0.0-$T_COMMIT" COLLECTION=default COMPLETE=true \
     BUILDER_IMAGE=$(sed -n 's/^image = "\(.*\)"$/\1/p' t.toml | head -1) PRIOR_X86_URL= PRIOR_X86_SHA256= PRIOR_ARM64_URL= PRIOR_ARM64_SHA256= \
     TILO_PACKAGE_PUBLIC_BASE_URL=$package_base TILO_REGISTRY_URL=$registry_url \
     TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$registry_owner_pubkey \
@@ -122,7 +138,8 @@ case $command in
     trap 'rm -f "$app_identity" "$runtime_identity"' EXIT
     # Registry versions only ever increase: the release sequence is the commit's time, which grows
     # along stable's history.
-    sequence=$(git show -s --format=%ct "$T_COMMIT")
+    sequence=$(commit_epoch)
+    [[ $sequence =~ ^[0-9]+$ ]] || die "no time for $T_COMMIT"
     TILO_APP_PREBUILT=$built/compiled TILO_RELEASE_APPS=$(default_apps) TILO_APP_RELEASE_OUT=$out \
       TILO_APP_RELEASE_SOURCE=$T_COMMIT TILO_APP_RELEASE_SEQUENCE=$sequence GITHUB_SHA=$T_COMMIT \
       TAPP_PUBLISHER_IDENTITY_FILE=$app_identity RUNTIME_BUNDLE_IDENTITY_FILE=$runtime_identity \

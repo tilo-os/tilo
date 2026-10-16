@@ -159,6 +159,29 @@ def main() -> int:
             capture_output=True, text=True, check=True,
         ).stdout
         assert "so.tilo.notes: unanswered=1" in table and "p50=18.0ms" in table, table
+    # A long session: the full record holds only measurement lines by now,
+    # and the launch timing and failure live in the recorder's event record.
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "latest.log").write_text(
+            "paint-stats: 3/14 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | 60.000 Hz target | present=1 backpressure=0\n"
+            * 64
+        )
+        (root / "events.log").write_text(
+            "tilo-flight-record-v1 start=now pid=42 shell=/usr/bin/shell\n"
+            "2026-10-11T02:22:31.204118Z  INFO tilo::launch_latency: package_id=com.onepassword.OnePassword pid=9 request_to_spawn_us=1200000 application launcher spawned\n"
+            "2026-10-11T02:22:45.760719Z ERROR tilo::app_launch: application stopped before presenting a window package_id=com.onepassword.OnePassword display_name=1Password exit_code=None\n"
+        )
+        output = root / "current.json"
+        subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root), "--output", str(output)],
+            check=True,
+        )
+        flight = json.loads(output.read_text())["flight"]
+        assert flight["app_failures"] == {"com.onepassword.OnePassword": 1}, flight["app_failures"]
+        assert flight["launch_latency_us"]["com.onepassword.OnePassword"]["request_to_spawn_us"]["max"] == 1200000
+        assert flight["paint_last"]["painted"] == "3"
+
     print("session report: PASS")
     return 0
 

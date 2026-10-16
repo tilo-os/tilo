@@ -10366,6 +10366,46 @@ impl Widget for BlockEditor {
     }
 }
 
+impl BlockEditor {
+    /// Each block's part of `selection`, in characters and named by the
+    /// owning model's item ids, for a selection shared across blocks.
+    fn spanned_ranges(
+        &self,
+        selection: DocumentSelection,
+    ) -> Vec<tilo_actions::InteractionTextRange> {
+        let (start, end) = selection.ordered();
+        let last = end.block.min(
+            start
+                .block
+                .saturating_add(tilo_actions::interaction::MAX_ANCHOR_ITEMS),
+        );
+        (start.block..=last)
+            .filter_map(|idx| {
+                let block = self.blocks.get(idx)?;
+                let text = block.text();
+                let from = if idx == start.block { start.byte } else { 0 };
+                let to = if idx == end.block {
+                    end.byte
+                } else {
+                    text.len()
+                };
+                let chars = |byte: usize| {
+                    text.get(..text.floor_char_boundary(byte))
+                        .map_or(0, |head| head.chars().count())
+                };
+                let PresenceKey::Resource { id, .. } = self.presence_key_for(&block.id) else {
+                    return None;
+                };
+                Some(tilo_actions::InteractionTextRange {
+                    block: id,
+                    start: u64::try_from(chars(from)).unwrap_or(u64::MAX),
+                    end: u64::try_from(chars(to.max(from))).unwrap_or(u64::MAX),
+                })
+            })
+            .collect()
+    }
+}
+
 impl crate::presence::capability::PublishesPresence for BlockEditor {
     fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         use crate::collaboration::PresencePayload;
@@ -10416,6 +10456,66 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
                 pos: block.line.cursor_pos(),
             },
         ))
+    }
+
+    /// The selection for an agent. Keyed by the owning model's ids, it is
+    /// placed in the caret's block in characters (a selection spanning
+    /// blocks shares its part there, as presence does) and the excerpt is
+    /// exactly that text. Otherwise the blocks are no resource items, and
+    /// the whole selected text travels without a place.
+    fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+        use crate::shared_selection::SharedSelection;
+        let idx = self.focused?;
+        let block = self.blocks.get(idx)?;
+        if !block.line.is_focused() {
+            return None;
+        }
+        let text = block.text();
+        let (from, to) = match self.document_selection {
+            Some(selection) => {
+                let (start, end) = selection.ordered();
+                (
+                    if start.block == idx { start.byte } else { 0 },
+                    if end.block == idx {
+                        end.byte
+                    } else {
+                        text.len()
+                    },
+                )
+            }
+            None => block
+                .line
+                .selection_range()
+                .unwrap_or((block.line.cursor_pos(), block.line.cursor_pos())),
+        };
+        let (from, to) = (
+            text.floor_char_boundary(from.min(to)),
+            text.floor_char_boundary(from.max(to)),
+        );
+        let item = self
+            .presence_keyed_by_model()
+            .then(|| self.presence_key_for(&block.id));
+        let Some(PresenceKey::Resource { id, kind, .. }) = item else {
+            return self
+                .selected_text()
+                .or_else(|| text.get(from..to).map(str::to_owned))
+                .filter(|selected| !selected.trim().is_empty())
+                .map(|selected| SharedSelection::of_text(&selected));
+        };
+        let chars = |byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
+        let selected = text.get(from..to).unwrap_or_default();
+        let place = if from == to {
+            tilo_actions::SelectionPlace::caret(id, chars(from))
+        } else {
+            tilo_actions::SelectionPlace::range(id, chars(from), chars(to))
+        };
+        let mut selection = SharedSelection::of_text(selected).at(place).in_kind(kind);
+        if let Some(selection_across) = self.document_selection {
+            selection.anchor = selection
+                .anchor
+                .spanning("body", self.spanned_ranges(selection_across));
+        }
+        Some(selection)
     }
 }
 

@@ -304,6 +304,9 @@ pub mod __private {
         pub example: Option<fn() -> serde_json::Value>,
         /// Its type's fields are the verb's parameters, each its own.
         pub flat: bool,
+        /// It takes content another action produced, by its hash, beside
+        /// the verb's other parameters.
+        pub content: bool,
     }
 
     /// A declared parameter's type.
@@ -328,7 +331,7 @@ pub mod __private {
                 ParamTypeOf::Known(ty) => ty,
                 ParamTypeOf::Schema(schema) => param_type_of(&schema()),
             };
-            out.push(declared_param(
+            let declared = declared_param(
                 param.name,
                 ty,
                 param.description,
@@ -336,7 +339,12 @@ pub mod __private {
                 param.optional,
                 param.place,
                 param.example,
-            ));
+            );
+            out.push(if param.content {
+                declared.as_content()
+            } else {
+                declared
+            });
         }
         out
     }

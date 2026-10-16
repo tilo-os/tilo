@@ -162,6 +162,13 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
     if spec.argv.is_empty() {
         return Err(SpawnError::Invalid("a VM step needs a command".into()));
     }
+    let devices = virtio_devices(spec);
+    if devices > VIRTIO_TRANSPORTS {
+        return Err(SpawnError::Invalid(format!(
+            "a VM step with {} disks needs {devices} virtio devices; this machine has {VIRTIO_TRANSPORTS}",
+            spec.disks.len()
+        )));
+    }
     for p in [&spec.guest.kernel, &spec.guest.busybox, &spec.root]
         .into_iter()
         .chain(spec.disks.iter().map(|d| &d.image))
@@ -237,6 +244,30 @@ impl Prepared {
     }
 }
 
+/// The virtio devices the machine can hold: `microvm` has eight virtio-mmio transports, `virt`
+/// thirty-two.
+const VIRTIO_TRANSPORTS: usize = if cfg!(target_arch = "aarch64") { 32 } else { 8 };
+
+/// The virtio devices a step needs: the serial ports' device, the random number generator on
+/// arm64, the root, scratch and output disks, one per disk, and the network.
+fn virtio_devices(spec: &VmSpec) -> usize {
+    BASE_DEVICES
+        .saturating_add(spec.disks.len())
+        .saturating_add(usize::from(spec.network.is_some()))
+}
+
+/// The serial ports' device, the random number generator on arm64, and the root, scratch and
+/// output disks.
+const BASE_DEVICES: usize = if cfg!(target_arch = "aarch64") { 5 } else { 4 };
+
+/// The most disks of its own a step with a network can have on this machine.
+pub const MAX_DISKS: usize = VIRTIO_TRANSPORTS
+    .saturating_sub(BASE_DEVICES)
+    .saturating_sub(1);
+
+// Sources, the checks' /target and a mirror's objects: what t gives a step at most.
+const _: () = assert!(MAX_DISKS >= 3);
+
 /// QEMU's command line, with the step's files at their paths in QEMU's job.
 fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     let mut argv: Vec<OsString> = vec![
@@ -248,6 +279,13 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     for a in machine(spec.kvm) {
         arg(&a);
     }
+    // x86's microvm has only eight virtio transports, which a step's disks and network fill;
+    // its guest seeds its random numbers from the CPU (RDRAND) instead. arm64's `virt` has
+    // room, and no such instruction to rely on.
+    if cfg!(target_arch = "aarch64") {
+        arg("-device");
+        arg("virtio-rng-device");
+    }
     let memory_mib = (spec.memory >> 20).max(256);
     for a in [
         "-nodefaults",
@@ -258,8 +296,6 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         &spec.cpus.max(1).to_string(),
         "-m",
         &format!("{memory_mib}M"),
-        "-device",
-        "virtio-rng-device",
         "-device",
         "virtio-serial-device",
         "-chardev",
@@ -295,10 +331,12 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         let mut d = OsString::from("file=");
         d.push(escape_option(file.as_os_str()));
         d.push(format!(",if=none,id={serial},format=raw,file.locking=off"));
-        // Writes go to the host's page cache and are flushed when QEMU exits; nobody needs
-        // them on a platter before that.
+        // Writes bypass the host's page cache (O_DIRECT): the guest caches them already, and
+        // dirty host pages of a multi-GB write (an image pull) were charged to the step's
+        // cgroup on top of guest RAM, which the kernel then killed QEMU for. Flushes are
+        // ignored: nobody needs the writes on a platter before QEMU exits.
         d.push(if writable {
-            ",cache=unsafe"
+            ",cache.direct=on,cache.no-flush=on"
         } else {
             ",readonly=on"
         });
@@ -507,7 +545,15 @@ pub fn make_image(tree: &Path, image: &Path) -> Result<(), SpawnError> {
         .saturating_add(4096)
         .to_string();
     let mut cmd = Command::new("mkfs.ext4");
-    cmd.args(["-q", "-F", "-O", "^has_journal", "-E"])
+    // 4 KiB blocks and extents whatever the size: mke2fs.conf's types for small file systems
+    // pick 1 KiB blocks without them, which caps one file at 16 GiB ("Ext2 file too big" for a
+    // multi-GB image archive).
+    cmd.args(["-q", "-F", "-T", "default", "-b", "4096"])
+        .args([
+            "-O",
+            "^has_journal,extents,huge_file,large_file,64bit",
+            "-E",
+        ])
         .arg("root_owner=0:0,lazy_itable_init=1,nodiscard")
         .args(["-m", "0", "-N", &inode_count, "-d"])
         .arg(tree)
@@ -694,6 +740,29 @@ mod tests {
         );
         assert!(f.contains("\tt_output '/target/out/*'\n"), "{f}");
         assert!(f.contains("T_PATH='/usr/bin'\n"), "{f}");
+    }
+
+    #[test]
+    fn the_most_devices_a_step_can_ask_for_fit_the_machine() {
+        let mut spec = spec();
+        spec.network = Some("/net".into());
+        spec.disks = (0..MAX_DISKS).map(|_| spec.disks[0].clone()).collect();
+        let argv = qemu_argv(&spec);
+        let virtio = argv
+            .iter()
+            .filter_map(|a| a.to_str())
+            .filter(|a| a.starts_with("virtio-") && a.contains("-device"))
+            .count();
+        assert_eq!(virtio, virtio_devices(&spec));
+        let kernel = argv.iter().position(|a| a == "-kernel").unwrap();
+        assert_eq!(
+            argv.get(kernel.saturating_add(1)),
+            Some(&OsString::from(KERNEL)),
+            "-kernel takes the kernel: {argv:?}"
+        );
+        assert!(virtio <= VIRTIO_TRANSPORTS, "{virtio} virtio devices");
+        spec.disks.push(spec.disks[0].clone());
+        assert!(virtio_devices(&spec) > VIRTIO_TRANSPORTS || cfg!(target_arch = "aarch64"));
     }
 
     #[test]

@@ -176,6 +176,9 @@ tagline = "A safer way through"
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 tagline = "Look ahead"
+[apps.web-search]
+description = "Search the web and read pages from your device, for your agents and shortcuts. No account or API key."
+tagline = "Find it, read it"
 [apps.windows]
 description = "Run supported Windows applications in a contained Tilo experience."
 tagline = "A bridge for the apps you still need"

@@ -3,13 +3,12 @@
 # publication tool present and no compiler, since the release jobs that run in it hold
 # credentials.
 #
-# usage: release_tools_image.sh ARCHIVE | IMAGE
+# usage: release_tools_image.sh ARCHIVE
 # ARCHIVE is an OCI archive as tools/ci/publish/oci-build.sh writes it (the t checks
-# image-release-tools-<arch>), tested in the buildah image without a daemon. IMAGE is a tag in
-# the local Docker daemon (build-release-tools.yml).
+# image-release-tools-<arch>), tested in the buildah image without a daemon.
 set -euo pipefail
 
-image=${1:?usage: release_tools_image.sh ARCHIVE | IMAGE}
+archive=${1:?usage: release_tools_image.sh ARCHIVE}
 max_image_bytes=536870912
 
 # What every publication needs and no compiler, run inside the image.
@@ -22,25 +21,13 @@ contents='
   done
 '
 
-if [[ -f $image ]]; then
-  run=$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/oci-run.sh
-  bash "$run" "$image" bash -euo pipefail -c '
-    image_bytes=$(du -sxb / | cut -f1)
-    (( image_bytes <= '"$max_image_bytes"' )) || {
-      printf "release-tools image is unexpectedly large: %s bytes\n" "$image_bytes" >&2
-      exit 1
-    }
-    printf "release-tools image size: %s bytes\n" "$image_bytes"
-  '"$contents"
-  exit 0
-fi
-
-image_bytes=$(docker image inspect --format '{{.Size}}' "$image")
-[[ $image_bytes =~ ^[0-9]+$ ]]
-(( image_bytes <= max_image_bytes )) || {
-  printf 'release-tools image is unexpectedly large: %s bytes\n' "$image_bytes" >&2
-  exit 1
-}
-printf 'release-tools image size: %s bytes\n' "$image_bytes"
-
-docker run --rm --entrypoint bash "$image" -euo pipefail -c "$contents"
+[[ -f $archive ]] || { echo "not an OCI archive: $archive" >&2; exit 1; }
+run=$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/oci-run.sh
+bash "$run" "$archive" bash -euo pipefail -c '
+  image_bytes=$(du -sxb / | cut -f1)
+  (( image_bytes <= '"$max_image_bytes"' )) || {
+    printf "release-tools image is unexpectedly large: %s bytes\n" "$image_bytes" >&2
+    exit 1
+  }
+  printf "release-tools image size: %s bytes\n" "$image_bytes"
+'"$contents"
