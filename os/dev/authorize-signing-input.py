@@ -32,6 +32,9 @@ def authorize(identifier, purpose, source, expected_sha256, architecture, prepar
         pe = boot.pe.u32(data, 0x3c)
         if boot.pe.u16(data, pe + 4) != boot.loader.MACHINES[architecture]:
             raise ValueError('EFI architecture differs')
+        if purpose == 'loader' and (boot.pe.u16(data, pe + 24) != 0x20b
+                                    or boot.pe.u16(data, pe + 24 + 68) != 10):
+            raise ValueError('loader must be a native PE32+ EFI application')
         if purpose != 'loader':
             gen = boot.expected_inputs(architecture, generation, composefs_digest)
             sections = boot.uki_sections(data, architecture)

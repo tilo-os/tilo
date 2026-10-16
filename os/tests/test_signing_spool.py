@@ -349,5 +349,40 @@ subprocess.run([home+'/signer','sign-sha256-rsa-pkcs1',source,destination],check
             spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
                               str(self.home / 'pcr.pub'), str(source), str(output)])
 
+@unittest.skipUnless(os.getuid() == 0, 'requires root or podman unshare')
+class LoaderAuthorizationTests(unittest.TestCase):
+    def test_loader_authorization_rejects_non_native_applications_before_output(self):
+        import struct
+        original_temporary = tempfile.TemporaryDirectory
+        with original_temporary() as temporary:
+            root = Path(temporary)
+            def scratch(*args, **kwargs):
+                return original_temporary(prefix=kwargs.get('prefix', ''), dir=root)
+            source, prepared = root / 'loader.efi', root / 'prepared'
+            for kind in ('pe32', 'console', 'efi-driver', 'application'):
+                with self.subTest(kind=kind):
+                    prepared.unlink(missing_ok=True)
+                    data = bytearray(synthetic_uki('aarch64'))
+                    optional = 64 + 24
+                    if kind == 'pe32':
+                        struct.pack_into('<H', data, optional, 0x10b)
+                        struct.pack_into('<I', data, optional + 92, 16)
+                    elif kind != 'application':
+                        struct.pack_into('<H', data, optional + 68, 3 if kind == 'console' else 11)
+                    source.write_bytes(data)
+                    kwargs = dict(identifier='loader', purpose='loader', source=source,
+                                  expected_sha256=spool.digest(data), architecture='aarch64',
+                                  prepared_input=prepared)
+                    with patch.object(authorize.tempfile, 'TemporaryDirectory', side_effect=scratch):
+                        if kind == 'application':
+                            row = authorize.authorize(**kwargs)
+                            self.assertEqual(row['operation'], 'sign-efi')
+                            self.assertEqual(prepared.read_bytes(), data)
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'EFI application'):
+                                authorize.authorize(**kwargs)
+                            self.assertFalse(prepared.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
