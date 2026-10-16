@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -50,14 +51,17 @@ def main() -> int:
         assert process.poll() is None, "fixture must prove persistence before EOF"
 
         second = os.urandom(4 * 1024 * 1024 + 257)
-        relayed = bytearray(process.stdout.read1(65536))
-        offset = 0
-        while offset < len(second):
-            written = os.write(process.stdin.fileno(), second[offset : offset + 65536])
-            offset += written
-            relayed.extend(process.stdout.read1(65536))
+        # The relay is read on a thread of its own while the input is written: a pipe holds
+        # as little as two pages when its user has many pipes open (fs.pipe-user-pages-soft),
+        # so writing a 64 KiB chunk before reading back deadlocks against a relay blocked on
+        # its own full output.
+        relayed = bytearray()
+        reader = threading.Thread(target=lambda: relayed.extend(process.stdout.read()))
+        reader.start()
+        process.stdin.write(second)
         process.stdin.close()
-        relayed.extend(process.stdout.read())
+        reader.join(timeout=60)
+        assert not reader.is_alive(), "the relay stopped passing its input on"
         assert process.wait(timeout=10) == 0
         assert relayed == first + second
         assert log.read_bytes() == (header + first + second)[-(4 * 1024 * 1024) :]
