@@ -116,6 +116,198 @@ impl OriginalInvocationData {
         )
     }
 
+    pub(super) fn private_draft_caller(
+        self: &Arc<Self>,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+        worker: &PrivateWorkerRegistration,
+        token: uuid::Uuid,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Argument {
+            token: uuid::Uuid,
+        }
+        let argument = self
+            .request
+            .argument
+            .as_deref()
+            .ok_or("private draft token missing")?;
+        let argument: Argument = serde_json::from_str(
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+        )
+        .map_err(|_| "invalid private draft action arguments")?;
+        if self.route != worker.route
+            || self.request.address.action != "adopt-private-draft"
+            || argument.token != token
+        {
+            return Err("original private draft action or token changed".into());
+        }
+        let restricted = match &self.caller {
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => {
+                *foreign_restriction
+                    || caller.admitted.verified.capped
+                    || caller.admitted.host_scope.is_some()
+            }
+            InvocationCaller::Local { admitted, .. } => {
+                admitted.verified.capped || admitted.host_scope.is_some()
+            }
+            InvocationCaller::NativePerson { .. } => false,
+        };
+        let original = OriginalInvocation {
+            broker: Arc::downgrade(state),
+            peer,
+            worker: TargetCustody::Registered(Box::new(worker.clone())),
+            data: self.clone(),
+        };
+        original.check_execution_frontier(state)?;
+        original.check_lifecycle()?;
+        let certificate = original.certificate()?;
+        if restricted || original.agent_id().is_some() || certificate.capabilities.foreign {
+            return Err("private draft adoption requires the original certified person".into());
+        }
+        let certificate = certificate.clone();
+        drop(original);
+        Ok(certificate)
+    }
+
+    pub(super) fn private_draft_token(&self) -> Option<uuid::Uuid> {
+        if self.request.address.action != "adopt-private-draft" {
+            return None;
+        }
+        let argument = self.request.argument.as_deref()?;
+        let value: serde_json::Value = serde_json::from_str(
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+        )
+        .ok()?;
+        serde_json::from_value(value.get("token")?.clone()).ok()
+    }
+
+    pub(super) fn person_chat_caller(
+        self: &Arc<Self>,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+        worker: &PrivateWorkerRegistration,
+        command: &crate::services::person_chat::PersonChatCommand,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        use crate::services::person_chat::PersonChatCommand;
+        // Reading an open view is a narrower continuation of that exact
+        // person's open invocation, still bound below to its original peer.
+        let open_read = matches!(command, PersonChatCommand::Read { .. })
+            && self.request.address.action == "open-direct-conversation";
+        if self.route != worker.route
+            || (self.request.address.action != command.action() && !open_read)
+        {
+            return Err(
+                "original private app action does not match person conversation operation".into(),
+            );
+        }
+        let bound_person = self.resource_kind == "chat.person"
+            && self
+                .request
+                .address
+                .resource
+                .starts_with("tilo-ui-bound:v1:");
+        let argument = if bound_person {
+            // The single prompted text field is carried as plain text by the
+            // action door, not as the legacy multi-parameter JSON object.
+            serde_json::json!({"text": self.request.argument})
+        } else {
+            self.request
+                .argument
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| "invalid original person conversation arguments")?
+                .unwrap_or(serde_json::Value::Null)
+        };
+        let original_peer = self.person_conversation_peer(&argument);
+        match command {
+            PersonChatCommand::Contacts => {
+                return Err("contacts are a private native snapshot, not an action".into());
+            }
+            PersonChatCommand::Open { public_key } | PersonChatCommand::Read { public_key } => {
+                if original_peer.as_deref() != Some(public_key.as_str()) {
+                    return Err("original person conversation peer changed".into());
+                }
+            }
+            PersonChatCommand::Send {
+                public_key,
+                text,
+                invocation,
+            } => {
+                if self.request.invocation.0 != *invocation {
+                    return Err("original person conversation send invocation changed".into());
+                }
+                if original_peer.as_deref() != Some(public_key.as_str()) {
+                    return Err("original person conversation send peer changed".into());
+                }
+                if argument.get("text").and_then(serde_json::Value::as_str) != Some(text.as_str()) {
+                    return Err("original person conversation send text changed".into());
+                }
+            }
+        }
+        let original = OriginalInvocation {
+            broker: Arc::downgrade(state),
+            peer,
+            worker: TargetCustody::Registered(Box::new(worker.clone())),
+            data: self.clone(),
+        };
+        original.check_execution_frontier(state)?;
+        original.check_lifecycle()?;
+        let restricted = match &self.caller {
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => {
+                *foreign_restriction
+                    || caller.admitted.verified.capped
+                    || caller.admitted.host_scope.is_some()
+            }
+            InvocationCaller::Local { admitted, .. } => {
+                admitted.verified.capped || admitted.host_scope.is_some()
+            }
+            InvocationCaller::NativePerson { .. } => false,
+        };
+        let certificate = original.certificate()?;
+        if restricted || original.agent_id().is_some() || certificate.capabilities.foreign {
+            return Err("private conversations require the original certified person".into());
+        }
+        Ok(certificate.clone())
+    }
+
+    fn person_conversation_peer(&self, argument: &serde_json::Value) -> Option<String> {
+        if let Some(key) = argument.get("public_key") {
+            return key.as_str().map(str::to_owned);
+        }
+        // A framework live row binds the peer in its resource address, so the
+        // caller supplies only the unbound fields (text for Send, none for
+        // Open/Read). This is the retained, broker-resolved address, never a
+        // new address asserted by the worker. Lifecycle checks pin its owner.
+        if self.resource_kind != "chat.person" {
+            return None;
+        }
+        let resource = &self.request.address.resource;
+        let key = if let Some(bound) = resource.strip_prefix("tilo-ui-bound:v1:") {
+            let mut parts = bound.splitn(3, ':');
+            uuid::Uuid::parse_str(parts.next()?).ok()?;
+            uuid::Uuid::parse_str(parts.next()?).ok()?;
+            String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?
+        } else {
+            resource.clone()
+        };
+        let peer = key.strip_prefix("chat.person:")?;
+        (peer.len() == 64 && peer.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| peer.to_owned())
+    }
+
     pub(super) fn display_caller(
         self: &Arc<Self>,
         state: &Arc<CapnpBrokerState>,

@@ -715,9 +715,9 @@ impl ChatApp {
             return;
         }
         // A shared draft is created the first time its surface is written
-        // in. Direct-Agent drafts are process-local and must not mint even an
-        // empty placeholder in the workspace document.
-        if self.direct_agent.is_none() {
+        // in. Private person and Agent drafts are process-local and must not
+        // mint even an empty placeholder in the workspace document.
+        if self.direct_agent.is_none() && self.direct_person.is_none() {
             let key = self.draft_key();
             if !crate::projection::has_draft(doc, &key) {
                 self.ensure_composer_draft(doc, &key);
@@ -895,6 +895,10 @@ impl ChatApp {
         self.menu = None;
         match hit {
             Hit::Inbox => {
+                if self.direct_person.is_some() {
+                    self.leave_floated_agent_route();
+                    self.close_person_conversation();
+                }
                 self.inbox_open = true;
                 self.thread_open = None;
                 self.focus = Focus::Main;
@@ -904,6 +908,11 @@ impl ChatApp {
                 self.on_hit_workspace(self.context_ws.clone());
             }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
+            Hit::DirectPerson(public_key) => {
+                if let Err(error) = self.open_person_conversation(&public_key) {
+                    self.person_error = Some(error);
+                }
+            }
             Hit::Agent(agent) => {
                 self.open_agent_conversation(&agent);
             }
@@ -1037,6 +1046,10 @@ impl ChatApp {
     }
 
     fn on_hit_workspace(&mut self, id: Id) {
+        if self.direct_person.is_some() {
+            self.leave_floated_agent_route();
+        }
+        self.close_person_conversation();
         if self.active_ws != id {
             self.active_ws = id;
             self.thread_open = None;
@@ -1047,6 +1060,10 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
+        if self.direct_person.is_some() {
+            self.leave_floated_agent_route();
+        }
+        self.close_person_conversation();
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
@@ -1569,7 +1586,7 @@ impl ChatApp {
             self.edit_input.insert_text(doc, s);
             return;
         }
-        if self.direct_agent.is_none() {
+        if self.direct_agent.is_none() && self.direct_person.is_none() {
             let key = self.draft_key();
             if !crate::projection::has_draft(doc, &key) {
                 self.ensure_composer_draft(doc, &key);
@@ -1660,6 +1677,10 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if self.direct_person.is_some() {
+            self.send_person_focused();
+            return;
+        }
         if self.direct_agent.is_some() {
             self.send_agent_focused(doc);
             return;

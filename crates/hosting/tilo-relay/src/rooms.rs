@@ -36,6 +36,11 @@ pub(crate) use desktop_writes::writes_desktop;
 mod member_records;
 pub use member_records::PreparedRecord;
 mod pages;
+mod private;
+#[cfg(test)]
+mod private_network_tests;
+mod private_store;
+pub use private::PrivateProtocol;
 mod publisher;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;

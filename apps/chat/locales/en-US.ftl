@@ -1,5 +1,13 @@
 # Chat — user-facing strings.
 
+chat-contacts-section = Contacts
+chat-person-chat-private = Private conversation
+chat-person-chat-placeholder = Write a private message
+chat-person-chat-unavailable = Private conversation unavailable. Choose a certified person in this workspace.
+chat-person-chat-empty = Write a message before sending.
+chat-person-chat-empty-conversation = Messages here are private to you and this person.
+chat-header-search = Search
+
 # Marker beside a participant in the `@` picker that is an agent rather than a
 # person, so somebody can tell at a glance that they are addressing software.
 chat-mention-agent-tag = agent

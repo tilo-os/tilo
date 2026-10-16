@@ -277,6 +277,9 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Native enrollment and private owner assertions in the remote person fixtures.
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # The shell-selection fixture, the selection construction counter and the
