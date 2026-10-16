@@ -671,7 +671,7 @@ pub(super) async fn handle_delta(
     let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
-        let _ = tap.try_send((peer.device_public_key, body));
+        tell_governor(&tap, peer.device_public_key, body).await;
     }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
@@ -679,6 +679,22 @@ pub(super) async fn handle_delta(
     drop(admitting);
 
     Ok(None)
+}
+
+/// Hand `body`, a change `author` made that the relay kept, to the room's
+/// governor through `tap`. Never dropped: the governor's copy is a replica
+/// of the room's records, and a replica that skipped a change would hold
+/// a different record than everyone else. A governor that has fallen
+/// behind holds the author back until it takes the change in. Nothing is
+/// sent once the governor stopped following (the room closed).
+pub(super) async fn tell_governor(
+    tap: &tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>,
+    author: [u8; 32],
+    body: Vec<u8>,
+) {
+    if tap.send((author, body)).await.is_err() {
+        tracing::debug!("the room's governor no longer follows it");
+    }
 }
 
 /// What the room's governor follows of `env`, a member's state change: its
@@ -787,7 +803,7 @@ pub(super) async fn handle_delta_prefix(
     }
     if let Some(tap) = governor_tap {
         for body in notices {
-            let _ = tap.try_send((peer.device_public_key, body));
+            tell_governor(&tap, peer.device_public_key, body).await;
         }
     }
     Ok(None)

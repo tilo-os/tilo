@@ -26,6 +26,7 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use shell::shell::tab_binding::Placement;
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::synthetic_input::PointerAction;
@@ -797,7 +798,10 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
 
         let opened = chrome
             .borrow_mut()
-            .handle_file_drop(std::path::Path::new("/tmp/layout-session.ts"))
+            .handle_file_drop_at_placement(
+                std::path::Path::new("/tmp/layout-session.ts"),
+                Placement::TabIn(100),
+            )
             .expect("file drop opens an editor tab");
         chrome.borrow_mut().bump();
         assert!(
@@ -895,10 +899,13 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
                 .len()
         };
 
-        // Drop a `.ts` file through the `WindowEvent::DroppedFile` entry.
+        // Drop a `.ts` file onto the group, as a `WindowEvent::DroppedFile` does.
         let tab_id = chrome
             .borrow_mut()
-            .handle_file_drop(std::path::Path::new("/some/where/component.ts"))
+            .handle_file_drop_at_placement(
+                std::path::Path::new("/some/where/component.ts"),
+                Placement::TabIn(100),
+            )
             .expect("a file drop must resolve to a launch intent");
 
         let st = chrome.borrow();
@@ -933,7 +940,7 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
 
         let tab_id = chrome
             .borrow_mut()
-            .handle_file_drop(&tmp)
+            .handle_file_drop_at_placement(&tmp, Placement::TabIn(100))
             .expect("folder drop resolves");
 
         let st = chrome.borrow();

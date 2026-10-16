@@ -22,7 +22,6 @@ use package_store::InstalledPackage;
 ///
 /// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
-#[cfg(test)]
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,

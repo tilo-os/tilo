@@ -328,7 +328,7 @@ pub fn update_section_with_at(
     change: &mut SectionChange<'_>,
 ) -> std::io::Result<()> {
     let _lock = session::lock_copy(path)?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     let current = match doc.get(name) {
         Some(Value::Object(section)) => section.clone(),
         _ => Map::new(),
@@ -383,11 +383,22 @@ fn unisolated_test_write(
     )
 }
 
+// Display reads may be forgiving; a writer must not erase a file it cannot read.
+// Malformed JSON remains repairable, but I/O and UTF-8 failures are preserved.
+fn load_for_update(path: &Path) -> std::io::Result<Map<String, Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(parse(&text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(error) => Err(error),
+    }
+}
+
 /// [`update_section`] against an explicit path.
 ///
 /// # Errors
 ///
-/// Returns an error if the document can't be serialised or written.
+/// Returns an error if an existing document can't be read, or the merged document can't
+/// be serialised or written. A missing file starts empty; malformed JSON is still repaired.
 pub fn update_section_at(
     path: &Path,
     name: &str,
@@ -411,7 +422,7 @@ pub fn compare_update_section_at(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     if doc.get(name) != Some(&Value::Object(expected.clone())) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -436,7 +447,7 @@ pub fn compare_display_update_at(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut document = load_at(path);
+    let mut document = load_for_update(path)?;
     if !update.matches(&document) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -471,7 +482,7 @@ pub fn update_document_at(
         )?),
         _ => None,
     };
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     change(&mut doc);
     write_atomic(path, &Value::Object(doc))
 }
@@ -698,6 +709,35 @@ mod tests {
             assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
             assert_eq!(bool_at(&doc, "display", "mode"), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_refuses_unreadable_input_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A symlink loop fails even for privileged test runners, unlike mode bits.
+        symlink("settings.json", &path).unwrap();
+        let read_error = std::fs::read_to_string(&path).unwrap_err();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.raw_os_error(), read_error.raw_os_error());
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("settings.json")
+        );
+    }
+
+    #[test]
+    fn a_merge_does_not_replace_non_utf8_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bytes = b"{\"region\":\"\xff\"}";
+        std::fs::write(&path, bytes).unwrap();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     // Non-destructive writes

@@ -141,12 +141,9 @@ pub(super) async fn handle_commit(
 /// Hand `delta`, a member's change `ws` kept, to the room's governor, if a
 /// governor follows the room. It follows every change the relay keeps, a
 /// committed one as one sent alone (`handle_delta`): a page writes its
-/// records as commits. As for a delta, a governor that fell behind misses
-/// the change rather than hold its author back: the change is kept, and
-/// the governor's copy takes it in when the room next opens.
+/// records as commits.
 async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
     let Envelope::Delta {
-        workspace_id,
         author_device_public_key,
         ..
     } = delta
@@ -154,13 +151,8 @@ async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
         return;
     };
     let tap = ws.lock().await.governor_tap.clone();
-    if let Some((tap, body)) = tap.zip(governor_notice(delta))
-        && tap.try_send((*author_device_public_key, body)).is_err()
-    {
-        tracing::warn!(
-            workspace_id,
-            "the room's governor fell behind and missed a member's change"
-        );
+    if let Some((tap, body)) = tap.zip(governor_notice(delta)) {
+        super::state::tell_governor(&tap, *author_device_public_key, body).await;
     }
 }
 

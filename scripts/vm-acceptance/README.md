@@ -43,6 +43,15 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
+## Harness regression tests
+
+```bash
+python3 -m unittest discover -s scripts/vm-acceptance/tests -v
+```
+
+These host-only tests exercise check results, boot identity validation, service-query
+shell exit handling and app-workload prerequisites without starting a VM.
+
 ## Run it in CI
 
 `.forgejo/workflows/vm-acceptance.yml` (Dev / VM acceptance) runs the suite on a
