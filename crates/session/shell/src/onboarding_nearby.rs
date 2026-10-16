@@ -400,13 +400,13 @@ fn watch_status(
         }
         final_look = false;
         let first = match woken.recv_timeout(STATUS_FALLBACK) {
-            Ok(woke) => Some(woke),
+            Ok(signal) => Some(signal),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         // One read covers every change queued meanwhile.
-        for woke in first.into_iter().chain(woken.try_iter()) {
-            match woke {
+        for signal in first.into_iter().chain(woken.try_iter()) {
+            match signal {
                 WatcherWake::Changed => {}
                 WatcherWake::Final => final_look = true,
                 WatcherWake::Stop => return,
@@ -1007,7 +1007,9 @@ mod tests {
         for _ in 0..3 {
             let (event, blocked) = std::thread::scope(|scope| {
                 let poll = scope.spawn(|| pairing.poll(Instant::now()));
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_secs(10))
+                    .expect("a deadline");
                 while !poll.is_finished() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(1));
                 }
