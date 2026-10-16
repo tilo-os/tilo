@@ -301,8 +301,13 @@ fn rebuild_in(
         return (Manifest::new(tier, chunks), stats);
     };
     let reusable = previous.filter(|p| p.tier() == tier);
-    let mut changed: Vec<Range<u64>> = changed.to_vec();
-    changed.sort_by_key(|r| r.start);
+    // The overlap lookup binary-searches range ends, so sorting starts alone
+    // is insufficient when dirty ranges overlap or nest.
+    let mut dirty = crate::ranges::RangeSet::new();
+    for range in changed {
+        dirty.insert(range.clone());
+    }
+    let changed: Vec<Range<u64>> = dirty.iter().cloned().collect();
     let mut pieces = Vec::new();
     let mut spans = Vec::new();
     let mut pos = 0_usize;
@@ -495,6 +500,19 @@ mod tests {
                 x.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn rebuild_rehashes_nested_dirty_ranges() {
+        let mut data = pseudo_random(512 * 1024, 7);
+        let (previous, _) = build(&data, None);
+        let offset = previous.chunk_range(2).unwrap().start as usize;
+        data[offset] ^= 1;
+        let changed = vec![0..data.len() as u64, 1..2];
+        let (rebuilt, _) = rebuild(Some(&previous), &data, &changed, None);
+        let (fresh, _) = build(&data, None);
+        assert_eq!(rebuilt, fresh);
+        assert!(rebuilt.verify(&data));
     }
 
     #[test]
