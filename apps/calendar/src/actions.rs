@@ -10,7 +10,6 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect as _, JsonSchema, items::item_resource_id};
-use uuid::Uuid;
 
 use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Recurrence,
@@ -474,16 +473,14 @@ fn parse_opt_id(s: &str) -> Option<Id> {
     }
 }
 
-/// The events and tasks of the iCalendar `source`, as an import takes them:
-/// each event under a new id. `None` when it holds neither.
+/// The events and tasks of the iCalendar `source`, retaining their UID-derived
+/// identities so a repeated import also recognises locally edited items.
+/// `None` when it holds neither.
 pub fn import_payload(source: &str) -> Option<(Vec<EventData>, Vec<TaskData>)> {
     let (events, tasks) = crate::ics::parse(source);
     let events: Vec<_> = events
         .into_iter()
-        .map(|mut event| {
-            event.id = Uuid::new_v4();
-            EventData::from_event(&event)
-        })
+        .map(|event| EventData::from_event(&event))
         .collect();
     let tasks: Vec<_> = tasks.iter().map(TaskData::from_task).collect();
     (!events.is_empty() || !tasks.is_empty()).then_some((events, tasks))
