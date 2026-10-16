@@ -279,6 +279,13 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
     for a in machine(spec.kvm) {
         arg(&a);
     }
+    // x86's microvm has only eight virtio transports, which a step's disks and network fill;
+    // its guest seeds its random numbers from the CPU (RDRAND) instead. arm64's `virt` has
+    // room, and no such instruction to rely on.
+    if cfg!(target_arch = "aarch64") {
+        arg("-device");
+        arg("virtio-rng-device");
+    }
     let memory_mib = (spec.memory >> 20).max(256);
     for a in [
         "-nodefaults",
@@ -302,13 +309,6 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         "-kernel",
     ] {
         arg(a);
-    }
-    // x86's microvm has only eight virtio transports, which a step's disks and network fill;
-    // its guest seeds its random numbers from the CPU (RDRAND) instead. arm64's `virt` has
-    // room, and no such instruction to rely on.
-    if cfg!(target_arch = "aarch64") {
-        arg("-device");
-        arg("virtio-rng-device");
     }
     argv.push(KERNEL.into());
     argv.push("-initrd".into());
@@ -754,6 +754,12 @@ mod tests {
             .filter(|a| a.starts_with("virtio-") && a.contains("-device"))
             .count();
         assert_eq!(virtio, virtio_devices(&spec));
+        let kernel = argv.iter().position(|a| a == "-kernel").unwrap();
+        assert_eq!(
+            argv.get(kernel.saturating_add(1)),
+            Some(&OsString::from(KERNEL)),
+            "-kernel takes the kernel: {argv:?}"
+        );
         assert!(virtio <= VIRTIO_TRANSPORTS, "{virtio} virtio devices");
         spec.disks.push(spec.disks[0].clone());
         assert!(virtio_devices(&spec) > VIRTIO_TRANSPORTS || cfg!(target_arch = "aarch64"));
