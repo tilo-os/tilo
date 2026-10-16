@@ -52,15 +52,39 @@ fn settle(app: &mut TestApp<SettingsShell>) {
 /// scrolled instead of jumping back to the top.
 #[test]
 fn changing_a_control_keeps_the_pane_scrolled() {
+    scroll_and_change_each_pane();
+}
+
+/// The same in a window that reads its areas as a live one does: the pane
+/// first stands in while its area is read off the UI thread, then fills in,
+/// and the reads of the other areas land while the person scrolls and
+/// changes controls. None of them may move the pane.
+#[test]
+fn changing_a_control_keeps_the_pane_scrolled_while_areas_are_read() {
+    crate::effects::defer_area_reads_in_tests(true);
+    scroll_and_change_each_pane();
+    crate::effects::defer_area_reads_in_tests(false);
+}
+
+fn scroll_and_change_each_pane() {
     ui::i18n::I18nManager::init("en-US");
+    let reading = crate::i18n::t("settings-pane-reading");
     for category in [Category::Power, Category::Pointing, Category::Displays] {
         let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
         app.harness().resize((1472, 920)).unwrap();
+        let _ = app.harness().poll_frame();
         app.call(
             "open",
             serde_json::json!({ "anchor": crate::effects::pane_row_id(category) }),
         )
         .expect("the pane opens");
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| !frame.contains(&reading))),
+            "{category:?}: what the pane reads is shown"
+        );
         settle(&mut app);
         app.harness()
             .send(&ui::synthetic_input::cursor_moved(1000.0, 500.0));
