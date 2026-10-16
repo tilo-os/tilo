@@ -433,6 +433,21 @@ struct OverlayInputs {
 
 /// How long a launchpad app card waits for the Applications index to take
 /// in the installed apps after boot before falling back to the launcher.
+/// A pause this long between finger-scroll events starts a new scroll, for
+/// a source that reports no phases (the toolkit's rule for the same).
+const SIDEWAYS_SCROLL_IDLE: Duration = Duration::from_millis(200);
+
+/// A finger scroll over the shell's own chrome, from its first event.
+struct ChromeSidewaysScroll {
+    /// It started out sideways, so it pans the strip.
+    sideways: bool,
+    /// Its travel so far toward the strip's later windows.
+    travel: f64,
+    /// The strip pan has begun.
+    panning: bool,
+    last: Instant,
+}
+
 const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
 /// How often a waiting launchpad app card asks the index again.
 const LAUNCHPAD_APP_RETRY: Duration = Duration::from_millis(25);
@@ -724,6 +739,9 @@ pub struct ShellOverlayHost {
     /// the indicators' resting point without showing them. The strip moving
     /// under the fingers is the feedback there.
     strip_pan_active: bool,
+    /// The finger scroll over the shell's own chrome in progress; see
+    /// [`Self::chrome_sideways_scroll`].
+    chrome_sideways: Option<ChromeSidewaysScroll>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::quick_settings::refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
@@ -2453,6 +2471,7 @@ impl ShellOverlayHost {
             strip_rail_hover: None,
             strip_indicators: strip_indicators::StripIndicators::default(),
             strip_pan_active: false,
+            chrome_sideways: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             workspace_rename_submit_held: false,
@@ -6958,52 +6977,125 @@ impl ShellOverlayHost {
     /// deliberately unchanged: moving the canvas and choosing an app are
     /// separate operations, just as they are during a pointer drag.
     pub fn update_active_strip_pan(&mut self, travel: f64, began: bool) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let strip = {
-            let st = chrome.borrow();
-            st.tree()
-                .desktop
-                .active_strip
-                .get(&st.tree().desktop.active)
-                .copied()
-        };
-        let Some(strip) = strip else { return false };
-        let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
-            return false;
-        };
-        // SAFETY: stable Box<GroupRow> contract documented on
-        // `group_row_ptrs`; this method holds `&mut self` for the mutation.
-        let row: &mut GroupRow = unsafe { &mut *ptr };
-        if began {
-            row.begin_strip_pan();
-            self.strip_pan_active = true;
-        }
-        row.update_strip_pan(travel)
+        self.update_strip_pan_of(None, travel, began)
     }
 
     /// Finish direct strip manipulation and start a boundary settle only if
     /// the fingers released in elastic overpull.
     pub fn end_active_strip_pan(&mut self, now: Instant) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
+        self.end_strip_pan_of(None, now)
+    }
+
+    /// The row of `strip`, or of the active strip for `None`.
+    fn strip_row_mut(&mut self, strip: Option<StripId>) -> Option<&mut GroupRow> {
+        let strip = strip.or_else(|| self.active_strip_id())?;
+        let &ptr = self.group_row_ptrs.get(&strip)?;
+        // SAFETY: stable Box<GroupRow> contract documented on
+        // `group_row_ptrs`; `&mut self` makes the access exclusive.
+        Some(unsafe { &mut *ptr })
+    }
+
+    /// Pan `strip` (the active strip for `None`) directly by `travel`
+    /// since the gesture `began`: a three-finger swipe, or a sideways
+    /// two-finger scroll the window under it handed back. Focus is
+    /// unchanged.
+    pub fn update_strip_pan_of(
+        &mut self,
+        strip: Option<StripId>,
+        travel: f64,
+        began: bool,
+    ) -> bool {
+        let Some(row) = self.strip_row_mut(strip) else {
             return false;
         };
-        let strip = {
-            let st = chrome.borrow();
-            st.tree()
-                .desktop
-                .active_strip
-                .get(&st.tree().desktop.active)
-                .copied()
+        if began {
+            row.begin_strip_pan();
+        }
+        let moved = row.update_strip_pan(travel);
+        if began {
+            self.strip_pan_active = true;
+        }
+        moved
+    }
+
+    /// Finish the direct pan of `strip` (the active strip for `None`).
+    pub fn end_strip_pan_of(&mut self, strip: Option<StripId>, now: Instant) -> bool {
+        self.strip_row_mut(strip)
+            .is_some_and(|row| row.end_strip_pan(now))
+    }
+
+    /// Step `steps` windows along `strip`, making it the active strip
+    /// first: a sideways wheel notch the window under the pointer handed
+    /// back, as Alt+Shift+wheel steps.
+    pub fn step_strip_of(&mut self, strip: Option<StripId>, steps: i32) -> bool {
+        if let Some(strip) = strip
+            && Some(strip) != self.active_strip_id()
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let mut chrome = chrome.borrow_mut();
+            {
+                let mut tree = chrome.tree_mut();
+                let workspace = tree.desktop.active;
+                tree.desktop.active_strip.insert(workspace, strip);
+            }
+            chrome.bump();
+        }
+        self.step_focus_along_strip(steps)
+    }
+
+    /// A finger scroll over the shell's own chrome (the tab row, the gaps
+    /// between windows, a tile the shell draws): one that starts out
+    /// sideways pans the active strip to its end, as three fingers do; any
+    /// other is left to the widget under the pointer. Returns whether the
+    /// strip took this event.
+    fn chrome_sideways_scroll(
+        &mut self,
+        (dx, dy): (f64, f64),
+        phase: winit::event::TouchPhase,
+        now: Instant,
+    ) -> bool {
+        use winit::event::TouchPhase;
+        let ends = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
+        let idle = self.chrome_sideways.as_ref().is_some_and(|scroll| {
+            now.saturating_duration_since(scroll.last) > SIDEWAYS_SCROLL_IDLE
+        });
+        if (phase == TouchPhase::Started || idle)
+            && let Some(previous) = self.chrome_sideways.take()
+            && previous.panning
+        {
+            self.end_active_strip_pan(now);
+        }
+        let scroll = match self.chrome_sideways.as_mut() {
+            Some(scroll) => scroll,
+            None if ends || (dx == 0.0 && dy == 0.0) => return false,
+            None => self.chrome_sideways.insert(ChromeSidewaysScroll {
+                sideways: dx.abs() > dy.abs(),
+                travel: 0.0,
+                panning: false,
+                last: now,
+            }),
         };
-        let Some(strip) = strip else { return false };
-        let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
+        scroll.last = now;
+        if !scroll.sideways {
+            if ends {
+                self.chrome_sideways = None;
+            }
             return false;
-        };
-        // SAFETY: same stable ownership contract as update above.
-        let row: &mut GroupRow = unsafe { &mut *ptr };
-        row.end_strip_pan(now)
+        }
+        // Winit's deltas are negative for fingers moving content toward its
+        // later columns, the way Super+Right goes.
+        scroll.travel -= dx;
+        let (travel, began) = (scroll.travel, !scroll.panning);
+        scroll.panning = true;
+        if ends {
+            self.chrome_sideways = None;
+            if !began {
+                self.end_active_strip_pan(now);
+            }
+        } else {
+            self.update_active_strip_pan(travel, began);
+        }
+        true
     }
 
     /// Moves focus one or more windows along the active strip — the single
@@ -17496,22 +17588,27 @@ impl ShellOverlayHost {
         }
         // Horizontal strip navigation is shell chrome, so it must run before
         // the active app can consume a generic wheel event. Vertical and
-        // diagonally vertical gestures still belong to app content.
-        if let WindowEvent::MouseWheel { delta, .. } = event {
-            let (dx, dy) = match *delta {
-                winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
-                winit::event::MouseScrollDelta::PixelDelta(p) => {
-                    (f32_of_f64(p.x) / 40.0, f32_of_f64(p.y) / 40.0)
+        // diagonally vertical gestures still belong to app content. Fingers
+        // pan the strip directly; a tilted wheel steps a window per notch.
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
+            match *delta {
+                winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
+                    // Winit's deltas are negative for a wheel turned
+                    // rightward, which scrolls content toward its later
+                    // columns: forward, as Super+Right.
+                    if dx.abs() > 0.5 && dx.abs() > dy.abs() {
+                        let dir = if dx < 0.0 { 1 } else { -1 };
+                        if self.step_focus_along_strip(dir) {
+                            *ctx.handled = true;
+                            return;
+                        }
+                    }
                 }
-            };
-            // Winit's deltas are negative for a wheel turned (or fingers
-            // scrolling) rightward, which scrolls content toward its later
-            // columns: forward, as Super+Right.
-            if dx.abs() > 0.5 && dx.abs() > dy.abs() {
-                let dir = if dx < 0.0 { 1 } else { -1 };
-                if self.step_focus_along_strip(dir) {
-                    *ctx.handled = true;
-                    return;
+                winit::event::MouseScrollDelta::PixelDelta(p) => {
+                    if self.chrome_sideways_scroll((p.x, p.y), *phase, Instant::now()) {
+                        *ctx.handled = true;
+                        return;
+                    }
                 }
             }
         }

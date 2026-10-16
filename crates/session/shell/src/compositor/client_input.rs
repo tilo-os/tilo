@@ -793,6 +793,23 @@ impl State {
         true
     }
 
+    /// End the scroll the pointer-focused client is receiving: the strip
+    /// took the rest of it (`scroll_handback`).
+    pub(crate) fn stop_client_pointer_axis(&mut self) {
+        if self.client_input.pointer_focus.is_none() {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let frame = AxisFrame::new(event_time(self))
+            .source(AxisSource::Finger)
+            .stop(Axis::Horizontal)
+            .stop(Axis::Vertical);
+        pointer.axis(self, frame);
+        pointer.frame(self);
+    }
+
     /// Forward one touchpad gesture to the focused client over
     /// `zwp_pointer_gestures_v1` — only gestures the shell did *not* claim reach here, since the finger-count split happens once, in [`crate::compositor::backend::drm::gestures`].
     pub fn forward_client_gesture(&mut self, gesture: BackendGestureEvent) {
@@ -1818,10 +1835,17 @@ fn route_mouse_wheel(
         }
         return true;
     }
-    if state.client_input.pointer_focus.is_some() {
-        state.forward_client_pointer_axis(delta, phase)
-    } else {
-        false
+    let Some(surface) = state.client_input.pointer_focus else {
+        return false;
+    };
+    // A sideways scroll the window hands back moves its strip instead
+    // (`scroll_handback`); the strip consumes it then.
+    let strip = state.client_input.placement(surface).map(|(strip, _)| strip);
+    match state.route_window_scroll(fb, surface, strip, delta, phase) {
+        crate::compositor::scroll_handback::Route::Strip => true,
+        crate::compositor::scroll_handback::Route::Window => {
+            state.forward_client_pointer_axis(delta, phase)
+        }
     }
 }
 

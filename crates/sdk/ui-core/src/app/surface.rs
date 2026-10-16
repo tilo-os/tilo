@@ -16,6 +16,9 @@ pub trait AppSurface {
     fn request_redraw(&self);
     /// Show `cursor` while the pointer is over the app.
     fn set_cursor(&self, cursor: CursorIcon);
+    /// Hand the sideways scroll in progress back to the compositor: nothing
+    /// in the app used it (see [`crate::gesture::SidewaysScroll`]).
+    fn horizontal_scroll_unused(&self) {}
     /// Whether the surface's host answers the desktop's tab chords (Ctrl+T,
     /// Ctrl+W, Ctrl+Shift+T) itself, so the app leaves them unhandled for it
     /// rather than asking the session's tab service.
@@ -36,6 +39,9 @@ impl AppSurface for winit::window::Window {
     }
     fn set_cursor(&self, cursor: CursorIcon) {
         winit::window::Window::set_cursor(self, cursor);
+    }
+    fn horizontal_scroll_unused(&self) {
+        let _ = tilo_presentation::scroll::horizontal_unused(self);
     }
 }
 
@@ -769,6 +775,36 @@ impl App {
         ) && app.input.tooltip_host.dismiss()
         {
             window.request_redraw();
+        }
+
+        // A sideways scroll nothing here used moves the compositor's strip.
+        if let WindowEvent::MouseWheel { delta, phase, .. } = &event {
+            let (dx, dy, precise) = match delta {
+                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
+                winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                    (f64::from(*x), f64::from(*y), false)
+                }
+            };
+            let phase = match phase {
+                winit::event::TouchPhase::Started => crate::gesture::GesturePhase::Begin,
+                winit::event::TouchPhase::Moved => crate::gesture::GesturePhase::Update,
+                winit::event::TouchPhase::Ended => crate::gesture::GesturePhase::End,
+                winit::event::TouchPhase::Cancelled => crate::gesture::GesturePhase::Cancel,
+            };
+            let root = &app.root_widget;
+            if app
+                .input
+                .sideways_scroll
+                .observe((dx, dy), phase, precise, handled, |direction| {
+                    let available = root.nav_availability();
+                    match direction {
+                        crate::gesture::NavDirection::Back => available.back,
+                        crate::gesture::NavDirection::Forward => available.forward,
+                    }
+                })
+            {
+                window.horizontal_scroll_unused();
+            }
         }
 
         if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
@@ -1556,6 +1592,11 @@ mod tests {
                     self.clicks.borrow_mut().push(self.pointer);
                     *ctx.handled = true;
                 }
+                // Its left half scrolls (a wide table, say); its right half
+                // has no use for a scroll.
+                WindowEvent::MouseWheel { .. } if self.pointer.x < self.rect.center().x => {
+                    *ctx.handled = true;
+                }
                 _ => {}
             }
         }
@@ -1610,6 +1651,8 @@ mod tests {
     struct Region {
         size: (u32, u32),
         redraw: Cell<bool>,
+        /// Sideways scrolls handed back to the compositor.
+        unused: Cell<u32>,
     }
 
     impl AppSurface for Region {
@@ -1623,6 +1666,9 @@ mod tests {
             self.redraw.set(true);
         }
         fn set_cursor(&self, _cursor: CursorIcon) {}
+        fn horizontal_scroll_unused(&self) {
+            self.unused.set(self.unused.get() + 1);
+        }
     }
 
     /// An app shown in a region of a host's scene lays out at the region's
@@ -1651,6 +1697,7 @@ mod tests {
         let region = Region {
             size: (320, 200),
             redraw: Cell::new(false),
+            unused: Cell::new(0),
         };
 
         let mut scene = Scene::new();
@@ -1693,6 +1740,7 @@ mod tests {
         let region = Region {
             size: (320, 200),
             redraw: Cell::new(false),
+            unused: Cell::new(0),
         };
         app.surface_frame(&region, &mut Scene::new());
         app.input.modifiers =
@@ -1743,6 +1791,7 @@ mod tests {
         let region = Region {
             size: (320, 200),
             redraw: Cell::new(false),
+            unused: Cell::new(0),
         };
         app.surface_frame(&region, &mut Scene::new());
         app.close_admission.show(
@@ -1793,6 +1842,7 @@ mod tests {
         let region = Region {
             size: (320, 200),
             redraw: Cell::new(false),
+            unused: Cell::new(0),
         };
         app.surface_frame(&region, &mut Scene::new());
         let snapshot = |text: &str| {
@@ -2015,5 +2065,49 @@ mod tests {
         embedded.set_focus(false);
         embedded.set_focus(true);
         assert!(embedded.app().focused_control().is_some());
+    }
+
+    /// A sideways scroll the app uses stays the app's; one nothing in it
+    /// uses goes back to the compositor once, which moves its window strip.
+    #[test]
+    fn a_sideways_scroll_nothing_uses_is_handed_back_once() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+            unused: Cell::new(0),
+        };
+        let _ = app.surface_frame(&region, &mut Scene::new());
+        let device = winit::event::DeviceId::dummy();
+        let mut scroll = |app: &mut App, x: f64, phase: winit::event::TouchPhase| {
+            app.surface_input(
+                &region,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: winit::dpi::PhysicalPosition::new(x, 100.0),
+                },
+                false,
+            );
+            app.surface_input(
+                &region,
+                WindowEvent::MouseWheel {
+                    device_id: device,
+                    delta: winit::event::MouseScrollDelta::PixelDelta(
+                        winit::dpi::PhysicalPosition::new(-14.0, 1.0),
+                    ),
+                    phase,
+                },
+                false,
+            );
+        };
+        use winit::event::TouchPhase::{Ended, Moved, Started};
+        for phase in [Started, Moved, Moved, Ended] {
+            scroll(&mut app, 60.0, phase);
+        }
+        assert_eq!(region.unused.get(), 0, "the half that scrolls keeps it");
+        for phase in [Started, Moved, Moved, Ended] {
+            scroll(&mut app, 260.0, phase);
+        }
+        assert_eq!(region.unused.get(), 1, "the other half hands it back once");
     }
 }

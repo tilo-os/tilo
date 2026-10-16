@@ -130,6 +130,11 @@ pub trait WindowExtWayland {
     /// Resolve the exact original request after its actual renderer result.
     /// Outcome is accepted (0), known rejection (1), or unknown delivery (2).
     fn acknowledge_private_text_input(&self, serial: u32, outcome: u32);
+    /// Tell Tilo's compositor that the sideways scroll this window is
+    /// receiving moved nothing in it, so the compositor can move its window
+    /// strip with the rest. Send it once per scroll, from the first event
+    /// nothing used. Returns false when the compositor does not ask (or on X11).
+    fn horizontal_scroll_unused(&self) -> bool;
 
     /// Observe the next committed buffer with the standard presentation protocol.
     /// Holds the native window state lock across the request and `present` so an
@@ -184,6 +189,14 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => false,
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.private_text_input(snapshot),
+        }
+    }
+    fn horizontal_scroll_unused(&self) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.horizontal_scroll_unused(),
         }
     }
     fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
@@ -311,3 +324,7 @@ impl MonitorHandleExtWayland for MonitorHandle {
 #[doc(hidden)]
 #[cfg(wayland_platform)]
 pub use crate::platform_impl::wayland::private_text_input_protocol;
+
+#[doc(hidden)]
+#[cfg(wayland_platform)]
+pub use crate::platform_impl::wayland::scroll_protocol;

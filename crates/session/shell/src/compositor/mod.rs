@@ -93,6 +93,7 @@ pub mod present;
 pub mod presentation;
 #[cfg(target_os = "linux")]
 pub mod private_text_input;
+pub mod scroll_handback;
 pub mod projection_capture;
 pub mod published_room;
 #[cfg(target_os = "linux")]

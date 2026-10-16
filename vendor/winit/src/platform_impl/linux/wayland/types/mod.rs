@@ -7,4 +7,5 @@ pub mod wp_presentation;
 pub mod wp_viewporter;
 pub mod xdg_activation;
 
+pub mod tilo_scroll;
 pub mod tilo_text_input;

@@ -219,6 +219,8 @@ mod shell_chrome_test;
 mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "sideways_scroll.rs"]
+mod sideways_scroll;
 #[path = "shm_readback.rs"]
 mod shm_readback;
 #[path = "sidebar_wheel_disc_snapshot.rs"]

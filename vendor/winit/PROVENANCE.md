@@ -11,7 +11,7 @@
 
 Local changes: synthetic key events, Wayland drag sources, pointer gestures,
 pen tablets, presentation-time frame announcements, focused keyboard layout
-snapshots and the `tilo_text_input_v1` acknowledgement on Wayland, a macOS
+snapshots, the `tilo_text_input_v1` acknowledgement and `tilo_scroll_v1` on Wayland, a macOS
 quit request, web animation-frame and resize fixes. Example images are stored
 as `.hex` text and decoded by `build.rs` (`fixture_build.rs`); the manifest
 carries the `tilo-winit` publication identity and a cargo-machete note; the

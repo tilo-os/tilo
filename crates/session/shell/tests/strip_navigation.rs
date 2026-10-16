@@ -4,8 +4,9 @@
 //! "where am I looking" (`GroupRow::scroll_x`) is real state several
 //! unrelated interactions can move. A bare wheel does *not* move the view
 //! (see `desktop_env_interactions::focus_scrolls_groups_into_view_but_the_wheel_does_not_pan`) —
-//! the view travels through focus changes, so a sideways scroll here steps
-//! focus rather than free-panning the canvas.
+//! the view travels through focus changes, so a sideways wheel notch here
+//! steps focus rather than free-panning the canvas. (Sideways two-finger
+//! scrolling pans it directly, as three fingers do: `sideways_scroll`.)
 //!
 //! The harness builds a `ShellOverlayHost`/`WorkspaceTree`, runs a layout
 //! pass, and drives `WindowEvent`s.

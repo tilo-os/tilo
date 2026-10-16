@@ -13955,6 +13955,10 @@ pub fn run() {
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
         client_steps.mark("dispatch");
+        // Sideways scrolls a window just handed back move its strip now.
+        if state.take_handed_back_scrolls(&mut frame_builder) {
+            injected_redraw_pending = true;
+        }
         let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         if capture_ready {
             injected_redraw_pending = true;

@@ -85,6 +85,9 @@ impl Window {
             .unwrap()
             .private_text_input(snapshot)
     }
+    pub fn horizontal_scroll_unused(&self) -> bool {
+        self.window_state.lock().unwrap().horizontal_scroll_unused()
+    }
     pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
         self.window_state
             .lock()

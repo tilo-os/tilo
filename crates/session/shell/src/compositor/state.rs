@@ -1252,6 +1252,8 @@ pub struct State {
     /// field from an ordinary one.
     pub(crate) text_fields: crate::compositor::text_commit::TextFields,
     pub(crate) private_text_input: crate::compositor::private_text_input::PrivateTextInput,
+    /// Sideways scrolls windows hand back, which move their strip.
+    pub(crate) scroll_handback: crate::compositor::scroll_handback::ScrollHandback,
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
@@ -1994,6 +1996,7 @@ impl State {
         // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
         crate::compositor::private_text_input::PrivateTextInput::register(&display_handle);
+        crate::compositor::scroll_handback::ScrollHandback::register(&display_handle);
         let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, {
@@ -2136,6 +2139,7 @@ impl State {
             trusted_input_method_clients: Vec::new(),
             text_fields: crate::compositor::text_commit::TextFields::default(),
             private_text_input: crate::compositor::private_text_input::PrivateTextInput::default(),
+            scroll_handback: crate::compositor::scroll_handback::ScrollHandback::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,

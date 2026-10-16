@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="tilo_scroll_v1">
+  <copyright>Copyright 2026 Tilo contributors. SPDX-License-Identifier: Apache-2.0</copyright>
+  <interface name="tilo_scroll_manager_v1" version="1">
+    <description summary="horizontal scrolling a surface has no use for">
+      Tilo lays windows side by side in a strip. A sideways two-finger swipe
+      or a tilted wheel over a window that has no use for horizontal
+      scrolling moves that strip instead. The compositor cannot see what a
+      client does with a scroll, so a client binding this global tells it:
+      the scroll still reaches the client first, and the client hands back
+      the ones nothing in it used. A surface without a tilo_scroll_surface_v1
+      keeps every horizontal scroll.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="get_scroll_surface">
+      <arg name="id" type="new_id" interface="tilo_scroll_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+  <interface name="tilo_scroll_surface_v1" version="1">
+    <request name="destroy" type="destructor"/>
+    <request name="horizontal_unused">
+      <description summary="hand the sideways scroll in progress back">
+        The horizontal scroll this surface is receiving moved nothing in it:
+        the first event of a finger or continuous scroll that is mostly
+        sideways, or a sideways wheel notch, was not used. The compositor may
+        take the rest of a finger scroll, ending it on this surface with
+        wl_pointer.axis_stop, and use the whole of it itself; a notch it uses
+        as is. Sent at most once per scroll. Ignored when no such scroll is
+        in progress over the surface.
+      </description>
+    </request>
+  </interface>
+</protocol>

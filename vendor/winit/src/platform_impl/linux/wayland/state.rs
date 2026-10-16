@@ -50,6 +50,8 @@ pub struct WinitState {
 
     pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
     pub private_text_input: Option<super::types::tilo_text_input::PrivateTextInputManager>,
+    /// Hands horizontal scrolling a window has no use for back to Tilo's compositor.
+    pub scroll_manager: Option<super::types::tilo_scroll::ScrollManager>,
 
     /// The state of the subcompositor.
     pub subcompositor_state: Option<Arc<SubcompositorState>>,
@@ -222,6 +224,8 @@ impl WinitState {
                 queue_handle,
             )
             .ok(),
+            scroll_manager: super::types::tilo_scroll::ScrollManager::bind(globals, queue_handle)
+                .ok(),
 
             seats,
             text_input_state: TextInputState::new(globals, queue_handle).ok(),

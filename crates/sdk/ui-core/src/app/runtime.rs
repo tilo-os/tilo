@@ -98,6 +98,8 @@ pub(super) struct InputRuntime {
     pub(super) interaction: crate::interaction::InteractionEnvironment,
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
+    /// Sideways scrolls nothing in the app used, handed back to the compositor.
+    pub(super) sideways_scroll: crate::gesture::SidewaysScroll,
     pub(super) current_cursor: CursorIcon,
     pub(super) tooltip_host: crate::widget::TooltipHost,
     /// Pen samples on their way to the pointer events they describe.
@@ -120,6 +122,7 @@ impl InputRuntime {
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            sideways_scroll: crate::gesture::SidewaysScroll::default(),
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),

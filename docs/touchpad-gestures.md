@@ -25,6 +25,28 @@ A gesture is never delivered to both. Turning off **Touchpad gestures** in Setti
 every gesture to the client. Swipe direction follows the touchpad's natural-scrolling
 setting.
 
+## Two-finger sideways scrolling
+
+Two-finger scrolling is no gesture to libinput but a scroll, and it goes to the window under
+the pointer first. A sideways one moves the strip when that window has no use for it
+(`crates/session/shell/src/compositor/scroll_handback.rs`):
+
+- An app built on Tilo's toolkit hands back, over the private `tilo_scroll_v1` protocol
+  (`vendor/winit/src/platform_impl/linux/wayland/types/tilo_scroll.xml`), the first event of a
+  mostly sideways scroll that nothing in it used and that would not navigate it back or
+  forward (`ui::gesture::SidewaysScroll`). The compositor ends the scroll on the window with
+  `wl_pointer.axis_stop` and pans the strip with all of it, as three fingers do. A table, map
+  or editor that scrolls sideways keeps it.
+- A sideways wheel notch (a tilting wheel) the app hands back steps along the strip a window,
+  as Alt+Shift+wheel does.
+- Any other Wayland client keeps every horizontal scroll: nothing on the wire says whether it
+  used one, and browsers, spreadsheets and editors do. Three fingers pan the strip over it.
+- Over the shell's own chrome (the tab row, the gaps between windows), a sideways scroll pans
+  the strip directly.
+
+A scroll keeps the owner its first event chose until the fingers lift, so the window and the
+strip never move together.
+
 ## Pinch-to-zoom in apps
 
 The compositor advertises `zwp_pointer_gestures_v1`, and Tilo's vendored winit

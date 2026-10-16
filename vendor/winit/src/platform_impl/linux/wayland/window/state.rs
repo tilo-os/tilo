@@ -104,6 +104,7 @@ pub struct WindowState {
     compositor: Arc<CompositorState>,
     presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
     private_text_input: Option<super::super::types::tilo_text_input::PrivateTextField>,
+    scroll_surface: Option<super::super::types::tilo_scroll::ScrollSurface>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -173,6 +174,15 @@ impl WindowState {
         field.update(snapshot);
         true
     }
+    /// Hand the sideways scroll in progress back to the compositor.
+    /// Returns false when the compositor does not ask for it.
+    pub fn horizontal_scroll_unused(&self) -> bool {
+        let Some(surface) = &self.scroll_surface else {
+            return false;
+        };
+        surface.horizontal_unused();
+        true
+    }
     pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
         if let Some(field) = &self.private_text_input {
             field.acknowledge(serial, outcome);
@@ -207,6 +217,10 @@ impl WindowState {
                 .private_text_input
                 .as_ref()
                 .map(|manager| manager.field(window.wl_surface(), queue_handle)),
+            scroll_surface: winit_state
+                .scroll_manager
+                .as_ref()
+                .map(|manager| manager.surface(window.wl_surface(), queue_handle)),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),

@@ -124,6 +124,12 @@ ownership. The SDK enables deferred browser fields only during an admitted voice
 session and consumes the original renderer's guarded receipt before acknowledging
 an edit. `vendor/winit/TILO-FORK.md` records the additional event variant and API.
 
+It also binds `tilo_scroll_manager_v1` (`types/tilo_scroll.xml`) and gives each
+window a `tilo_scroll_surface_v1`, whose one request,
+`WindowExtWayland::horizontal_scroll_unused`, tells Tilo's compositor that the
+sideways scroll the window is receiving moved nothing in it, so the compositor
+pans its strip of windows with it. It carries no coordinates or content.
+
 The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a

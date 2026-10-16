@@ -591,6 +591,75 @@ impl DragSelect {
     }
 }
 
+/// The way a sideways scroll of `dx` (winit's sign) navigates, by the same
+/// convention as [`NavGestureRecognizer::on_scroll`].
+#[must_use]
+pub fn swipe_direction(dx: f64) -> NavDirection {
+    if (dx > 0.0) == POSITIVE_DX_IS_BACK {
+        NavDirection::Back
+    } else {
+        NavDirection::Forward
+    }
+}
+
+/// Which sideways scrolls an app hands back to its compositor.
+///
+/// Under Tilo the compositor moves its strip of windows with a sideways
+/// two-finger swipe or a tilted wheel that the window under the pointer has
+/// no use for, and only the app can tell whether it had one. A scroll is the
+/// app's when anything in it used its first event (a widget scrolled or a
+/// control took it), or when it is a swipe that would navigate back or
+/// forward and the app can go that way. Otherwise the app hands it back,
+/// once: the first event of a finger or continuous scroll that is mostly
+/// sideways, and each sideways wheel notch. A scroll that starts out mostly
+/// vertical stays the app's to the end.
+#[derive(Debug, Default)]
+pub struct SidewaysScroll {
+    /// A finger scroll is in progress and its owner is settled.
+    decided: bool,
+    /// When the last finger-scroll event arrived; a pause longer than
+    /// [`SWIPE_IDLE_RESET_MS`] starts a new scroll even without phases.
+    last: Option<Instant>,
+}
+
+impl SidewaysScroll {
+    /// Observe one scroll event the app has dispatched: `dx`, `dy` in
+    /// winit's sign, `precise` for a finger or continuous source, `used`
+    /// whether anything in the app handled it, and `can_navigate` whether
+    /// the app would go back or forward. Returns whether to hand the scroll
+    /// back now.
+    pub fn observe(
+        &mut self,
+        (dx, dy): (f64, f64),
+        phase: GesturePhase,
+        precise: bool,
+        used: bool,
+        can_navigate: impl FnOnce(NavDirection) -> bool,
+    ) -> bool {
+        let sideways = dx.abs() > dy.abs();
+        if !precise {
+            return sideways && !used;
+        }
+        let now = crate::time::now();
+        let idle = self
+            .last
+            .is_none_or(|at| now.duration_since(at).as_millis() > SWIPE_IDLE_RESET_MS);
+        self.last = Some(now);
+        if phase == GesturePhase::Begin || idle {
+            self.decided = false;
+        }
+        if matches!(phase, GesturePhase::End | GesturePhase::Cancel) {
+            self.decided = false;
+            return false;
+        }
+        if self.decided || (dx == 0.0 && dy == 0.0) {
+            return false;
+        }
+        self.decided = true;
+        sideways && !used && !can_navigate(swipe_direction(dx))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,5 +927,38 @@ mod tests {
             None,
             "must not re-fire"
         );
+    }
+
+    #[test]
+    fn sideways_scrolls_an_app_has_no_use_for_are_handed_back_once() {
+        let never = |_| false;
+        // An app that scrolls sideways keeps the swipe.
+        let mut scroll = SidewaysScroll::default();
+        assert!(!scroll.observe((-12.0, 1.0), GesturePhase::Begin, true, true, never));
+        assert!(!scroll.observe((-12.0, 1.0), GesturePhase::Update, true, false, never));
+        // One that does not hands it back on its first event, and only then.
+        let mut scroll = SidewaysScroll::default();
+        assert!(scroll.observe((-12.0, 1.0), GesturePhase::Begin, true, false, never));
+        assert!(!scroll.observe((-12.0, 1.0), GesturePhase::Update, true, false, never));
+        assert!(!scroll.observe((0.0, 0.0), GesturePhase::End, true, false, never));
+        // The next swipe is a new scroll.
+        assert!(scroll.observe((9.0, 0.0), GesturePhase::Begin, true, false, never));
+        // A swipe the app would navigate with is the app's.
+        let mut scroll = SidewaysScroll::default();
+        assert!(
+            !scroll.observe((9.0, 0.0), GesturePhase::Begin, true, false, |dir| {
+                dir == swipe_direction(9.0)
+            })
+        );
+        // A scroll that starts out vertical stays the app's.
+        let mut scroll = SidewaysScroll::default();
+        assert!(!scroll.observe((0.0, -8.0), GesturePhase::Begin, true, false, never));
+        assert!(!scroll.observe((-20.0, 0.0), GesturePhase::Update, true, false, never));
+        // Every unused sideways wheel notch goes back; a used one does not.
+        let mut scroll = SidewaysScroll::default();
+        assert!(scroll.observe((-1.0, 0.0), GesturePhase::Update, false, false, never));
+        assert!(scroll.observe((-1.0, 0.0), GesturePhase::Update, false, false, never));
+        assert!(!scroll.observe((-1.0, 0.0), GesturePhase::Update, false, true, never));
+        assert!(!scroll.observe((0.0, -1.0), GesturePhase::Update, false, false, never));
     }
 }

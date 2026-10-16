@@ -172,6 +172,9 @@ pub enum DrmBackendError {
 #[derive(Default)]
 pub struct DrmDispatchState {
     pub session: Option<SessionState>,
+    /// A finger or continuous scroll is in progress: its first event was
+    /// reported `Started`, and the all-zero event that ends it `Ended`.
+    scrolling: bool,
     pub outputs: OutputRegistry,
     pub events: Vec<BackendEvent>,
     /// Every KMS card this seat can use, held open on the loop thread for
@@ -3444,10 +3447,11 @@ impl DrmDispatchState {
                 // makes kinetic scrolling look laggy; only a wheel has a
                 // discrete line interpretation. Zero-valued finger events
                 // are retained as the terminating scroll frame.
+                let phase = scroll_phase(&mut self.scrolling, event.source(), (dx, dy));
                 self.push(BackendEvent::Input(mouse_wheel_event(
                     event.source(),
-                    dx,
-                    dy,
+                    (dx, dy),
+                    phase,
                 )));
             }
             _ => {}
@@ -5133,7 +5137,7 @@ fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
 /// positive axis direction is down/right while winit's positive direction is
 /// up/left. Preserve the source: a wheel amount is in degrees (~15/click),
 /// while finger and continuous amounts are pixels.
-fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
+fn mouse_wheel_event(source: AxisSource, (dx, dy): (f64, f64), phase: TouchPhase) -> WindowEvent {
     let delta = match source {
         AxisSource::Wheel | AxisSource::WheelTilt => {
             // Scroll deltas in wheel "lines," not device pixels — f32
@@ -5151,7 +5155,29 @@ fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
     WindowEvent::MouseWheel {
         device_id: winit::event::DeviceId::dummy(),
         delta,
-        phase: TouchPhase::Moved,
+        phase,
+    }
+}
+
+/// The phase of one scroll event. A wheel's notches are each complete. A
+/// finger or continuous scroll starts with its first event and ends with
+/// the event libinput sends when the fingers lift, whose amounts are all
+/// zero: a toolkit takes that end for a fling's release, and the shell for
+/// the end of a strip pan.
+fn scroll_phase(scrolling: &mut bool, source: AxisSource, (dx, dy): (f64, f64)) -> TouchPhase {
+    if matches!(source, AxisSource::Wheel | AxisSource::WheelTilt) {
+        return TouchPhase::Moved;
+    }
+    if dx == 0.0 && dy == 0.0 {
+        if std::mem::take(scrolling) {
+            TouchPhase::Ended
+        } else {
+            TouchPhase::Moved
+        }
+    } else if std::mem::replace(scrolling, true) {
+        TouchPhase::Moved
+    } else {
+        TouchPhase::Started
     }
 }
 
@@ -8442,7 +8468,7 @@ mod tests {
         // Phase `touchpad_scroll_keeps_pixel_precision_and_sign`.
         {
             let WindowEvent::MouseWheel { delta, .. } =
-                mouse_wheel_event(AxisSource::Finger, 1.25, -2.5)
+                mouse_wheel_event(AxisSource::Finger, (1.25, -2.5), TouchPhase::Moved)
             else {
                 panic!("expected a mouse-wheel event")
             };
@@ -8454,11 +8480,33 @@ mod tests {
         // Phase `wheel_scroll_uses_line_units_without_losing_high_resolution_steps`.
         {
             let WindowEvent::MouseWheel { delta, .. } =
-                mouse_wheel_event(AxisSource::Wheel, 7.5, -30.0)
+                mouse_wheel_event(AxisSource::Wheel, (7.5, -30.0), TouchPhase::Moved)
             else {
                 panic!("expected a mouse-wheel event")
             };
             assert_eq!(delta, MouseScrollDelta::LineDelta(-0.5, 2.0));
+        }
+        // Phase `a_finger_scroll_starts_and_ends_once`.
+        {
+            let mut scrolling = false;
+            let phases: Vec<TouchPhase> = [(0.0, 3.0), (1.0, 4.0), (0.0, 0.0), (0.0, 0.0)]
+                .into_iter()
+                .map(|amount| scroll_phase(&mut scrolling, AxisSource::Finger, amount))
+                .collect();
+            assert_eq!(
+                phases,
+                [
+                    TouchPhase::Started,
+                    TouchPhase::Moved,
+                    TouchPhase::Ended,
+                    TouchPhase::Moved
+                ]
+            );
+            assert_eq!(
+                scroll_phase(&mut scrolling, AxisSource::Wheel, (0.0, 15.0)),
+                TouchPhase::Moved,
+                "a notch is complete in itself"
+            );
         }
         // Phase `a_touchpad_plan_turns_tapping_on_by_default`.
         {
