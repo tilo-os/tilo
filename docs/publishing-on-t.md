@@ -278,6 +278,7 @@ Deleted:
 | `build-ci-fast-images.yml` | `image-ci-fast`, `image-ci-control`, `image-ci-fast-smoke`, `publish-ci-fast`, `publish-ci-control` | `publish-ci-fast` and `publish-ci-control` on main ad95cf21a4, after the smoke test |
 | `room-service-image.yml` | `image-room-service-context`, `image-room-service` (its smoke test on the archive), `sign-room-service`, `publish-room-service` | the image and its test r3d39f0a8e5; `publish-room-service` on main a38941e29a; the release chain on rehearsal tags |
 | `web-entry.yml` | `image-web-entry-context`, `image-web-entry` (smoke test on the archive), `carry-web-entry` (stable: carries the version production serves), `sign-web-entry`, `publish-web-entry` | `publish-web-entry` on main ad95cf21a4; context, image and carry re77dfb7adf; the release chain on rehearsal tags |
+| `build-windows-compat.yml` | the windows-compat chain (`image-wine-tools`, `wine-*`, `image-wine-paired`, `image-windows-guest`, `image-fex-*`, `sign-fex-payload`, `publish-*`) | dispatches on main: r766c31687a (FEX payload, signed with the development key), r5b5e69f29c (windows guest); both pointers set |
 
 Still here, with what is missing:
 
@@ -292,7 +293,6 @@ Still here, with what is missing:
 | `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `publish-legacy-guest`, `pin-legacy-guest` | image and end-to-end test (r8673ba882c); the pin on main | a stable run |
 | `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries and catalogs on both architectures (r8673ba882c) | publication: the tools are sealed inside the build, so publishing re-signs them with the publisher identity and rewrites the catalog |
 | `ci-development-signing.yml` | `development-signing-context-*`, `development-signing-*` | both architectures (r8673ba882c) | nothing; it goes next |
-| `build-windows-compat.yml` | | | its scripts drive Docker: they move to buildah in micro-VM steps |
 | `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
 | `inspect-rpm-signing.yml` | none | | inspects the signing broker on the Forgejo runner; retires with `release-desktop.yml` |
 
@@ -319,7 +319,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | `build-legacy-guest.yml` | push main (paths), PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64, root podman, loop devices, KVM | `tilo/legacy-guest` signed, pin pull request | `privileged = true` on `disk-100g` nodes for the disk image and its boot test |
 | `build-env-runtime.yml` | every 4 hours, push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN`, `TAPP_PUBLISHER_IDENTITY` (raw Ed25519 identity) | x86_64 and arm64, Docker daemon | `tilo/env-runtime:set-<fp>`, sealed with the tapp publisher identity, signed | the schedule disappears: the check is cached by inputs, so it publishes once per fingerprint; sealing is a signing check holding the publisher identity |
 | `build-env-tools.yml` | every 6 hours, push main (paths), dispatch | as env-runtime | privileged container, loop-mounted ext4 | `tilo/env-tools:<runtime>-<catalog>` signed | `privileged = true` build, sign, publish |
-| `build-windows-compat.yml` | dispatch | Cosign via OIDC, `GITHUB_TOKEN` | Docker daemon, `disk-100g` Windows guest, arm64 FEX | `wine-tools`, `wine-paired`, `tilo-fex-*-candidate`, signed FEX payload | dispatch checks; consumers take the candidate from its receipt |
+| ~~`build-windows-compat.yml`~~ | dispatch | Cosign via OIDC, `GITHUB_TOKEN` | Docker daemon, `disk-100g` Windows guest, arm64 FEX | `wine-tools`, `wine-paired`, `tilo-fex-*-candidate`, signed FEX payload | moved to t (above) |
 
 ### The OS
 
