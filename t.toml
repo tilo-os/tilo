@@ -348,6 +348,23 @@ env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/check-wasm.sh"]
 cost = "minutes"
 
+# The production credential vault in real browser storage, not a mocked store.
+# The default builder supplies wasm32, the pinned wasm-bindgen CLI and Node;
+# Chromium uses software rendering and needs no GPU, FUSE or KVM device.
+[[check]]
+name = "accounts-web-storage"
+requires = ["arch=x86_64"]
+run = """
+cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings -A clippy::future_not_send -A clippy::arc_with_non_send_sync -A clippy::drop_non_drop
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" > "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+node crates/system/accounts/web/run.mjs --no-sandbox
+"""
+env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
+inputs = ["crates/system/accounts/**", "crates/system/secret-vault/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source/**", "crates/system/tilo-seal/**", "crates/platform/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/ensure-browser-dependencies.sh", "os/Containerfile.builder"]
+cost = "minutes"
+
 # Every web-capable example, built for the web. The build runs `npm ci` in
 # scripts/moq-browser, so it writes into its own copy of the sources.
 [[check]]

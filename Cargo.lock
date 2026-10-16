@@ -150,6 +150,8 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "workspace-hack",
  "zeroize",
 ]

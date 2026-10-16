@@ -98,6 +98,8 @@ pub struct SecretVault {
     entries: BTreeMap<String, Secret>,
     // Explicit edits merge into the latest inventory while the write lock is held.
     pending: std::sync::Mutex<PendingEdits>,
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    page_in_flight: std::sync::Mutex<Option<PendingEdits>>,
     custody: SecretCustody,
     load_error: Option<String>,
 }
@@ -129,6 +131,8 @@ impl SecretVault {
                     page: None,
                     entries: BTreeMap::new(),
                     pending: std::sync::Mutex::default(),
+                    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                    page_in_flight: std::sync::Mutex::default(),
                     custody: explicit_root_custody(),
                     load_error: Some(format!("user config directory unavailable: {error}")),
                 },
@@ -144,7 +148,11 @@ impl SecretVault {
         Self::open_at(dir, custody)
     }
 
-    fn open_page(page: tilo_files::Dir) -> Self {
+    /// Open the encrypted vault in a supplied profile-bound config directory.
+    /// Browser hosts must load that directory's file mirror and secret custody
+    /// before opening. The Dir capability, not an app-chosen user label, selects
+    /// the inventory; native key custody is unaffected.
+    pub fn open_page(page: tilo_files::Dir) -> Self {
         let (entries, load_error) = match load_page_entries(&page) {
             Ok(entries) => (entries, None),
             Err(error) => {
@@ -157,6 +165,8 @@ impl SecretVault {
             page: Some(page),
             entries,
             pending: std::sync::Mutex::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            page_in_flight: std::sync::Mutex::default(),
             custody: SecretCustody::System,
             load_error,
         }
@@ -171,6 +181,8 @@ impl SecretVault {
                 page: None,
                 entries: BTreeMap::new(),
                 pending: std::sync::Mutex::default(),
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                page_in_flight: std::sync::Mutex::default(),
                 custody,
                 load_error: Some(
                     "protected credential storage unavailable; restore the system keyring or explicitly open a recovery store".into(),
@@ -193,6 +205,8 @@ impl SecretVault {
             page: None,
             entries,
             pending: std::sync::Mutex::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            page_in_flight: std::sync::Mutex::default(),
             custody,
             load_error,
         }
@@ -315,25 +329,15 @@ impl SecretVault {
 impl SecretVault {
     fn merge_pending(
         &self,
-        mut entries: BTreeMap<String, Secret>,
+        entries: BTreeMap<String, Secret>,
     ) -> Result<BTreeMap<String, Secret>, String> {
-        for (id, (original, replacement)) in self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-        {
-            let current = entries.get(id);
-            if current != original.as_ref() && current != replacement.as_ref() {
-                return Err("credential changed concurrently; reopen and retry".into());
-            }
-            if let Some(secret) = replacement {
-                entries.insert(id.clone(), secret.clone());
-            } else {
-                entries.remove(id);
-            }
-        }
-        Ok(entries)
+        merge_edits(
+            entries,
+            &self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -345,37 +349,75 @@ impl SecretVault {
         if pending.is_empty() {
             return Ok(());
         }
-        // Seed migration with the original inventory, not the locally edited
-        // view. The browser reloads the durable inventory under its Web Lock
-        // and compares each edited entry before replacing anything.
-        let mut baseline = self.entries.clone();
-        for (id, (original, _)) in pending.iter() {
-            if let Some(secret) = original {
-                baseline.insert(id.clone(), secret.clone());
-            } else {
-                baseline.remove(id);
+        let mut in_flight = self
+            .page_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let submitted = in_flight.get_or_insert_with(|| pending.clone()).clone();
+        // Identify the requested result, not the freshly loaded baseline. A
+        // synchronous facade may reopen its vault on each retry, after the
+        // committed file has already refreshed the mirror.
+        let replacements: BTreeMap<_, _> = submitted
+            .iter()
+            .map(|(id, (_, replacement))| (id, replacement))
+            .collect();
+        let operation = Zeroizing::new(
+            serde_json::to_string(&replacements)
+                .map_err(|_| "could not encode credential edits")?,
+        );
+        let edits = submitted.clone();
+        let page = self.page.as_ref().ok_or("page vault unavailable")?;
+        let committed = tilo_files::web::update_atomic_blocking(
+            page,
+            &page_vault(),
+            &operation,
+            move |blob| async move {
+                let key = FORMAT
+                    .load_or_create_page_key(blob.is_some())
+                    .await
+                    .map_err(tilo_files::FsError::Io)?;
+                let entries = decode_page_entries(blob.as_deref(), &key)
+                    .and_then(|entries| merge_edits(entries, &edits))
+                    .map_err(tilo_files::FsError::Io)?;
+                let plaintext = Zeroizing::new(
+                    serde_json::to_vec(&entries)
+                        .map_err(|error| tilo_files::FsError::Io(error.to_string()))?,
+                );
+                seal(&key, &plaintext).ok_or_else(|| {
+                    tilo_files::FsError::Io("credential vault encryption failed".into())
+                })
+            },
+        );
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(error) => {
+                // Keep the immutable snapshot for retry: an I/O failure may
+                // follow a visible replacement. Reestablish its durable result
+                // before rebasing any edits made while it was in flight.
+                return Err(format!("credential storage failed: {error}"));
             }
-        }
-        let baseline = Zeroizing::new(
-            serde_json::to_string(&baseline)
-                .map_err(|_| "could not encode credential inventory")?,
-        );
-        let changes = Zeroizing::new(
-            serde_json::to_string(&*pending).map_err(|_| "could not encode credential edits")?,
-        );
-        let committed = tilo_secrets::web::merge_json_blocking(
-            "tilo.accounts",
-            "vault.entries",
-            &baseline,
-            &changes,
-        )
-        .map_err(|_| "credential storage failed; reopen and retry")?;
+        };
         if !committed {
             return Err("credential save pending; retry after browser storage completes".into());
         }
-        pending.clear();
-        drop(pending);
-        Ok(())
+        *in_flight = None;
+        drop(in_flight);
+        for (id, (_, saved)) in submitted {
+            if let Some((original, replacement)) = pending.get_mut(&id) {
+                if replacement == &saved {
+                    pending.remove(&id);
+                } else {
+                    // The user edited again while this snapshot was committing.
+                    // Retain the newer edit, based on the acknowledged value.
+                    *original = saved;
+                }
+            }
+        }
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err("credential save pending; retry remaining edits".into())
+        }
     }
 }
 
@@ -387,13 +429,14 @@ fn page_vault() -> tilo_files::VPath {
 fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
+        // An unreleased browser implementation stored an origin-wide inventory.
+        // It has no profile provenance: never import it into the current user.
+        // Retain it for explicit recovery, without making it authoritative.
         let store = tilo_secrets::SecretStore::for_app("tilo.accounts");
-        if let Some(secret) = store
-            .get_blocking("vault.entries")
-            .map_err(|_| "credential inventory unavailable")?
-        {
-            return serde_json::from_slice(secret.expose())
-                .map_err(|_| "credential inventory is invalid".into());
+        if matches!(store.get_blocking("vault.entries"), Ok(Some(_))) {
+            tracing::warn!(
+                "unassigned origin-wide account inventory retained in tilo-secrets tilo.accounts/vault.entries; recover explicitly into the verified owner's profile"
+            );
         }
     }
     let blob = match tilo_files::blocking::read(page, &page_vault()) {
@@ -404,10 +447,38 @@ fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>,
     let key = FORMAT
         .load_or_create_system_key(true)
         .ok_or_else(|| "credential vault key unavailable".to_string())?;
+    decode_page_entries(Some(&blob), &key)
+}
+
+fn decode_page_entries(
+    blob: Option<&[u8]>,
+    key: &VaultKey,
+) -> Result<BTreeMap<String, Secret>, String> {
+    let Some(blob) = blob else {
+        return Ok(BTreeMap::new());
+    };
     let plaintext =
-        open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
+        open(key, blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
     serde_json::from_slice(&plaintext)
         .map_err(|_| "decrypted credential vault is invalid".to_string())
+}
+
+fn merge_edits(
+    mut entries: BTreeMap<String, Secret>,
+    edits: &PendingEdits,
+) -> Result<BTreeMap<String, Secret>, String> {
+    for (id, (original, replacement)) in edits {
+        let current = entries.get(id);
+        if current != original.as_ref() && current != replacement.as_ref() {
+            return Err("credential changed concurrently; reopen and retry".into());
+        }
+        if let Some(secret) = replacement {
+            entries.insert(id.clone(), secret.clone());
+        } else {
+            entries.remove(id);
+        }
+    }
+    Ok(entries)
 }
 
 /// Read and authenticate existing entries, distinguishing absence from damage.
