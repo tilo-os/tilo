@@ -123,6 +123,8 @@ gates = ["image-ci-fast-smoke"]
 containerfile = "os/Containerfile.ci-fast"
 inputs = ["os/Containerfile.ci-fast"]
 cost = "heavy"
+# It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
+memory = "8G"
 
 [[product]]
 family = "ci-images"
@@ -138,6 +140,7 @@ build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/ima
 needs = ["image-ci-fast"]
 inputs = ["os/Containerfile.ci-control"]
 cost = "minutes"
+memory = "8G"
 
 [[product]]
 family = "ci-images"
