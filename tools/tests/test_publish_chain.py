@@ -123,6 +123,51 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("/target/publish/p/aarch64 'sha-{commit}-aarch64'", run)
         self.assertEqual(c["sign-p"]["run"].count("oci-sign.sh"), 2)
 
+    def test_a_derived_release_is_signed_and_published_in_place_of_the_build(self):
+        c = checks({"family": "f", "name": "web", "repository": "r/web", "dev": ["dev-{commit}"],
+                    "release": ["sha-{commit}"],
+                    "build": {"containerfile": "x/Containerfile", "test": ["test {out}/image.oci.tar"]},
+                    "release_build": {"name": "carry-web", "run": "carry {out} {dir}/release",
+                                      "inputs": ["carry.sh"], "outputs": ["{dir}/release/extra.json"],
+                                      "cache": False, "cpus": 4}})
+        self.assertEqual(sorted(c), ["carry-web", "image-web", "publish-web", "sign-web"])
+        carry = c["carry-web"]
+        self.assertEqual(carry["run"], "carry /target/publish/web /target/publish/web/release")
+        self.assertEqual(carry["needs"], ["image-web"])
+        self.assertEqual(carry["on"], ["stable"])
+        self.assertEqual(carry["outputs"], ["/target/publish/web/release/image.oci.tar",
+                                            "/target/publish/web/release/digest",
+                                            "/target/publish/web/release/extra.json"])
+        self.assertIn("carry.sh", carry["inputs"])
+        self.assertEqual((carry["isolation"], carry["cache"], carry["cpus"], carry["default"]),
+                         ("vm", False, 4, False))
+        self.assertNotIn("id_token", carry)
+        sign = c["sign-web"]
+        self.assertEqual(sign["needs"], ["carry-web"])
+        self.assertEqual(sign["run"], "bash tools/ci/publish/oci-sign.sh r/web /target/publish/web/release")
+        # A fresh derived image is never paired with a signature from the cache.
+        self.assertIs(sign["cache"], False)
+        self.assertNotIn("cache", c["publish-web"])
+        publish = c["publish-web"]
+        # Main publishes the build it tested; stable waits for the derived image and its signature.
+        self.assertEqual(publish["needs"], ["image-web"])
+        self.assertEqual(publish["optional_needs"], ["sign-web", "carry-web"])
+        self.assertEqual(publish["env"], {"TILO_RELEASE_OUT": "/target/publish/web/release"})
+        self.assertIn("oci-publish.sh any r/web /target/publish/web 'dev:dev-{commit}'", publish["run"])
+        self.assertEqual(publish["outputs"], ["/target/publish/web/receipt.json"])
+        c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
+                    "build": {"run": "b {out}"}, "release_build": {"name": "derive-rel", "run": "d"}})
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel"])
+        for bad, why in (({"dev": ["t"]}, "without release tags"),
+                         ({"release": ["t"], "arches": ["x86_64", "aarch64"]}, "one architecture"),
+                         ({"release": ["t"], "anonymous": True}, "not a derived release")):
+            with self.assertRaisesRegex(products.ProductError, why):
+                checks({"family": "f", "name": "x", "repository": "r", "build": {"run": "b"},
+                        "release_build": {"name": "d", "run": "d"}, **bad})
+        with self.assertRaisesRegex(products.ProductError, "may not set"):
+            checks({"family": "f", "name": "x", "repository": "r", "release": ["t"], "build": {"run": "b"},
+                    "release_build": {"name": "d", "run": "d", "on": ["main"]}})
+
     def test_products_without_tags_are_only_built(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "build": {"run": "b {out}"}})
         self.assertEqual(sorted(c), ["image-b"])
@@ -241,7 +286,7 @@ class ScriptTests(unittest.TestCase):
         (self.tmp / "scratch").mkdir()
 
     @staticmethod
-    def archive(path: Path) -> str:
+    def archive(path: Path, config: bytes = b'{"architecture":"amd64","os":"linux"}') -> str:
         blobs = {}
 
         def blob(data: bytes) -> str:
@@ -249,7 +294,7 @@ class ScriptTests(unittest.TestCase):
             blobs[digest] = data
             return digest
 
-        config = blob(b'{"architecture":"amd64","os":"linux"}')
+        config = blob(config)
         manifest = json.dumps({"schemaVersion": 2, "config": {"digest": config, "size": 1}, "layers": []},
                               separators=(",", ":")).encode()
         digest = blob(manifest)
@@ -303,6 +348,38 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(self.receipt()["tags"], [f"sha-{COMMIT}", "latest-stable"])
         self.assertTrue(self.receipt()["signed"])
         self.assertIn("cosign verify-blob", self.log.read_text())
+
+    def test_a_derived_release_publishes_its_own_archive_with_the_receipt_in_out(self):
+        release = self.tmp / "release"
+        release.mkdir()
+        derived = self.archive(release / "image.oci.tar", b'{"architecture":"amd64","os":"linux","derived":1}')
+        self.assertNotEqual(derived, self.digest)
+        (release / "digest").write_text(derived + "\n")
+        (release / "receipt-extra.json").write_text('{"replaces":"r.example/img@sha256:1","carriedVersion":"abc"}\n')
+        self.env["TILO_RELEASE_OUT"] = str(release)
+        # Main publishes the build, unsigned, whatever the release directory holds.
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["digest"], self.digest)
+        # Stable publishes the derived image with its own signature, not the build's, and records
+        # what the step added.
+        self.signed()
+        result = self.publish("dev:dev-{commit}", "release:sha-{commit}", ref="stable")
+        self.assertIn("signed only", result.stderr)
+        (release / "payload.json").write_text((self.out / "payload.json").read_text().replace(self.digest, derived))
+        (release / "signature").write_text("sig")
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = self.receipt()
+        self.assertEqual((receipt["digest"], receipt["image"]), (derived, f"r.example/img@{derived}"))
+        self.assertEqual((receipt["replaces"], receipt["carriedVersion"]), ("r.example/img@sha256:1", "abc"))
+        self.assertFalse((release / "receipt.json").exists())
+        (release / "receipt-extra.json").write_text('{"a": 1}\n{"b": 2}\n')
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertIn("one JSON object on one line", result.stderr)
+        (release / "image.oci.tar").unlink()
+        result = self.publish("release:sha-{commit}", ref="stable")
+        self.assertIn("did not run", result.stderr)
 
     def test_a_signature_over_another_image_is_refused(self):
         (self.out / "payload.json").write_text('{"critical":{"identity":{"docker-reference":"r.example/other"}}}')

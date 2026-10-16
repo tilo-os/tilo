@@ -44,7 +44,11 @@ pointers = { room-service = "{dir}/receipt.json" }
 [[product]]
 family = "services"
 name = "web-entry"
-about = "The web entry (web-entry.yml): the Tilo app on the web, deployed by digest."
+about = """
+The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
+stable's receipt. A release carries the version of the image production serves, so tabs open on
+it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
+what stable signs and publishes. Main's development tags are the build as it is."""
 repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
@@ -59,8 +63,21 @@ cost = "heavy"
 [product.build]
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/browser/tilo-browser-runtime/container/test-image.sh {out}/image.oci.tar"]
+inputs = ["crates/browser/tilo-browser-runtime/container/test-image.sh"]
 cost = "minutes"
 
+# It observes production (the image it replaces), so it runs on every release.
+[product.release_build]
+name = "carry-web-entry"
+run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
+inputs = ["crates/browser/tilo-browser-runtime/container/carry.sh", "crates/browser/tilo-browser-runtime/container/Containerfile.carry", "crates/browser/tilo-browser-runtime/container/test-image.sh"]
+outputs = ["{dir}/release/receipt-extra.json"]
+cache = false
+cost = "minutes"
+
+# Stable's receipt is what cloud-promotion promotes.
 [product.publish]
 pointers = { web-entry = "{dir}/receipt.json" }
 
