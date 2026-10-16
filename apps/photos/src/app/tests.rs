@@ -587,6 +587,30 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     }
 }
 
+#[test]
+fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
+    let mut newer = LibraryPhoto::from_image(OpenImage::fixture("newer.png", 20, 10));
+    newer.captured_at = Some("2026-09-07".into());
+    let mut older = LibraryPhoto::from_image(OpenImage::fixture("older.png", 20, 10));
+    older.captured_at = Some("2026-08-01".into());
+    let previous = crate::model::PhotoLibrary::of(vec![older.clone()], Vec::new());
+    let current = crate::model::PhotoLibrary::of(vec![newer, older], Vec::new());
+    let anchor = crate::actions::TimelineAnchor::Day {
+        day: "2026-08-01".into(),
+    };
+    let mut app = test_app();
+    app.view_timeline(&previous, Some(&anchor)).unwrap();
+    assert_eq!(app.timeline_scroll_y, 0.0);
+
+    // The day still exists in the cache, but now has another day before it.
+    // A resource open must resolve against the library it was dispatched on.
+    app.view_timeline(&current, Some(&anchor)).unwrap();
+    let mut fresh = test_app();
+    fresh.view_timeline(&current, Some(&anchor)).unwrap();
+    assert!(fresh.timeline_scroll_y > 0.0);
+    assert_eq!(app.timeline_scroll_y, fresh.timeline_scroll_y);
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
