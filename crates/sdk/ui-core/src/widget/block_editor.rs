@@ -4504,6 +4504,20 @@ impl BlockEditor {
         }
     }
 
+    /// Offer the correction for the word that has rested under the caret
+    /// (a pause at the end of a word, the caret back on an earlier one).
+    /// Its line asked to be woken when the word settles, but the frame that
+    /// wake brings repaints only a dirty editor: without this the chip
+    /// showed only when something else happened to repaint the line.
+    fn settle_caret_suggestion_at(&mut self, now: crate::time::Instant) {
+        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
+            return;
+        };
+        if block.line.inner_mut().settle_suggestion_at(now) {
+            self.dirty = true;
+        }
+    }
+
     /// The editor's document node, which [`Widget::accessibility`] fills
     /// with a node per block.
     fn document_access_node(&self) -> crate::a11y::AccessNode {
@@ -8452,6 +8466,7 @@ impl Widget for BlockEditor {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document_ref(state, path);
         self.retire_finished_handle_fade();
+        self.settle_caret_suggestion_at(crate::time::now());
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.

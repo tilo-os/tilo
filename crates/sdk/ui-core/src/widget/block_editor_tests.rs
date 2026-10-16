@@ -2547,6 +2547,35 @@ fn a_block_fields_suggestion_timer_wakes_the_editor() {
     );
 }
 
+/// Resting at the end of a misspelled word, or coming back to one, offers
+/// its correction with no further input: the wake its line asked for brings
+/// a frame, and that frame repaints the line with the chip on it.
+#[test]
+fn a_word_settling_under_the_caret_repaints_its_line_with_the_suggestion() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    editor.set_focus(true);
+    editor.focus_block(0, CursorPlacement::End);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_spell_language("en_US");
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    editor.settle_caret_suggestion_at(now);
+    editor.dirty = false;
+
+    editor.settle_caret_suggestion_at(now + crate::text_edit::SUGGESTION_SETTLE);
+    assert!(
+        editor.dirty,
+        "the settled word's suggestion repaints the editor"
+    );
+    editor.dirty = false;
+    editor.settle_caret_suggestion_at(now + crate::text_edit::SUGGESTION_SETTLE * 2);
+    assert!(
+        !editor.dirty,
+        "an offer already shown asks for nothing more"
+    );
+}
+
 #[test]
 fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_read_only() {
     let mut editor = BlockEditor::new();
