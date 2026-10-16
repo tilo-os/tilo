@@ -3723,7 +3723,7 @@ env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/til
 requires = ["arch=any"]
 on = ["schedule:40 4 * * *", "dispatch"]
 cache = false
-secrets = ["REGISTRY_TOKEN"]
+secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.dispatch_inputs]
 images = ""
