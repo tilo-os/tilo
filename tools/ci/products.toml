@@ -16,7 +16,7 @@ dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:1256501473
 [[product]]
 family = "services"
 name = "room-service"
-about = "The room service (room-service-image.yml): deployed by digest from stable's receipt."
+about = "The room service: tested before it is published, deployed by digest from stable's receipt."
 repository = "registry.tilo.so/tilo/room-service"
 dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
@@ -33,6 +33,8 @@ cost = "heavy"
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
 build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/hosting/tilo-room-service/container/test-image.sh {out}/image.oci.tar $(cat {dir}/context/source-revision)"]
+inputs = ["crates/hosting/tilo-room-service/container/test-image.sh"]
 cost = "minutes"
 
 # Stable's receipt is what cloud-promotion promotes.

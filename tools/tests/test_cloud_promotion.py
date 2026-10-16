@@ -415,8 +415,7 @@ class CloudPromotionTests(unittest.TestCase):
 
 class WorkflowContractTests(unittest.TestCase):
     def test_image_receipts_name_their_build_run(self):
-        for name, artifact in (("web-entry.yml", "web-entry-image.json"),
-                               ("room-service-image.yml", "room-service-image.json")):
+        for name, artifact in (("web-entry.yml", "web-entry-image.json"),):
             text = (ROOT / ".forgejo/workflows" / name).read_text()
             self.assertIn("schemaVersion:2", text, name)
             self.assertIn("build:{workflow:$workflow,runId:($runId|tonumber),runNumber:($runNumber|tonumber),url:$runUrl}",

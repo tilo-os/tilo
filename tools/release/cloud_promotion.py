@@ -665,7 +665,7 @@ def build_plan(registry: Registry, git: Git, main: str, revision: str | None,
         found = promotable(registry, git, head)
         if found is None:
             raise PromotionError(f"no commit among main's last {SEARCH_DEPTH} has both images; dispatch "
-                                 "web-entry.yml and room-service-image.yml on main")
+                                 "publish-web-entry and publish-room-service on main")
         chosen = found
     if not git.contains(chosen, head):
         raise PromotionError(f"{chosen} is not on {main}; production only runs main")

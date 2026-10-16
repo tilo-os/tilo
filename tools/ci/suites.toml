@@ -1265,8 +1265,7 @@ workflow = "web-entry.yml"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-workflow = "room-service-image.yml"
+reason = "needs the built room-service image: t's image-room-service check runs it"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
