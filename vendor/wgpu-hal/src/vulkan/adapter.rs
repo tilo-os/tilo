@@ -2888,6 +2888,9 @@ impl super::Adapter {
             .queue_create_infos(&family_infos)
             .enabled_extension_names(&str_pointers);
         let info = enabled_phd_features.add_to_device_create(pre_info);
+        // Tilo: see `LOADER_DEVICE_LISTS`. Held until the device's functions
+        // are loaded, which looks the new device up.
+        let lists = super::LOADER_DEVICE_LISTS.lock();
         let raw_device = {
             profiling::scope!("vkCreateDevice");
             unsafe {
@@ -2908,7 +2911,7 @@ impl super::Adapter {
             }
         }
 
-        unsafe {
+        let device = unsafe {
             self.device_from_raw(
                 raw_device,
                 None,
@@ -2919,7 +2922,9 @@ impl super::Adapter {
                 family_info.queue_family_index,
                 0,
             )
-        }
+        };
+        drop(lists);
+        device
     }
 }
 
