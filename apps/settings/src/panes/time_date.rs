@@ -1547,12 +1547,10 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         let area = TimeDateArea::over(Arc::new(UnreadableClock));
         let mut pane = TimeDatePane::new(cx, &area);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while area.reading.revision() == pane.reading_seen {
-            assert!(std::time::Instant::now() < deadline, "the clock is read");
-            std::thread::yield_now();
-        }
-        pane.adopt(area.reading.get().expect("a reading landed"));
+        // The reading may land before the pane notes the revision it saw,
+        // so wait for the reading itself, not for a later revision.
+        let reading = tilo_test_env::wait_for("the clock is read", || area.reading.get());
+        pane.adopt(reading);
         assert!(pane.timezone_unknown);
         let text = crate::widgets::announced_text(pane.build_composition().as_ref());
         let says = |needle: &str| text.iter().any(|line| line == needle);
