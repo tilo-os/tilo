@@ -348,7 +348,7 @@ class Product:
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if self.data.get("tlog"):
                 outputs.append(f"{d}/bundle.json")
-        fields = {
+        return {
             "name": f"sign-{self.name}",
             "image": self.defaults["skopeo"],
             "run": "\n".join(f"bash {PUBLISH}/oci-sign.sh {self.repository} {d}" for d, _ in signed)
@@ -361,11 +361,6 @@ class Product:
             "requires": CREDENTIAL_REQUIRES,
             "on": self.dev_on if dev else self.release_on,
         }
-        if self.release_build:
-            # t keys a check by its needs' keys, not their outputs, so a derived release that
-            # observes the outside world (cache = false) can produce another image under the same
-            # key: a signature served from the cache would then be over the last one.
-            fields["cache"] = False
         return fields
 
     def publish(self) -> dict[str, Any]:

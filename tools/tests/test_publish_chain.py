@@ -145,9 +145,9 @@ class GeneratorTests(unittest.TestCase):
         sign = c["sign-web"]
         self.assertEqual(sign["needs"], ["carry-web"])
         self.assertEqual(sign["run"], "bash tools/ci/publish/oci-sign.sh r/web /target/publish/web/release")
-        # A fresh derived image is never paired with a signature from the cache.
-        self.assertIs(sign["cache"], False)
-        self.assertNotIn("cache", c["publish-web"])
+        # t keys a need of an uncached step by what that step produced this run, so a cached
+        # signature is only ever over the same derived image.
+        self.assertNotIn("cache", sign)
         publish = c["publish-web"]
         # Main publishes the build it tested; stable waits for the derived image and its signature.
         self.assertEqual(publish["needs"], ["image-web"])
