@@ -201,12 +201,15 @@ pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
 ///
 /// Returns an error if the device cannot be opened or read.
 pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
+    let path = format!("/dev/{dev_leaf}");
+    let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+    benchmark_reader(&mut f, &path)
+}
+
+fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, String> {
     const BLOCK: usize = 1 << 20;
     const TARGET: usize = 64 << 20;
     const SEEKS: u32 = 100;
-
-    let path = format!("/dev/{dev_leaf}");
-    let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
 
     let mut buf = vec![0u8; BLOCK];
     let start = ui::time::now();
@@ -218,11 +221,21 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
             Err(e) => return Err(format!("read {path}: {e}")),
         }
     }
+    if total == 0 {
+        return Err(format!("read {path}: device returned no data"));
+    }
     let secs = start.elapsed().as_secs_f64().max(1e-9);
     let mbs = (total as f64 / 1_000_000.0) / secs;
 
     // Random-seek latency across the device.
-    let size = f.seek(SeekFrom::End(0)).unwrap_or(0).max(BLOCK as u64);
+    let size = f
+        .seek(SeekFrom::End(0))
+        .map_err(|e| format!("seek {path}: {e}"))?;
+    if size < 4096 {
+        return Err(format!(
+            "read {path}: device is smaller than one 4 KiB sample"
+        ));
+    }
     let mut small = vec![0u8; 4096];
     let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
     let seek_start = ui::time::now();
@@ -231,8 +244,10 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         let off = (rng % size.saturating_sub(4096).max(1)) & !0xFFF;
-        let _ = f.seek(SeekFrom::Start(off));
-        let _ = f.read(&mut small);
+        f.seek(SeekFrom::Start(off))
+            .map_err(|e| format!("seek {path}: {e}"))?;
+        f.read_exact(&mut small)
+            .map_err(|e| format!("read {path}: {e}"))?;
     }
     let avg_ms = seek_start.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
 
@@ -282,6 +297,54 @@ pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailingRandomIo {
+        data: std::io::Cursor<Vec<u8>>,
+        fail_seek: bool,
+        random_phase: bool,
+    }
+
+    impl Read for FailingRandomIo {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.random_phase {
+                return Err(std::io::Error::other("random read failed"));
+            }
+            self.data.read(buf)
+        }
+    }
+
+    impl Seek for FailingRandomIo {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.random_phase = true;
+            if self.fail_seek {
+                return Err(std::io::Error::other("device seek failed"));
+            }
+            self.data.seek(pos)
+        }
+    }
+
+    #[test]
+    fn benchmark_reports_random_io_failures_instead_of_latency() {
+        for (fail_seek, expected) in [(true, "device seek failed"), (false, "random read failed")] {
+            let mut reader = FailingRandomIo {
+                data: std::io::Cursor::new(vec![0; 8192]),
+                fail_seek,
+                random_phase: false,
+            };
+            let error = benchmark_reader(&mut reader, "test-device").unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("test-device"), "{error}");
+        }
+        let mut healthy = std::io::Cursor::new(vec![0; 8192]);
+        assert!(benchmark_reader(&mut healthy, "test-device").is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn benchmark_rejects_a_device_that_returns_no_data() {
+        let error = benchmark("null").expect_err("an empty device cannot yield benchmark results");
+        assert!(error.contains("/dev/null"), "{error}");
+    }
 
     /// Mount/unmount/format target the right `UDisks2` D-Bus calls, fall back to udisksctl then raw tools, and a failed chain reports its last failure.
     #[test]
