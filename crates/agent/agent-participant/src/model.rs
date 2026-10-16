@@ -1032,56 +1032,14 @@ impl Planner for ModelPlanner {
         if let Some(refused) = planned_nothing(&answer, context) {
             return Err(refused);
         }
-        let mut steps = Vec::with_capacity(answer.actions.len().saturating_add(1));
-        let mut rest = answer.then.clone();
-        for (id, arguments) in answer.actions.iter().zip(answer.arguments) {
-            // "Nothing offered fits" ends what can be done now: the steps
-            // before it run, then the task is planned again over what they
-            // published (an app opened, say).
-            if id == tilo_agent::plan::NOTHING_FITS {
-                if steps.is_empty() {
-                    let because = [Some(answer.why.trim()), answer.then.as_deref()]
-                        .into_iter()
-                        .flatten()
-                        .filter(|text| !text.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    return Err(format!("nothing offered fits: {because}"));
-                }
-                rest = Some(answer.then.unwrap_or_else(|| task.to_owned()));
-                break;
-            }
-            let address = surface::decode_address(id)
-                .ok_or_else(|| format!("the model named {id:?}, which is not an operation"))?;
-            match targets.get(id) {
-                Some(Target::Record(route)) => steps.push(Step {
-                    app: route.app_id.clone(),
-                    record: Some(route.record.clone()),
-                    carries: context.wants_content(&route.app_id, Some(&route.record), &address),
-                    action: StepAction::Invoke { address, arguments },
-                }),
-                Some(Target::New(app)) => steps.push(Step {
-                    app: app.clone(),
-                    record: None,
-                    carries: context.preview_wants_content(app, &address),
-                    action: StepAction::Invoke { address, arguments },
-                }),
-                Some(Target::Open(app)) => steps.push(Step {
-                    app: app.clone(),
-                    record: None,
-                    action: StepAction::Open,
-                    carries: false,
-                }),
-                Some(Target::OpenRecord(route)) => steps.push(Step {
-                    app: route.app_id.clone(),
-                    record: Some(route.record.clone()),
-                    action: StepAction::Open,
-                    carries: false,
-                }),
-                None => return Err(format!("the model named {id:?}, which was not offered")),
-            }
-        }
-        if let Some(wait) = answer.wait {
+        let (mut steps, rest, wait) = answer_steps(
+            answer,
+            task,
+            (&catalogue, &targets),
+            context,
+            self.model.sees(),
+        )?;
+        if let Some(wait) = wait {
             // The wait ends this plan: what `then` left is planned with
             // what arrived, so it rides with the wait.
             steps.push(wait_step(wait, rest));
@@ -1107,6 +1065,144 @@ impl Planner for ModelPlanner {
         }
         Ok(steps)
     }
+}
+
+/// The steps of an answer, the rest of the task to plan again after them,
+/// and the wait that ends them ([`answer_steps`]).
+type AnswerSteps = (Vec<Step>, Option<String>, Option<tilo_agent::tools::Wait>);
+
+/// The steps `answer` names, over `offered` (the catalogue it was given
+/// and where each offer runs), with the rest of the task to plan again
+/// after them and the wait that ends them. "Nothing offered fits" first is
+/// the plan's refusal; later, it ends the steps there.
+///
+/// A model `sees` that plans a picture (a frame, a page, the artwork) and
+/// then writes in the same plan has written what the picture shows before
+/// seeing it (a sign-off naming the wrong cut): its steps end after the
+/// pictures, and the rest is planned again with them shown, told what it
+/// had meant to write. A plan already shown the task's pictures is not cut
+/// again, so a model that looks once more does not loop.
+fn answer_steps(
+    answer: tilo_agent::tools::Answer,
+    task: &str,
+    (catalogue, targets): (&Catalogue, &BTreeMap<String, Target>),
+    context: &PlanContext,
+    sees: bool,
+) -> Result<AnswerSteps, String> {
+    let mut steps = Vec::with_capacity(answer.actions.len().saturating_add(1));
+    let mut rest = answer.then.clone();
+    let mut wait = answer.wait;
+    let mut pictured = false;
+    let planned: Vec<(&String, serde_json::Map<String, serde_json::Value>)> =
+        answer.actions.iter().zip(answer.arguments).collect();
+    for (at, (id, arguments)) in planned.iter().enumerate() {
+        // "Nothing offered fits" ends what can be done now: the steps
+        // before it run, then the task is planned again over what they
+        // published (an app opened, say).
+        if *id == tilo_agent::plan::NOTHING_FITS {
+            if steps.is_empty() {
+                let because = [Some(answer.why.trim()), answer.then.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(format!("nothing offered fits: {because}"));
+            }
+            rest = Some(answer.then.clone().unwrap_or_else(|| task.to_owned()));
+            break;
+        }
+        let address = surface::decode_address(id)
+            .ok_or_else(|| format!("the model named {id:?}, which is not an operation"))?;
+        let offer = catalogue.offers.iter().find(|offer| offer.id() == **id);
+        if sees && pictured && context.pictures.is_empty() && offer.is_some_and(writes) {
+            let unseen = planned.get(at..).unwrap_or_default();
+            rest = Some(pictures_first(rest.as_deref().unwrap_or(task), unseen));
+            wait = None;
+            break;
+        }
+        pictured |= shows_picture(&address);
+        let arguments = arguments.clone();
+        match targets.get(*id) {
+            Some(Target::Record(route)) => steps.push(Step {
+                app: route.app_id.clone(),
+                record: Some(route.record.clone()),
+                carries: context.wants_content(&route.app_id, Some(&route.record), &address),
+                action: StepAction::Invoke { address, arguments },
+            }),
+            Some(Target::New(app)) => steps.push(Step {
+                app: app.clone(),
+                record: None,
+                carries: context.preview_wants_content(app, &address),
+                action: StepAction::Invoke { address, arguments },
+            }),
+            Some(Target::Open(app)) => steps.push(Step {
+                app: app.clone(),
+                record: None,
+                action: StepAction::Open,
+                carries: false,
+            }),
+            Some(Target::OpenRecord(route)) => steps.push(Step {
+                app: route.app_id.clone(),
+                record: Some(route.record.clone()),
+                action: StepAction::Open,
+                carries: false,
+            }),
+            None => return Err(format!("the model named {id:?}, which was not offered")),
+        }
+    }
+    Ok((steps, rest, wait))
+}
+
+/// Operations that answer with a picture of their record (a canvas look, a
+/// PDF page, a video frame), by name: a model that sees is shown it on the
+/// plan after them.
+const PICTURE_ACTIONS: &[&str] = &["look", "look-page", "view-frame-content"];
+
+/// Whether the operation at `address` answers with a picture
+/// ([`PICTURE_ACTIONS`], or another `look-…`).
+fn shows_picture(address: &ActionAddress) -> bool {
+    PICTURE_ACTIONS.contains(&address.action.as_str()) || address.action.starts_with("look-")
+}
+
+/// Whether `offer` writes: it changes its record or makes something (an
+/// edit, an export, a post), rather than only reading or showing it.
+fn writes(offer: &Offer) -> bool {
+    !shows_picture(offer.address())
+        && tilo_agent::tools::opened_app(offer).is_none()
+        && match offer.descriptor.kind {
+            tilo_actions::OperationKind::Document => true,
+            tilo_actions::OperationKind::View => false,
+            tilo_actions::OperationKind::Effect => !readable(&offer.descriptor),
+        }
+}
+
+/// The most characters of the steps a plan cut after its pictures that the
+/// plan after them is told.
+const MOST_UNSEEN_CHARS: usize = 1_200;
+
+/// The rest of a task whose plan was cut after its pictures, before the
+/// steps it had written ahead of seeing them (`unseen`, each an operation
+/// id and its arguments): `then`, what the plan left after them.
+fn pictures_first(
+    then: &str,
+    unseen: &[(&String, serde_json::Map<String, serde_json::Value>)],
+) -> String {
+    let mut planned = unseen
+        .iter()
+        .map(|(id, arguments)| format!("{id} {}", serde_json::Value::Object(arguments.clone())))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if planned.chars().count() > MOST_UNSEEN_CHARS {
+        planned = planned.chars().take(MOST_UNSEEN_CHARS).collect::<String>() + "…";
+    }
+    format!(
+        "Look at the pictures the steps so far rendered (the newest is shown; look_content shows \
+         the others by the addresses they answered) before writing anything about them. The \
+         plan went on with these steps, written before the pictures were seen: {planned}. Plan \
+         them again only as the pictures show them to be right, correcting what they got wrong. \
+         Then: {then}"
+    )
 }
 
 /// The step a plan's `wait_for` becomes: its place resolved to the app it
@@ -5390,6 +5486,109 @@ pub(crate) mod tests {
         let again = first_turn("Draw a teal band", &briefed, &offered, &mut revealed);
         assert!(again.starts_with(&briefed.reference));
         assert!(after.starts_with(&briefed.reference));
+    }
+
+    /// Answers with whatever it was built with, and is shown pictures.
+    struct SeeingCanned(Answer, bool);
+
+    impl PlanModel for SeeingCanned {
+        fn choose(&mut self, _: &str, _: &Catalogue, _: Option<usize>) -> Result<Answer, String> {
+            Ok(self.0.clone())
+        }
+
+        fn sees(&self) -> bool {
+            self.1
+        }
+    }
+
+    /// A model that sees and plans frames, then a sign-off that depends on
+    /// them, in one plan: the plan ends after the frames and the sign-off is
+    /// planned again with them shown, told what it had meant to write. A
+    /// model that does not see, or a plan already shown the pictures, runs
+    /// as planned.
+    #[test]
+    fn a_write_planned_after_pictures_waits_for_the_pictures_to_be_seen() {
+        use tilo_actions::{ActionParam, OperationKind, ParamType};
+        let editor = "so.tilo.video-editor";
+        let frame = operation(
+            "video_editor.project",
+            "view-frame-content",
+            OperationKind::Effect,
+            vec![ActionParam::required("at", ParamType::Number, "Seconds")],
+        );
+        let sign_off = operation(
+            "video_editor.project",
+            "set-title",
+            OperationKind::Document,
+            vec![ActionParam::required("text", ParamType::Text, "Words")],
+        );
+        let context = PlanContext {
+            open: vec![(route(editor, "cut"), vec![frame, sign_off])],
+            apps: vec![editor.into()],
+            ..PlanContext::default()
+        };
+        let (offered, _) = catalogue(&context);
+        let id = |action: &str| {
+            offered
+                .offers
+                .iter()
+                .find(|offer| offer.address().action == action)
+                .map(Offer::id)
+                .unwrap()
+        };
+        let argument = |key: &str, value: serde_json::Value| {
+            serde_json::Map::from_iter([(key.to_owned(), value)])
+        };
+        let answer = Answer {
+            actions: vec![
+                id("view-frame-content"),
+                id("view-frame-content"),
+                id("set-title"),
+            ],
+            arguments: vec![
+                argument("at", 1.5.into()),
+                argument("at", 4.5.into()),
+                argument("text", "HERON approved".into()),
+            ],
+            why: "check the cut".into(),
+            then: Some("post the verdict".into()),
+            reply: None,
+            wait: None,
+        };
+        let plan = |sees: bool, context: &PlanContext| {
+            ModelPlanner::new(Box::new(SeeingCanned(answer.clone(), sees)))
+                .plan("review the cut and sign it off", context)
+                .unwrap()
+        };
+
+        let steps = plan(true, &context);
+        let actions: Vec<String> = steps
+            .iter()
+            .filter_map(|step| match &step.action {
+                StepAction::Invoke { address, .. } => Some(address.action.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions, ["view-frame-content", "view-frame-content"]);
+        let Some(StepAction::Continue(rest)) = steps.last().map(|step| &step.action) else {
+            panic!("the rest is planned again: {steps:?}");
+        };
+        assert!(
+            rest.contains("written before the pictures were seen")
+                && rest.contains("set-title {\"text\":\"HERON approved\"}")
+                && rest.ends_with("Then: post the verdict"),
+            "{rest}"
+        );
+
+        assert_eq!(plan(false, &context).len(), 4, "three steps and the rest");
+        let mut shown = context;
+        shown.pictures = vec![crate::vision::tests::address('a')];
+        let again = plan(true, &shown);
+        assert!(
+            again.iter().any(|step| matches!(&step.action,
+                StepAction::Invoke { address, .. } if address.action == "set-title")),
+            "a plan shown the pictures is not cut again: {again:?}"
+        );
     }
 
     /// A canvas open on `c1` publishing `look` beside `draw` and `inspect`.
