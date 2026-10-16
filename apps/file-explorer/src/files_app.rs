@@ -8759,7 +8759,6 @@ impl Collaborative for FileExplorerWidget {
         if let Some(result) = self.local_clipboard.timeout(now) {
             self.complete_clipboard_publication(result);
         }
-        self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
         requests.extend(self.shortcut_menu.take_requests());
@@ -8949,8 +8948,11 @@ impl Widget for FileExplorerWidget {
         let changed_directory = (self.directory_changed && !read_deferred).then(|| {
             self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
         });
+        // Nearby Send asks only when the shell announces a change; the asks
+        // that announcement queued go out on the next pump, at once.
         self.nearby_send
-            .next_poll()
+            .has_requests()
+            .then(Instant::now)
             .into_iter()
             .chain(self.next_metadata_refresh)
             .chain(changed_directory)

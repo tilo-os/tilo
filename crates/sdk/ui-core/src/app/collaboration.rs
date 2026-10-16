@@ -806,6 +806,7 @@ impl App {
         !matches!(
             event,
             CollabEvent::NearbyTransferCommandResult { .. }
+                | CollabEvent::NearbyTransferChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -920,6 +921,7 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::NearbyTransferChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }

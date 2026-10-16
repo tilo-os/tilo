@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices};
+use tilo_action_broker::services::{
+    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
+};
 
 use super::super::state::WorkspaceAuthority as _;
 use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
@@ -16,8 +18,19 @@ use crate::shell::device_fabric_runtime as fabric;
 use crate::shell::nearby_transfer::{SecureNearbyDestination, SecureNearbySource};
 use crate::shell::personal_continuity::DeviceId;
 
-const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
+/// As long as transfer and destination handles: Files no longer re-asks
+/// every two seconds, so a target handle published through Files' actions is
+/// kept fresh by one snapshot shortly before it lapses
+/// ([`NEARBY_HANDLE_REFRESH_LEAD`]), not by a poll.
+const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(120);
 const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
+/// How long before a live handle lapses its holder is told to ask again, so
+/// the handles Files publishes stay usable while nothing else changes.
+const NEARBY_HANDLE_REFRESH_LEAD: Duration = Duration::from_secs(15);
+const _: () = assert!(
+    NEARBY_HANDLE_REFRESH_LEAD.as_secs() < NEARBY_TARGET_HANDLE_TTL.as_secs()
+        && NEARBY_HANDLE_REFRESH_LEAD.as_secs() < NEARBY_TRANSFER_HANDLE_TTL.as_secs()
+);
 const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
 pub(super) const FILES_APP_ID: &str = "so.tilo.file-explorer";
@@ -106,6 +119,16 @@ impl NearbyTargetRegistry {
         self.bindings
             .retain(|_, binding| binding.peer_id != peer_id);
     }
+
+    /// When the first handle still held by this connection lapses.
+    fn next_expiry(&self, peer_id: u64, channel: &str, now: Instant) -> Option<Instant> {
+        self.bindings
+            .values()
+            .filter(|binding| binding.peer_id == peer_id && binding.channel == channel)
+            .map(|binding| binding.expires_at)
+            .filter(|expires_at| *expires_at > now)
+            .min()
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +138,10 @@ struct NearbyTransferBinding {
     transfer_id: [u8; 16],
     direction: runtime_collab::NearbyTransferDirection,
     expires_at: Instant,
+    /// The transfer completed or was cancelled when last listed: its handle
+    /// still names it, but nothing can be done with it, so it is not kept
+    /// fresh.
+    settled: bool,
 }
 
 #[derive(Default)]
@@ -174,6 +201,7 @@ impl NearbyTransferRegistry {
                         transfer_id,
                         direction,
                         expires_at: nearby_handle_expiry(now, NEARBY_TRANSFER_HANDLE_TTL),
+                        settled: false,
                     },
                 );
                 return Some(handle);
@@ -205,6 +233,70 @@ impl NearbyTransferRegistry {
         self.bindings
             .retain(|_, binding| binding.peer_id != peer_id);
     }
+
+    /// Record whether `handle`'s transfer has finished for good.
+    fn settle(&mut self, handle: runtime_collab::NearbyTransferHandle, settled: bool) {
+        if let Some(binding) = self.bindings.get_mut(&handle) {
+            binding.settled = settled;
+        }
+    }
+
+    /// When the first handle this connection can still act on lapses.
+    fn next_expiry(&self, peer_id: u64, channel: &str, now: Instant) -> Option<Instant> {
+        self.bindings
+            .values()
+            .filter(|binding| {
+                binding.peer_id == peer_id && binding.channel == channel && !binding.settled
+            })
+            .map(|binding| binding.expires_at)
+            .filter(|expires_at| *expires_at > now)
+            .min()
+    }
+}
+
+/// Whether a transfer moving in `direction` and in `phase` is over, with
+/// nothing left to decide, cancel or retry: only a failed send is retried.
+fn settled(
+    direction: runtime_collab::NearbyTransferDirection,
+    phase: runtime_collab::NearbyTransferPhase,
+) -> bool {
+    use runtime_collab::NearbyTransferPhase as Phase;
+    match phase {
+        Phase::Completed | Phase::Cancelled => true,
+        Phase::Failed => direction == runtime_collab::NearbyTransferDirection::Receiving,
+        Phase::Queued
+        | Phase::Transferring
+        | Phase::AwaitingConsent
+        | Phase::AwaitingDestination => false,
+    }
+}
+
+/// When the connection `peer_id` on `channel` must next ask for a snapshot
+/// to keep the handles it can act on usable: shortly before the first of
+/// them lapses. A handle already that close is not counted again: its
+/// holder was told when it got there, and a wait that counted it would spin
+/// until it lapsed. `None` while there is nothing to keep.
+fn handles_due(
+    targets: &Mutex<NearbyTargetRegistry>,
+    transfers: &Mutex<NearbyTransferRegistry>,
+    peer_id: u64,
+    channel: &str,
+    now: Instant,
+) -> Option<Instant> {
+    let targets = targets
+        .lock()
+        .ok()
+        .and_then(|registry| registry.next_expiry(peer_id, channel, now));
+    let transfers = transfers
+        .lock()
+        .ok()
+        .and_then(|registry| registry.next_expiry(peer_id, channel, now));
+    targets
+        .into_iter()
+        .chain(transfers)
+        .filter_map(|expiry| expiry.checked_sub(NEARBY_HANDLE_REFRESH_LEAD))
+        .filter(|due| *due > now)
+        .min()
 }
 
 #[derive(Clone)]
@@ -335,9 +427,13 @@ fn outcome(result: Result<(), String>) -> runtime_collab::NearbyTransferReply {
 pub struct NativeNearbyTransfer {
     network: Arc<crate::shell::network::ShellNetwork>,
     membership: WorkspaceTreeHandle,
-    targets: Mutex<NearbyTargetRegistry>,
-    transfers: Mutex<NearbyTransferRegistry>,
+    targets: Arc<Mutex<NearbyTargetRegistry>>,
+    transfers: Arc<Mutex<NearbyTransferRegistry>>,
     destinations: Mutex<NearbyDestinationRegistry>,
+    /// Moved after every command: a snapshot, send or decision may have
+    /// renewed the handles a connection holds, so when it must next ask to
+    /// keep them usable moved too.
+    renewed: Arc<tokio::sync::watch::Sender<()>>,
     #[cfg(target_os = "linux")]
     airdrop: super::airdrop_transfer::NativeAirDropTransfer,
 }
@@ -400,9 +496,10 @@ impl NativeNearbyTransfer {
             airdrop: super::airdrop_transfer::NativeAirDropTransfer::session(membership.clone()),
             network,
             membership,
-            targets: Mutex::default(),
-            transfers: Mutex::default(),
+            targets: Arc::default(),
+            transfers: Arc::default(),
             destinations: Mutex::default(),
+            renewed: Arc::new(tokio::sync::watch::Sender::new(())),
         }
     }
 
@@ -491,7 +588,13 @@ impl NativeNearbyTransfer {
         now: Instant,
     ) -> Result<Vec<runtime_collab::NearbyTransferStatus>, String> {
         let (peer_id, channel) = (context.peer_id(), context.channel());
-        let raw_transfers = fabric::nearby_transfer_statuses(&self.network);
+        let fabric::NearbyTransferStatuses {
+            statuses: raw_transfers,
+            complete,
+        } = fabric::nearby_transfer_statuses(&self.network);
+        if !complete {
+            fabric::served_incomplete_nearby_view();
+        }
         #[cfg(target_os = "linux")]
         let external = self.airdrop.statuses(peer_id, channel);
         let visible_ids = raw_transfers
@@ -514,6 +617,7 @@ impl NativeNearbyTransfer {
             .filter_map(|status| {
                 let handle =
                     registry.issue(peer_id, channel, status.transfer_id, status.direction, now)?;
+                registry.settle(handle, settled(status.direction, status.phase));
                 Some(runtime_collab::NearbyTransferStatus {
                     handle,
                     name: status.name,
@@ -536,6 +640,13 @@ impl NativeNearbyTransfer {
                     runtime_collab::NearbyTransferDirection::Sending,
                     now,
                 ) {
+                    registry.settle(
+                        handle,
+                        settled(
+                            runtime_collab::NearbyTransferDirection::Sending,
+                            status.phase,
+                        ),
+                    );
                     issued.push(runtime_collab::NearbyTransferStatus {
                         handle,
                         name: status.name,
@@ -704,8 +815,8 @@ impl NativeNearbyTransfer {
     }
 }
 
-impl NearbyTransferServices for NativeNearbyTransfer {
-    fn command(
+impl NativeNearbyTransfer {
+    fn run_command(
         &self,
         context: &NearbyTransferRequestContext,
         command: runtime_collab::NearbyTransferCommand,
@@ -796,6 +907,85 @@ impl NearbyTransferServices for NativeNearbyTransfer {
                 }
             }
         })
+    }
+}
+
+impl NearbyTransferServices for NativeNearbyTransfer {
+    fn command(
+        &self,
+        context: &NearbyTransferRequestContext,
+        command: runtime_collab::NearbyTransferCommand,
+    ) -> Result<runtime_collab::NearbyTransferReply, String> {
+        let reads = matches!(
+            command,
+            runtime_collab::NearbyTransferCommand::Snapshot
+                | runtime_collab::NearbyTransferCommand::AirDropAvailability
+        );
+        let reply = self.run_command(context, command);
+        if !reads {
+            // A send, decision, cancel or retry moves the view now; every
+            // Files instance hears of it without waiting for a compositor
+            // turn.
+            fabric::observe_nearby_view(&self.network, ContinuityPolicySnapshot::current());
+        }
+        self.renewed.send_replace(());
+        reply
+    }
+
+    /// Resolves at the next announced change, at an offer's consent expiry,
+    /// or shortly before the handles this connection can act on lapse. With
+    /// no other device online and no transfer under way none of those come,
+    /// and the wait costs no wakeup at all.
+    fn changed(
+        &self,
+        context: &NearbyTransferRequestContext,
+        after: u64,
+    ) -> Option<NearbyTransferChange> {
+        // Subscribed before anything is read, so a change or a renewal in
+        // between is still seen.
+        let mut changes = fabric::nearby_changes().subscribe();
+        let renewals = Arc::clone(&self.renewed);
+        let mut renewed = renewals.subscribe();
+        let (targets, transfers) = (Arc::clone(&self.targets), Arc::clone(&self.transfers));
+        let (peer_id, channel) = (context.peer_id(), context.channel().to_owned());
+        Some(Box::pin(async move {
+            // Held so the renewal channel outlives this wait.
+            let _renewals = renewals;
+            loop {
+                let current = *changes.borrow_and_update();
+                if current != after {
+                    return current;
+                }
+                let now = Instant::now();
+                // A disabled service answers every snapshot with a refusal,
+                // renews no handle and expires no consent.
+                let deadline = nearby_policy_enabled(ContinuityPolicySnapshot::current())
+                    .then(|| {
+                        handles_due(&targets, &transfers, peer_id, &channel, now)
+                            .into_iter()
+                            .chain(fabric::next_nearby_consent_expiry())
+                            .filter(|deadline| *deadline > now)
+                            .min()
+                    })
+                    .flatten();
+                let due = async {
+                    match deadline {
+                        Some(deadline) => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))
+                                .await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::select! {
+                    // The revision and the renewals live as long as their
+                    // senders, which outlive this wait: neither ends.
+                    _ = changes.changed() => {}
+                    _ = renewed.changed() => {}
+                    () = due => fabric::note_nearby_changed(),
+                }
+            }
+        }))
     }
 
     fn disconnect(&self, peer_id: u64) {
@@ -954,6 +1144,86 @@ mod tests {
                 .resolve(destination.handle, 41, &route, false, now)
                 .is_none()
         );
+    }
+
+    /// Files no longer re-asks on a timer, so the shell tells it to ask
+    /// before the handles it can act on lapse, and only then: a connection
+    /// that holds none, or only finished transfers, is never woken for them.
+    #[test]
+    fn only_live_handles_ask_their_holder_to_refresh() {
+        let route = channel("room-a");
+        let other_route = channel("room-b");
+        let now = Instant::now();
+
+        let mut targets = NearbyTargetRegistry::default();
+        assert_eq!(targets.next_expiry(41, &route, now), None, "no handles");
+        targets.issue(
+            41,
+            &route,
+            DeviceId::new("desk").expect("valid device"),
+            now,
+        );
+        assert_eq!(
+            targets.next_expiry(41, &route, now),
+            Some(now + NEARBY_TARGET_HANDLE_TTL)
+        );
+        assert_eq!(targets.next_expiry(42, &route, now), None, "other peer");
+        assert_eq!(
+            targets.next_expiry(41, &other_route, now),
+            None,
+            "other workspace"
+        );
+        assert_eq!(
+            targets.next_expiry(41, &route, now + NEARBY_TARGET_HANDLE_TTL),
+            None,
+            "a lapsed handle is no reason to wake"
+        );
+
+        let mut transfers = NearbyTransferRegistry::default();
+        let sending = runtime_collab::NearbyTransferDirection::Sending;
+        let handle = transfers
+            .issue(41, &route, [3; 16], sending, now)
+            .expect("handle");
+        assert_eq!(
+            transfers.next_expiry(41, &route, now),
+            Some(now + NEARBY_TRANSFER_HANDLE_TTL)
+        );
+        transfers.settle(
+            handle,
+            settled(sending, runtime_collab::NearbyTransferPhase::Completed),
+        );
+        assert_eq!(
+            transfers.next_expiry(41, &route, now),
+            None,
+            "a completed transfer's handle is not kept fresh"
+        );
+        transfers.settle(
+            handle,
+            settled(sending, runtime_collab::NearbyTransferPhase::Failed),
+        );
+        assert_eq!(
+            transfers.next_expiry(41, &route, now),
+            Some(now + NEARBY_TRANSFER_HANDLE_TTL),
+            "a failed send can still be retried"
+        );
+        assert!(settled(
+            runtime_collab::NearbyTransferDirection::Receiving,
+            runtime_collab::NearbyTransferPhase::Failed
+        ));
+
+        // Asked shortly before the first live handle lapses, and once: a
+        // handle inside that lead is no reason to wake again.
+        let (targets, transfers) = (Mutex::new(targets), Mutex::new(transfers));
+        let inside_lead = now + NEARBY_TARGET_HANDLE_TTL.saturating_sub(NEARBY_HANDLE_REFRESH_LEAD);
+        assert_eq!(
+            handles_due(&targets, &transfers, 41, &route, now),
+            Some(inside_lead)
+        );
+        assert_eq!(
+            handles_due(&targets, &transfers, 41, &route, inside_lead),
+            None
+        );
+        assert_eq!(handles_due(&targets, &transfers, 42, &route, now), None);
     }
 
     #[test]

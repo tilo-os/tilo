@@ -8,6 +8,7 @@ mod display_auto_leases;
 mod display_refresh;
 #[cfg(test)]
 mod display_refresh_tests;
+mod nearby_changes;
 mod nearby_store_worker;
 pub(crate) mod person_layout;
 mod receive_recovery;
@@ -52,6 +53,10 @@ use crate::shell::device_fabric::{
     MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
+pub(crate) use nearby_changes::{
+    nearby_changes, next_consent_expiry as next_nearby_consent_expiry, note_nearby_changed,
+    observe_nearby_view, served_incomplete_view as served_incomplete_nearby_view,
+};
 use tilo_lock::MutexRecover as _;
 
 type ProductionGamepadFactory =
@@ -367,10 +372,6 @@ fn remove_legacy_media_cache() {
 
 fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
     try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::outbox)
-}
-
-fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
-    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::inbox)
 }
 
 /// A copy of the store's `entries`. A store that is busy or not open yet
@@ -1986,6 +1987,9 @@ impl DeviceFabricRuntime {
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         resume_nearby_transfers(network, policy);
+        // After the store's follow-ups and expired consents: what Files
+        // would see now, announced only when it moved.
+        observe_nearby_view(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
@@ -6111,6 +6115,13 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
     Ok(())
 }
 
+/// What [`nearby_transfer_statuses`] projected, and whether it saw the
+/// store's queues: a busy store reads as empty rather than blocking.
+pub struct NearbyTransferStatuses {
+    pub statuses: Vec<NearbyTransferRuntimeStatus>,
+    pub complete: bool,
+}
+
 /// Project path-free, identity-redacted transfer state for Files.
 pub struct NearbyTransferRuntimeStatus {
     pub transfer_id: [u8; 16],
@@ -6126,11 +6137,17 @@ pub struct NearbyTransferRuntimeStatus {
     clippy::too_many_lines,
     reason = "one projection maps every transfer phase to its status row"
 )]
-pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
+pub fn nearby_transfer_statuses(network: &ShellNetwork) -> NearbyTransferStatuses {
     if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer) {
-        return Vec::new();
+        return NearbyTransferStatuses {
+            statuses: Vec::new(),
+            complete: true,
+        };
     }
     expire_nearby_consents(network);
+    let queues = nearby_changes::try_store_queues();
+    let complete = queues.is_some();
+    let (inbox, outbox) = queues.unwrap_or_default();
     let fabric = network.device_fabric();
     let label = |device: &crate::shell::personal_continuity::DeviceId| {
         fabric.snapshots().get(device).map_or_else(
@@ -6139,7 +6156,10 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         )
     };
     let Ok(state) = nearby_drop_state().lock() else {
-        return Vec::new();
+        return NearbyTransferStatuses {
+            statuses: Vec::new(),
+            complete,
+        };
     };
     let mut statuses = state
         .incoming
@@ -6194,10 +6214,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     let nearby_send = |kind: crate::shell::nearby_transfer::TransferKind| {
         kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
     };
-    for entry in try_inbox_entries()
-        .into_iter()
-        .filter(|entry| nearby_send(entry.kind))
-    {
+    for entry in inbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -6218,7 +6235,6 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             total_bytes: entry.total_bytes,
         });
     }
-    let outbox = try_outbox_entries();
     for entry in outbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
@@ -6258,7 +6274,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         });
     }
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
-    statuses
+    NearbyTransferStatuses { statuses, complete }
 }
 
 /// Outgoing streams on the one transfer lane, Nearby sends and media
