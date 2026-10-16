@@ -62,7 +62,37 @@ fn resources() -> Vec<Resource> {
     let result = tilo_actions::ResultSpec::Json {
         schema: json!({"type":"object"}),
     };
+    let mut profile_start = ActionSpec::typed_operation(
+        "profile-start",
+        crate::shell::i18n::t("session-diagnostics-profile-start"),
+        "",
+        OperationKind::Effect,
+        "session-diagnostics/v1",
+        vec![ActionParam::optional_owned(
+            "seconds",
+            ParamType::Integer,
+            crate::shell::i18n::t("session-diagnostics-profile-seconds"),
+        )],
+        |_| EncodedAction {
+            type_id: "session-diagnostics/v1".into(),
+            payload: b"profile-start".to_vec(),
+        },
+    );
+    let mut profile_stop = ActionSpec::typed_operation(
+        "profile-stop",
+        crate::shell::i18n::t("session-diagnostics-profile-stop"),
+        "",
+        OperationKind::Effect,
+        "session-diagnostics/v1",
+        Vec::new(),
+        |_| EncodedAction {
+            type_id: "session-diagnostics/v1".into(),
+            payload: b"profile-stop".to_vec(),
+        },
+    );
     configure.contract.result = result.clone();
+    profile_start.contract.result = result.clone();
+    profile_stop.contract.result = result.clone();
     inspect.contract.result = result;
     inspect.contract.kind = tilo_actions::ActionKind::Read;
     vec![
@@ -72,7 +102,9 @@ fn resources() -> Vec<Resource> {
             crate::shell::i18n::t("session-diagnostics-title"),
         )
         .with_action(configure)
-        .with_action(inspect),
+        .with_action(inspect)
+        .with_action(profile_start)
+        .with_action(profile_stop),
     ]
 }
 
@@ -135,6 +167,15 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
             });
         }
     };
+    match admitted.encoded.payload.as_slice() {
+        b"profile-start" => return Some(profile_start(args)),
+        b"profile-stop" => {
+            return Some(Response::Answer(
+                json!({ "profile": super::metrics::profile::stop() }),
+            ));
+        }
+        _ => {}
+    }
     let session = LaunchSession::current();
     if admitted.encoded.payload == b"configure" {
         let flags = FIELDS.map(|(field, _)| {
@@ -172,13 +213,200 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
             });
         }
         answer.insert("launch_history".into(), history);
+        answer.insert("profile".into(), super::metrics::profile::status());
     }
     Some(Response::Answer(serde_json::Value::Object(answer)))
+}
+
+/// Start profiling the compositor for `seconds` (default
+/// [`profile::DEFAULT_SECONDS`]) into the session's profile directory.
+fn profile_start(args: &serde_json::Map<String, serde_json::Value>) -> Response {
+    use super::metrics::profile;
+    let Some(root) = profile::default_root() else {
+        return Response::Err {
+            code: "unavailable".into(),
+            message: crate::shell::i18n::t("session-diagnostics-profile-no-state-dir"),
+        };
+    };
+    profile_start_in(&root, args)
+}
+
+fn profile_start_in(
+    root: &std::path::Path,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    use super::metrics::profile;
+    let seconds = match args.get("seconds").map(serde_json::Value::as_u64) {
+        None => profile::DEFAULT_SECONDS,
+        Some(Some(seconds)) if (1..=profile::MAX_SECONDS).contains(&seconds) => seconds,
+        Some(_) => {
+            return Response::Err {
+                code: "invalid_arguments".into(),
+                message: crate::shell::i18n::t_args(
+                    "session-diagnostics-profile-seconds-range",
+                    &[("max", profile::MAX_SECONDS.to_string().into())],
+                ),
+            };
+        }
+    };
+    match profile::start(root, std::time::Duration::from_secs(seconds)) {
+        Ok(status) => Response::Answer(json!({ "profile": status })),
+        Err(profile::StartError::AlreadyRecording(path)) => Response::Err {
+            code: "action_failed".into(),
+            message: crate::shell::i18n::t_args(
+                "session-diagnostics-profile-already-recording",
+                &[("path", path.display().to_string().into())],
+            ),
+        },
+        Err(profile::StartError::Io(error)) => Response::Err {
+            code: "action_failed".into(),
+            message: crate::shell::i18n::t_args(
+                "session-diagnostics-profile-not-created",
+                &[("error", error.to_string().into())],
+            ),
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn invoke(id: &str, args: &serde_json::Value) -> Command {
+        Command::ActionsInvoke {
+            provider: PROVIDER.into(),
+            id: id.into(),
+            args: args.as_object().cloned().unwrap_or_default(),
+            device: None,
+            wait_ms: None,
+        }
+    }
+
+    #[test]
+    fn profiling_is_owner_only_on_every_other_connection() {
+        for id in [
+            "profile-start@session-diagnostics",
+            "profile-stop@session-diagnostics",
+        ] {
+            assert!(
+                matches!(owner_required(&invoke(id, &json!({}))), Some(Response::Err { code, .. }) if code == "not_permitted"),
+                "{id}"
+            );
+        }
+    }
+
+    /// The admin starts a profile, the loop records, the admin stops it: the
+    /// directory holds the frame rows in the frame trace's columns, every
+    /// loop-timing phase, each thread's CPU and a summary written last.
+    #[test]
+    fn a_profile_the_owner_starts_and_stops_is_complete_on_disk() {
+        use crate::compositor::metrics::{CSV_HEADER, FrameRecorder, profile};
+        use std::time::{Duration, Instant};
+
+        // Off by default: the loop's recorder records nothing.
+        let mut recorder = FrameRecorder::disabled();
+        recorder.begin_tick(Instant::now());
+        recorder.end_tick();
+        assert!(!recorder.is_enabled() && !profile::active());
+        assert!(recorder.samples().is_empty());
+
+        let root = tempfile::tempdir().expect("tempdir");
+        for seconds in [json!(0), json!(profile::MAX_SECONDS + 1), json!("ten")] {
+            assert!(
+                matches!(profile_start_in(root.path(), json!({ "seconds": seconds }).as_object().unwrap()), Response::Err { code, .. } if code == "invalid_arguments"),
+                "{seconds}"
+            );
+        }
+        assert!(!profile::active(), "a refused length records nothing");
+        let Response::Answer(started) =
+            profile_start_in(root.path(), json!({"seconds": 60}).as_object().unwrap())
+        else {
+            panic!("the owner starts a profile");
+        };
+        assert_eq!(started["profile"]["state"], "recording");
+        let dir = std::path::PathBuf::from(started["profile"]["path"].as_str().unwrap());
+        assert!(dir.starts_with(root.path()));
+        assert!(
+            matches!(profile_start_in(root.path(), &serde_json::Map::new()), Response::Err { code, .. } if code == "action_failed"),
+            "one profile at a time"
+        );
+
+        // The loop, unchanged: a recorder with no environment begins
+        // recording at its next tick.
+        recorder.set_target_period(Duration::from_micros(11_111));
+        for _ in 0..3 {
+            recorder.begin_tick(Instant::now());
+            profile::record_phase("widget-pump", Duration::from_micros(250), None);
+            profile::record_phase("legacy-inbound", Duration::from_micros(40), Some(2));
+            recorder.mark_pump(Duration::from_micros(300));
+            recorder.end_tick();
+        }
+        assert!(recorder.is_enabled());
+        assert!(
+            recorder.samples().is_empty(),
+            "a profile keeps its own rows, not the environment's summary"
+        );
+
+        let Some(Response::Answer(stopped)) =
+            dispatch(&invoke("profile-stop@session-diagnostics", &json!({})))
+        else {
+            panic!("the owner stops the profile");
+        };
+        assert_eq!(stopped["profile"]["state"], "idle");
+        assert_eq!(stopped["profile"]["last"]["ticks"], 3);
+        assert!(!profile::active());
+        recorder.begin_tick(Instant::now());
+        recorder.end_tick();
+        assert!(!recorder.is_enabled(), "recording stops with the profile");
+
+        // The summary is written last, off the loop.
+        let summary_path = dir.join("summary.json");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !summary_path.exists() {
+            assert!(Instant::now() < deadline, "the profile completes");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frames = std::fs::read_to_string(dir.join("frames.csv")).unwrap();
+        let mut rows = frames.lines();
+        assert_eq!(rows.next(), Some(CSV_HEADER));
+        assert_eq!(rows.count(), 3);
+        let phases = std::fs::read_to_string(dir.join("phases.csv")).unwrap();
+        assert_eq!(phases.lines().next(), Some("seq,phase,elapsed_us,items"));
+        assert_eq!(
+            phases
+                .lines()
+                .filter(|l| l.contains(",widget-pump,250,"))
+                .count(),
+            3
+        );
+        assert!(phases.contains(",legacy-inbound,40,2"));
+        let threads = std::fs::read_to_string(dir.join("threads.csv")).unwrap();
+        assert_eq!(threads.lines().next(), Some("t_us,tid,thread,cpu_us"));
+        let summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
+        assert_eq!(summary["frames"]["ticks"], 3);
+        assert_eq!(summary["phases"]["widget-pump"]["count"], 3);
+        assert_eq!(summary["phases"]["widget-pump"]["total_us"], 750);
+        assert!(
+            !summary["threads"].as_array().unwrap().is_empty(),
+            "the sampler saw this process's threads"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("frames.csv"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "a profile names apps; it is private");
+        }
+        let Some(Response::Answer(inspected)) =
+            dispatch(&invoke("inspect@session-diagnostics", &json!({})))
+        else {
+            panic!("inspect");
+        };
+        assert_eq!(inspected["profile"]["last"]["path"], json!(dir));
+    }
 
     #[test]
     fn session_diagnostics_strict_admission_readback_and_session_isolation() {

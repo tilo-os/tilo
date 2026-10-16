@@ -67,11 +67,6 @@ impl StripIndicators {
         self.last = Some(position);
     }
 
-    /// Show them now, as navigation would.
-    pub(crate) fn poke(&mut self, now: Instant) {
-        self.changed_at = Some(now);
-    }
-
     /// Opacity at `now`. Under reduced motion they cut out instead of fading.
     pub(crate) fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
         if self.hovered {

@@ -794,15 +794,11 @@ impl WordProcessorWidget {
         self.participants.set_label(participant, label);
     }
 
-    /// Forget `participant`'s view (its task ended). Returns whether it had one.
-    pub fn remove_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        self.participants.remove(participant)
-    }
-
     /// The Find results `participant` sees, as resources: this window's
     /// for `None`, else built from that participant's own view only, so no
     /// other participant's hits leak into it.
-    pub fn participant_resources(
+    #[cfg(test)]
+    pub(crate) fn participant_resources(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
@@ -833,7 +829,8 @@ impl WordProcessorWidget {
     /// Refuses an invoker without a participant, and returns the first
     /// executor refusal; envelopes before it stay applied, the view is then
     /// left as it was (rebased).
-    pub fn apply_participant_edit(
+    #[cfg(test)]
+    pub(crate) fn apply_participant_edit(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
         state: &mut ui::widget::Edits<'_>,

@@ -666,6 +666,17 @@ pub struct NativeManagedTaskRequest {
     pub route: WorkspaceTaskRoute,
 }
 
+/// A task run to hand to its agent once the caller has released the tree.
+/// Dispatch goes through the action broker, which reads the workspace tree
+/// itself to check the room's authority, so it cannot run while the event
+/// that asked for it still holds the tree for writing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskDispatchRequest {
+    pub room: String,
+    pub task_id: String,
+    pub assigned_agent: Option<String>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these independent flags report distinct effects to the overlay host"
@@ -674,6 +685,8 @@ pub struct NativeManagedTaskRequest {
 pub struct RoomActivityOutcome {
     pub create_native_manual: Option<NativeManualTaskRequest>,
     pub create_native_managed: Option<NativeManagedTaskRequest>,
+    /// Run with [`RoomActivityPane::dispatch_task`] after releasing the tree.
+    pub dispatch_task: Option<TaskDispatchRequest>,
     pub handled: bool,
     pub reverted: bool,
     /// A band was named/renamed/un-named — a document write too.
@@ -5562,6 +5575,34 @@ impl RoomActivityPane {
     }
 
     /// Close the draft only after the native owner retained its actual receipt.
+    /// Hand a task run the pane asked for to its agent. Call it with the tree
+    /// unlocked: the broker checks the room's authority against the tree.
+    /// On success the caller refreshes the pane, which shows the run; a
+    /// refusal is kept as the agent's failed start, so the task offers a
+    /// retry with the reason.
+    pub fn dispatch_task(&mut self, request: TaskDispatchRequest) -> bool {
+        let TaskDispatchRequest {
+            room,
+            task_id,
+            assigned_agent,
+        } = request;
+        match self.host.dispatch_task(&room, &task_id) {
+            Ok(()) => true,
+            Err(detail) => {
+                if let Some(agent) = assigned_agent {
+                    let detail = if detail.is_empty() {
+                        t("activity-agent-dispatch-failed")
+                    } else {
+                        detail
+                    };
+                    self.agent_startup
+                        .insert((room, agent), AgentStartup::Failed { detail });
+                }
+                false
+            }
+        }
+    }
+
     pub fn complete_native_manual_task(&mut self, id: String, tree: &mut impl ActivityTree) {
         self.selected_task = Some(id);
         self.close_task_composer();
@@ -5711,25 +5752,13 @@ impl RoomActivityPane {
             };
         }
         if action == TaskAction::Launch {
-            let assigned_agent = task.assigned_agent.clone();
-            let dispatched = self.host.dispatch_task(&self.task_room, &task_id);
-            if dispatched.is_ok() {
-                self.refresh(tree);
-            } else if let Some(agent) = assigned_agent {
-                let detail = dispatched
-                    .as_ref()
-                    .err()
-                    .cloned()
-                    .unwrap_or_else(|| t("activity-agent-dispatch-failed"));
-                self.agent_startup.insert(
-                    (self.task_room.clone(), agent),
-                    AgentStartup::Failed { detail },
-                );
-            }
             return RoomActivityOutcome {
                 handled: true,
-                task_changed: dispatched.is_ok(),
-                agent_runtime_changed: dispatched.is_err(),
+                dispatch_task: Some(TaskDispatchRequest {
+                    room: self.task_room.clone(),
+                    task_id,
+                    assigned_agent: task.assigned_agent.clone(),
+                }),
                 ..RoomActivityOutcome::default()
             };
         }
@@ -5822,6 +5851,22 @@ impl RoomActivityPane {
                     }
                     actions.push(TaskAction::CancelRun);
                 }
+            }
+            // A reviewed run reaches its agent only once that agent
+            // subscribes, so an offline assigned agent must be startable
+            // here too: approving alone would wait for it forever.
+            if self.host.mutations_available()
+                && !self.feed_coverage.pending_tree
+                && !task.status.is_finished()
+                && task.route != WorkspaceTaskRoute::Manual
+                && let Some(agent) = task.assigned_agent.as_deref()
+                && !self.agent_is_live(agent)
+                && !matches!(
+                    self.agent_startup_state(agent),
+                    Some(AgentStartup::Starting { .. })
+                )
+            {
+                actions.insert(1, TaskAction::StartAgent);
             }
             return actions;
         }

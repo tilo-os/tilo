@@ -570,8 +570,10 @@ async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
         first,
         "exact retry retains the original generation"
     );
-    let changed =
-        StatePeer::validate_workspace_effect_receipt_encoding(invocation, &receipt).unwrap();
+    let changed = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
+        invocation, &receipt,
+    )
+    .unwrap();
     let mut changed = changed.clone();
     changed.completed_at = 2;
     assert!(

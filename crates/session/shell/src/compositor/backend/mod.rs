@@ -410,8 +410,12 @@ pub enum BackendEvent {
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
     /// A gesture the shell *did* claim, already resolved into the
-    /// navigation it means. Never also delivered as [`Self::Gesture`].
-    ShellGesture(crate::compositor::backend::drm::gestures::GestureAction),
+    /// navigation it means, with the time its input event was reported.
+    /// Never also delivered as [`Self::Gesture`].
+    ShellGesture(
+        crate::compositor::backend::drm::gestures::GestureAction,
+        std::time::Instant,
+    ),
     /// A touch point, for forwarding to the focused client over
     /// `wl_touch`. The shell receives the same contact as raw
     /// `WindowEvent::Touch` through [`Self::Input`].
@@ -461,7 +465,7 @@ impl BackendEvent {
             | Self::TabletPad(_)
             | Self::TabletPadMap { .. }
             | Self::Gesture(_)
-            | Self::ShellGesture(_)
+            | Self::ShellGesture(..)
             | Self::Touch(_)
             | Self::TabletMode(_)
             // A key press an accessibility filter rejected was still pressed.
@@ -716,6 +720,15 @@ pub trait Backend {
         self.submit_frame(&frame.scene, output);
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
+
+    /// Read input that arrived since the last poll, without blocking and
+    /// without touching anything else [`Self::poll_events`] applies (the
+    /// output table above all), so the run loop can call it between the
+    /// phases of a turn while that turn's frame is being built. The events
+    /// arrive in order and belong ahead of whatever the next
+    /// [`Self::poll_events`] returns. Backends whose input does not arrive
+    /// on their own loop have nothing to read here.
+    fn poll_input(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
 
     /// Duplicate an fd which becomes readable whenever this backend has
     /// events waiting for [`Self::poll_events`]. The compositor registers it

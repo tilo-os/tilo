@@ -1,7 +1,7 @@
 # Fast quality needs Rust metadata/formatting and repository policy tools, not
 # the compositor's graphics, media, browser or legacy application test subjects.
 # Reuse the reviewed compiler and audit binaries; never resolve a floating Rust.
-# Built by t's image-ci-fast check (t.toml). Keep the base on the
+# Built by t's image-ci-fast check. Keep the base on the
 # builder's Fedora release: the copied audit tools link against its glibc.
 ARG TOOLS_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM ${TOOLS_IMAGE} AS tools

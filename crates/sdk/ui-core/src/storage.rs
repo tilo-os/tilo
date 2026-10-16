@@ -253,8 +253,10 @@ impl SettingsDocument {
             Ok(())
         } else {
             if file {
-                // After what a UI thread changed before, in the order made.
-                store_pending();
+                // After what a UI thread changed in this document before, in
+                // the order made. Other documents' changes keep their own
+                // order and need not wait for this write.
+                store_pending(Some(self));
             }
             match (self, origin) {
                 (Self::Session, Some(origin)) => {
@@ -301,7 +303,7 @@ struct Change {
 /// replace, each merged into the file as it is then. The last change to a
 /// key wins and what other processes stored meanwhile is kept. A writer on
 /// any other thread stores the queue first, so changes land in the order
-/// they were made.
+/// they were made in that document.
 struct Queue {
     pending: Vec<Change>,
     /// A background job is to store the queue.
@@ -351,7 +353,7 @@ fn defer(change: Change) {
 /// The background job: store the queue until it is empty.
 fn store_queue() {
     loop {
-        store_pending();
+        store_pending(None);
         let mut queue = lock_queue();
         // A change queued after the last batch found this job scheduled.
         if queue.pending.is_empty() {
@@ -362,20 +364,28 @@ fn store_queue() {
     }
 }
 
-/// Store every queued change on this thread, oldest first, after the batch
-/// another thread may be writing.
-fn store_pending() {
+/// Store the queued changes to `only` (every queued change when `None`) on
+/// this thread, oldest first, after the batch another thread may be
+/// writing.
+fn store_pending(only: Option<&SettingsDocument>) {
+    let wanted = |change: &Change| only.is_none_or(|document| change.document == *document);
     let mut queue = lock_queue();
     loop {
         if queue.writing {
             queue = wait(queue);
             continue;
         }
-        if queue.pending.is_empty() {
+        // While `writing` is set no other thread takes changes off the
+        // queue, and new ones are only appended, so these positions hold
+        // until the batch is stored.
+        let taken: Vec<usize> = (0..queue.pending.len())
+            .filter(|&at| wanted(&queue.pending[at]))
+            .collect();
+        if taken.is_empty() {
             return;
         }
         queue.writing = true;
-        let batch = queue.pending.clone();
+        let batch: Vec<Change> = taken.iter().map(|&at| queue.pending[at].clone()).collect();
         drop(queue);
         debug_assert!(
             !crate::rt::is_ui_thread(),
@@ -404,7 +414,9 @@ fn store_pending() {
             }
         }
         queue = lock_queue();
-        queue.pending.drain(..batch.len());
+        for &at in taken.iter().rev() {
+            queue.pending.remove(at);
+        }
         queue.writing = false;
         WRITES.fetch_add(1, Ordering::AcqRel);
         if failed && let Some(wake) = queue.wake.take() {
@@ -419,7 +431,7 @@ fn store_pending() {
 /// runner does before the process ends.
 pub fn flush_settings_writes() {
     if !crate::rt::is_ui_thread() {
-        store_pending();
+        store_pending(None);
         return;
     }
     let mut queue = lock_queue();
@@ -1037,6 +1049,60 @@ mod tests {
         assert_eq!(
             AppFiles::for_app("so.tilo.example").paths().id(),
             "so.tilo.example"
+        );
+    }
+
+    /// A write to one settings file from off a UI thread stores the changes
+    /// a UI thread queued for that file first, and leaves another file's
+    /// queued changes to the background that stores them.
+    #[test]
+    fn an_off_thread_write_stores_only_its_own_files_queued_changes() {
+        fn values(key: &str, value: i64) -> Map<String, Value> {
+            [(key.to_owned(), Value::from(value))].into_iter().collect()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mine_path, other_path) = (dir.path().join("mine.json"), dir.path().join("other.json"));
+        let mine = SettingsDocument::File(mine_path.clone());
+        let other = SettingsDocument::File(other_path.clone());
+        let work = crate::rt::background::Pumped::new();
+        let background = work.background();
+        let (queued_mine, queued_other) = (mine.clone(), other.clone());
+        std::thread::spawn(move || {
+            crate::rt::mark_ui_thread();
+            let _work = background.enter();
+            queued_mine
+                .update_section("s", values("queued", 1))
+                .unwrap();
+            queued_other
+                .update_section("s", values("queued", 2))
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+
+        other.update_section("s", values("direct", 3)).unwrap();
+        let stored = settings_store::load_section_at(&other_path, "s");
+        assert_eq!(
+            stored.get("queued"),
+            Some(&Value::from(2)),
+            "its queued change first"
+        );
+        assert_eq!(stored.get("direct"), Some(&Value::from(3)));
+        assert!(
+            settings_at(&mine_path).is_empty(),
+            "another file's queued change waits for its own background"
+        );
+        assert_eq!(
+            mine.section("s").get("queued"),
+            Some(&Value::from(1)),
+            "and reads as made"
+        );
+
+        work.run_pending();
+        assert_eq!(
+            settings_store::load_section_at(&mine_path, "s").get("queued"),
+            Some(&Value::from(1)),
+            "the background stores it"
         );
     }
 }

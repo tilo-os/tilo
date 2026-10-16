@@ -733,6 +733,58 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
             });
         Some((key, ui::PresencePayload::Caret { pos }))
     }
+
+    /// The selection for an agent, in the terms the editor's place-taking
+    /// actions read (`at`): the caret's block and character offsets in it.
+    /// A selection spanning blocks is shared as its part in the caret's
+    /// block, the same part peers see, with every block's part noted beside
+    /// it; the excerpt is exactly the caret block's text, so what the agent
+    /// reads at the place is what it will act on there.
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        use ui::shared_selection::SharedSelection;
+        if !self.lifecycle.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        let block = self.blocks.iter().find(|b| &b.id == caret_block)?;
+        let kind = <tilo_document::RichText as tilo_resource::Resource>::KIND;
+        let spans = if self.inner.has_selection() {
+            self.selection_blocks_cached()
+        } else {
+            Vec::new()
+        };
+        if let Some((_, start, end)) = spans.iter().find(|(b, _, _)| b == caret_block)
+            && start < end
+        {
+            let (start, end) = (*start, *end);
+            let text: String = block.text.chars().skip(start).take(end - start).collect();
+            let ranges = spans
+                .iter()
+                .map(|(block, start, end)| tilo_actions::InteractionTextRange {
+                    block: block.clone(),
+                    start: u64::try_from(*start).unwrap_or(u64::MAX),
+                    end: u64::try_from(*end).unwrap_or(u64::MAX),
+                })
+                .collect();
+            let mut selection = SharedSelection::of_text(&text)
+                .at(tilo_actions::SelectionPlace::range(
+                    caret_block.clone(),
+                    start,
+                    end,
+                ))
+                .in_kind(kind);
+            selection.anchor = selection.anchor.spanning("body", ranges);
+            return Some(selection);
+        }
+        Some(
+            SharedSelection::default()
+                .at(tilo_actions::SelectionPlace::caret(
+                    caret_block.clone(),
+                    self.inner.caret.offset,
+                ))
+                .in_kind(kind),
+        )
+    }
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {

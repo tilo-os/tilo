@@ -41,7 +41,7 @@ run 'Workflow dependency and supply-chain invariants' \
 run 'Path-filtered package dependency triggers' \
   python3 tools/policy/check_workflow_package_paths.py \
   --check tilo-advisory-lock .forgejo/workflows/build-ci-builder.yml \
-  --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
+  --check tilo-crypto 't.toml#development-signing-context-x86_64' \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-relay 't.toml#image-relay' \
@@ -100,6 +100,8 @@ run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
 run 'No new interpreter scripts in the OS image' \
   python3 tools/policy/check_image_interpreters.py
+run 'State seeded once keeps every version upgraded machines hold' \
+  python3 tools/policy/check_seeded_state_history.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 run 'rustls is the only TLS stack' python3 tools/policy/check_tls_stack.py
 run 'No telemetry, analytics or crash-upload client' python3 tools/policy/check_no_telemetry.py

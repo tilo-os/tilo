@@ -136,7 +136,7 @@ path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true

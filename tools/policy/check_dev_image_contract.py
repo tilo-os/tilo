@@ -199,13 +199,15 @@ def check_builder_packages(repo: Path) -> list[Finding]:
     generator = repo / "os/scripts/builder-packages.py"
     listing = repo / "os/scripts/builder-packages.txt"
     if not generator.is_file():
-        return []
+        return [Finding(rel(repo, generator), "package generator is missing", WHY_TOOLCHAIN,
+                        "restore os/scripts/builder-packages.py so package parity can be checked.")]
     module = load("builder_packages_for_dev_contract", generator)
     try:
         committed = [line.strip() for line in listing.read_text(encoding="utf-8").splitlines()
                      if line.strip() and not line.startswith("#")]
-    except OSError:
-        committed = []
+    except OSError as error:
+        return [Finding(rel(repo, listing), f"cannot read package list: {error}", WHY_TOOLCHAIN,
+                        "restore a readable os/scripts/builder-packages.txt.")]
     findings = []
     for arch in ("x86_64", "aarch64"):
         wanted = module.builder_packages(repo / "os/Containerfile", "builder-base", arch)

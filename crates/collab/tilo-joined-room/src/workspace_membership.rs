@@ -51,7 +51,8 @@ impl NativeWorkspaceOwner {
         // Always revalidate current person administration, including retries.
         // Apply to a clone so retry validation cannot publish another mutation.
         let mut peer = candidate.peer.clone();
-        peer.apply_workspace_membership_command(&caller, &command, key, now)?;
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&caller, &command, key, now)?;
         if let Some(existing) = candidate.record.workspace_memberships.get(&id) {
             if existing.receipt.binding != binding {
                 return Err("membership invocation was already bound to another command".into());

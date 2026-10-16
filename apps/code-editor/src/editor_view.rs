@@ -506,6 +506,38 @@ impl EditorView {
         self.selected_text()
     }
 
+    /// What the person has selected (or where the caret is) while the editor
+    /// is focused, for asking an agent about it: character offsets into the
+    /// whole text of `file`, the place the project's `replace-range` reads.
+    pub fn shared_selection_in(&self, file: &str) -> Option<ui::shared_selection::SharedSelection> {
+        use ui::shared_selection::SharedSelection;
+        if !self.is_focused || !self.is_bound() {
+            return None;
+        }
+        if let Some((start, end)) = self.primary_flat_selection()
+            && start != end
+        {
+            let (start, end) = (start.min(end), start.max(end));
+            let selected: String = self
+                .cached_text
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .collect();
+            return Some(
+                SharedSelection::of_text(&selected)
+                    .at(ui::tilo_actions::SelectionPlace::range(file, start, end)),
+            );
+        }
+        let caret = self.primary();
+        Some(
+            SharedSelection::default().at(ui::tilo_actions::SelectionPlace::caret(
+                file,
+                self.char_index(caret.line, caret.col),
+            )),
+        )
+    }
+
     /// Bind the authoritative Text while restoring this peer's recent render
     /// projection and viewport. `sync` validates its committed witness before
     /// reusing content; pending transactions always bypass that witness.

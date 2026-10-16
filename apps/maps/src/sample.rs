@@ -836,10 +836,9 @@ pub fn sample_transit() -> Vec<TransitJourney> {
     ]
 }
 
-/// Assemble the fully-populated default model used by `--shots` and as the
-/// initial state of a fresh live session.
-/// Sample geocoded region candidates for the offline download-by-place shot
-/// (no network). Real Munich bounding boxes; used only behind `--shots`/demo.
+/// Sample geocoded region candidates for the offline download-by-place test
+/// (no network): real Munich bounding boxes.
+#[cfg(test)]
 pub fn download_regions() -> Vec<crate::net::RegionHit> {
     use crate::net::RegionHit;
     vec![
@@ -867,6 +866,8 @@ pub fn download_regions() -> Vec<crate::net::RegionHit> {
     ]
 }
 
+/// Assemble the fully-populated default model used by `--shots` and as the
+/// initial state of a fresh live session.
 pub fn default_model() -> MapModel {
     let mut m = MapModel {
         places: places(),

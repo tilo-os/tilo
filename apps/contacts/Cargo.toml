@@ -17,11 +17,20 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the contact directory through its engine library in the runtime
+# bundle (libtilo_contact_directory_engine.so,
+# crates/runtime/engines/contact-directory) instead of the runtime. The
+# release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links tilo-contact-directory statically,
+# because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
 tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["priority-contacts"] }
 automerge.workspace = true

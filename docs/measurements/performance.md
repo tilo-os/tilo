@@ -51,7 +51,7 @@ never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performanc
 records") lists the KPIs.
 
 The `browser` group qualifies the browser runtime: the release desktop bundle
-(`build.sh --bundle desktop`, the bytes `web-entry.yml` publishes) in headless
+(`build.sh --bundle desktop`, the bytes t's `image-web-entry` publishes) in headless
 Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
 page ran exactly that commit's clean bundle on the WebGPU adapter the records
 name, then measures load, first opens, window activation, the demo workload's
@@ -80,8 +80,8 @@ The `hosting` group has two jobs: the relay's cost per collaborator-hour
 `adapters.py room-load`), which guards the guests' p99 join and chat delivery
 and the host's peak memory and CPU. The capacity curve behind that point and
 the deployed caps (guests and spectators from 50 to 4000, the caps at once, and
-the price of 100 concurrent guests per node) is the `perf-room-capacity` check
-(`t dispatch perf-room-capacity`, `tools/perf/room_capacity.py`);
+the price of 100 concurrent guests per node) is **Perf / room host capacity**
+(`perf-room-capacity.yml`, manual dispatch, `tools/perf/room_capacity.py`);
 [docs/benchmarks/room-host-capacity-2026-10.md](../benchmarks/room-host-capacity-2026-10.md)
 records a run.
 
@@ -106,8 +106,30 @@ node scripts/perf/native_stream_qualification.mjs target/qualify --out stream.js
   --renderer gpu --expect-revision "$(git rev-parse HEAD)" --max-load 0.25 --enforce-goals
 ```
 
+The nightly runs the qualification twice in one job: H.264, then `--codec vp9`,
+the software VP9 a session with no H.264 encoder (a stock device) streams. The
+VP9 run is its own series, with the codec after the group in each KPI id
+(`stream.vp9.frame.latency`), so neither codec's baseline judges the other's.
+
 `--carrier https` takes the live plane over the HTTPS stream fallback instead of
 WebTransport.
+
+After the timed run, on the same host and in the same room (one the host
+governs, as a shared workspace is), the harness drives the acceptance cases of
+`scripts/perf/native_stream_acceptance.mjs`, and a case that breaks fails the
+run like any other incorrect stream: focus moving onto and off the window with
+clicks, a paste with Control+V, an input method's composition (only its
+committed text reaches the window, once), the page resized and the window
+resizing itself while it streams, a second device of the owner on a network
+where WebTransport never becomes ready (it must take the HTTPS stream and drive
+the window), a second person invited as a viewer (frames, but no control, and
+input they send the host directly refused), the live plane dropped under the
+page while a window streams (it must resume and end on the last frame), and
+typing that never reaches a window that does not hold the keyboard or has
+closed. Safari is not automated: WebKit's Linux builds (WebKitGTK and WPE,
+which Playwright's WebKit is) are not Safari and have no WebTransport, and
+Safari runs only on macOS, for a logged-in user who has enabled remote
+automation (`safaridriver --enable`), which no CI runner here provides.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,

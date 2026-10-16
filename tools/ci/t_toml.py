@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep the parts of t.toml that other repository files define in step with them.
 
-t keys a cargo check by its package's own files and path dependencies, and a
+t keys a cargo check by what cargo reads for its package (its sources, the
+local crates it reaches and the lockfile entries of the crates it uses), and a
 shell check by its `inputs`. suites.toml already says which packages read
 files outside their directory and which paths each hermetic suite group reads,
 so t.toml carries both, generated between markers:
@@ -9,9 +10,16 @@ so t.toml carries both, generated between markers:
   * `package_inputs` of the cargo families, so a change to a file a package
     reads through include_str! or a test fixture path runs its checks again;
   * one `suite-<group>` check per suite group;
+  * the publishing chains of tools/ci/products.toml, one block per family
+    (`products-<family>`; docs/publishing-on-t.md, "Products");
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
     filter in the image .config/visual-goldens-image names, and the nightly
-    `nightly-arm64-goldens` check, which runs it there on aarch64.
+    `nightly-arm64-goldens` check, which runs it there on aarch64;
+  * what the checks in CARGO_CHECKS read: the workspace packages they build,
+    test or run (`cargo_packages`, whose sources, local dependencies and
+    external crates t derives from the manifests and the lockfile), and the
+    files outside those packages they or the packages read, so a change
+    elsewhere in the tree doesn't run them again.
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
@@ -19,12 +27,16 @@ so t.toml carries both, generated between markers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import affected_packages  # noqa: E402
+import products  # noqa: E402
 import suites  # noqa: E402
+import workspace_graph  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 T_TOML = ROOT / "t.toml"
@@ -95,7 +107,9 @@ def suite_checks(manifest: suites.Manifest) -> str:
 
 
 def goldens(image: str) -> str:
-    """The goldens family: the golden filter over the packages it names, in their image."""
+    """The goldens family: the golden filter over the packages it names, in their image. It stays
+    on x86_64, where the baselines were rendered: on aarch64 seven of them come out different
+    (nightly-arm64-goldens), so a result from there wouldn't stand for both."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -117,7 +131,7 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The nightly goldens on aarch64, in the same image: the pixels match on both architectures."""
+    """The nightly goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -137,12 +151,197 @@ def arm64_goldens(image: str) -> str:
     ]) + "\n"
 
 
+# What tools/ci/package_sets.py runs to pick its packages.
+PACKAGE_SET_TOOLS = ["tools/ci/__init__.py", "tools/ci/package_sets.py", "tools/ci/affected_packages.py",
+                     "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
+                     "tools/ci/qualified_native.py", "tools/ci/suites.py"]
+# The files tools/test-env.sh and the scripts it runs read.
+TEST_ENV = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+
+
+def apps_of(packages: dict[str, dict], root: Path, parent: str) -> set[str]:
+    """Workspace packages directly under `parent` that are Tilo apps (have a tilo-app.toml)."""
+    found = set()
+    for name, package in packages.items():
+        directory = Path(package["manifest_path"]).resolve().parent
+        if directory.parent == (root / parent).resolve() and (directory / "tilo-app.toml").is_file():
+            found.add(name)
+    return found
+
+
+# Checks that build, test or run particular workspace packages, keyed by those
+# packages rather than by every file under apps/ and crates/. Each names its
+# packages (or how to find them in the workspace's metadata), whether their
+# dev-dependencies count (`dev`, by default: they do when it runs their tests or
+# examples), those whose tests or examples it runs (`tested`, by default all of
+# them where `dev`), and the other files it reads.
+CARGO_CHECKS: dict[str, dict] = {
+    # Clippy of the apps with an Android host example, for both Android targets.
+    "android": {
+        "packages": lambda packages, root: affected_packages.android_apps(packages),
+        "inputs": ["tools/ci/clippy-android.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", *PACKAGE_SET_TOOLS],
+    },
+    # Clippy of the browser crates' libraries and binaries for wasm32.
+    "wasm": {
+        "packages": lambda packages, root: affected_packages.browser_crates(packages)
+        | {"tilo-web-desktop", "tilo-browser-runtime", "tilo-browser-compute"},
+        "dev": False,
+        "inputs": ["tools/ci/check-wasm.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", *PACKAGE_SET_TOOLS],
+    },
+    # tilo-app builds each example for the web with the browser runtime and the
+    # MoQ library npm builds.
+    "web-examples": {
+        "packages": lambda packages, root: affected_packages.example_apps(packages, root)
+        | {"tilo-app-cli", "tilo-browser-runtime"},
+        "dev": False,
+        "inputs": ["examples/apps/**", "scripts/moq-browser/**", "tools/ci/build-web-examples.sh"],
+    },
+    # tilo-app runs each example's saved scenarios through its own binary.
+    "example-scenarios": {
+        "packages": lambda packages, root: affected_packages.example_apps(packages, root) | {"tilo-app-cli"},
+        "dev": False,
+        "inputs": ["examples/apps/**", "tools/ci/example-scenarios.sh", *TEST_ENV],
+    },
+    # tilo-app lints the sources and manifests of every app of the workspace, as
+    # the workspace's members name them.
+    "app-lints": {
+        "packages": lambda packages, root: {"tilo-app-cli"},
+        "dev": False,
+        "inputs": ["Cargo.toml", "apps/**", "examples/apps/**"],
+    },
+    # tilo-app builds and audits every app of the workspace.
+    "certify": {
+        "packages": lambda packages, root: apps_of(packages, root, "apps")
+        | apps_of(packages, root, "examples/apps") | {"tilo-app-cli"},
+        "dev": False,
+        "inputs": ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
+                   "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml"],
+    },
+    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged.
+    "sdk-linux": {
+        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator"},
+        "tested": {"tilo-caps", "tilo-app-cli"},
+        "inputs": ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py"],
+    },
+    # The SDK's web path: the desktop bundle (the web desktop and the apps it
+    # registers), the chat bundle and the agent participant's example, in Chromium.
+    "sdk-web": {
+        "packages": lambda packages, root: {"tilo-app-cli", "calculator", "chat", "tilo-agent-participant",
+                                            "tilo-web-desktop", "tilo-browser-runtime", "tilo-browser-compute"},
+        "tested": {"tilo-agent-participant"},
+        "inputs": ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**",
+                   "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**"],
+    },
+    # The portable provider panel in the production single-app browser runtime.
+    "model-providers-web": {
+        "packages": lambda packages, root: {"model-providers", "tilo-app-cli", "tilo-browser-runtime"},
+        "dev": False,
+        "inputs": ["apps/model-providers/web/**", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
+                   "apps/*/src/lib.rs", "crates/browser/tilo-web-desktop/**",
+                   "crates/agent/agent-participant/src/web_apps.rs", "scripts/moq-browser/**",
+                   "tools/ci/**", "tools/web/**"],
+    },
+    # The release desktop bundle and the image worker it qualifies.
+    "sdk-web-size": {
+        "packages": lambda packages, root: {"tilo-app-cli", "calculator", "tilo-web-desktop",
+                                            "tilo-browser-runtime", "tilo-browser-compute"},
+        "dev": False,
+        "inputs": ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/ensure-browser-dependencies.sh",
+                   "tools/web/**"],
+    },
+    # The FUSE tests of these packages, and the session lifecycle test, which
+    # reads the OS image's units and the session scripts.
+    "real-fuse": {
+        "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
+                                            "fs-protocol", "tilo-user-identity", "shell"},
+        "inputs": ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh",
+                   "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+}
+
+
+def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:
+    """`names` and the workspace packages they reach through normal and build dependencies,
+    and with `dev` through their own dev-dependencies, as t derives a check's packages."""
+    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
+
+    def local(package: dict, dev_edges: bool) -> list[str]:
+        found = []
+        for dependency in package.get("dependencies", []):
+            if not dependency.get("path") or (dependency.get("kind") == "dev") != dev_edges:
+                continue
+            name = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
+            if name:
+                found.append(name)
+        return found
+
+    stack = list(names)
+    if dev:
+        stack += [d for name in names for d in local(packages[name], True)]
+    seen: set[str] = set()
+    while stack:
+        name = stack.pop()
+        if name not in seen:
+            seen.add(name)
+            stack += local(packages[name], False)
+    return seen
+
+
+def compiled_reads(reader: suites.CargoReader) -> set[str]:
+    """What building a package that `reader` describes reads outside its directory: the files
+    its sources include, and everything the entry names if a build script reads files it finds
+    at run time. The rest of the entry is what its tests read."""
+    found: set[str] = set()
+    for path in reader.readers:
+        text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+        for match in suites.RUST_INCLUDE.finditer(text):
+            found.add(os.path.normpath(os.path.join(os.path.dirname(path), match.group(1) or match.group(2))))
+        if path.endswith("/build.rs") and suites.MANIFEST_DIR.search(text):
+            return {glob(input) for input in reader.inputs}
+    return found
+
+
+def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict[str, dict], root: Path) -> str:
+    """A CARGO_CHECKS check's packages and the files it reads beyond them: its own, and those
+    suites.toml says its packages read outside their directories (for packages it only builds,
+    what building them reads)."""
+    names = set(spec["packages"](packages, root))
+    missing = sorted(names - packages.keys())
+    if missing:
+        raise ValueError(f"{name}: no workspace package is called {', '.join(missing)}")
+    dev = spec.get("dev", True)
+    tested = spec.get("tested", names if dev else set())
+    reach = local_closure(packages, names, dev)
+    reads: set[str] = set()
+    for reader in manifest.cargo:
+        if reader.package in reach:
+            reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
+    inputs = list(dict.fromkeys([*spec["inputs"], *sorted(reads - set(spec["inputs"]))]))
+    return "\n".join([
+        f"cargo_packages = {array(sorted(names))}",
+        *([] if dev else ["cargo_dev_dependencies = false"]),
+        f"inputs = {array(inputs)}",
+    ]) + "\n"
+
+
+def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
+    metadata = metadata if metadata is not None else workspace_graph.cargo_metadata(ROOT)
+    packages = {p["name"]: p for p in metadata["packages"]}
+    return {f"{name}-reads": cargo_check(name, spec, manifest, packages, ROOT) for name, spec in CARGO_CHECKS.items()}
+
+
 def generated(manifest: suites.Manifest) -> dict[str, str]:
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "clippy-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
-            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
+            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
+            **product_blocks(products.load()), **cargo_checks(manifest)}
+
+
+def product_blocks(manifest: dict) -> dict[str, str]:
+    return {f"products-{family}": products.render(manifest, family)
+            for family in products.families(manifest)}
 
 
 def render(text: str, blocks: dict[str, str]) -> str:
@@ -173,11 +372,11 @@ def main(argv: list[str]) -> int:
             T_TOML.write_text(expected, encoding="utf-8")
         return 0
     if expected != text:
-        print("t.toml is out of date with tools/ci/suites.toml or .config/: "
+        print("t.toml is out of date with tools/ci/suites.toml, tools/ci/products.toml, .config/ or the workspace: "
               "run python3 tools/ci/t_toml.py write",
               file=sys.stderr)
         return 1
-    print("t.toml matches tools/ci/suites.toml and .config/")
+    print("t.toml matches tools/ci/suites.toml, tools/ci/products.toml, .config/ and the workspace")
     return 0
 
 

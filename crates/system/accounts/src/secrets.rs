@@ -301,15 +301,6 @@ pub struct AccessRequest {
     pub origin: Option<String>,
 }
 
-/// Non-secret login metadata the credential picker may present for one exact
-/// web origin. Secret values and notes are deliberately absent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CredentialCandidate {
-    pub item_id: SecretId,
-    pub title: String,
-    pub username: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessDecision {
     Deny,
@@ -509,30 +500,6 @@ impl CredentialBroker {
             return Err(BrokerError::Denied);
         }
         self.request_existing_scoped(request, scope)
-    }
-
-    /// Find logins eligible for an exact origin so an app can offer account
-    /// selection without already knowing a vault item ID. This never performs
-    /// suffix matching: a look-alike host receives no candidates.
-    pub fn candidates_for_origin(
-        &self,
-        origin: &str,
-    ) -> Result<Vec<CredentialCandidate>, BrokerError> {
-        let origin = canonical_origin(origin)?;
-        if let Some(error) = self.store.recovery_error() {
-            return Err(BrokerError::Storage(error.to_owned()));
-        }
-        Ok(self
-            .store
-            .list()
-            .into_iter()
-            .filter(|item| item.kind == SecretItemKind::Login && item.origins.contains(&origin))
-            .map(|item| CredentialCandidate {
-                item_id: item.id,
-                title: item.title,
-                username: item.username,
-            })
-            .collect())
     }
 
     pub fn request<F>(
@@ -828,16 +795,16 @@ mod tests {
         std::fs::write(&sealed, b"damaged existing ciphertext").unwrap();
         let before = std::fs::read(&sealed).unwrap();
         let mut broker = CredentialBroker::new(SecretStore::open_in(&root));
-        assert!(matches!(
-            broker.candidates_for_origin("https://example.com"),
-            Err(BrokerError::Storage(_))
-        ));
         let request = AccessRequest {
             app_id: "org.tilo.Browser".into(),
             item_id: item.id,
             purpose: "Sign in".into(),
             origin: None,
         };
+        assert!(matches!(
+            broker.request_existing(&request),
+            Err(BrokerError::Storage(_))
+        ));
         assert!(matches!(
             broker.request(&request, |_, _| panic!("damaged custody must not prompt")),
             Err(BrokerError::Storage(_))
@@ -1011,40 +978,6 @@ mod tests {
 
     #[test]
     fn broker_accepts_only_canonical_origins_and_trusted_prompt_metadata() {
-        // Phase `broker_discovers_only_login_candidates_for_the_exact_origin`.
-        {
-            let root = root();
-            let mut store = SecretStore::open_in(&root);
-            let mut login = SecretItem::login("Bank", "ada@example.com", "pw");
-            login.add_origin("https://bank.example/login").unwrap();
-            store.put(&mut login).unwrap();
-
-            let mut note = SecretItem::login("Recovery note", "", "private note");
-            note.kind = SecretItemKind::SecureNote;
-            note.add_origin("https://bank.example").unwrap();
-            store.put(&mut note).unwrap();
-
-            let broker = CredentialBroker::new(store);
-            assert!(
-                broker
-                    .candidates_for_origin("https://bank.example.evil.test")
-                    .unwrap()
-                    .is_empty()
-            );
-            let candidates = broker
-                .candidates_for_origin("https://BANK.EXAMPLE/sign-in?next=home")
-                .unwrap();
-            assert_eq!(
-                candidates,
-                vec![CredentialCandidate {
-                    item_id: login.id,
-                    title: "Bank".into(),
-                    username: "ada@example.com".into(),
-                }]
-            );
-            std::fs::remove_dir_all(root).ok();
-        }
-
         // Phase `origins_use_web_origin_rules_and_reject_credential_or_control_injection`.
         {
             assert_eq!(

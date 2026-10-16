@@ -421,8 +421,10 @@ impl AreaReads {
         let Some((index, area)) = self.take_next(app) else {
             return Step::Done;
         };
+        // A read the pane shown already started is waited for the same
+        // way: taking it in now would wait for it on the UI thread.
         if let Some(read) = &area.background
-            && (read.start)(app)
+            && ((read.start)(app) || !(read.finished)(app))
         {
             self.in_flight.set(Some(index));
             return Step::Waiting;

@@ -77,3 +77,13 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# Actions Chat offers while it is not running: the action catalogue lists
+# them, and invoking one starts Chat. The running app's published action
+# admits the invocation (a test checks the two agree).
+[[offers]]
+resource  = "chat.workspace"
+action    = "start-call"
+label     = "Start a call"
+kind      = "outside"
+operation = "effect"

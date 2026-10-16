@@ -515,6 +515,7 @@ impl CapnpBrokerState {
                         .clone()
                         .unwrap_or_else(|| task.title.clone()),
                 ),
+                subject: task.subject.clone(),
                 run_id,
                 lease,
                 planning,
@@ -725,6 +726,12 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
+        // An agent reports acceptance and its first progress without waiting
+        // in between, and a report's command is read from the state the one
+        // before committed (progress needs the accepted run). Applied
+        // concurrently, progress read the state before acceptance landed and
+        // was refused, failing the run at its end.
+        let _order = self.native_task_report_order.lock().await;
         let binding = run.native.clone().ok_or("not a native task run")?;
         let service = self
             .native_tasks(&run.cluster_id)

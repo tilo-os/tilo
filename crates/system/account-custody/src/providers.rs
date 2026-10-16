@@ -163,6 +163,10 @@ pub enum Capability {
     Mail,
     Music,
     MusicStreaming,
+    /// Hosted agent models the model gateway calls (Google Vertex AI). A
+    /// grant of its own, so the broad cloud scope it needs never rides on a
+    /// mail or storage token, and forgetting it leaves those untouched.
+    Models,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -186,6 +190,8 @@ impl OAuthUse {
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
             (OAuthIssuer::Spotify, _) => "Spotify",
+            (OAuthIssuer::Google, Capability::Models) => "Google Vertex AI",
+            (_, Capability::Models) => "Agent models",
             (_, Capability::Music | Capability::MusicStreaming) => "Music",
             (OAuthIssuer::Google, Capability::Files) => "Google Drive",
             (OAuthIssuer::Google, Capability::Mail) => "Gmail",
@@ -314,5 +320,9 @@ mod tests {
         );
         assert_eq!(OAuthUse::mail(OAuthIssuer::Google).label(), "Gmail");
         assert_eq!(OAuthUse::mail(OAuthIssuer::Microsoft).label(), "Outlook");
+        assert_eq!(
+            OAuthUse::new(OAuthIssuer::Google, Capability::Models).label(),
+            "Google Vertex AI"
+        );
     }
 }

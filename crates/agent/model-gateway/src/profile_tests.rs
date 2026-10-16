@@ -38,8 +38,60 @@ fn through(
     cache.resolve(("p", "m"), stamp, now, || {
         let mut profile = ProviderProfile::local_vllm();
         profile.id = "p".into();
-        Ok((profile, Some(Zeroizing::new(key.to_owned()))))
+        Ok(((profile, Some(Zeroizing::new(key.to_owned()))), None))
     })
+}
+
+/// Resolve `("p", "m")` through `cache`, a read answering a minted `token`
+/// usable until `until`.
+fn minted(
+    cache: &ProfileCache,
+    now: Instant,
+    token: &str,
+    until: Instant,
+) -> Result<ResolvedProfile, ModelError> {
+    cache.resolve(("p", "m"), Some(stamp(1)), now, || {
+        let mut profile = ProviderProfile::google_vertex("p-1", "global", "m");
+        profile.id = "p".into();
+        Ok((
+            (profile, Some(Zeroizing::new(token.to_owned()))),
+            Some(until),
+        ))
+    })
+}
+
+/// A minted access token is reused only until shortly before it expires,
+/// however recently it was read; a sweep lets go of an expired one.
+#[test]
+fn a_minted_token_is_reused_only_while_it_is_valid() {
+    let start = Instant::now();
+    let cache = ProfileCache::new();
+    // Expires in 120 s: reused for the 30 s before the margin.
+    let until = reuse_until(1_120, 1_000, start);
+    assert_eq!(until, at(start, 30));
+    let first = minted(&cache, start, "first", until).unwrap();
+    let later = minted(&cache, at(start, 29), "later", until).unwrap();
+    assert_eq!(key_of(&first), Some("first"));
+    assert_eq!(key_of(&later), Some("first"));
+    assert_eq!(reads(&cache), 1);
+    let renewed = minted(&cache, at(start, 30), "renewed", at(start, 3000)).unwrap();
+    assert_eq!(key_of(&renewed), Some("renewed"));
+    assert_eq!(reads(&cache), 2);
+    // Still bounded by the reuse age, not only the token's lifetime.
+    let aged = minted(&cache, at(start, 91), "aged", at(start, 3000)).unwrap();
+    assert_eq!(key_of(&aged), Some("aged"));
+    // A token already inside the margin is used once and never kept.
+    let cache = ProfileCache::new();
+    let due = reuse_until(1_050, 1_000, start);
+    assert_eq!(due, start);
+    minted(&cache, start, "due", due).unwrap();
+    assert_eq!(kept(&cache), 0);
+    // A sweep drops a token whose time is up even within the reuse age.
+    minted(&cache, start, "short", at(start, 10)).unwrap();
+    cache.sweep(at(start, 9));
+    assert_eq!(kept(&cache), 1);
+    cache.sweep(at(start, 10));
+    assert_eq!(kept(&cache), 0);
 }
 
 fn reads(cache: &ProfileCache) -> u64 {
@@ -66,7 +118,7 @@ fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
         // Another model of the same provider is its own reading.
         cache
             .resolve(("p", "other"), Some(stamp(1)), start, || {
-                Ok((ProviderProfile::local_vllm(), None))
+                Ok(((ProviderProfile::local_vllm(), None), None))
             })
             .unwrap();
         assert_eq!(reads(&cache), 2);
@@ -122,8 +174,11 @@ fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
             .resolve(("p", "m"), Some(stamp(1)), start, || {
                 cache.forget("p");
                 Ok((
-                    ProviderProfile::local_vllm(),
-                    Some(Zeroizing::new("old".into())),
+                    (
+                        ProviderProfile::local_vllm(),
+                        Some(Zeroizing::new("old".into())),
+                    ),
+                    None,
                 ))
             })
             .unwrap();
@@ -346,4 +401,99 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
             "the configuration went to the document under test"
         );
     }
+}
+
+fn seal_grant(profile_id: &str, refresh_token: &str) {
+    let tokens = account_custody::TokenSet {
+        access_token: "minted-access-token".into(),
+        scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
+        refresh_token: refresh_token.into(),
+        expires_in: 3600,
+        obtained_at: tilo_clock::unix_now(),
+    };
+    Custodian::live()
+        .seal_oauth(&grant_id(profile_id).unwrap(), &tokens)
+        .unwrap();
+}
+
+/// The production path for a Google sign-in over real files: the gateway
+/// takes the access token custody holds, Settings and the agent see it as
+/// configured, and once the grant is revoked every one of them says to
+/// sign in again; the profile's API-key slot is never consulted.
+fn child_mints_from_custody() {
+    let mut profile = ProviderProfile::google_vertex("tilo-509618", "global", "gemini-4-argon");
+    profile.id = "vertex-provider".into();
+    let model = profile.default_model.clone().unwrap();
+    ProviderConfig {
+        profiles: vec![profile],
+        default_profile: None,
+    }
+    .save()
+    .unwrap();
+    let signed_in = |expected: bool| {
+        assert_eq!(secret_status("vertex-provider"), Ok(expected));
+        let selection = selection_configured(
+            "vertex-provider",
+            &model,
+            ProviderProtocol::OpenAiCompatible,
+        );
+        assert_eq!(selection.is_ok(), expected, "{selection:?}");
+    };
+
+    // Phase: never signed in on this device.
+    signed_in(false);
+    assert_eq!(
+        plan_profile("vertex-provider", &model).unwrap_err(),
+        resolution_error(ErrorKind::Authentication, SIGN_IN_AGAIN)
+    );
+
+    // Phase: a sealed grant yields its access token, kept between turns.
+    seal_grant("vertex-provider", "refresh-token");
+    signed_in(true);
+    let (profile, token) = plan_profile("vertex-provider", &model).unwrap();
+    assert_eq!(
+        token.as_deref().map(String::as_str),
+        Some("minted-access-token")
+    );
+    assert!(profile.signs_in_with_google());
+    assert!(holds("vertex-provider"));
+    let api_key = SecretVault::open().get(&vault_id("vertex-provider").unwrap());
+    assert!(api_key.is_none(), "a sign-in never writes the API-key slot");
+
+    // Phase: a revoked grant (custody keeps it empty) means sign in again.
+    seal_grant("vertex-provider", "");
+    signed_in(false);
+    assert_eq!(
+        plan_profile("vertex-provider", &model).unwrap_err(),
+        resolution_error(ErrorKind::Authentication, SIGN_IN_AGAIN)
+    );
+    assert!(!holds("vertex-provider"));
+}
+
+#[test]
+fn a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again() {
+    if std::env::var_os("PROFILE_TEST_CHILD").is_some() {
+        child_mints_from_custody();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "service::profile_tests::a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again",
+            "--nocapture",
+        ])
+        // No ambient credentials, settings path, or secret-tool.
+        .env_clear()
+        .env("PATH", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("PROFILE_TEST_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

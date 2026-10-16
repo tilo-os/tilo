@@ -506,6 +506,7 @@ suites = [
   "scripts/perf/presentation_feedback_test.py",
   "scripts/perf/render_bench_test.py",
   "scripts/perf/render_boundaries_test.py",
+  "scripts/perf/resource_bench_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
   "scripts/perf/settings_effects_test.py",
@@ -526,14 +527,21 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/app-launch-sweep.py",
+  "scripts/headless-examples/",
   "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
+  "scripts/tests/test_headless_error_handling.py",
   "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
+
+[[group]]
+name = "vm-acceptance-tools"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/tests/test_error_paths.py"]
 
 [[group]]
 name = "ux-bench"
@@ -884,6 +892,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
+  # Workspace certification tells a compute package from a window by its manifest.
+  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.
@@ -953,6 +963,8 @@ readers = [
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
+  # Workspace certification's compute-package test reads real manifests.
+  "crates/dev/tilo-app-cli/src/main.rs",
   "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
 ]
 
@@ -971,6 +983,7 @@ package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
 readers = [
@@ -1230,6 +1243,10 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
+[[covered]]
+suite = "tools/ci/focused_test.py"
+by = "tools/tests/test_focused_test.py"
+
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1243,13 +1260,11 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
-reason = "needs the built web entry image"
-workflow = "web-entry.yml"
+reason = "needs the built web entry image: t's image-web-entry check runs it, and carry-web-entry on the release"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-workflow = "room-service-image.yml"
+reason = "needs the built room-service image: t's image-room-service check runs it"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
@@ -1396,43 +1411,35 @@ reason = "needs rootless Podman"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
-reason = "needs the disposable root native container with Cosign"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
-reason = "needs the disposable root native container with Cosign and Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign and Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
-reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
-reason = "needs Podman, Cosign and a TLS registry"
-workflow = "ci-development-signing.yml"
+reason = "needs Podman, Cosign and a TLS registry: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -1452,8 +1459,7 @@ reason = "driver for a running FluxCast server"
 
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -1587,8 +1593,7 @@ reason = "asserts preserved sparse holes, which the container overlay root of th
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
-reason = "needs a root-owned /usr/local/bin/tilo-crypto"
-workflow = "ci-development-signing.yml"
+reason = "needs a root-owned /usr/local/bin/tilo-crypto: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
@@ -1755,3 +1760,7 @@ package = "install"
 # Real signed runtime installation is checked against its broker service grants.
 inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
 readers = ["crates/packaging/install/tests/runtime_package.rs"]
+
+[[unrequired]]
+suite = "tools/ci/windows/wine-test.sh"
+reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary, so t's wine/windows-x86_64-tests check runs it after build/windows-x86_64-tests"

@@ -35,6 +35,8 @@ mod history_and_agents;
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
 mod launch_cli;
+#[path = "legacy_notebook.rs"]
+mod legacy_notebook;
 #[path = "live_block_anchor.rs"]
 mod live_block_anchor;
 #[path = "main_panel_scroll.rs"]
@@ -67,12 +69,16 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "surface_receipts.rs"]
+mod surface_receipts;
 #[path = "tab_nesting.rs"]
 mod tab_nesting;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typed_markdown.rs"]
+mod typed_markdown;
 #[path = "typing_damage.rs"]
 mod typing_damage;
 #[path = "typing_order.rs"]

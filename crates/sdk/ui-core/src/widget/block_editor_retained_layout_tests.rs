@@ -1258,3 +1258,140 @@ fn kept_accessibility_rows_follow_caret_indent_and_moves() {
         "after a move the kept rows publish what a full rebuild publishes"
     );
 }
+
+/// The drag handles are for the pointer: moving it brings them up, typing
+/// hides them, and a few seconds' rest fades them out, after which the editor
+/// asks for no frame and sets no wake until something moves again.
+#[test]
+fn drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest() {
+    use super::handle_reveal::HANDLE_HOLD;
+    use crate::time::testing::with_monotonic_time;
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
+    let quiet = |fixture: &RetainedEditor| {
+        !fixture.editor.needs_redraw()
+            && !Widget::needs_animation_frame(&*fixture.editor)
+            && fixture.editor.handle_fade_deadline().is_none()
+    };
+    assert_eq!(
+        fixture.editor.handle_opacity_drawn_for_test(),
+        0.0,
+        "no handle shows beside the caret before the pointer moves"
+    );
+    assert!(quiet(&fixture));
+
+    let over_text = fixture.editor.blocks[1].line.get_rect().center();
+    let point = |fixture: &mut RetainedEditor, at| {
+        with_monotonic_time(at, || {
+            Dispatch::new()
+                .doc(&mut fixture.doc)
+                .layout(&fixture.tree, fixture.root)
+                .send(
+                    &mut *fixture.editor,
+                    &crate::synthetic_input::cursor_moved(over_text.x, over_text.y),
+                );
+            fixture.frame();
+        });
+    };
+    point(&mut fixture, at(0));
+    assert_eq!(
+        fixture.editor.handle_opacity_drawn_for_test(),
+        1.0,
+        "moving the pointer shows the handles"
+    );
+
+    with_monotonic_time(at(100), || fixture.type_text("a"));
+    assert_eq!(
+        fixture.editor.handle_opacity_drawn_for_test(),
+        0.0,
+        "a keystroke hides them"
+    );
+    assert!(quiet(&fixture), "hidden handles need nothing");
+
+    point(&mut fixture, at(200));
+    assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 1.0);
+    let rest = at(200) + HANDLE_HOLD;
+    with_monotonic_time(at(300), || {
+        assert!(!Widget::needs_animation_frame(&*fixture.editor));
+        assert!(
+            !fixture.editor.needs_redraw(),
+            "resting handles cost no frames"
+        );
+        assert_eq!(
+            fixture.editor.handle_fade_deadline(),
+            Some(rest),
+            "the editor sleeps until the fade starts"
+        );
+        assert!(
+            Widget::next_wake_deadline(&*fixture.editor).is_some_and(|wake| wake <= rest),
+            "and its host wakes it then"
+        );
+    });
+    let midway = rest + crate::animation::CHROME_FADE / 2;
+    with_monotonic_time(midway, || {
+        assert!(Widget::needs_animation_frame(&*fixture.editor), "fading");
+        fixture.frame();
+    });
+    let fading = fixture.editor.handle_opacity_drawn_for_test();
+    assert!(fading > 0.0 && fading < 1.0, "halfway faded: {fading}");
+    let gone = rest + crate::animation::CHROME_FADE;
+    with_monotonic_time(midway, || {
+        assert_eq!(
+            Widget::next_wake_deadline(&*fixture.editor),
+            Some(gone),
+            "the host wakes it when the fade is over"
+        );
+    });
+    with_monotonic_time(gone, || {
+        // That wake's frame takes the faint handles away.
+        fixture.frame();
+        assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 0.0);
+        assert!(quiet(&fixture), "faded handles need no frame or wake");
+    });
+}
+
+/// The handles' frames follow the clock, not the draws: an editor that is
+/// never drawn (its host culls it) asks for frames only during the fade, and
+/// for none once the fade is over, so it cannot keep the window spinning.
+#[test]
+fn undrawn_drag_handles_stop_asking_for_frames_once_their_fade_is_over() {
+    use super::handle_reveal::HANDLE_HOLD;
+    use crate::time::testing::with_monotonic_time;
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let mut fixture = with_monotonic_time(at(0), || RetainedEditor::new(480.0, 1.0, false));
+    let over_text = fixture.editor.blocks[1].line.get_rect().center();
+    // The pointer moves over it, and no frame is drawn from here on.
+    with_monotonic_time(at(0), || {
+        Dispatch::new()
+            .doc(&mut fixture.doc)
+            .layout(&fixture.tree, fixture.root)
+            .send(
+                &mut *fixture.editor,
+                &crate::synthetic_input::cursor_moved(over_text.x, over_text.y),
+            );
+    });
+    let rest = at(0) + HANDLE_HOLD;
+    with_monotonic_time(at(100), || {
+        assert!(
+            !Widget::needs_animation_frame(&*fixture.editor),
+            "the hold needs no frames"
+        );
+        assert_eq!(fixture.editor.handle_fade_deadline(), Some(rest));
+    });
+    with_monotonic_time(rest + crate::animation::CHROME_FADE / 2, || {
+        assert!(
+            Widget::needs_animation_frame(&*fixture.editor),
+            "the fade has frames"
+        );
+    });
+    with_monotonic_time(rest + crate::animation::CHROME_FADE, || {
+        assert!(
+            !Widget::needs_animation_frame(&*fixture.editor),
+            "an undrawn editor asks for no frame once the fade is over"
+        );
+        assert!(fixture.editor.handle_fade_deadline().is_none());
+        assert!(Widget::next_wake_deadline(&*fixture.editor).is_none());
+    });
+}

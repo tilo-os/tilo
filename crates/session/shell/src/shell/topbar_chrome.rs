@@ -211,9 +211,10 @@ impl DesktopChromeSource for NativeChrome {
                 ws_settings: state.overlays.ws_settings,
                 clock: state.overlays.clock,
             },
-            // A client-requested fullscreen owns the whole output. User
-            // maximize still fills the workspace but keeps the bar.
-            fullscreen: state.fullscreen_group().is_some() && state.is_fullscreen(),
+            // A fullscreen owns its display: over the primary one, the full
+            // bar steps aside. User maximize still fills the workspace but
+            // keeps the bar.
+            fullscreen: state.fullscreen_covers_primary(),
             notification_badge: state.notification_badge_total(),
             activity_glance: state.activity_glance.clone(),
             viewport_size: state.viewport_size(),

@@ -938,40 +938,6 @@ impl MusicApp {
         }
     }
 
-    /// Open a global-search hit's deep link onto the real navigation / play
-    /// path. This is the app side of the [`crate::search_type`] seam: the OS
-    /// search host round-trips `music://{track,album,artist,playlist}/<id>`
-    /// back to Music, and this routes it exactly like an in-app click —
-    /// playing the track, or navigating to the album / artist / playlist page
-    /// (the view's own `sync` then loads a live page on demand). Returns
-    /// whether the link was recognised and routed.
-    pub fn open_deep_link(&mut self, link: &str, state: &mut ui::widget::Edits<'_>) -> bool {
-        let Some(dl) = crate::search_type::DeepLink::parse(link) else {
-            return false;
-        };
-        match dl {
-            crate::search_type::DeepLink::Track(id) => {
-                self.dispatch(
-                    Action::Play {
-                        queue: vec![id].into(),
-                        index: 0,
-                    },
-                    state,
-                );
-            }
-            crate::search_type::DeepLink::Album(id) => {
-                self.dispatch(Action::Nav(View::Album(id)), state);
-            }
-            crate::search_type::DeepLink::Artist(id) => {
-                self.dispatch(Action::Nav(View::Artist(id)), state);
-            }
-            crate::search_type::DeepLink::Playlist(id) => {
-                self.dispatch(Action::Nav(View::Playlist(id)), state);
-            }
-        }
-        true
-    }
-
     /// Convert a published top-level destination id back to its concrete view.
     /// The resource layer only admits ids from `NAVIGATION_VIEWS`; this router
     /// keeps the final local navigation step equally explicit.

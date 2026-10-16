@@ -1289,9 +1289,6 @@ impl TouchpadScrollMethod {
     pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
 }
 
-/// `input` key for the scroll-distance multiplier applied to wheel and
-/// finger scrolling alike.
-pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
 /// Slowest scroll multiplier the Settings slider can reach.
 pub const SCROLL_SPEED_MIN: f64 = 0.25;
 /// Fastest scroll multiplier the Settings slider can reach.
@@ -1841,6 +1838,9 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    /// Ask an agent about what is selected in the focused window, in the
+    /// quick composer seeded with that selection.
+    AskAgent,
     DictationToggle,
     DictationFinish,
     DictationCancel,
@@ -2455,6 +2455,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            // Windows' assistant key (Win+C): ask an agent about the
+            // focused window's selection.
+            (ShortcutAction::AskAgent, super_chord("c")),
             (ShortcutAction::DictationToggle, super_shift_chord("d")),
             (ShortcutAction::DictationFinish, super_alt_chord("d")),
             (ShortcutAction::DictationCancel, super_shift_chord("escape")),
@@ -3027,6 +3030,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::AskAgent), "Super+c");
         assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
@@ -3228,7 +3232,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 50);
+            assert_eq!(cfg.bindings.len(), 51);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

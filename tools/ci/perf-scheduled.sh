@@ -28,6 +28,17 @@ env_json() { # profile renderer virtualization
   python3 tools/perf/record.py env --profile "$1" --renderer "$2" --virtualization "$3" --runner "$runner"
 }
 
+# The release bundle names its commit and refuses a tree that differs from it.
+# t gives scheduled and dispatched runs the commit as T_COMMIT; the tree is its
+# files, so a repository holding just that commit makes it a clean checkout.
+commit_checkout() {
+  git rev-parse HEAD >/dev/null 2>&1 && return
+  [[ -n ${T_COMMIT:-} ]] || { echo "$group measures a commit: run it on t's schedule or with t dispatch" >&2; exit 2; }
+  git init -q
+  git fetch -q --depth=1 --no-tags https://code.tilo.so/tilo/tilo.git "$T_COMMIT"
+  git reset -q "$T_COMMIT"
+}
+
 chrome() {
   bash tools/ci/ensure-browser-dependencies.sh
   npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
@@ -91,11 +102,14 @@ case $group in
     exit "$status"
     ;;
   footprint-image)
+    # The previous build an update starts from: main's first parents, commits only.
+    git clone -q --bare --filter=tree:0 --single-branch --branch main \
+      https://code.tilo.so/tilo/tilo.git "$TMPDIR/history.git"
     status=0
     for arch in x86_64 aarch64; do
       python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
         --arch "$arch" --records "$out/image-$arch.jsonl" --runner none \
-        --update-from-previous 'main-{sha7}-{arch}' \
+        --update-from-previous 'main-{sha7}-{arch}' --git-dir "$TMPDIR/history.git" \
         --json "$out/image-size-$arch.json" --markdown "$out/image-size-$arch.md" > /dev/null || status=1
     done
     cat "$out"/image-*.jsonl > "$out/footprint-image.jsonl" 2>/dev/null || true
@@ -174,6 +188,7 @@ case $group in
       > "$out/hosting-room.jsonl"
     ;;
   browser)
+    commit_checkout
     cargo fetch --locked
     crates/browser/tilo-browser-runtime/scripts/build.sh "$out/bundle" --bundle desktop
     chrome
@@ -186,6 +201,7 @@ case $group in
     rm -rf "$out/bundle"
     ;;
   stream)
+    commit_checkout
     cargo fetch --locked
     crates/browser/tilo-browser-runtime/scripts/build.sh "$out/bundle" --bundle desktop
     cargo build --locked --release -p tilo-relay --features web,stream-source \

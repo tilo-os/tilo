@@ -6,7 +6,7 @@ use ui::framework::testing::TestApp;
 
 use super::*;
 use crate::{SettingsShell, effects::NavigationEffect};
-include!("../../../../../crates/agent/provider-settings-ui/src/fake_backend.rs");
+include!("../../../../../crates/sdk/provider-settings-ui/src/fake_backend.rs");
 
 fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::for_person_with_lent(
@@ -171,6 +171,79 @@ fn with_panel<T>(
         .unwrap()
 }
 
+#[test]
+fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
+    for conflict in [false, true] {
+        let backend = Arc::new(FakeAdminBackend::default());
+        let profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
+        let id = profile.id.clone();
+        backend.state.lock_recover().config.upsert(profile);
+        let mut app = mount(backend.clone());
+        let draft = app
+            .with_widget::<SettingsApp, _>(|app| {
+                let pane = app.agent_models().model().borrow();
+                pane.vertex_fields(&pane.provider_config().profiles[0])
+            })
+            .unwrap();
+        draft.project.set("project-b".into());
+        let effect = SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
+            provider: Some(id.clone()),
+            project: "project-b".into(),
+            location: Some("global".into()),
+            model: Some("gemini-2.5-pro".into()),
+        });
+        backend.delay.store(true, Ordering::SeqCst);
+        if conflict {
+            backend.state.lock_recover().revision += 1;
+        } else {
+            backend.state.lock_recover().fail_next = true;
+        }
+        app.start_effect_on(&format!("settings.agent-provider:{id}"), &effect)
+            .unwrap();
+        with_panel(&mut app, |panel| assert!(panel.admin_pending.is_some()));
+        assert!(
+            invoke(
+                &mut app,
+                AgentModelsEffect::SetProviderEnabled {
+                    provider: id.clone(),
+                    on: false
+                }
+            )
+            .is_err()
+        );
+        backend.delay.store(false, Ordering::SeqCst);
+        app.settle();
+        with_panel(&mut app, |panel| {
+            assert!(panel.admin_pending.is_none());
+            assert_eq!(
+                panel.admin_snapshot.as_ref().unwrap().revision,
+                backend.state.lock_recover().revision.to_string()
+            );
+        });
+        assert_eq!(draft.project.get(), "project-b");
+        assert_eq!(
+            config(&mut app).profiles[0]
+                .sign_in
+                .as_ref()
+                .unwrap()
+                .billing_project
+                .as_deref(),
+            Some("project-a")
+        );
+        app.effect_on(&format!("settings.agent-provider:{id}"), &effect)
+            .unwrap();
+        assert_eq!(
+            config(&mut app).profiles[0]
+                .sign_in
+                .as_ref()
+                .unwrap()
+                .billing_project
+                .as_deref(),
+            Some("project-b")
+        );
+    }
+}
+
 mod shared_contract {
     use super::*;
     // The native public effect adapter retains all existing ids and parameter shapes.
@@ -178,5 +251,5 @@ mod shared_contract {
     fn host_effect(effect: ProviderEffect) -> SettingsEffect {
         effect.into()
     }
-    include!("../../../../../crates/agent/provider-settings-ui/src/mounted_tests.rs");
+    include!("../../../../../crates/sdk/provider-settings-ui/src/mounted_tests.rs");
 }

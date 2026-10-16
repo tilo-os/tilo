@@ -12,7 +12,6 @@
 //! too and validates its mailbox before either service account is saved.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
@@ -20,6 +19,7 @@ use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OA
 use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
+use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::t;
 use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
 
@@ -66,7 +66,7 @@ impl Outcome {
 
 enum Cancel {
     Loopback(LoopbackCancel),
-    Channel(mpsc::Sender<()>),
+    Channel(std::sync::mpsc::Sender<()>),
 }
 
 enum Stage {
@@ -392,28 +392,32 @@ impl SignInFlow {
             return;
         };
         let cancel = Cancel::Loopback(canceller);
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
         let google_mail = self.google_mail;
         let expected_mail = self.expected_mail.clone();
-        std::thread::spawn(move || {
-            let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
-                oauth_completed(
-                    &custodian,
-                    cloud,
-                    kind,
-                    existing_id,
-                    display_name,
-                    &tokens,
-                    google_mail,
-                    expected_mail.as_deref(),
-                )
-            });
-            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = Custodian::finish_sign_in(authorization).and_then(|tokens| {
+                    oauth_completed(
+                        &custodian,
+                        cloud,
+                        kind,
+                        existing_id,
+                        display_name,
+                        &tokens,
+                        google_mail,
+                        expected_mail.as_deref(),
+                    )
+                });
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
         self.message = Some(format!(
             "Continue in your browser: sign in with {} and allow access. This page updates when you are done.",
             cloud.sign_in_with()
@@ -439,29 +443,33 @@ impl SignInFlow {
             };
             return;
         }
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
         let custodian = self.custodian.clone();
         let google_mail = self.google_mail;
         let expected_mail = self.expected_mail.clone();
-        std::thread::spawn(move || {
-            let outcome =
-                Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
-                    oauth_completed(
-                        &custodian,
-                        cloud,
-                        kind,
-                        existing_id,
-                        display_name,
-                        &tokens,
-                        google_mail,
-                        expected_mail.as_deref(),
-                    )
-                });
-            let _ = sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome =
+                    Custodian::finish_sign_in_with_code(authorization, &code).and_then(|tokens| {
+                        oauth_completed(
+                            &custodian,
+                            cloud,
+                            kind,
+                            existing_id,
+                            display_name,
+                            &tokens,
+                            google_mail,
+                            expected_mail.as_deref(),
+                        )
+                    });
+                let _ =
+                    sender.send(outcome.unwrap_or_else(|error| Outcome::Failed(error.to_string())));
+            }),
+        );
         self.code.set(String::new());
         self.message = Some("Checking the code…".into());
         self.stage = Stage::Waiting {
@@ -478,35 +486,40 @@ impl SignInFlow {
             self.message = Some(error.to_string());
             return;
         }
-        let (url_sender, urls) = mpsc::sync_channel(1);
-        let (sender, result) = mpsc::sync_channel(1);
-        let (stop, cancel) = mpsc::channel();
+        let (url_sender, urls) = channel::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
+        let (stop, cancel) = std::sync::mpsc::channel();
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let outcome = nextcloud::begin(&server).and_then(|flow| {
-                let _ = url_sender.send(flow.login_url().to_string());
-                flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
-            });
-            let _ = sender.send(match outcome {
-                Ok(login) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name: display_name.clone(),
-                    config: serde_json::json!({
-                        "label": display_name,
-                        "server_url": login.server,
-                        "username": login.login_name,
-                        "app_password": true,
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = nextcloud::begin(&server).and_then(|flow| {
+                    let _ = url_sender.send(flow.login_url().to_string());
+                    flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
+                });
+                let _ = sender.send(match outcome {
+                    Ok(login) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name: display_name.clone(),
+                        config: serde_json::json!({
+                            "label": display_name,
+                            "server_url": login.server,
+                            "username": login.login_name,
+                            "app_password": true,
+                        }),
+                        secret: accounts::Secret::password(login.app_password.as_str()),
+                        mail: None,
                     }),
-                    secret: accounts::Secret::password(login.app_password.as_str()),
-                    mail: None,
-                }),
-                Err(NextcloudError::Cancelled) => Outcome::Failed("sign-in was cancelled".into()),
-                Err(error) => Outcome::Failed(error.to_string()),
-            });
-        });
+                    Err(NextcloudError::Cancelled) => {
+                        Outcome::Failed("sign-in was cancelled".into())
+                    }
+                    Err(error) => Outcome::Failed(error.to_string()),
+                });
+            }),
+        );
         self.message = Some(
             "Contacting your Nextcloud server… Approve access in the browser page that opens; \
              Nextcloud then gives this device its own app password."
@@ -530,26 +543,29 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let password = zeroize::Zeroizing::new(password);
-            let outcome = match auth.sign_in(&apple_id, &password) {
-                Ok(ICloudSignIn::Complete(session)) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name,
-                    config: icloud_config(auth.as_ref(), &apple_id),
-                    secret: account_custody::icloud_secret(&apple_id, &session),
-                    mail: None,
-                }),
-                Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
-                Err(error) => Outcome::Failed(error.to_string()),
-            };
-            let _ = sender.send(outcome);
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let password = zeroize::Zeroizing::new(password);
+                let outcome = match auth.sign_in(&apple_id, &password) {
+                    Ok(ICloudSignIn::Complete(session)) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name,
+                        config: icloud_config(auth.as_ref(), &apple_id),
+                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        mail: None,
+                    }),
+                    Ok(ICloudSignIn::NeedsCode(challenge)) => Outcome::NeedsCode(challenge),
+                    Err(error) => Outcome::Failed(error.to_string()),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
         self.message = Some("Signing in to iCloud…".into());
         self.stage = Stage::Waiting {
             urls: None,
@@ -568,27 +584,30 @@ impl SignInFlow {
             return;
         }
         let auth = Arc::clone(self.custodian.icloud());
-        let (sender, result) = mpsc::sync_channel(1);
+        let (sender, result) = channel::sync_channel(1);
         let kind = self.kind;
         let existing_id = self.existing_id.clone();
         let display_name = self.display_name();
-        std::thread::spawn(move || {
-            let outcome = match auth.verify_code(&challenge, &code) {
-                Err(ICloudAuthError::InvalidCode) => {
-                    Outcome::CodeRejected(challenge, ICloudAuthError::InvalidCode.to_string())
-                }
-                Ok(session) => Outcome::completed(Completed {
-                    kind,
-                    existing_id,
-                    display_name,
-                    config: icloud_config(auth.as_ref(), &apple_id),
-                    secret: account_custody::icloud_secret(&apple_id, &session),
-                    mail: None,
-                }),
-                Err(error) => Outcome::Failed(error.to_string()),
-            };
-            let _ = sender.send(outcome);
-        });
+        let _ = crate::device_read::thread(
+            "settings-cloud-sign-in",
+            Box::new(move || {
+                let outcome = match auth.verify_code(&challenge, &code) {
+                    Err(ICloudAuthError::InvalidCode) => {
+                        Outcome::CodeRejected(challenge, ICloudAuthError::InvalidCode.to_string())
+                    }
+                    Ok(session) => Outcome::completed(Completed {
+                        kind,
+                        existing_id,
+                        display_name,
+                        config: icloud_config(auth.as_ref(), &apple_id),
+                        secret: account_custody::icloud_secret(&apple_id, &session),
+                        mail: None,
+                    }),
+                    Err(error) => Outcome::Failed(error.to_string()),
+                };
+                let _ = sender.send(outcome);
+            }),
+        );
         self.code.set(String::new());
         self.message = Some("Checking the code…".into());
         self.stage = Stage::Waiting {
@@ -719,9 +738,9 @@ impl SignInFlow {
         if let Some(receiver) = urls.take() {
             match receiver.recv_timeout(remaining()) {
                 Ok(url) => *launch = Some(self.opener.open(&url)),
-                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+                Err(channel::RecvTimeoutError::Timeout) => return false,
                 // The worker failed before learning a URL; its outcome follows.
-                Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(channel::RecvTimeoutError::Disconnected) => {}
             }
         }
         match result.recv_timeout(remaining()) {

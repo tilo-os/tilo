@@ -1155,7 +1155,6 @@ mod tests {
             crate::shell::hosted_inputs::HostedDocument {
                 provider_id: "org.nirios.Editor",
                 path: file,
-                text: "moor at the east quay\n".into(),
             },
         );
         let editor = mount_tab(

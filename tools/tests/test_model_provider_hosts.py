@@ -29,6 +29,23 @@ class ModelProviderHosts(unittest.TestCase):
         ]:
             self.assertIn(registration, (ROOT / path).read_text())
 
+    def test_shared_panel_is_an_sdk_surface_with_native_only_workspace_hack(self):
+        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
+        panel = "crates/sdk/provider-settings-ui"
+        self.assertIn(panel, workspace["workspace"]["members"])
+        self.assertNotIn("crates/agent/provider-settings-ui", workspace["workspace"]["members"])
+        for app in ("settings", "model-providers"):
+            manifest = tomllib.loads((ROOT / f"apps/{app}/Cargo.toml").read_text())
+            dependency = manifest["dependencies"]["provider-settings-ui"]
+            self.assertEqual((ROOT / f"apps/{app}" / dependency["path"]).resolve(), ROOT / panel)
+        manifest = tomllib.loads((ROOT / panel / "Cargo.toml").read_text())
+        self.assertEqual(manifest["package"]["name"], "provider-settings-ui")
+        self.assertNotIn("workspace-hack", manifest["dependencies"])
+        self.assertIn("workspace-hack", manifest["target"]['cfg(not(target_arch = "wasm32"))']["dependencies"])
+        app = tomllib.loads((ROOT / "apps/model-providers/Cargo.toml").read_text())
+        self.assertEqual(app["features"]["thin"], ["dep:runtime-dylib"])
+        self.assertTrue(app["dependencies"]["runtime-dylib"]["optional"])
+
     def test_browser_administration_uses_exact_registered_identity(self):
         base = ROOT / "crates/browser/tilo-browser-runtime/src"
         services = (base / "host_services.rs").read_text()

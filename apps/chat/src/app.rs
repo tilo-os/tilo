@@ -1504,15 +1504,6 @@ impl ChatApp {
                 self.history_open = Some("m_sora".into());
                 self.history_anchor = Point::new(424.0, 420.0);
             }
-            "no-access" => {
-                // A reader the workspace has not granted its files: every
-                // attachment shows what it is and that it cannot open. The
-                // restricted grant itself is the shot's permission context
-                // (`shot_permission`).
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-            }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
                 // offering Edit — the discoverable entry point to editing.
@@ -1531,15 +1522,6 @@ impl ChatApp {
                 self.call = CallState::default();
             }
         }
-    }
-
-    /// The permission context a scenario is captured under, when it is not
-    /// the local unrestricted user: `no-access` is a person the workspace
-    /// has granted nothing, so its attachments cannot be opened.
-    #[doc(hidden)]
-    pub fn shot_permission(scenario: &str) -> Option<ui::permissions::PermissionContext> {
-        (scenario == "no-access")
-            .then(|| ui::permissions::PermissionContext::stranger(crate::model::ME))
     }
 
     /// Show the call as the voice service reports a joined call: connected,

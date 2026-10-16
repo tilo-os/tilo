@@ -190,6 +190,11 @@ async fn eventually(what: &'static str, mut check: impl FnMut() -> bool) {
 
 #[test]
 fn a_registered_item_is_reported_published_as_actions_and_reachable() {
+    run_on_own_runtime(transcript);
+}
+
+/// Run `make()`'s transcript on a runtime of its own, bounded as a whole.
+fn run_on_own_runtime<F: std::future::Future<Output = ()> + 'static>(make: fn() -> F) {
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -198,7 +203,7 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
             .build()
             .expect("runtime");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runtime.block_on(transcript());
+            runtime.block_on(make());
         }));
         pending("the runtime to shut down");
         runtime.shutdown_timeout(tilo_test_env::hang_bound());
@@ -225,35 +230,14 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
 async fn transcript() {
     let tray = Tray::new(super::icon_rasteriser());
     let calls: Calls = Arc::default();
-    let (shell_socket, app_socket) = UnixStream::pair().expect("socket pair");
-    let shell_side = Builder::unix_stream(shell_socket)
-        .server(TEST_GUID)
-        .expect("guid")
-        .p2p();
-    let app_side = Builder::unix_stream(app_socket)
-        .p2p()
-        .serve_at(
-            "/StatusNotifierItem",
-            FakeItem {
-                calls: Arc::clone(&calls),
-            },
-        )
-        .expect("serve item")
-        .serve_at(
-            "/MenuBar",
-            FakeMenu {
-                calls: Arc::clone(&calls),
-            },
-        )
-        .expect("serve menu");
-    let (_watcher, app_conn) = step("the p2p handshake", async {
-        futures_util::try_join!(
-            watcher::serve(shell_side, Arc::clone(&tray)),
-            app_side.build()
-        )
-    })
-    .await
-    .expect("p2p pair with the watcher served");
+    let (_watcher, app_conn) = connect_app(
+        &tray,
+        FakeItem {
+            calls: Arc::clone(&calls),
+        },
+        &calls,
+    )
+    .await;
 
     let watcher_proxy = step(
         "the watcher proxy",
@@ -382,5 +366,224 @@ async fn transcript() {
     assert!(
         tray.request(key, TrayRequest::Menu { id: 5 }).is_err(),
         "a disabled entry cannot be chosen"
+    );
+}
+
+/// Connect a fake application serving `item` (and the fake menu) to a
+/// watcher for `tray` over a peer-to-peer pair.
+async fn connect_app(
+    tray: &Arc<Tray>,
+    item: impl zbus::object_server::Interface,
+    calls: &Calls,
+) -> (watcher::WatcherHandle, zbus::Connection) {
+    let (shell_socket, app_socket) = UnixStream::pair().expect("socket pair");
+    let shell_side = Builder::unix_stream(shell_socket)
+        .server(TEST_GUID)
+        .expect("guid")
+        .p2p();
+    let app_side = Builder::unix_stream(app_socket)
+        .p2p()
+        .serve_at("/StatusNotifierItem", item)
+        .expect("serve item")
+        .serve_at(
+            "/MenuBar",
+            FakeMenu {
+                calls: Arc::clone(calls),
+            },
+        )
+        .expect("serve menu");
+    step("the p2p handshake", async {
+        futures_util::try_join!(
+            watcher::serve(shell_side, Arc::clone(tray)),
+            app_side.build()
+        )
+    })
+    .await
+    .expect("p2p pair with the watcher served")
+}
+
+/// Register the app's item at the default path and wait until it is read.
+async fn register(tray: &Tray, app_conn: &zbus::Connection) -> &'static str {
+    let watcher_proxy = step(
+        "the watcher proxy",
+        zbus::proxy::Builder::<zbus::Proxy<'_>>::new(app_conn)
+            .destination(WATCHER_BUS_NAME)
+            .expect("destination")
+            .path(WATCHER_PATH)
+            .expect("path")
+            .interface("org.kde.StatusNotifierWatcher")
+            .expect("interface")
+            .build(),
+    )
+    .await
+    .expect("watcher proxy");
+    step(
+        "the registration reply",
+        watcher_proxy.call::<_, _, ()>("RegisterStatusNotifierItem", &("/StatusNotifierItem",)),
+    )
+    .await
+    .expect("registration answered");
+    let key = "/StatusNotifierItem";
+    eventually("the item to be read", || tray.item(key).is_some()).await;
+    key
+}
+
+/// What the watcher records once the item's owner is proven: a peer-to-peer
+/// connection has no bus to prove it with, so the test states it.
+fn prove_owner(tray: &Tray, key: &str, owner: &str) {
+    let mut item = tray.item(key).expect("registered item");
+    item.address.owner_app = Some(owner.to_string());
+    tray.upsert(item);
+}
+
+/// A tray item that only shows a menu: `Activate` is not one of its methods.
+struct MenuOnlyItem;
+
+#[zbus::interface(name = "org.kde.StatusNotifierItem")]
+impl MenuOnlyItem {
+    #[zbus(property)]
+    fn id(&self) -> String {
+        "nm-applet".into()
+    }
+}
+
+fn password_manager() -> crate::shell::host_apps::HostApp {
+    crate::shell::host_apps::HostApp {
+        desktop_id: "com.onepassword.OnePassword.desktop".into(),
+        name: "1Password".into(),
+        source_label: "Flatpak",
+        categories: Vec::new(),
+        keywords: Vec::new(),
+        window_identities: vec![
+            "1Password".into(),
+            "com.onepassword.OnePassword.desktop".into(),
+            "com.onepassword.OnePassword".into(),
+        ],
+        mime_types: Vec::new(),
+        terminal: false,
+        icon: None,
+    }
+}
+
+fn open_request(app: crate::shell::host_apps::HostApp) -> crate::shell::host_apps::QueuedLaunch {
+    crate::shell::host_apps::QueuedLaunch {
+        app,
+        placement: crate::shell::tab_binding::Placement::NewGroup,
+        portal_workspace_id: None,
+        requested_at: std::time::Instant::now(),
+        reopen_from_tray: true,
+    }
+}
+
+/// Clicking 1Password while it runs in the tray with no window asks its
+/// tray item to show the window, as clicking the icon would, instead of
+/// starting a second copy that only hands over to the first.
+#[test]
+fn an_app_running_in_the_tray_is_reopened_through_its_item_not_started_again() {
+    run_on_own_runtime(reopen_transcript);
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the transcript runs on its own runtime's block_on and is never sent"
+)]
+async fn reopen_transcript() {
+    use crate::shell::host_apps::reopen_from_tray;
+
+    let tray = Tray::new(super::icon_rasteriser());
+    let calls: Calls = Arc::default();
+    let (_watcher, app_conn) = connect_app(
+        &tray,
+        FakeItem {
+            calls: Arc::clone(&calls),
+        },
+        &calls,
+    )
+    .await;
+    let key = register(&tray, &app_conn).await;
+    let request = open_request(password_manager());
+    let no_wake: crate::session_runtime::Wake = Arc::new(|| {});
+    let desktop = crate::shell::state::WorkspaceTree::bootstrap_default();
+
+    assert!(
+        !reopen_from_tray(&request, &tray, &desktop, Arc::clone(&no_wake)),
+        "an item whose owner is not proven is never taken for the app's"
+    );
+
+    prove_owner(&tray, key, "com.onepassword.OnePassword");
+    let mut showing = desktop.clone();
+    crate::shell::tab_binding::adopt_toplevel_at(
+        &mut showing,
+        41,
+        Some("1Password".into()),
+        crate::shell::tab_binding::Placement::NewGroup,
+    );
+    assert!(
+        !reopen_from_tray(&request, &tray, &showing, Arc::clone(&no_wake)),
+        "with a window open, the launch asks the app for a new one"
+    );
+    let mut after_refusal = request.clone();
+    after_refusal.reopen_from_tray = false;
+    assert!(
+        !reopen_from_tray(&after_refusal, &tray, &desktop, Arc::clone(&no_wake)),
+        "the launch that follows a refusal does not ask the item again"
+    );
+
+    assert!(
+        reopen_from_tray(&request, &tray, &desktop, Arc::clone(&no_wake)),
+        "no window and a proven tray item: the item is asked"
+    );
+    eventually("activate to reach the app", || {
+        calls.lock_recover().contains(&"activate 0 0".to_string())
+    })
+    .await;
+    assert!(
+        crate::shell::host_apps::take_queued_launches_of(&request.app.desktop_id).is_empty(),
+        "no second copy is started"
+    );
+}
+
+/// An item that refuses `Activate` does not leave the click unanswered: the
+/// app is started as it would have been, and the loop is woken for it.
+#[test]
+fn a_tray_item_that_refuses_to_reopen_its_app_falls_back_to_a_launch() {
+    run_on_own_runtime(refusal_transcript);
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the transcript runs on its own runtime's block_on and is never sent"
+)]
+async fn refusal_transcript() {
+    let tray = Tray::new(super::icon_rasteriser());
+    let calls: Calls = Arc::default();
+    let (_watcher, app_conn) = connect_app(&tray, MenuOnlyItem, &calls).await;
+    let key = register(&tray, &app_conn).await;
+    let mut app = password_manager();
+    app.desktop_id = "com.example.TrayRefuses.desktop".into();
+    app.window_identities = vec!["com.example.TrayRefuses".into()];
+    prove_owner(&tray, key, "com.example.TrayRefuses");
+    let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wake: crate::session_runtime::Wake = {
+        let woken = Arc::clone(&woken);
+        Arc::new(move || {
+            woken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    assert!(crate::shell::host_apps::reopen_from_tray(
+        &open_request(app.clone()),
+        &tray,
+        &crate::shell::state::WorkspaceTree::bootstrap_default(),
+        wake,
+    ));
+    eventually("the loop to be woken for the launch", || {
+        woken.load(std::sync::atomic::Ordering::SeqCst) == 1
+    })
+    .await;
+    let queued = crate::shell::host_apps::take_queued_launches_of(&app.desktop_id);
+    assert_eq!(queued.len(), 1, "the app is started instead");
+    assert!(
+        !queued[0].reopen_from_tray,
+        "and that launch does not go back to the item"
     );
 }

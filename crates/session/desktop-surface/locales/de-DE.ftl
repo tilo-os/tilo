@@ -1010,7 +1010,7 @@ window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwende
 window-switcher-app-title = Fenster dieser App wechseln
 window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
 window-switcher-untitled = Unbenanntes Fenster
-window-switcher-caption-paged = { $title } ({ $position } von { $count })
+window-switcher-caption-paged = { $position } von { $count }
 
 # Workspace wheel
 a11y-shell-wheel = Arbeitsbereichsrad
@@ -1034,7 +1034,6 @@ overview-presence-you-and-one = Du und { $name } seid hier
 overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
-overview-collaborators-here = { $count } Mitwirkende sind hier
 
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo

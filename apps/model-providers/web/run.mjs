@@ -67,7 +67,12 @@ try {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
-  browser = await launch({args:['--ignore-certificate-errors', '--window-size=1200,2000', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+  // Headless Linux workers use the same explicit WebGPU backend as the
+  // desktop browser journeys, rather than relying on automatic driver selection.
+  const gpuArgs = process.platform === 'linux'
+    ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
+    : [];
+  browser = await launch({args:['--ignore-certificate-errors', '--window-size=1200,2000', ...gpuArgs, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
   const tab = await browser.tab();
   await tab.navigate(`${origin}/proof.html`);
   await tab.waitFor('!!document.getElementById("app")', {timeout:15000});
@@ -105,7 +110,7 @@ try {
       await wait(`!!findControl(${JSON.stringify(id)})`);
     } catch(error) {
       const controls = await tab.evaluate(`(()=>{const out=[];const walk=n=>{if(!n)return;if(n.test_id)out.push({id:n.test_id,widget:n.widget,rect:n.rect});(n.children??[]).forEach(walk)};walk(mount.state()?.semantics?.root);return out;})()`);
-      throw new Error(`${error.message}; production controls: ${JSON.stringify(controls)}; runtime: ${await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})')}; browser errors: ${tab.log.join('; ')}`, {cause:error});
+      throw new Error(`${error.message}; production controls: ${JSON.stringify(controls)}; runtime: ${await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})')}; browser errors: ${tab.log.join('; ')}; browser: ${browser.diagnostics()}`, {cause:error});
     }
     await tab.evaluate(`control(${JSON.stringify(id)},${JSON.stringify(action)},${JSON.stringify(value)})`);
   };
@@ -117,7 +122,7 @@ try {
     assert(!JSON.stringify(config).includes(secret), 'secret leaked to backend configuration');
   };
   assert.equal(await tab.evaluate('mount.state()?.phase'), 'presented',
-    await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})') + '; ' + tab.log.join('; '));
+    await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})') + '; ' + tab.log.join('; ') + '; browser: ' + browser.diagnostics());
   assert((await tab.screenshot())?.length > 1000, 'production WebGPU canvas was not captured');
   await settled();
   await control('agent-models-add-openai');

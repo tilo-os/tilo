@@ -18,7 +18,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-provider-settings-ui = { version = "0.1.0", path = "../../crates/agent/provider-settings-ui" }
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
 ui = { package = "tilo-app", version = "0.1.0", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 

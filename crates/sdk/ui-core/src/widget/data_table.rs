@@ -2528,10 +2528,8 @@ impl<Row> DataTable<Row> {
                         scene,
                         label,
                         color,
-                        translated(
-                            transform,
-                            band.x0 + self.bleed,
-                            centered_text_top(y0, row_h, text_h),
+                        transform.pre_translate(
+                            (band.x0 + self.bleed, centered_text_top(y0, row_h, text_h)).into(),
                         ),
                         None,
                         &style,
@@ -2563,10 +2561,12 @@ impl<Row> DataTable<Row> {
                 scene,
                 &add.label,
                 tokens.colors.text_tertiary,
-                translated(
-                    transform,
-                    x + icon + f64::from(tokens.spacing.s1),
-                    centered_text_top(rect.y0, rect.height(), h),
+                transform.pre_translate(
+                    (
+                        x + icon + f64::from(tokens.spacing.s1),
+                        centered_text_top(rect.y0, rect.height(), h),
+                    )
+                        .into(),
                 ),
                 None,
                 &style,
@@ -3037,7 +3037,14 @@ fn paint_cell_text<Row>(
         for line in &lines {
             let (w, _) = text.measure_style(line, None, &style);
             let x = align.place(cell, f64::from(w), pad);
-            text.draw_style(scene, line, ink, translated(transform, x, y), None, &style);
+            text.draw_style(
+                scene,
+                line,
+                ink,
+                transform.pre_translate((x, y).into()),
+                None,
+                &style,
+            );
             y += line_h;
         }
         return;
@@ -3049,7 +3056,7 @@ fn paint_cell_text<Row>(
         scene,
         &label,
         ink,
-        translated(transform, x, centered_text_top(cell.y0, cell.height(), h)),
+        transform.pre_translate((x, centered_text_top(cell.y0, cell.height(), h)).into()),
         None,
         &style,
     );
@@ -3098,17 +3105,6 @@ fn paint_cell_badge(
 /// the row above, which the unclamped rule would let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
     crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
-}
-
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
 }
 
 fn accessible_sort_description<Row>(

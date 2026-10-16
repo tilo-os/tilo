@@ -250,10 +250,9 @@ impl Project {
         id
     }
 
-    /// The id `alloc` will hand out next. Captured at authoring
-    /// time so the Ctrl+K "New file" action and the app's own `New File` command
-    /// target the same buffer node id (and therefore build the identical action).
-    pub fn peek_next_id(&self) -> NodeId {
+    /// The id `alloc` will hand out next.
+    #[cfg(test)]
+    pub(crate) fn peek_next_id(&self) -> NodeId {
         self.next_id
     }
 

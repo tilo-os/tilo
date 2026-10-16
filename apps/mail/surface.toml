@@ -30,7 +30,7 @@ fields = [
   { path = "draft.html_body", type = "Option<String>" },
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
-  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:1ce89d3350d639da" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:228bfc4bf4f5e079" },
   { path = "outbox", type = "Outbox<Outgoing>" },
   { path = "server", type = "Outbox<ServerUpdate>" },
 ]
@@ -100,6 +100,16 @@ id = "save-draft"
 kind = "outside"
 params = [
   { name = "message", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
+]
+
+[[resources.verbs]]
+id = "attach"
+kind = "outside"
+params = [
+  { name = "content", required = true, schema = { type = "string", content = true } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "size", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "mime", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

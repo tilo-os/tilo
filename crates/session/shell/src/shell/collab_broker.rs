@@ -226,6 +226,22 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
+    spawn_native_offloading(capnp_socket_path, peer_sync, membership, None)
+}
+
+/// [`spawn_native`] whose action door asks `action_offload` where an
+/// admitted offloadable invocation runs (`HostServices::action_offload`);
+/// `None` runs each through its app's own handler, as [`spawn_native`] does.
+///
+/// # Errors
+///
+/// As [`spawn_native`].
+pub fn spawn_native_offloading(
+    capnp_socket_path: PathBuf,
+    peer_sync: &Option<Arc<ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+) -> std::io::Result<BrokerHandle> {
     // Records this device lacks are brought from the room's other devices
     // over the same network this broker answers their requests on.
     if let Some(network) = peer_sync {
@@ -251,6 +267,7 @@ pub fn spawn_native(
         Some(membership),
         CertificateProvisioning::Production,
         None,
+        action_offload,
     )?;
     handle.task_review = task_review;
     Ok(handle)
@@ -274,6 +291,7 @@ pub fn spawn_native_harness(
         &publisher,
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
+        None,
         None,
     )
 }
@@ -310,6 +328,7 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
+        None,
     )
 }
 
@@ -340,6 +359,7 @@ pub fn spawn_native_peer(
         Some(membership),
         CertificateProvisioning::Production,
         Some(config),
+        None,
     )
 }
 
@@ -788,6 +808,7 @@ fn spawn_inner(
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     certificate_provisioning: CertificateProvisioning,
     config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
+    action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -892,6 +913,7 @@ fn spawn_inner(
         services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
     }
     services.record_content = record_content;
+    services.action_offload = action_offload;
     // The same service the identity broker answers key requests from: its
     // changes tell each route's endpoint when to ask again. A session broker
     // follows even without one; a configured peer broker never has one and

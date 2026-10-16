@@ -105,9 +105,11 @@ Each adapter reads what a benchmark already prints and emits records through
   (`scripts/perf/native_stream_qualification.mjs`): a session's window
   streamed to the browser desktop. Each sample list becomes one `stream.*` KPI
   (`STREAM_KPIS`), and the frames sent but never drawn one
-  `stream.frame.missed` sample (percent). The report must name the env's
-  renderer, commit and profile, and be correct: an incorrect run is a failure,
-  never a measurement.
+  `stream.frame.missed` sample (percent). A stream in a codec other than
+  H.264 (`--codec vp9`) is its own series, its codec after the group
+  (`stream.vp9.frame.latency`), so it never shares a baseline with H.264's.
+  The report must name the env's renderer, commit and profile, and be
+  correct: an incorrect run is a failure, never a measurement.
 
 Usage:
 
@@ -658,6 +660,18 @@ STREAM_KPIS = {
     "encode_ms": ("stream.encode.frame", "ms"),
     "input_ms": ("stream.input.latency", "ms"),
 }
+# The codec whose series carries no codec in its ids: H.264's series predate
+# the others and keep their ids, so their baselines continue.
+STREAM_DEFAULT_CODEC = "h264"
+
+
+def stream_kpi(kpi: str, codec: str) -> str:
+    """`kpi` for a stream in `codec`: `stream.vp9.frame.latency` for VP9's
+    `stream.frame.latency`, unchanged for H.264's."""
+    if codec == STREAM_DEFAULT_CODEC:
+        return kpi
+    group, rest = kpi.split(".", 1)
+    return f"{group}.{codec}.{rest}"
 
 
 def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
@@ -682,6 +696,11 @@ def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Re
     failures = report["correctness"]["failures"]
     if failures:
         raise ValueError(f"the stream was incorrect: {'; '.join(failures)}")
+    codec = report["workload"]["codec"]
+    if not re.fullmatch(r"[a-z][a-z0-9]*", codec):
+        raise ValueError(f"the report names codec {codec!r}")
+    if session["codec"] != codec:
+        raise ValueError(f"the session streamed {session['codec']}, not the requested {codec}")
     samples = report["samples"]
     missing = [field for field in STREAM_KPIS if not samples.get(field)]
     if missing:
@@ -693,13 +712,14 @@ def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Re
     meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "browser": report["browser"]["product"],
             "encoder": session["encoder"], "encoder_hardware": str(bool(session["hardware"])).lower(),
             "window": f"{session['width']}x{session['height']}", "fps": str(session["fps"]),
-            "carrier": report["workload"]["carrier"],
+            "carrier": report["workload"]["carrier"], "codec": codec,
             "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
             "frames_sent": str(counts["sent"])}
     base = {name: value for name, value in env.items() if name != "meta"}
-    records = [record.from_samples(*STREAM_KPIS[field], samples[field], meta=meta, **base) for field in STREAM_KPIS]
-    records.append(record.from_samples("stream.frame.missed", "percent", [round(100.0 - delivered, 2)],
-                                       meta=meta, **base))
+    records = [record.from_samples(stream_kpi(kpi, codec), unit, samples[field], meta=meta, **base)
+               for field, (kpi, unit) in STREAM_KPIS.items()]
+    records.append(record.from_samples(stream_kpi("stream.frame.missed", codec), "percent",
+                                       [round(100.0 - delivered, 2)], meta=meta, **base))
     return records
 
 

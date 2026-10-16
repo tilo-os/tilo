@@ -57,7 +57,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Read the app SDK snapshot only in the owned native boundary fixture.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 
@@ -68,6 +68,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
 tilo-desktop = { path = "../desktop" }
+tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The owner commit service the native workspace owner implements.
 tilo-owner-commit = { path = "../../collab/owner-commit" }
@@ -496,4 +497,4 @@ windows-vm = { path = "../../windows/windows-vm" }
 ush = { path = "../../runtime/ush" }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }

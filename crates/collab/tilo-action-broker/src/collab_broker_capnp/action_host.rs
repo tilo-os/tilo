@@ -33,6 +33,8 @@ use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+mod own_device;
+
 /// The longest a waiter on a running invocation sleeps without a signalled
 /// change, so a change nothing signals (an idle expiry) costs latency, never
 /// a stalled shortcut run.
@@ -231,6 +233,59 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     action.descriptor(ExecutionLocus::default())
 }
 
+/// The action `offer` of the installed app `app` declares, as the catalogue
+/// lists it while the app is closed. Its contract is what the signed
+/// manifest says; once the app runs, its own published action admits the
+/// invocation.
+pub(super) fn offered_action(
+    app: &crate::services::LaunchableApplication,
+    offer: &tilo_app_package::manifest::OfferedAction,
+) -> PublishedAction {
+    use tilo_app_package::manifest::{OfferKind, OfferOperation};
+    let kind = match offer.kind {
+        OfferKind::Read => tilo_actions::ActionKind::Read,
+        OfferKind::Undoable => tilo_actions::ActionKind::Undoable,
+        OfferKind::Outside => tilo_actions::ActionKind::Outside,
+    };
+    let (risk, confirmation) = match (offer.confirm, offer.kind) {
+        (true, _) => (
+            tilo_actions::RiskLevel::Destructive,
+            tilo_actions::ConfirmationPolicy::Confirm,
+        ),
+        (false, OfferKind::Read) => (
+            tilo_actions::RiskLevel::None,
+            tilo_actions::ConfirmationPolicy::None,
+        ),
+        (false, _) => (
+            tilo_actions::RiskLevel::Low,
+            tilo_actions::ConfirmationPolicy::None,
+        ),
+    };
+    PublishedAction {
+        semantic_identity: None,
+        resource: offer.resource.clone(),
+        action: offer.action.clone(),
+        resource_kind: offer.resource_kind().to_owned(),
+        resource_label: app.display_name.clone(),
+        action_label: offer.label.clone(),
+        description: offer.description.clone(),
+        operation_kind: match offer.operation {
+            OfferOperation::Document => tilo_actions::OperationKind::Document,
+            OfferOperation::Effect => tilo_actions::OperationKind::Effect,
+            OfferOperation::View => tilo_actions::OperationKind::View,
+        },
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            kind,
+            risk,
+            confirmation,
+            ..tilo_actions::ActionContract::default()
+        },
+        view: None,
+        input: super::PublishedInput::None,
+    }
+}
+
 fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
     let display_name = &app.display_name;
     let (resource_kind, description) = if app.unconfined {
@@ -302,6 +357,10 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
     }
 }
 
+/// `(app, resource, action)` of every action retained for closed apps in
+/// one workspace.
+type RetainedAddresses = std::collections::HashSet<(String, String, String)>;
+
 /// Which rows a [`CapnpBrokerState::eager_catalogue`] pass builds. Every
 /// scope lists the same providers and puts each row it builds through the
 /// same checks; a narrower one only skips the rows of providers nobody asked
@@ -323,6 +382,17 @@ impl RowScope<'_> {
             Self::None => false,
             Self::All => true,
             Self::Provider(wanted) => wanted == provider,
+        }
+    }
+
+    /// Whether rows of an application provider (an installed app's actions
+    /// offered while it is closed) may be built, so the installed
+    /// applications need reading.
+    fn wants_application_providers(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Provider(wanted) => application_provider(wanted).is_some(),
         }
     }
 
@@ -416,6 +486,16 @@ impl CapnpBrokerState {
         let permitted = match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
+            }
+            // Another of the person's devices is reached only for the app's
+            // own actions there, as the person using it; never under the
+            // app's own identity, which holds no reach across devices.
+            RemoteActionMessage::Invoke(request)
+                if request.target.provider == tilo_actions::remote::own_device::PROVIDER =>
+            {
+                tilo_actions::remote::own_device::Invocation::from_argument(&request.argument)
+                    .is_ok_and(|invocation| invocation.app == app_id)
+                    .then(|| person.clone())
             }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request) || link_request(request) {
@@ -778,7 +858,7 @@ impl CapnpBrokerState {
                 );
             }
             if caller.room().is_some() {
-                self.launchable_catalogue(
+                let retained = self.launchable_catalogue(
                     &workspace,
                     &policy,
                     now,
@@ -786,6 +866,22 @@ impl CapnpBrokerState {
                     (scope, &mut rows),
                     &mut providers,
                 );
+                if let Some(launcher) = self
+                    .services
+                    .launcher
+                    .as_ref()
+                    .filter(|_| scope.wants_application_providers())
+                {
+                    let applications = applications.get_or_insert_with(|| {
+                        (launcher.applications(), launcher.closes_applications())
+                    });
+                    Self::offered_catalogue(
+                        (&workspace, &policy, now),
+                        (&live_apps, &retained),
+                        &applications.0,
+                        (scope, &mut rows),
+                    );
+                }
             }
             let unlisted = roots
                 .iter()
@@ -1021,7 +1117,9 @@ impl CapnpBrokerState {
 
     /// Actions retained from applications that are closed in `workspace`,
     /// offered to a caller on this machine that may launch the application
-    /// and use the action. Invoking one launches the app first.
+    /// and use the action. Invoking one launches the app first. Returns
+    /// every `(app, resource, action)` retained in the workspace, offered or
+    /// not: what an app published supersedes what its manifest declares.
     fn launchable_catalogue(
         &self,
         workspace: &Workspace,
@@ -1030,11 +1128,28 @@ impl CapnpBrokerState {
         live_apps: &std::collections::HashSet<String>,
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
-    ) {
+    ) -> RetainedAddresses {
         let room = workspace.room.to_string();
-        for surface in self.launchable.surfaces().into_iter().filter(|surface| {
-            surface.route.cluster_id == room
-                && !live_apps.contains(&surface.app_id)
+        let in_room = self
+            .launchable
+            .surfaces()
+            .into_iter()
+            .filter(|surface| surface.route.cluster_id == room)
+            .collect::<Vec<_>>();
+        let retained = in_room
+            .iter()
+            .flat_map(|surface| {
+                surface.actions.iter().map(|action| {
+                    (
+                        surface.app_id.clone(),
+                        action.resource.clone(),
+                        action.action.clone(),
+                    )
+                })
+            })
+            .collect::<RetainedAddresses>();
+        for surface in in_room.into_iter().filter(|surface| {
+            !live_apps.contains(&surface.app_id)
                 && policy.may_in(
                     workspace,
                     &app_node(workspace, &surface.app_id),
@@ -1074,6 +1189,70 @@ impl CapnpBrokerState {
                 record_id: surface.route.record_id.clone(),
                 browsable: false,
             });
+        }
+        retained
+    }
+
+    /// The actions installed applications' signed manifests offer while
+    /// they are closed (`[[offers]]`), for the apps not running in
+    /// `workspace`, offered on the same terms as an action they published:
+    /// the caller may launch the app and use the action. An action the app
+    /// already published there, retained in the launchable catalogue, is
+    /// listed from that instead. Invoking one launches the app, and the
+    /// action it publishes admits the invocation.
+    fn offered_catalogue(
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        (live_apps, retained): (&std::collections::HashSet<String>, &RetainedAddresses),
+        applications: &[crate::services::LaunchableApplication],
+        (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
+    ) {
+        let room = workspace.room.to_string();
+        for app in applications.iter().filter(|app| {
+            !app.unconfined
+                && !app.offers.is_empty()
+                && !live_apps.contains(&app.package_id)
+                && policy.may_in(
+                    workspace,
+                    &app_node(workspace, &app.package_id),
+                    tilo_action_policy::ActionKind::Undoable,
+                    now,
+                )
+        }) {
+            let provider =
+                tilo_actions::remote::application_action_target(&room, &app.package_id, "", "")
+                    .provider;
+            if !scope.wants(&provider) {
+                continue;
+            }
+            rows.extend(
+                app.offers
+                    .iter()
+                    .filter(|offer| {
+                        !retained.contains(&(
+                            app.package_id.clone(),
+                            offer.resource.clone(),
+                            offer.action.clone(),
+                        ))
+                    })
+                    .map(|offer| offered_action(app, offer))
+                    .filter(|action| {
+                        Self::offered(
+                            workspace,
+                            policy,
+                            now,
+                            &app.package_id,
+                            (&action.resource_kind, &action.resource, &action.action),
+                            &action.contract,
+                        )
+                    })
+                    .map(|action| {
+                        CatalogueRow::for_action(
+                            provider.clone(),
+                            &app.package_id,
+                            descriptor(&action),
+                        )
+                    }),
+            );
         }
     }
 
@@ -1337,6 +1516,9 @@ impl CapnpBrokerState {
         {
             return Pending::ready(self.invoke_host_step(caller, &steps, request));
         }
+        if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
+            return Pending::ready(self.invoke_own_device(caller, request));
+        }
         Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
     }
 
@@ -1452,7 +1634,8 @@ impl CapnpBrokerState {
                         surface.actions.into_iter().find(|action| {
                             action.resource == address.resource && action.action == address.action
                         })
-                    });
+                    })
+                    .or_else(|| self.manifest_offer(app_id, address));
                 (room.to_owned(), app_id.to_owned(), None, offered)
             } else {
                 let retained = self
@@ -1527,6 +1710,20 @@ impl CapnpBrokerState {
             app_id,
             record,
         })
+    }
+
+    /// The action the installed app `app_id`'s signed manifest offers at
+    /// `address` while it is closed: what a launch is admitted against until
+    /// the app publishes its own.
+    fn manifest_offer(&self, app_id: &str, address: &ActionAddress) -> Option<PublishedAction> {
+        let applications = self.services.launcher.as_ref()?.applications();
+        let app = applications
+            .iter()
+            .find(|app| app.package_id == app_id && !app.unconfined)?;
+        app.offers
+            .iter()
+            .find(|offer| offer.resource == address.resource && offer.action == address.action)
+            .map(|offer| offered_action(app, offer))
     }
 
     /// Launch `app_id` unless it already publishes the action, then deliver
@@ -3478,6 +3675,7 @@ mod app_close_tests {
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
                 unconfined: false,
+                offers: Vec::new(),
             }]
         }
         fn launch(

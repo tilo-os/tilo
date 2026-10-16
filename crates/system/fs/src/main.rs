@@ -3739,6 +3739,12 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         },
         None => fs,
     };
+    // What this device learned about files opened together survives the
+    // restart, per workspace, in the cache directory.
+    let fs = match predictive_cache_root.as_ref() {
+        Some(root) => fs.with_kept_prefetch_history(root, checked_history_workspace),
+        None => fs,
+    };
     fs.resume_pending_evictions();
     // Bytes accepted by fsync, or whose commit failed, are staged per
     // workspace so they survive a crash or unmount and are replayed here.
@@ -3788,7 +3794,12 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             storage_availability,
             storage_eviction_queue,
             storage_history,
-            "Current workspace",
+            // The name the person's devices tell this workspace by: its
+            // mount's directory, or its id where the mount has none.
+            mount_point
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map_or_else(|| checked_history_workspace.to_string(), str::to_owned),
         )
         .with_cache_policy(Arc::clone(&cache_policies))
     });
@@ -4301,6 +4312,51 @@ mod tests {
             assert!(
                 !outsider.permits(&identity, "/notes/today.md", Access::Read),
                 "the shipped list must grant its named principal, not whoever mounts"
+            );
+        }
+    }
+
+    /// tmpfiles' `C` never overwrites, so a machine keeps the capability list
+    /// of the image it was installed with across every update. Each version
+    /// the image ever seeded must still mount with the grant it gave, through
+    /// the same loader fs.service uses. `tools/policy/check_seeded_state_history.py`
+    /// requires today's default to be among them.
+    #[test]
+    fn every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant() {
+        use fs::Access;
+
+        let history = os_file("os/tests/seeded-state/var/lib/tilo/fs-capabilities.json");
+        let mut versions: Vec<_> = std::fs::read_dir(&history)
+            .expect("the seeded capability list history must exist")
+            .map(|entry| entry.expect("history entry").path())
+            .collect();
+        versions.sort();
+        assert!(
+            versions.len() >= 2,
+            "the history must hold the pre-authority list and today's: {versions:?}"
+        );
+        let identity: IdentityKey = [0x5A; 32];
+        for path in &versions {
+            let local = vec![parse_principal("person:local").unwrap()];
+            let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
+                panic!(
+                    "{} must still load on an upgraded machine: {error}",
+                    path.display()
+                )
+            });
+            let handle = file.handle();
+            assert!(
+                handle.permits(&identity, "/notes/today.md", Access::Write),
+                "{} must still let the local session write its workspace",
+                path.display()
+            );
+            let outsider = CapabilityFile::load(path, identity, Vec::new())
+                .expect("loads")
+                .handle();
+            assert!(
+                !outsider.permits(&identity, "/notes/today.md", Access::Read),
+                "{} must grant only its named principal",
+                path.display()
             );
         }
     }

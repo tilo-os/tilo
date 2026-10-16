@@ -23,7 +23,10 @@
 //! items it handed out since it was copied, so the edits between it and the
 //! items it was copied from ([`Model::diff`], what a surface that edited a
 //! local copy submits) compare only those: an edit of one clip of 600 costs
-//! one clip, not 600.
+//! one clip, not 600. Items added at the end ([`Items::push`]) are remembered
+//! the same way, so cutting a clip in two costs the two halves. Saving a
+//! [`Keyed`] copy over the items it was copied from writes only the items
+//! changed and added, and those someone else touched meanwhile.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -40,7 +43,9 @@ use crate::collection::Id;
 use crate::cow::Shared;
 use crate::delta::Delta;
 use crate::model::LocatedAt as _;
-use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key};
+use crate::model::{
+    Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key_changed,
+};
 use crate::path::{Edit, EditOp, Path, Segment};
 
 /// An item of a [`Keyed`] or an [`Ordered`](crate::Ordered): what it is
@@ -85,14 +90,27 @@ struct Stock<T> {
     since: Option<Since>,
 }
 
-/// Items still as the ones they were copied from, except at `changed`.
+/// Items still as the ones they were copied from, except at `changed` and
+/// past their number.
 struct Since {
     /// The [`Stock::mark`] of the items copied.
     copied: u64,
     /// Positions, ascending, handed out one at a time to change since the
-    /// copy. Nothing else changed: handing out all the items, or any change
-    /// that moves one, forgets the copy.
+    /// copy. Every item past the ones copied was added at the end
+    /// ([`Items::push`]) under an id none held. Nothing else changed:
+    /// handing out all the items, or any change that moves one, forgets the
+    /// copy.
     changed: Vec<usize>,
+}
+
+/// What changed in items since they were copied ([`Stock::changed_since`]).
+#[derive(Clone, Copy)]
+struct Changes<'a> {
+    /// Positions, ascending, of items that may have changed in place; some
+    /// may be past `copied`.
+    changed: &'a [usize],
+    /// How many items were copied: the ones past them were added at the end.
+    copied: usize,
 }
 
 /// A [`Stock::mark`] no other stock has had.
@@ -144,13 +162,15 @@ impl<T> Stock<T> {
         self.items.get_mut(at)
     }
 
-    /// The positions changed since these items were copied from `origin`,
-    /// when they were and `origin` is still as it was then.
-    fn changed_since(&self, origin: &Self) -> Option<&[usize]> {
+    /// What changed since these items were copied from `origin`, when they
+    /// were and `origin` is still as it was then.
+    fn changed_since(&self, origin: &Self) -> Option<Changes<'_>> {
         let since = self.since.as_ref()?;
         let still_as_copied = since.copied == origin.mark;
-        (still_as_copied && self.items.len() == origin.items.len())
-            .then_some(since.changed.as_slice())
+        (still_as_copied && self.items.len() >= origin.items.len()).then_some(Changes {
+            changed: since.changed.as_slice(),
+            copied: origin.items.len(),
+        })
     }
 }
 
@@ -468,6 +488,33 @@ impl<T: Identified, S> Items<T, S> {
         stock.one_mut(at)
     }
 
+    /// Add `item` at the end, as `Vec::push` does. The items are copied
+    /// first when a clone still shares them; the copy remembers the item
+    /// came, so comparing it with what it was copied from, or saving it over
+    /// that, visits the items changed and added rather than every item. An
+    /// id the items already hold is no addition but items leaving and
+    /// coming, which only comparing them all can tell: the copy forgets
+    /// what it was copied from. The ids kept beside the items are kept.
+    pub fn push(&mut self, item: T) {
+        let stock = self.stock.make_mut();
+        if stock.since.is_some() || stock.ids.is_some() {
+            let id = item.id();
+            if stock.since.is_some() {
+                // The ids, learned when unknown, to tell an addition.
+                let ids = stock.take_ids().unwrap_or_else(|| ids_of(&stock.items));
+                if ids.iter().any(|held| **held == *id.as_str()) {
+                    stock.since = None;
+                }
+                stock.ids = Some(ids);
+            }
+            if let Some(ids) = &mut stock.ids {
+                ids.push(Arc::from(id.as_str()));
+            }
+        }
+        stock.mark = fresh_mark();
+        stock.items.push(item);
+    }
+
     /// Remove the item `id`.
     pub fn take(&mut self, id: &Id) -> Option<T> {
         let at = self.position_of(id)?;
@@ -728,37 +775,124 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     before_ids
 }
 
-/// The edits between `before` and `after`, which holds the same items at
-/// the same positions except at `changed` (ascending): each changed item
-/// that kept its id, field by field, in the order [`ItemStorage::diff`]
-/// would list them. `false`, with nothing written, when one changed its id:
-/// then items left and came, which only comparing them all can tell.
-fn diff_changed<T: Model + Identified, R>(
+/// The items of `changes` that changed in place and kept their ids, by
+/// position, with their id: `None` when one changed its id, as then items
+/// left and came, which only comparing them all can tell.
+fn kept_ids<T: Identified>(
     before: &[T],
     after: &[T],
-    changed: &[usize],
+    changes: Changes<'_>,
+) -> Option<Vec<(usize, Id)>> {
+    let mut kept = Vec::with_capacity(changes.changed.len());
+    for &at in changes.changed {
+        if at >= changes.copied {
+            // Added since: written whole.
+            break;
+        }
+        let id = before.get(at)?.id();
+        if after.get(at)?.id() != id {
+            return None;
+        }
+        kept.push((at, id));
+    }
+    Some(kept)
+}
+
+/// The edits between `before` and `after`, which holds the same items at
+/// the same positions except as `changes` says: each item changed in place,
+/// field by field, then each added one, in the order [`ItemStorage::diff`]
+/// would list them (an [`Ordered`](crate::Ordered) item inserted at its
+/// position, `arranged`). `false`, with nothing written, when one changed
+/// its id.
+fn diff_changed<T: Model + Identified, R>(
+    (before, after): (&[T], &[T]),
+    changes: Changes<'_>,
+    arranged: bool,
     path: &[Segment],
     out: &mut Vec<Edit<R>>,
 ) -> bool {
-    let mut pairs = Vec::with_capacity(changed.len());
-    for &at in changed {
-        let (Some(was), Some(now)) = (before.get(at), after.get(at)) else {
-            return false;
-        };
-        let id = was.id();
-        if now.id() != id {
-            return false;
-        }
-        pairs.push((id, was, now));
-    }
+    let Some(kept) = kept_ids(before, after, changes) else {
+        return false;
+    };
     let mut at = Vec::with_capacity(path.len().saturating_add(1));
     at.extend_from_slice(path);
-    for (id, was, now) in pairs {
-        at.push(Segment::Item(id));
-        was.diff(now, &at, out);
-        at.pop();
+    for (position, id) in kept {
+        if let (Some(was), Some(now)) = (before.get(position), after.get(position)) {
+            at.push(Segment::Item(id));
+            was.diff(now, &at, out);
+            at.pop();
+        }
+    }
+    for (index, item) in after.iter().enumerate().skip(changes.copied) {
+        out.push(Edit::new(
+            path.to_vec(),
+            EditOp::InsertItem {
+                id: Some(item.id()),
+                at: if arranged { index } else { 0 },
+                value: item.to_json(),
+            },
+        ));
     }
     true
+}
+
+/// [`Model::store_changed`] of [`Keyed`] items `now` over the items `was`
+/// they were copied from, changed and added to as `changes` says: the
+/// operations [`ById::store`] writes, found without visiting the other
+/// items. The map holds each of `was` under its id as a store left it,
+/// except where `dirty` says someone else wrote since; an item no change
+/// touched is the very item `was` holds there, and storing it writes
+/// nothing. `items` finds an item by id.
+fn store_by_id_changed<T: Model + Identified, S>(
+    items: &Items<T, S>,
+    (now, was): (&[T], &[T]),
+    changes: Changes<'_>,
+    (doc, slot): (&mut Doc, Slot<'_>),
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    // A slot holding no map yet is written whole, as is a map someone else
+    // changed otherwise than item by item, or items that left and came.
+    let Some((Value::Object(ObjType::Map), map)) = slot.current(doc)? else {
+        return ById::store(now, doc, slot);
+    };
+    let touched = dirty.under(&map);
+    let kept = match kept_ids(was, now, changes) {
+        Some(kept) if !touched.is_all() => kept,
+        _ => return ById::store(now, doc, slot),
+    };
+    // What to write: the items changed and added, and those someone else
+    // touched; what to delete: a key no item is under, which only someone
+    // else can have written.
+    let mut writes: Vec<usize> = kept.iter().map(|(at, _)| *at).collect();
+    writes.extend(changes.copied..now.len());
+    let mut stale: Vec<&str> = Vec::new();
+    for key in touched.keys() {
+        match items.position_of(&Id::from_raw(key)) {
+            Some(at) => writes.push(at),
+            None if doc.get(&map, key)?.is_some() => stale.push(key),
+            None => {}
+        }
+    }
+    // In the order `store` writes: deletes by key, then items in order.
+    stale.sort_unstable();
+    for key in stale {
+        doc.delete(&map, key)?;
+    }
+    writes.sort_unstable();
+    writes.dedup();
+    for at in writes {
+        let Some(item) = now.get(at) else {
+            continue;
+        };
+        let id = item.id();
+        match was.get(at).filter(|_| at < changes.copied) {
+            Some(held) => write_key_changed(doc, &map, id.as_str(), item, held, dirty)?,
+            None => item
+                .store(doc, Slot::Key(&map, id.as_str()))
+                .located(id.as_str())?,
+        }
+    }
+    Ok(())
 }
 
 impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
@@ -843,6 +977,40 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         S::store(self.items(), doc, slot)
     }
 
+    /// Items two clones still share are the same items, and store as they
+    /// are: saving a record whose items no change touched visits none.
+    fn stores_as(&self, before: &Self) -> bool {
+        self.stock.same(&before.stock)
+    }
+
+    /// A [`Keyed`] copy changed one item at a time and added to writes
+    /// only those items, and the ones someone else touched; anything else
+    /// is written as [`store`](Model::store) writes it.
+    #[inline(never)]
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let (now, was) = (self.stock.get(), before.stock.get());
+        let changes = if self.stock.same(&before.stock) {
+            Some(Changes {
+                changed: &[],
+                copied: was.items.len(),
+            })
+        } else {
+            now.changed_since(was)
+        };
+        match changes {
+            Some(changes) if !S::ARRANGED => {
+                store_by_id_changed(self, (&now.items, &was.items), changes, (doc, slot), dirty)
+            }
+            _ => S::store(self.items(), doc, slot),
+        }
+    }
+
     #[inline(never)]
     fn refresh(
         &mut self,
@@ -901,8 +1069,14 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         if self.stock.same(&after.stock) {
             return;
         }
-        if let Some(changed) = after.stock.get().changed_since(self.stock.get())
-            && diff_changed(self.items(), after.items(), changed, path, out)
+        if let Some(changes) = after.stock.get().changed_since(self.stock.get())
+            && diff_changed(
+                (self.items(), after.items()),
+                changes,
+                S::ARRANGED,
+                path,
+                out,
+            )
         {
             return;
         }

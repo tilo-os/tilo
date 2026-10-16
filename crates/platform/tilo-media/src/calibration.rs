@@ -365,42 +365,6 @@ impl MagnitudeResponse {
         })
     }
 
-    /// The dB-domain weighted mean of responses on one grid: a multi-position
-    /// room response. `None` when there is nothing to average, the weights
-    /// sum to zero, or the grids differ.
-    #[must_use]
-    pub fn weighted_mean(responses: &[(&Self, f64)]) -> Option<Self> {
-        let (first, _) = responses.first()?;
-        let total: f64 = responses.iter().map(|(_, weight)| weight.max(0.0)).sum();
-        let same_grid = responses.iter().all(|(response, _)| {
-            response.points.len() == first.points.len()
-                && response
-                    .points
-                    .iter()
-                    .zip(&first.points)
-                    .all(|(a, b)| (a.hz - b.hz).abs() <= 1e-9 * b.hz.abs().max(1.0))
-        });
-        if total <= 0.0 || !total.is_finite() || !same_grid {
-            return None;
-        }
-        let points = first
-            .points
-            .iter()
-            .enumerate()
-            .map(|(index, point)| ResponsePoint {
-                hz: point.hz,
-                db: responses
-                    .iter()
-                    .filter_map(|(response, weight)| {
-                        response.points.get(index).map(|p| p.db * weight.max(0.0))
-                    })
-                    .sum::<f64>()
-                    / total,
-            })
-            .collect();
-        Some(Self { points })
-    }
-
     /// Mean of the dB values of the points between `low_hz` and `high_hz`.
     pub fn log_average_db(&self, low_hz: f64, high_hz: f64) -> f64 {
         let (sum, count) = self
@@ -419,6 +383,7 @@ impl MagnitudeResponse {
 
     /// The smoothed level at `hz`, interpolated between points; `None` past
     /// the highest point.
+    #[cfg(test)]
     pub fn db_at(&self, hz: f64) -> Option<f64> {
         let after = self.points.iter().position(|p| p.hz >= hz)?;
         let high = self.points.get(after)?;
@@ -821,16 +786,6 @@ mod tests {
         }
         assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db[1..]).is_none());
         assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &[f64::NAN; 1]).is_none());
-        let louder = MagnitudeResponse::from_grid_db(
-            20.0,
-            20_000.0,
-            &db.iter().map(|db| db + 6.0).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let mean = MagnitudeResponse::weighted_mean(&[(&rebuilt, 2.0), (&louder, 1.0)]).unwrap();
-        assert!((mean.points[10].db - (db[10] + 2.0)).abs() < 1e-9);
-        assert!(MagnitudeResponse::weighted_mean(&[]).is_none());
-        assert!(MagnitudeResponse::weighted_mean(&[(&rebuilt, 0.0)]).is_none());
         assert_eq!(
             room_eq(&rebuilt, measured.level_db, RATE),
             measured.eq,

@@ -117,7 +117,6 @@ Jobs that need more than an unprivileged container:
 |---|---|
 | `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
 | `ci-staging-loop.yml`, `build-env-tools.yml` | a privileged container |
-| `ci-development-signing.yml` | Docker that can start privileged containers |
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | Image, kernel and buildroot builds | Docker with Buildx |

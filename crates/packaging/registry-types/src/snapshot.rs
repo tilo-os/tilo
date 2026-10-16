@@ -492,6 +492,16 @@ pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
         && hex::decode(value).is_ok_and(|decoded| decoded.len() == bytes)
 }
 
+/// Whether a snapshot issued at `issued_at_unix` and expiring at
+/// `expires_at_unix` may be used at `now_unix`: issued no further ahead than
+/// the clock skew a verifier tolerates, and not yet expired. The only part
+/// of [`verify_snapshot`] and [`verify_compact_snapshot`] that depends on
+/// the time, so a server that verified a snapshot once re-checks just this.
+#[must_use]
+pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_unix: u64) -> bool {
+    issued_at_unix <= now_unix.saturating_add(300) && expires_at_unix >= now_unix
+}
+
 /// Verify owner signature, freshness, structural bounds, publisher signatures,
 /// and owner authorization. A successful return is the proof behind the Store's
 /// "verified" badge.
@@ -571,8 +581,7 @@ impl SignedHeader<'_> {
         {
             return Err(SnapshotError::Sequence);
         }
-        if self.issued_at_unix > now_unix.saturating_add(300)
-            || self.expires_at_unix < now_unix
+        if !within_validity_window(self.issued_at_unix, self.expires_at_unix, now_unix)
             || self.expires_at_unix <= self.issued_at_unix
             || self.expires_at_unix.saturating_sub(self.issued_at_unix)
                 > MAX_SNAPSHOT_VALIDITY_SECONDS

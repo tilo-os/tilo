@@ -8,6 +8,20 @@ use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 
+/// The save states the window announces on its own, as live regions.
+fn announced_save_labels(app: &mut TestApp<NotesShell>) -> Vec<String> {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| {
+            node.live()
+                .is_some_and(|live| live != ui::accesskit::Live::Off)
+        })
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .filter(|label| ["Saved", "Saving…", "Save failed", "Not saved"].contains(&label.as_str()))
+        .collect()
+}
+
 fn save_labels(app: &mut TestApp<NotesShell>) -> Vec<String> {
     app.harness()
         .a11y_nodes()
@@ -39,7 +53,18 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
             .collect::<Vec<_>>()
     });
     assert_eq!(titles, ["Groceries"], "the note is durable");
-    assert_eq!(save_labels(&mut app), ["Saved"]);
+    // Bytes that were only read count as durable once the store's thread has
+    // synced them, so a reopened note can read "Saving…" for a moment. It
+    // must turn "Saved" by itself: run frames only as the live host would
+    // (the status's own wake deadline) until it does.
+    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+        save_labels(app) == ["Saved"]
+    });
+    assert!(
+        saved,
+        "a reopened note reads Saved without input: {:?}",
+        save_labels(&mut app)
+    );
 }
 
 /// Run frames only when the live host would: for queued work, an animation
@@ -86,6 +111,11 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
         app.harness().type_text(&key.to_string());
         app.harness().persist_tick();
         idle(&mut app, std::time::Duration::from_millis(80), |_| false);
+        assert_eq!(
+            announced_save_labels(&mut app),
+            Vec::<String>::new(),
+            "autosave announces nothing"
+        );
     }
     let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
         save_labels(app) == ["Saved"]
@@ -94,5 +124,62 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
         saved,
         "the note's write landed, yet with no input the app still shows {:?}",
         save_labels(&mut app)
+    );
+}
+
+/// Assistive technology hears what the screen shows: autosave cycling
+/// between "Saving…" and "Saved" is silent, a failed save is announced, and
+/// so is the save that ends it, once.
+#[test]
+fn only_a_failed_save_and_its_recovery_are_announced() {
+    use ui::record::RecordSaveStatus;
+    use ui::widget::Widget;
+    fn announced(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        if node.live.is_some() {
+            out.push(node.name.clone().unwrap_or_default());
+        }
+        for child in &node.children {
+            announced(child, out);
+        }
+    }
+    ui::i18n::I18nManager::init("en-US");
+    let mut doc = automerge::AutoCommit::new();
+    read::initialize(&mut doc);
+    doc.commit();
+    let mut app =
+        notes::NotesApp::from_document(&doc, &ui::permissions::UserId("me".into())).unwrap();
+    let status = ui::LocalState::new(RecordSaveStatus::Saved);
+    app.follow_save_status(status.clone());
+    let mut hear = |state: RecordSaveStatus| {
+        status.set(state);
+        app.sync(&doc, &automerge::ROOT);
+        let mut out = Vec::new();
+        announced(&app.accessibility().unwrap(), &mut out);
+        out
+    };
+    for state in
+        std::iter::repeat_n([RecordSaveStatus::Saving, RecordSaveStatus::Saved], 3).flatten()
+    {
+        assert_eq!(hear(state), Vec::<String>::new(), "autosave is silent");
+    }
+    assert_eq!(
+        hear(RecordSaveStatus::Failed("disk failure".into())),
+        ["Save failed"],
+        "a failed save is announced"
+    );
+    assert_eq!(
+        hear(RecordSaveStatus::Saving),
+        Vec::<String>::new(),
+        "the retry is quiet"
+    );
+    assert_eq!(
+        hear(RecordSaveStatus::Saved),
+        ["Saved"],
+        "the recovery is announced"
+    );
+    assert_eq!(
+        hear(RecordSaveStatus::Saving),
+        Vec::<String>::new(),
+        "and quiet after"
     );
 }

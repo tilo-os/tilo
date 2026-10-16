@@ -93,6 +93,9 @@ else
   while read -r unit; do
     w=$(systemctl --user show -P CPUWeight "$unit")
     case "$w" in 800|50) ;; *) bad "$unit has no foreground/background tier (CPUWeight=$w)" ;; esac
+    # One process the kernel kills for memory must not stop the whole app.
+    o=$(systemctl --user show -P OOMPolicy "$unit")
+    [ "$o" = continue ] || bad "$unit OOMPolicy=$o: one OOM kill would stop the whole app"
   done < <(systemctl --user list-units --plain --no-legend 'app-tilo-*.scope' | awk '{print $1}')
   # Exactly one scope is boosted: the focused one.
   boosted=$(systemctl --user list-units --plain --no-legend 'app-tilo-*.scope' | awk '{print $1}' |

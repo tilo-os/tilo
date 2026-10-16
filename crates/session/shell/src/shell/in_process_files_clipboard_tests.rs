@@ -855,6 +855,9 @@ mod files_clipboard_tests {
         }
     }
 
+    // Tests that pause a transfer midway use the Linux file clipboard's
+    // transfer hook (`TestTransferPause`), so they exist only on Linux.
+    #[cfg(target_os = "linux")]
     #[test]
     fn mounted_files_cancelled_cut_recovers_without_false_paste_history() {
         use crate::shell::broker_services::TestTransferPause;
@@ -914,6 +917,7 @@ mod files_clipboard_tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mounted_files_partial_paste_records_only_its_published_objects() {
         use crate::shell::broker_services::TestTransferPause;
@@ -1025,6 +1029,7 @@ mod files_clipboard_tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     fn kill_after_saving_cross_device_undo(profile: &Path, receiving: PathBuf) -> ! {
         let mut fixture = Fixture::open_in(profile, true, [profile.join("source"), receiving]);
         fixture.succeeds(0, "select-all");
@@ -1070,6 +1075,7 @@ mod files_clipboard_tests {
         unreachable!("the isolated test process must be killed");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mounted_files_cold_recovery_settles_a_saved_cross_device_undo() {
         use std::os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _};
@@ -1761,6 +1767,7 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    #[cfg(target_os = "linux")]
     fn paused_restore_refuses(fixture: &mut Fixture, trash: &Path, case: &str) {
         use crate::shell::broker_services::TestTransferPause;
         let info = native_trash_pair(trash);
@@ -1841,6 +1848,7 @@ mod files_clipboard_tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mounted_files_native_trash_restore_rechecks_admitted_objects_and_cancellation() {
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_rechecks_admitted_objects_and_cancellation";

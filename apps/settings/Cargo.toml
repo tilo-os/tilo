@@ -18,16 +18,27 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach account custody and the IMAP client through their engine library in
+# the runtime bundle (libtilo_accounts_engine.so,
+# crates/runtime/engines/accounts) instead of the runtime. The release
+# collection enables it (dist/apps/app-collections.toml); a `thin` build
+# without it (`tilo-app dev`) links account-custody and async-imap
+# statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
-provider-settings-ui = { version = "0.1.0", path = "../../crates/agent/provider-settings-ui" }
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
+# The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
+tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
 tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
@@ -109,7 +120,7 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-provider-settings-ui = { version = "0.1.0", path = "../../crates/agent/provider-settings-ui", features = ["test-support"] }
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
 # The platform adapter the native runner feeds, for the live-bus benchmark.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

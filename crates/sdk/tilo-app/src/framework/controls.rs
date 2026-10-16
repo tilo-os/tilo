@@ -55,6 +55,8 @@ action_control! {
     ui_core::widget::ToggleGroup => usize, |control| control.with_enabled(false);
     ui_core::KeyboardMapSelection => String, |control| control.with_enabled(false);
     Button => (), |control| control.with_enabled(false);
+    // Unavailable, a card is left unbound, which makes it inert.
+    ui_core::widget::MediaCard => (), |control| control;
     EmptyState => (), |control| control.with_enabled(false);
     // Unavailable, an inline rename stays a label that is never committed.
     EditableLabel => String, |control| control;

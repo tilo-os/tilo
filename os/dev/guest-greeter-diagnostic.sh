@@ -62,7 +62,7 @@ commands = (
     'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"',
 )
 launcher = (
-    'WLR_LOG=debug /usr/libexec/tilo-cage-session'
+    'TILO_CAGE_SESSION_KEEP_OUTPUT=1 WLR_LOG=debug /usr/libexec/tilo-cage-session'
     if variant == 'gpu'
     else 'WLR_NO_HARDWARE_CURSORS=1 WLR_RENDERER=pixman '
          'WLR_DRM_NO_ATOMIC=1 WLR_LOG=debug cage -s --'

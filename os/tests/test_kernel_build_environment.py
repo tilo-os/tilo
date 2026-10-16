@@ -52,6 +52,23 @@ class KernelBuildEnvironmentTests(unittest.TestCase):
             self.assertEqual(run(envelope([SOURCE, BUILDROOT],
                                           build_type="https://example.invalid/kernel-rpm/v1")).returncode, 1)
 
+    def test_valid_predicate_cannot_mask_an_unusable_matching_predicate(self):
+        valid = envelope([SOURCE, BUILDROOT])
+        other = "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "7" * 64
+        for invalid in (envelope([SOURCE, BUILDROOT, other]), envelope([SOURCE, BASE])):
+            for pair in ((valid, invalid), (invalid, valid)):
+                with self.subTest(pair=pair):
+                    result = run(*pair)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.stdout, "")
+
+    def test_unrelated_and_repeated_valid_predicates_remain_supported(self):
+        result = run(envelope([SOURCE, BUILDROOT]), envelope([SOURCE, BUILDROOT]),
+                     envelope([SOURCE, BASE], architecture="aarch64"),
+                     envelope([BUILDROOT]), as_array=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), BUILDROOT)
+
     def test_environment_rejections(self):
         with self.subTest(phase="rejects_a_kernel_built_from_an_rpm_snapshot"):
             self.assertEqual(run(envelope([SOURCE, BASE, RPMS])).returncode, 1)

@@ -110,13 +110,7 @@ impl SizeDisclosure {
 #[derive(Debug)]
 pub struct Consent(());
 
-impl Consent {
-    /// Record that `disclosure` was shown and accepted.
-    #[must_use]
-    pub fn after_showing(_disclosure: &SizeDisclosure) -> Self {
-        Self(())
-    }
-}
+impl Consent {}
 
 /// Where Windows support stands on this system.
 #[derive(Clone, Debug, PartialEq, Eq)]

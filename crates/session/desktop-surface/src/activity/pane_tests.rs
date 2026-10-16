@@ -1291,6 +1291,7 @@ mod tests {
             route: WorkspaceTaskRoute::RulesOnly,
             status: WorkspaceTaskStatus::InProgress,
             resource: None,
+            subject: None,
             created_at: 42,
             updated_at: 42,
             audit: vec![
@@ -1409,6 +1410,111 @@ mod tests {
             .expect("task remains stored");
         assert_eq!(task.status, WorkspaceTaskStatus::Queued);
         assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
+    }
+
+    /// Records each dispatch and whether the test held the tree for it.
+    #[derive(Default)]
+    struct DispatchHost {
+        tree_held: Rc<Cell<bool>>,
+        dispatched: RefCell<Vec<(String, String, bool)>>,
+        refusal: Option<String>,
+    }
+    impl ActivityHost for DispatchHost {
+        fn local_user(&self) -> String {
+            "ada".into()
+        }
+        fn mutations_available(&self) -> bool {
+            true
+        }
+        fn all_workspaces_available(&self) -> bool {
+            true
+        }
+        fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
+            true
+        }
+        fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
+            self.dispatched
+                .borrow_mut()
+                .push((room.into(), task.into(), self.tree_held.get()));
+            self.refusal.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    fn launchable_task(host: Rc<DispatchHost>) -> (WorkspaceTree, RoomActivityPane, String) {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        pane.selected_task = Some(task_id.clone());
+        (tree, pane, task_id)
+    }
+
+    /// The broker that runs a task checks the room's authority against the
+    /// workspace tree. The shell holds that tree for writing while the pane
+    /// handles the click, so dispatching from inside the handler stopped the
+    /// compositor. Launch now only asks; the dispatch runs once the caller
+    /// has let go of the tree.
+    #[test]
+    fn launching_a_task_dispatches_only_after_the_tree_is_released() {
+        let host = Rc::new(DispatchHost::default());
+        let (mut tree, mut pane, task_id) = launchable_task(Rc::clone(&host));
+        let task = pane
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .cloned()
+            .expect("task is projected");
+        assert!(pane.task_actions_for(&task).contains(&TaskAction::Launch));
+
+        host.tree_held.set(true);
+        let outcome = pane.apply_task_action(TaskAction::Launch, &mut tree);
+        host.tree_held.set(false);
+
+        assert!(
+            host.dispatched.borrow().is_empty(),
+            "nothing dispatched while the tree is held"
+        );
+        let request = outcome.dispatch_task.expect("Launch asks for a dispatch");
+        assert_eq!(request.task_id, task_id);
+        assert_eq!(request.assigned_agent.as_deref(), Some("studio-agent"));
+        assert!(outcome.handled);
+        assert!(pane.dispatch_task(request), "the live agent took the run");
+        assert_eq!(
+            host.dispatched.borrow().as_slice(),
+            [(pane.task_room.clone(), task_id, false)]
+        );
+    }
+
+    #[test]
+    fn a_refused_dispatch_offers_the_agent_start_again_with_its_reason() {
+        let host = Rc::new(DispatchHost {
+            refusal: Some("the assigned agent is not live and task-capable".into()),
+            ..DispatchHost::default()
+        });
+        let (mut tree, mut pane, _) = launchable_task(Rc::clone(&host));
+        let request = pane
+            .apply_task_action(TaskAction::Launch, &mut tree)
+            .dispatch_task
+            .expect("Launch asks for a dispatch");
+        let room = request.room.clone();
+
+        assert!(!pane.dispatch_task(request));
+        assert!(matches!(
+            pane.agent_startup.get(&(room, "studio-agent".into())),
+            Some(AgentStartup::Failed { detail }) if detail.contains("not live")
+        ));
     }
 
     #[test]
@@ -3856,10 +3962,23 @@ mod task_review_tests {
     struct ReviewHost {
         snapshot: RefCell<crate::activity::TaskReviewSnapshot>,
         submitted: RefCell<Vec<crate::activity::TaskReviewRequest>>,
+        mutations: std::cell::Cell<bool>,
+        launched: RefCell<Vec<String>>,
     }
     impl ActivityHost for ReviewHost {
         fn local_user(&self) -> String {
             "local".into()
+        }
+        fn mutations_available(&self) -> bool {
+            self.mutations.get()
+        }
+        fn launch_agent(
+            &self,
+            agent: &str,
+            _workspace: &tilo_desktop_model::Workspace,
+        ) -> Result<(), String> {
+            self.launched.borrow_mut().push(agent.into());
+            Ok(())
         }
         fn task_review_required(&self, _room: &str) -> bool {
             true
@@ -3923,6 +4042,8 @@ mod task_review_tests {
                 )]),
             }),
             submitted: RefCell::default(),
+            mutations: std::cell::Cell::new(false),
+            launched: RefCell::default(),
         });
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
@@ -4028,6 +4149,38 @@ mod task_review_tests {
                 assert!(!actions.contains(&TaskAction::CancelRun));
             }
         }
+    }
+    #[test]
+    fn an_approved_run_offers_to_start_its_offline_agent() {
+        let (mut tree, mut pane, host) = review_fixture();
+        host.mutations.set(true);
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "an approved run reaches no one until its agent is running"
+        );
+        pane.apply_task_action(TaskAction::StartAgent, &mut tree);
+        assert_eq!(*host.launched.borrow(), ["scribe"]);
+        assert!(
+            !pane
+                .task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "a starting agent is not offered a second start"
+        );
+        host.snapshot.borrow_mut().tasks[0].status = WorkspaceTaskStatus::Done;
+        pane.agent_startup.clear();
+        pane.refresh(&mut tree);
+        assert!(
+            !pane
+                .task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "a finished task has no run to start an agent for"
+        );
     }
     #[test]
     fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {

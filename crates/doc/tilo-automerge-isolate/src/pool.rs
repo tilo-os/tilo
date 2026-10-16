@@ -15,7 +15,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use automerge::{AutoCommit, SaveOptions};
@@ -75,7 +75,7 @@ impl Pool {
     ) -> Result<Applied, Rejected> {
         let key = Key::of(doc);
         let slot = self.route(&key);
-        let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
+        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
         let mut next = if key.complete_heads().is_some() {
             Base::Cached
         } else {
@@ -144,7 +144,7 @@ impl Pool {
 
     pub(crate) fn load(&self, bytes: &[u8]) -> Result<AutoCommit, Rejected> {
         let slot = self.any_slot();
-        let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
+        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
         match self.call(
             &mut worker,
             &Request::Load { incoming: bytes },
@@ -166,7 +166,7 @@ impl Pool {
     }
 
     fn route(&self, key: &Key) -> usize {
-        let known = lock(&self.routes).get(key);
+        let known = self.routes.lock_recover().get(key);
         known.unwrap_or_else(|| self.any_slot())
     }
 
@@ -180,7 +180,7 @@ impl Pool {
 
     fn remember(&self, key: Key, slot: usize) {
         if key.complete_heads().is_some() {
-            lock(&self.routes).insert(key, slot);
+            self.routes.lock_recover().insert(key, slot);
         }
     }
 
@@ -296,10 +296,6 @@ fn catch_up(doc: &mut AutoCommit, cached: &[Key]) -> Option<(Key, Vec<u8>)> {
             .all(|hash| doc.get_change_meta_by_hash(hash).is_some())
             .then(|| (key.clone(), doc.save_after(&heads)))
     })
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock_recover()
 }
 
 struct Worker {
@@ -523,7 +519,8 @@ struct Spawner(Mutex<mpsc::Sender<SpawnJob>>);
 impl Spawner {
     fn spawn(&self, command: Command) -> io::Result<Child> {
         let (reply, result) = mpsc::channel();
-        lock(&self.0)
+        self.0
+            .lock_recover()
             .send((command, reply))
             .map_err(|_| io::Error::other("worker spawner stopped"))?;
         result
@@ -747,10 +744,10 @@ mod tests {
         doc.put(automerge::ROOT, "k", 1).unwrap();
         doc.commit();
         let mut first = pool.load(&doc.save()).unwrap();
-        let pid = lock(&pool.slots[0]).as_ref().unwrap().child.id();
+        let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
         std::thread::sleep(Duration::from_millis(1600));
         assert!(
-            lock(&pool.slots[0]).as_mut().unwrap().exited(),
+            (pool.slots[0]).lock_recover().as_mut().unwrap().exited(),
             "worker {pid} did not exit"
         );
         let mut remote = first.fork();
@@ -770,14 +767,14 @@ mod tests {
         doc.put(automerge::ROOT, "k", 1).unwrap();
         doc.commit();
         pool.load(&doc.save()).unwrap();
-        let mut worker = lock(&pool.slots[0]).take().unwrap();
+        let mut worker = (pool.slots[0]).lock_recover().take().unwrap();
         let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
         // SAFETY: signalling our own child.
         unsafe { libc::kill(pid, libc::SIGALRM) };
         while !worker.exited() {
             std::thread::sleep(Duration::from_millis(5));
         }
-        *lock(&pool.slots[0]) = Some(worker);
+        *(pool.slots[0]).lock_recover() = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
     }
 

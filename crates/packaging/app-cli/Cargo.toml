@@ -50,6 +50,9 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 # The end-to-end test packs, publishes, and installs a .tapp.
 app-registry = { path = "../app-registry" }

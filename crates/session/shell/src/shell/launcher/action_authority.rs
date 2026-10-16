@@ -779,6 +779,7 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            offers: Vec::new(),
         };
         let room = RoomId::new();
         let mut command = LaunchCommand {
@@ -828,6 +829,9 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    // Sandbox registration (`Lease::register_sandbox`) exists only on Linux,
+    // so do these fixtures and the tests below that use them.
+    #[cfg(target_os = "linux")]
     fn live_child() -> std::process::Child {
         std::process::Command::new("sleep")
             .arg("60")
@@ -835,6 +839,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(target_os = "linux")]
     fn grant(app: &str, path: &str) -> CapOverride {
         CapOverride::grant(
             collab_types::Subject::Principal(collab_types::Principal::App(app.into())),
@@ -846,6 +851,7 @@ mod tests {
 
     /// Register a lease for `app` in `room` that captured `grant` at
     /// `revision`, then clean up everything it published.
+    #[cfg(target_os = "linux")]
     fn register(
         room: RoomId,
         app: &str,
@@ -950,6 +956,36 @@ mod tests {
         let registered = register(room, "so.tilo.unprompted", &granted, revision);
         lock(&PUBLISHED).rooms.remove(&room);
         registered.expect("the write's own save publishes the revision");
+    }
+
+    /// A saved window reopens while the frame holds the tree for writing, so
+    /// its launch captures the policy revision on the thread that holds it.
+    /// That used to wait for a read lock its own thread held and stop the
+    /// compositor. The launch now captures the revision the write publishes
+    /// when it is released, and the publication it waits for arrives.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_inside_a_tree_write_captures_the_revision_that_write_publishes() {
+        let _turn = serial();
+        let previous = lock(&POLICY_SOURCE).take();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let room = tree.read().desktop.workspaces[0].room;
+        follow_tree(&tree);
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let guard = tree.write();
+            let captured = captured_revision();
+            drop(guard);
+            let _ = done.send(captured);
+        });
+        let captured = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a launch inside a tree write must not wait on that write")
+            .expect("the tree is the policy source");
+        let published = await_published(room, captured);
+        lock(&PUBLISHED).rooms.remove(&room);
+        *lock(&POLICY_SOURCE) = previous;
+        published.expect("releasing the write publishes the revision the launch captured");
     }
 
     /// The save that would publish the revision fails (its directory cannot

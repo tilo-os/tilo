@@ -204,6 +204,16 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         message: String,
     },
+    /// [`Self::QueueInstruction`] about what the person had selected: the
+    /// request's subject, never an attachment, so the run's authority is a
+    /// room-wide task's. Appended to preserve existing postcard indices.
+    QueueInstructionAbout {
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        route: WorkspaceTaskRoute,
+        subject: Box<tilo_actions::SelectionSubject>,
+    },
     /// Private coalesced model turn; appended to preserve command codec indices.
     Presentation {
         task_id: String,
@@ -219,6 +229,7 @@ impl WorkspaceTaskCommand {
         match self {
             Self::Queue { assigned_agent, .. }
             | Self::QueueInstruction { assigned_agent, .. }
+            | Self::QueueInstructionAbout { assigned_agent, .. }
             | Self::StartRun {
                 agent_id: assigned_agent,
                 ..
@@ -338,7 +349,8 @@ fn dispatch(
             dispatch_budget(tasks, controls, context, command)
         }
         command @ (WorkspaceTaskCommand::Queue { .. }
-        | WorkspaceTaskCommand::QueueInstruction { .. }) => {
+        | WorkspaceTaskCommand::QueueInstruction { .. }
+        | WorkspaceTaskCommand::QueueInstructionAbout { .. }) => {
             dispatch_queue(tasks, controls, context, command)
         }
         command @ (WorkspaceTaskCommand::ApproveRun { .. }
@@ -453,6 +465,27 @@ fn dispatch_queue(
             None,
             Some(instruction.as_str()),
         ),
+        WorkspaceTaskCommand::QueueInstructionAbout {
+            title,
+            instruction,
+            assigned_agent,
+            route,
+            subject,
+        } => {
+            validate_subject(subject)?;
+            let queued = queue(
+                tasks,
+                controls,
+                context,
+                title,
+                assigned_agent,
+                *route,
+                None,
+                Some(instruction.as_str()),
+            )?;
+            task_mut(tasks, &queued.0)?.subject = Some(subject.as_ref().clone());
+            Ok(queued)
+        }
         _ => Err("not a queue command".into()),
     }
 }
@@ -677,6 +710,20 @@ pub fn validate_manual_resource(resource: &WorkspaceTaskResource) -> Result<(), 
     Ok(())
 }
 
+/// A request's subject names an ordinary application resource, as an
+/// attachment must, and a bounded selection in it.
+fn validate_subject(subject: &tilo_actions::SelectionSubject) -> Result<(), String> {
+    subject.validate()?;
+    validate_manual_resource(&WorkspaceTaskResource {
+        app_id: Some(subject.app_id.clone()),
+        app_label: Some(subject.app_label.clone()),
+        id: subject.resource.id.clone(),
+        kind: subject.resource.kind.clone(),
+        label: subject.resource.label.clone(),
+        agent_request: None,
+    })
+}
+
 fn manual_command(
     tasks: &mut Vec<WorkspaceTask>,
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -711,6 +758,7 @@ fn manual_command(
                 route: WorkspaceTaskRoute::Manual,
                 status: WorkspaceTaskStatus::Queued,
                 resource: resource.as_deref().cloned(),
+                subject: None,
                 created_at: context.now,
                 updated_at: context.now,
                 audit: vec![WorkspaceTaskAuditEvent::new(
@@ -902,6 +950,7 @@ fn queue(
         route,
         status: WorkspaceTaskStatus::Queued,
         resource,
+        subject: None,
         created_at: context.now,
         updated_at: context.now,
         audit: vec![WorkspaceTaskAuditEvent::new(
@@ -2693,5 +2742,85 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn subject(anchor: tilo_actions::SelectionAnchor) -> tilo_actions::SelectionSubject {
+        tilo_actions::SelectionSubject {
+            app_id: "so.tilo.word-processor".into(),
+            app_label: "Writer".into(),
+            resource: tilo_actions::ActionResource {
+                id: "doc:proposal".into(),
+                kind: "word-processor.document".into(),
+                label: "Proposal".into(),
+            },
+            anchor,
+        }
+    }
+
+    fn queue_about(subject: tilo_actions::SelectionSubject) -> WorkspaceTaskCommand {
+        WorkspaceTaskCommand::QueueInstructionAbout {
+            title: "Tighten this".into(),
+            instruction: "Tighten this sentence".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            subject: Box::new(subject),
+        }
+    }
+
+    #[test]
+    fn an_instruction_about_a_selection_keeps_it_as_the_subject_not_an_attachment() {
+        let anchor = tilo_actions::SelectionAnchor::of_text("the opening sentence")
+            .at(tilo_actions::SelectionPlace::range("block-2", 0, 20));
+        let command = queue_about(subject(anchor.clone()));
+        let encoded = postcard::to_allocvec(&command).unwrap();
+        assert_eq!(
+            encoded[0], 16,
+            "the new command stays appended after every established wire variant"
+        );
+        let WorkspaceTaskCommand::QueueInstructionAbout { subject: read, .. } =
+            postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap()
+        else {
+            panic!("decoded another command")
+        };
+        assert_eq!(read.anchor, anchor);
+
+        let mut doc = AutoCommit::new();
+        let applied = run(&mut doc, 81, 81, &person(), &command).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = applied.result else {
+            panic!("queue result")
+        };
+        let current = snapshot(&doc).unwrap();
+        let task = current
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .unwrap();
+        assert_eq!(
+            task.subject.as_ref().map(|subject| &subject.anchor),
+            Some(&anchor)
+        );
+        assert!(
+            task.resource.is_none(),
+            "a selection never becomes the scope-narrowing attachment"
+        );
+        assert_eq!(
+            current.controls[&task_id].instruction.as_deref(),
+            Some("Tighten this sentence")
+        );
+    }
+
+    #[test]
+    fn an_instruction_about_a_selection_refuses_carriers_and_oversized_anchors() {
+        let oversized = subject(tilo_actions::SelectionAnchor {
+            excerpt: Some("x".repeat(tilo_actions::MAX_EXCERPT_BYTES + 1)),
+            ..tilo_actions::SelectionAnchor::default()
+        });
+        let mut doc = AutoCommit::new();
+        assert!(run(&mut doc, 82, 82, &person(), &queue_about(oversized)).is_err());
+        let mut carrier = subject(tilo_actions::SelectionAnchor::of_text("x"));
+        carrier.resource.id = "file:///etc/passwd".into();
+        assert!(run(&mut doc, 83, 83, &person(), &queue_about(carrier)).is_err());
+        let ordinary = subject(tilo_actions::SelectionAnchor::of_text("x"));
+        assert!(run(&mut doc, 84, 84, &agent(), &queue_about(ordinary)).is_err());
     }
 }

@@ -92,6 +92,11 @@ struct ProviderConnection {
 }
 
 impl Chooser {
+    /// The provider this chooser asks, when it has one.
+    pub fn selection(&self) -> Option<&ProviderSelection> {
+        self.provider.as_ref().map(|provider| &provider.selection)
+    }
+
     /// `enabled` false forces the keyword vocabulary — for a run that must be
     /// reproducible, and for proving the fallback works.
     pub fn new(enabled: bool, timeout: Duration) -> Self {
@@ -802,6 +807,7 @@ fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
             id: id.into(),
             name: name.into(),
             input,
+            extra_content: None,
         });
     }
     Ok((
@@ -872,6 +878,10 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
             id: id.into(),
             name: name.into(),
             input,
+            extra_content: call
+                .get("extra_content")
+                .filter(|extra| extra.is_object())
+                .cloned(),
         });
     }
     let mut assistant = serde_json::json!({
@@ -1518,6 +1528,7 @@ mod tests {
                     id: "call-a".into(),
                     name: tools::LIST_APPLICATIONS.into(),
                     input: serde_json::json!({}),
+                    extra_content: None,
                 })],
             },
             stop_reason: StopReason::ToolCalls,

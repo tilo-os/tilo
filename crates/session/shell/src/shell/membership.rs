@@ -1,8 +1,9 @@
 //! Workspace membership: the one implementation of changing a member's role
 //! and removing a member.
 //!
-//! The `member.role.set` / `member.remove` shell actions and the Members tab
-//! of workspace settings both call these functions, so a person clicking, a
+//! The `member.role.set` / `member.remove` / `agent.remove` shell actions and
+//! the Members and Agents tabs of workspace settings both call these
+//! functions, so a person clicking, a
 //! script, an agent and a screen reader pass the same authority check and
 //! produce the same policy-document writes. Two checks run, and neither
 //! replaces the other: the shell action's gate (the room's policy at the
@@ -15,6 +16,9 @@ use crate::shell::search::action_api::ActionError;
 use crate::shell::state::{CapRole, PolicyEdit, UserId, Workspace};
 
 pub(crate) use tilo_action_broker::collaboration_admin::{REMOVE_ACTION, SET_ROLE_ACTION};
+
+/// The shell action that takes an agent out of the active workspace.
+pub(crate) const AGENT_REMOVE_ACTION: &str = "agent.remove";
 
 /// Why a membership edit did not happen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +114,37 @@ pub(crate) fn remove_member(st: &mut ChromeState, member: &UserId) -> Result<(),
     active_role_of(st, member)?;
     edit_active_workspace_policy(st, |ws, actor| {
         tilo_desktop::workspace_settings::remove_member(ws, actor, member)
+    })
+    .map(drop)
+}
+
+/// Take `agent` out of the active workspace: revoke every grant naming it,
+/// its membership and whatever else it was given. Its next call through
+/// any door is answered from the policy without them, so this ends its
+/// access mid-session; an open agent-door connection stays served only
+/// what the room still grants it (nothing it was admitted with).
+///
+/// # Errors
+///
+/// [`MembershipError::NotMember`] when no grant names `agent`, otherwise
+/// see [`MembershipError`].
+pub(crate) fn remove_agent(st: &mut ChromeState, agent: &str) -> Result<(), MembershipError> {
+    authorize(st, AGENT_REMOVE_ACTION)?;
+    let subject = tilo_action_policy::Subject::agent(agent);
+    let holds_grants = st.tree().desktop.active_workspace().map(|workspace| {
+        workspace
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.subject == subject)
+    });
+    match holds_grants {
+        None => return Err(MembershipError::NoWorkspace),
+        Some(false) => return Err(MembershipError::NotMember),
+        Some(true) => {}
+    }
+    edit_active_workspace_policy(st, |ws, actor| {
+        tilo_desktop::workspace_settings::remove_agent(ws, actor, agent)
     })
     .map(drop)
 }

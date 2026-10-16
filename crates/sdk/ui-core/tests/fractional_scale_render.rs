@@ -11,17 +11,10 @@
 //! Skipped (eprintln + early return) when no wgpu adapter is available,
 //! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
 
-use crate::support::offscreen::OffscreenRenderer;
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 /// A 40×40 logical square, top-left (10, 10).
 const LOGICAL_L: f64 = 10.0;
@@ -43,7 +36,7 @@ fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
             let scale = 1.5_f64;
             // Logical canvas is 60×60; physical surface is logical × scale = 90×90.
             let phys = 90u32;
-            let Some(mut renderer) = try_new_renderer(phys, phys) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(phys, phys).ok() else {
                 eprintln!("offscreen: no wgpu adapter — skipping fractional-scale render test");
                 return;
             };
@@ -113,7 +106,7 @@ fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
             // Proves the placement scales with the factor, not a fixed rounding.
             for (scale, edge_in, edge_out) in [(1.25_f64, 60u32, 65u32), (1.75_f64, 85u32, 90u32)] {
                 let phys = ((60.0 * scale).round() as u32) + 4;
-                let Some(mut renderer) = try_new_renderer(phys, phys) else {
+                let Some(mut renderer) = OffscreenRenderer::try_new(phys, phys).ok() else {
                     eprintln!("offscreen: no wgpu adapter — skipping ({scale}x) case");
                     return;
                 };

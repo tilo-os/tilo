@@ -4,6 +4,7 @@
 #include "include/cef_request_context.h"
 #include "site_policy.h"
 #include "download_slots.h"
+#include "download_space.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include <algorithm>
@@ -88,6 +89,15 @@ class Downloads final : public CefDownloadHandler {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
     if(!allow) { CancelDownload(id);return; }
     std::error_code ec;std::filesystem::create_directories(downloads_,ec);
+    // A download must never fill the disk; refuse it before writing a byte.
+    if(!ec) {
+      const auto& t=it->second;
+      const uint64_t remaining=t.total>t.received?static_cast<uint64_t>(t.total-t.received):0;
+      if(auto free=tilo::AvailableBytes(downloads_)) {
+        auto why=tilo::SpaceRefusal(remaining,*free);
+        if(!why.empty()) { Finish(id,"failed",why);return; }
+      }
+    }
     // mkdtemp atomically reserves a private destination. Untrusted suggested
     // names cannot traverse or overwrite an existing file, even on repetition.
     std::string directory=downloads_+"/tilo-download-XXXXXX";
@@ -123,7 +133,7 @@ class Downloads final : public CefDownloadHandler {
         if(item->IsInProgress()){staged->second.active=callback;Changed();return;}
         auto transfer=staged->second;early_.erase(staged);transfers_[id]=std::move(transfer);
         const std::string state=item->IsComplete()?"complete":item->IsCanceled()?"cancelled":"failed";
-        Finish(id,state,state=="failed"?"Chromium interrupted download ("+std::to_string(item->GetInterruptReason())+")":"");return;
+        Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");return;
       }
       if(item->IsInProgress()) {
         const int owner=owner_(browser);
@@ -141,11 +151,25 @@ class Downloads final : public CefDownloadHandler {
     auto& transfer=it->second;transfer.owner=owner_(browser);Merge(transfer,item);
     if(item->IsInProgress()) {
       transfer.active=callback;
+      // As the size becomes known, and while it grows, stop a download the
+      // disk can't hold before it fills it.
+      if(!transfer.cancel_requested) {
+        const uint64_t remaining=transfer.total>transfer.received?static_cast<uint64_t>(transfer.total-transfer.received):0;
+        if(auto free=tilo::AvailableBytes(downloads_)) {
+          auto why=tilo::SpaceRefusal(remaining,*free);
+          if(!why.empty()) {transfer.space_error=why;transfer.cancel_requested=true;}
+        }
+      }
       if(transfer.cancel_requested) {if(!transfer.cancel_sent){transfer.cancel_sent=true;callback->Cancel();}return;}
       EmitState(id,transfer,"progress","");return;
     }
+    if(!transfer.space_error.empty() && !item->IsComplete()) {Finish(id,"failed",transfer.space_error);return;}
     const std::string state=item->IsComplete()?"complete":item->IsCanceled()?"cancelled":"failed";
-    Finish(id,state,state=="failed"?"Chromium interrupted download ("+std::to_string(item->GetInterruptReason())+")":"");
+    Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");
+  }
+  static std::string InterruptMessage(cef_download_interrupt_reason_t reason) {
+    if(reason==CEF_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE) return "Not enough space to finish the download";
+    return "Chromium interrupted download ("+std::to_string(reason)+")";
   }
   void Retry(int id,CefRefPtr<CefBrowser> browser) {
     auto found=history_.find(id);if(!accepting_ || !browser || found==history_.end() || !found->second.retryable) return;
@@ -162,7 +186,7 @@ class Downloads final : public CefDownloadHandler {
   }
   void Close() {CancelAll();}
  private:
-  struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;};
+  struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;std::string space_error;};
   struct RetryRecord {std::string url;bool retryable=false;};
   static void Merge(Transfer& transfer,CefRefPtr<CefDownloadItem> item) {
     // The consent callback supplies the destination name. Later item updates

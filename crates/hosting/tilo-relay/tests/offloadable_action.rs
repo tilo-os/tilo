@@ -27,8 +27,9 @@ use tilo_actions::{
 };
 use tilo_clock::unix_now_ms;
 use tilo_relay::offload::{
-    ComputePlacement, LocalTransform, OffloadError, OffloadJob, OffloadRoute, Offloader,
-    OffloaderParts, PlacementQuery, RanOn, RelayPlacement, WorkspaceContent,
+    ComputePlacement, DeviceOffload, DeviceOffloadConfig, LocalTransform, OffloadError,
+    OffloadIdentity, OffloadJob, OffloadRelay, OffloadRoute, Offloader, OffloaderParts,
+    PlacementQuery, RanOn, RelayPlacement, WorkspaceContent, start_route,
 };
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
@@ -1237,6 +1238,194 @@ async fn the_door_runs_photos_make_thumbnails_on_the_placed_device_with_the_loca
         panic!("no workspace, no offload");
     };
     assert!(reason.contains("no compute for the room"), "{reason}");
+    jobs.abort();
+    serving.abort();
+}
+
+/// `device`'s identity as its session starts its offload route from.
+fn offload_identity(user: &TestUser, device: &TestDevice) -> OffloadIdentity {
+    OffloadIdentity {
+        user_public_key: user.user_pk,
+        device_cert: device.cert.clone(),
+        device_signing_key: device.sk.clone(),
+        revocations: RevocationList::new(),
+    }
+}
+
+/// Wait until `offload` has started or failed to.
+async fn settled(offload: &DeviceOffload) {
+    tilo_test_env::within("the offload route's start", async {
+        while offload.started().is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session's route, configured, placed elsewhere, then refused, read top to bottom"
+)]
+async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_truthfully() {
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let desktop = user.enrol("desktop", DeviceCapabilities::host());
+    let desktop_key = desktop.device_pubkey();
+    // Another person's device, which the relay never lets in.
+    let someone_else = TestUser::fresh("someone else");
+    let stranger = someone_else.enrol("stranger", DeviceCapabilities::primary());
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key, desktop_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let root = tempfile::tempdir().unwrap();
+
+    // The desktop advertises the thumbnails package and runs its jobs.
+    let (desktop_package, _) = installed_package(&root.path().join("desktop"), PACKAGE, ENTRYPOINT);
+    let executor = Arc::new(ComputeWorker::new(
+        worker_advertisement(desktop_key, WORKSPACE, PACKAGE),
+        root.path().join("data"),
+        root.path().join("execution"),
+        FileComputeContentStore::open(root.path().join("retained")).unwrap(),
+        FixtureCatalogue(desktop_package),
+        ThumbnailSandbox,
+    ));
+    let mut desktop_compute = compute_session(address.clone(), &user, relay_key, desktop).await;
+    advertise_thumbnails(&mut desktop_compute, desktop_key).await;
+    let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
+    let desktop_connection = desktop_compute.connection();
+    let serving = tokio::spawn(async move {
+        while let Ok((mut send, mut receive)) = desktop_connection.accept_bi().await {
+            let outputs = Arc::clone(&outputs);
+            tokio::spawn(async move {
+                let _ = serve_worker_stream_with(
+                    WorkerEnvironments::default(),
+                    Some(outputs),
+                    &mut send,
+                    &mut receive,
+                )
+                .await;
+                let _ = send.finish();
+            });
+        }
+    });
+    let staging = Arc::new(Staging {
+        next: Mutex::new(InputStaging::from(root.path().join("hydrated"))),
+        staged: Mutex::default(),
+    });
+    let jobs = tokio::spawn(run_jobs(desktop_compute, Arc::clone(&executor), staging));
+
+    // The laptop's session: Photos put the photographs in the room's media,
+    // and the session starts its route from the registered home relay that
+    // retains the room, handing it to the broker before it is up.
+    let store = Arc::new(fs::store::ContentStore::memory());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    let scope = BlobScope::new(ROOM, PHOTOS).unwrap();
+    let photographs: Vec<Vec<u8>> = (0..3).map(photograph).collect();
+    let mut hashes = Vec::new();
+    for bytes in &photographs {
+        hashes.push(media.store(&scope, bytes.clone()).await.unwrap().to_hex());
+    }
+    let (laptop_package, _) = installed_package(&root.path().join("laptop"), PACKAGE, ENTRYPOINT);
+    let config = DeviceOffloadConfig {
+        relay: OffloadRelay {
+            address: address.clone(),
+            device: relay_key,
+        },
+        identity: offload_identity(&user, &laptop),
+        rooms: std::collections::HashMap::from([(ROOM.to_owned(), WORKSPACE)]),
+    };
+    let route = DeviceOffload::spawn(
+        start_route(
+            config.clone(),
+            client_endpoint().await,
+            Arc::clone(&store),
+            Arc::new(FixtureCatalogue(laptop_package)),
+        ),
+        &tokio::runtime::Handle::current(),
+    );
+    settled(&route).await;
+    assert_eq!(
+        route.started(),
+        Some(Ok(())),
+        "the home relay admits the laptop"
+    );
+
+    // An agent asks for the thumbnails: they are made on the desktop, and
+    // the door gets exactly what Photos' handler makes here, kept as the
+    // room's media.
+    let request = make_thumbnails_request(&hashes);
+    let app_content = tilo_content::ContentStore::memory();
+    for bytes in &photographs {
+        app_content.put(bytes).unwrap();
+    }
+    let here = photos::actions::make_thumbnails(&hashes, &app_content).unwrap();
+    let ran = tilo_test_env::within("the offloaded run", route.offload(request.clone())).await;
+    let Offloaded::Ran { output, device, .. } = ran else {
+        panic!("the desktop is better placed: {ran:?}");
+    };
+    assert_eq!(device, hex::encode(desktop_key));
+    assert_eq!(output, here, "the same output, wherever it ran");
+    for resource in &output.resources {
+        let hash = tilo_actions::content_hash(resource).unwrap();
+        let mut digest = [0; 32];
+        hex::decode_to_slice(hash, &mut digest).unwrap();
+        assert!(
+            media.contains(&scope, digest.into()).await,
+            "the room's media"
+        );
+        assert_eq!(
+            app_content.read(hash),
+            store
+                .read_blob_range(digest.into(), 0..u64::MAX)
+                .await
+                .map(|(bytes, _)| bytes),
+            "byte for byte the local thumbnail"
+        );
+    }
+
+    // A room the relay does not place stays here.
+    let mut unplaced = request.clone();
+    unplaced.room = "a-room-without-compute".into();
+    let Offloaded::RunHere { reason } = route.offload(unplaced).await else {
+        panic!("no workspace, no offload");
+    };
+    assert!(reason.contains("no compute for the room"), "{reason}");
+
+    // A device the relay refuses never gets a route up: every offloadable
+    // invocation runs here, and the door is told why.
+    let (stranger_package, _) =
+        installed_package(&root.path().join("stranger"), PACKAGE, ENTRYPOINT);
+    let refused = DeviceOffload::spawn(
+        start_route(
+            DeviceOffloadConfig {
+                identity: offload_identity(&someone_else, &stranger),
+                ..config
+            },
+            client_endpoint().await,
+            Arc::clone(&store),
+            Arc::new(FixtureCatalogue(stranger_package)),
+        ),
+        &tokio::runtime::Handle::current(),
+    );
+    settled(&refused).await;
+    assert!(
+        matches!(refused.started(), Some(Err(_))),
+        "{:?}",
+        refused.started()
+    );
+    let Offloaded::RunHere { reason } = refused.offload(request).await else {
+        panic!("a route that did not start places nothing elsewhere");
+    };
+    assert!(reason.contains("did not start"), "{reason}");
     jobs.abort();
     serving.abort();
 }

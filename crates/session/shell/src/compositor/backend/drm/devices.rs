@@ -138,7 +138,8 @@ pub fn is_kms_node(path: &Path) -> bool {
 
 /// The connector's default mode: [`select_mode`] with no configured mode.
 /// `None` only when `modes` is empty.
-pub fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
+#[cfg(test)]
+fn preferred_mode(modes: &[ModeInfo]) -> Option<ModeInfo> {
     select_mode(modes, None).and_then(|index| modes.get(index).copied())
 }
 
@@ -437,11 +438,8 @@ mod runtime_mode_policy_tests {
     #[test]
     fn preferred_mode_selection_picks_first_preferred_or_falls_back_to_highest() {
         // Phase `preferred_mode_selection_picks_first_preferred`.
-        // Pure-logic mirror of the policy `enumerate_connectors_on_device`
-        // implements when projecting DRM modes into `ModeInfo`s: the
-        // `preferred` flag is honored. The full flow needs a real DRM device,
-        // so we verify the *policy* end-to-end via `super::devices::preferred_mode`
-        // instead — pinning the contract that a preferred mode in the list is the one picked.
+        // The `preferred` flag is honored: a preferred mode in the list is
+        // the one picked.
         {
             use super::preferred_mode;
             let modes = [
@@ -476,7 +474,7 @@ mod runtime_mode_policy_tests {
             assert_eq!(picked.height, 1080);
         }
         // Phase `preferred_mode_selection_falls_back_to_highest_when_no_preferred`.
-        // And when none of the modes are flagged preferred, the policy falls back to the highest resolution × refresh, matching `enumerate_connectors_on_device`.
+        // And when none of the modes are flagged preferred, the policy falls back to the highest resolution × refresh.
         {
             use super::preferred_mode;
             let modes = [

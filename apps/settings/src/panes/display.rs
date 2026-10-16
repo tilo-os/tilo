@@ -194,8 +194,9 @@ pub(crate) fn answer(
         } else {
             ui::collaboration::DisplayOrigin::LocalHost
         };
-        return Ok(cx.thread(
-            move |_| request_host_display(&command, original),
+        return Ok(crate::device_read::job(
+            cx,
+            move || request_host_display(&command, original),
             move |app, result, _| {
                 let model = app.displays().model();
                 let mut model = model.borrow_mut();
@@ -493,41 +494,6 @@ fn adaptive_sync_unavailable_key(
     }
 }
 
-/// Map a raw DRM connector directory name + its `status` file contents to a
-/// [`DisplayOutput`]. `conn` looks like `card0-eDP-1`; the `cardN-` prefix
-/// is stripped and built-in panels (eDP/LVDS/DSI) get a friendly label.
-pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
-    // Strip the leading `cardN-` so we're left with the connector, e.g.
-    // `eDP-1`, `HDMI-A-1`, `DP-2`.
-    let name = conn.split_once('-').map_or(conn, |(_, rest)| rest);
-    let upper = name.to_ascii_uppercase();
-    let builtin = upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
-    let label = if builtin {
-        "Built-in display".to_string()
-    } else {
-        name.to_string()
-    };
-    DisplayOutput {
-        label,
-        connected: status.trim() == "connected",
-        builtin,
-        connector: name.to_string(),
-        connector_label: name.to_string(),
-        modes: Vec::new(),
-        current_mode: None,
-        scale: 1.0,
-        hdr: false,
-        sink_hdr: false,
-        hdr_unavailable_reason: None,
-        vrr: false,
-        sink_vrr: false,
-        vrr_unavailable_reason: None,
-        color_profiles: Vec::new(),
-        color_profile_labels: BTreeMap::new(),
-        monitor: None,
-    }
-}
-
 impl DisplayOutput {
     /// The entry that describes this output as it runs with none saved.
     fn unconfigured(&self) -> OutputConfig {
@@ -801,16 +767,16 @@ pub struct DisplayModel {
     host_state: Option<settings_store::display_control::DisplayReply>,
     host_poll_deadline: Option<Instant>,
     host_probe: Option<
-        std::sync::mpsc::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
+        crate::channel::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
     >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
-    hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
+    hardware_probe: Option<crate::channel::Receiver<HardwareProbe>>,
     /// Why the panel brightness could not be read; the slider is then not
     /// offered at a made-up level.
     brightness_error: Option<String>,
-    brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
-    brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
+    brightness_tx: Option<crate::channel::Sender<f32>>,
+    brightness_result_rx: Option<crate::channel::Receiver<Result<f32, String>>>,
     pending_brightness: Option<f32>,
     /// What the last change, or the compositor's answer to it, said.
     notice: Option<String>,
@@ -920,31 +886,33 @@ impl DisplayModel {
     /// This device's displays; brightness is probed and set off the UI
     /// thread.
     fn of_device(cx: PaneCx) -> Self {
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
-        let brightness_error = std::thread::Builder::new()
-            .name("settings-display-probe".into())
-            .spawn(move || {
+        let (probe_tx, probe_rx) = crate::channel::channel();
+        let brightness_error = crate::device_read::thread(
+            "settings-display-probe",
+            Box::new(move || {
                 let _ = probe_tx.send((
                     os_actions::get_brightness(),
                     os_actions::has_ambient_light_sensor(),
                 ));
-            })
-            .err()
-            .map(|error| format!("the brightness probe could not start: {error}"));
+            }),
+        )
+        .err()
+        .map(|error| format!("the brightness probe could not start: {error}"));
         let control: Arc<dyn BrightnessControl> =
             Arc::new(SystemBrightness(dispatcher_or_real(None)));
-        let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let (brightness_tx, brightness_rx) = crate::channel::channel::<f32>();
+        let (result_tx, result_rx) = crate::channel::channel();
         let worker = Arc::clone(&control);
-        std::thread::Builder::new()
-            .name("settings-brightness-apply".into())
-            .spawn(move || {
+        crate::device_read::thread(
+            "settings-brightness-apply",
+            Box::new(move || {
                 while let Ok(percent) = brightness_rx.recv() {
                     let _ =
                         result_tx.send(worker.set_brightness(percent).map(|()| percent / 100.0));
                 }
-            })
-            .ok();
+            }),
+        )
+        .ok();
         let outputs = read_outputs();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
@@ -1803,8 +1771,8 @@ impl DisplayModel {
                     self.hardware_probe = None;
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.hardware_probe = None,
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Disconnected) => self.hardware_probe = None,
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         if let Some(result) = self
@@ -1842,10 +1810,10 @@ impl DisplayModel {
                     self.notice = Some(error);
                     self.changed = true;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(crate::channel::TryRecvError::Disconnected) => {
                     self.host_probe = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(crate::channel::TryRecvError::Empty) => {}
             }
         }
         if self.host_probe.is_none()
@@ -1866,16 +1834,19 @@ impl DisplayModel {
                     )
                 })
         {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let (sender, receiver) = crate::channel::sync_channel(1);
             self.host_probe = Some(receiver);
             let wake = ui::WakeHandle::new();
-            std::thread::spawn(move || {
-                let _ = sender.send(request_host_display(
-                    &settings_store::display_control::DisplayCommand::Inspect,
-                    ui::collaboration::DisplayOrigin::LocalHost,
-                ));
-                wake.wake();
-            });
+            let _ = crate::device_read::thread(
+                "settings-display-host-probe",
+                Box::new(move || {
+                    let _ = sender.send(request_host_display(
+                        &settings_store::display_control::DisplayCommand::Inspect,
+                        ui::collaboration::DisplayOrigin::LocalHost,
+                    ));
+                    wake.wake();
+                }),
+            );
         }
         let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
             .map_or_else(Vec::new, |snapshot| snapshot.displays);
@@ -3286,6 +3257,41 @@ mod tests {
         DisplayModel::detached(PaneCx::in_file(profile.join("settings.json"))).with_outputs(outputs)
     }
 
+    /// An output named after the DRM connector `conn` (`card0-eDP-1`, with the
+    /// `cardN-` prefix dropped); eDP/LVDS/DSI panels are built in.
+    fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
+        // Strip the leading `cardN-` so we're left with the connector, e.g.
+        // `eDP-1`, `HDMI-A-1`, `DP-2`.
+        let name = conn.split_once('-').map_or(conn, |(_, rest)| rest);
+        let upper = name.to_ascii_uppercase();
+        let builtin =
+            upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
+        let label = if builtin {
+            "Built-in display".to_string()
+        } else {
+            name.to_string()
+        };
+        DisplayOutput {
+            label,
+            connected: status.trim() == "connected",
+            builtin,
+            connector: name.to_string(),
+            connector_label: name.to_string(),
+            modes: Vec::new(),
+            current_mode: None,
+            scale: 1.0,
+            hdr: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            vrr: false,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profiles: Vec::new(),
+            color_profile_labels: BTreeMap::new(),
+            monitor: None,
+        }
+    }
+
     fn recording(outputs: Vec<DisplayOutput>) -> (DisplayModel, Arc<RecordingDispatcher>) {
         let rec = Arc::new(RecordingDispatcher::default());
         let mut model = model(outputs);
@@ -3314,7 +3320,7 @@ mod tests {
     #[test]
     fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
         let mut model = model(vec![panel()]);
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let (probe_tx, probe_rx) = crate::channel::channel();
         model.hardware_probe = Some(probe_rx);
         probe_tx
             .send((Err("no backlight device".into()), false))
@@ -3329,7 +3335,7 @@ mod tests {
         );
 
         let mut model = self::model(vec![panel()]);
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        let (probe_tx, probe_rx) = crate::channel::channel();
         model.hardware_probe = Some(probe_rx);
         probe_tx.send((Ok(0.8), true)).unwrap();
         assert!(model.poll());
@@ -3415,31 +3421,10 @@ mod tests {
         assert!(place("Left of Nowhere", &mut portrait).is_err());
     }
 
-    /// Builtin/external classification, distinct duplicate labels, staging
-    /// per connector and virtual connector filtering.
+    /// Distinct duplicate labels, staging per connector and virtual
+    /// connector filtering.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn display_connectors_are_classified_labelled_and_filtered() {
-        // Case `classify_builtin_and_external_connectors`.
-        {
-            let builtin = classify_connector("card0-eDP-1", "connected\n");
-            assert_eq!(builtin.label, "Built-in display");
-            assert!(builtin.builtin);
-            assert!(builtin.connected);
-
-            let hdmi = classify_connector("card0-HDMI-A-1", "disconnected\n");
-            assert_eq!(hdmi.label, "HDMI-A-1");
-            assert!(!hdmi.builtin);
-            assert!(!hdmi.connected);
-
-            let dp = classify_connector("card1-DP-2", "connected");
-            assert_eq!(dp.label, "DP-2");
-            assert!(dp.connected);
-        }
-
+    fn display_connectors_are_labelled_and_filtered() {
         // Case `qualified_duplicate_snapshot_labels_are_distinct_in_settings`.
         {
             let first = OutputDescriptor {

@@ -56,6 +56,7 @@ use crate::hydration::Hydrator;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
+use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
 use crate::sync::SyncHandle;
 use fs_protocol::projection::{
     RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
@@ -654,8 +655,12 @@ pub struct QuickFS {
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
     /// Which files this mount opened when: what prediction learns from.
-    /// Local to this device and this workspace, bounded, never persisted.
-    access_history: Mutex<AccessHistory>,
+    /// Local to this device and this workspace and bounded; its
+    /// opened-together pairs survive restarts through `kept_history`.
+    access_history: Arc<Mutex<AccessHistory>>,
+    /// Keeps the opened-together pairs in the workspace's cache directory
+    /// (`None`: memory only).
+    kept_history: Option<Arc<KeptHistory>>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -767,7 +772,8 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
-            access_history: Mutex::new(AccessHistory::new()),
+            access_history: Arc::new(Mutex::new(AccessHistory::new())),
+            kept_history: None,
             document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
@@ -809,6 +815,46 @@ impl QuickFS {
             #[cfg(test)]
             namespace_locks: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Keep the opened-together history for `workspace` under `cache_root`
+    /// across restarts, and restore what was kept. See
+    /// [`crate::smart::kept_history`].
+    #[must_use]
+    pub fn with_kept_prefetch_history(
+        self,
+        cache_root: &std::path::Path,
+        workspace: uuid::Uuid,
+    ) -> Self {
+        self.with_kept_prefetch_history_after(
+            cache_root,
+            workspace,
+            crate::smart::kept_history::FLUSH_DELAY,
+        )
+    }
+
+    /// [`Self::with_kept_prefetch_history`], writing `flush_delay` after a
+    /// change.
+    #[must_use]
+    pub fn with_kept_prefetch_history_after(
+        mut self,
+        cache_root: &std::path::Path,
+        workspace: uuid::Uuid,
+        flush_delay: Duration,
+    ) -> Self {
+        let runtime = self.hydrator.runtime_handle.clone();
+        self.kept_history = Some(KeptHistory::open(
+            KeptHistorySource {
+                cache_root,
+                workspace,
+                history: Arc::clone(&self.access_history),
+                namespace: Arc::clone(&self.namespace),
+                heuristics: Arc::clone(&self.heuristics),
+            },
+            &runtime,
+            flush_delay,
+        ));
+        self
     }
 
     #[must_use]
@@ -3944,16 +3990,11 @@ impl QuickFS {
             .ok()
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the policy update and persisted availability projection form one atomic state transition"
-    )]
     fn set_pin_policy(&self, ino: u64, policy: AvailabilityPolicy) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, mut ancestry) = {
+        let mut ancestry = {
             let mut ns = self.ns();
-            let record_id = ns.record_id_for(ino).ok_or(ENOENT)?;
             let mut ancestry = Vec::new();
             let mut cursor = Some(ino);
             while let Some(current_ino) = cursor {
@@ -3969,29 +4010,15 @@ impl QuickFS {
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
-            (record_id, ancestry)
+            drop(ns);
+            ancestry
         };
-        {
-            let mut registry = registry.lock_recover();
-            ancestry.reverse();
-            for (id, kind, parent) in ancestry {
-                let mut record = registry
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| RecordAvailability::new(id, kind));
-                record.kind = kind;
-                record.parent = parent;
-                if id == record_id {
-                    record.policy = policy;
-                }
-                registry.put(record).map_err(|_| EIO)?;
-            }
-            if policy == AvailabilityPolicy::Automatic {
-                registry
-                    .clear_automatic_transfer_subtree(record_id)
-                    .map_err(|_| EIO)?;
-            }
-        }
+        // From the workspace root down to the record itself.
+        ancestry.reverse();
+        registry
+            .lock_recover()
+            .set_policy_along(&ancestry, policy)
+            .map_err(|_| EIO)?;
         if let Some(worker) = &self.pinned_hydration {
             worker
                 .wake
@@ -4565,11 +4592,23 @@ impl QuickFS {
             .collect();
         siblings.sort_by(|(_, a), (_, b)| natural_cmp(a.as_bytes(), b.as_bytes()));
         let order: Vec<u64> = siblings.into_iter().map(|(entry, _)| entry).collect();
-        let prediction = {
+        // Nothing is learned while the person has turned prefetching off.
+        let learn = self.heuristics.prefetch_enabled();
+        let (prediction, changed) = {
             let mut history = self.access_history.lock_recover();
-            history.record(parent, ino, std::time::Instant::now());
-            history.predict(parent, ino, &order)
+            let before = history.revision();
+            if learn {
+                history.record(parent, ino, std::time::Instant::now());
+            }
+            (
+                history.predict(parent, ino, &order),
+                history.revision() != before,
+            )
         };
+        if changed && let Some(kept) = &self.kept_history {
+            // Only wakes the keeper: the request path never writes.
+            kept.changed();
+        }
         let together: Vec<u64> = prediction
             .together
             .into_iter()

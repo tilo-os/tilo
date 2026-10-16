@@ -30,4 +30,9 @@ moq=$scratch/moq-browser
 rm -rf "$moq" && cp -r scripts/moq-browser "$moq"
 TILO_MOQ_BROWSER_DIR=$moq crates/browser/tilo-browser-runtime/scripts/build.sh "$out/assets" --bundle desktop >/dev/null
 cp crates/hosting/tilo-room-service/web/* "$out/assets/"
-cp crates/hosting/tilo-room-service/container/Containerfile "$out/"
+cp crates/hosting/tilo-room-service/container/Containerfile \
+  crates/hosting/tilo-room-service/container/Containerfile.dockerignore \
+  os/scripts/verify-no-cisco-openh264.sh "$out/"
+# The image's revision label: the commit this context was built from. t reuses the build for
+# later commits with the same inputs, whose receipts name them.
+git rev-parse HEAD > "$out/source-revision"

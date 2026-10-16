@@ -65,6 +65,9 @@ pub enum InstallError {
     Refused { code: i32, detail: String },
     /// Downloaded bytes did not match the signed registry metadata.
     Integrity { detail: String },
+    /// Not enough free space to download and install it; nothing was
+    /// downloaded.
+    NotEnoughSpace { needed: u64, available: u64 },
     /// The app needs a runtime build this device lacks and its registry
     /// does not offer; nothing was changed.
     RuntimeUnavailable {
@@ -97,6 +100,11 @@ impl InstallError {
             InstallError::Integrity { detail } => {
                 format!("the downloaded package failed its registry check: {detail}")
             }
+            InstallError::NotEnoughSpace { needed, available } => format!(
+                "not enough space: it needs {}, {} is free",
+                readable_size(*needed),
+                readable_size(*available)
+            ),
             InstallError::RuntimeUnavailable {
                 package_id,
                 runtime,
@@ -113,6 +121,49 @@ impl InstallError {
 impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.user_message())
+    }
+}
+
+/// Room an install needs beyond the package itself: the store unpacks what
+/// it installs, and the person's other work keeps a little headroom.
+const INSTALL_HEADROOM: u64 = 256 * 1024 * 1024;
+
+/// Whether `available` bytes leave room to stage and install a package of
+/// `package_bytes`. Staging keeps the package, installing unpacks a copy, so
+/// both count, plus [`INSTALL_HEADROOM`].
+fn room_for_install(package_bytes: u64, available: u64) -> Result<(), InstallError> {
+    let needed = package_bytes
+        .saturating_mul(2)
+        .saturating_add(INSTALL_HEADROOM);
+    if available < needed {
+        return Err(InstallError::NotEnoughSpace { needed, available });
+    }
+    Ok(())
+}
+
+/// Free space where `dir` lives, or `None` when the host can't say (then the
+/// download goes ahead and a full disk still fails it cleanly).
+fn available_space(dir: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let stat = rustix::fs::statvfs(dir).ok()?;
+        Some(stat.f_bavail.saturating_mul(stat.f_frsize))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+fn readable_size(bytes: u64) -> String {
+    const MB: u64 = 1000 * 1000;
+    const GB: u64 = 1000 * MB;
+    if bytes >= GB {
+        let tenths = bytes.saturating_mul(10) / GB;
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    } else {
+        format!("{} MB", bytes.div_ceil(MB))
     }
 }
 
@@ -507,6 +558,9 @@ fn fetch_verified(
     dest: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<u64, InstallError> {
+    if let Some(available) = dest.parent().and_then(available_space) {
+        room_for_install(app.tapp_size_bytes, available)?;
+    }
     let refuse = |error: InstallError| {
         let _ = std::fs::remove_file(dest);
         error
@@ -1008,6 +1062,17 @@ fn installer_complaint(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_install_that_would_fill_the_disk_is_refused_before_downloading() {
+        let package = 1_000_000_000;
+        assert!(room_for_install(package, 3_000_000_000).is_ok());
+        let refused = room_for_install(package, 1_500_000_000).expect_err("too little room");
+        assert_eq!(
+            refused.user_message(),
+            "not enough space: it needs 2.2 GB, 1.5 GB is free"
+        );
+    }
+
     use super::*;
 
     #[test]

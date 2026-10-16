@@ -872,9 +872,12 @@ pub fn draw_lock_scene_at_time(
     // private wallpaper retains its existing scrim and takes precedence.
     if wallpaper.is_none() {
         for output in outputs {
+            // The lock scene is composed in output-layout coordinates with
+            // the identity transform, like every other lock draw below.
             ui::auth_backdrop::draw(
                 &mut scene,
                 theme,
+                Affine::IDENTITY,
                 LockLayout::for_output(*output, theme).output,
                 elapsed_seconds,
             );

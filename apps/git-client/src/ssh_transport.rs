@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use git2::transport::{Service, SmartSubtransport, SmartSubtransportStream, Transport};
 use russh::keys::agent::AgentIdentity;
+use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::{ChannelMsg, client};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -258,7 +259,7 @@ impl SshSession {
                     },
                 )
                 .await?;
-                let mut agent = ssh_agent_client::connect()
+                let mut agent = connect_agent()
                     .await
                     .context("cannot connect to SSH agent")?;
                 let hash = handle.best_supported_rsa_hash().await?.flatten();
@@ -406,6 +407,25 @@ impl Write for SshStream {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// The user's SSH agent: the socket named by `SSH_AUTH_SOCK` on Unix, the
+/// OpenSSH named pipe (`SSH_AUTH_SOCK` or its default) on Windows.
+async fn connect_agent()
+-> Result<AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>, russh::keys::Error> {
+    #[cfg(unix)]
+    {
+        Ok(AgentClient::connect_env().await?.dynamic())
+    }
+    #[cfg(windows)]
+    {
+        Ok(AgentClient::connect_named_pipe(
+            std::env::var_os("SSH_AUTH_SOCK")
+                .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".into()),
+        )
+        .await?
+        .dynamic())
     }
 }
 

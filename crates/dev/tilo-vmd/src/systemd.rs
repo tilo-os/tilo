@@ -714,8 +714,10 @@ impl Apply for SystemdApply {
         run(
             "systemd-sysext refresh",
             Command::new("systemd-sysext").arg("refresh"),
-        )
-        .map(drop)
+        )?;
+        // A layer may bring a system account (a sysusers.d entry, as the
+        // relay's does): create it as the image build would.
+        run("systemd-sysusers", &mut Command::new("systemd-sysusers")).map(drop)
     }
 
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {

@@ -3,12 +3,12 @@
 [[resources]]
 kind = "notes.notebook"
 label = "Notebook"
-version = 1
+version = 2
 fields = [
   { path = "pages", type = "Collection<Page>", stored = "collection" },
   { path = "pages.*.title", type = "String", label = true, readonly = true },
   { path = "pages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "pages.*.body", type = "RichText", ops = "sha256:1ce89d3350d639da" },
+  { path = "pages.*.body", type = "RichText", ops = "sha256:228bfc4bf4f5e079" },
   { path = "pages.*.tags", type = "Set<Id>" },
   { path = "tags", type = "Collection<Tag>", stored = "collection" },
   { path = "tags.*.name", type = "Atom", label = true },

@@ -230,7 +230,7 @@ impl RemoteActions {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        lock(&self.inner)
+        self.inner.lock_recover()
     }
 
     /// Read every page of `query` from the catalogue the app is offered.
@@ -389,7 +389,7 @@ impl RemoteActions {
         let inner = Arc::clone(&self.inner);
         answer.then(move |answer| {
             if let Some(answer) = answer {
-                let follow_up = apply(&mut lock(&inner), answer);
+                let follow_up = apply(&mut inner.lock_recover(), answer);
                 if let Some(next) = follow_up {
                     Self { inner }.send(next);
                 }
@@ -426,10 +426,6 @@ impl RemoteActions {
             self.send(next);
         }
     }
-}
-
-fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
-    inner.lock_recover()
 }
 
 /// Record `answer`, returning the request that continues it (the next

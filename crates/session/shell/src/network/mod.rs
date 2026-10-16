@@ -14,8 +14,6 @@ pub use tilo_endpoint_reachability as reachability;
 pub mod replica;
 pub mod streaming;
 pub mod surface_stream;
-#[cfg(target_os = "linux")]
-pub mod wayland;
 pub mod wire_record;
 pub mod workspace_control;
 

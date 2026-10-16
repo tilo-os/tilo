@@ -46,6 +46,35 @@ pub enum WordProcessorEffect {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
     },
+    /// Read a file.
+    ///
+    /// Answers with what a document file says, as Markdown: Word,
+    /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
+    /// without opening it; the document here stays as it is. A long file
+    /// answers in parts: read on from the `next` an answer gives.
+    #[effect(kind = "read", returns, idempotent, device_only)]
+    ReadFile {
+        #[param("Absolute path of the file")]
+        file: String,
+        #[param("The character to read from; the start when none")]
+        from: Option<usize>,
+    },
+    /// Convert a file.
+    ///
+    /// Writes a document or text file again in another format beside it,
+    /// under a free name: PDF, Word, `OpenDocument`, Markdown, HTML, RTF or
+    /// plain text. The original and the document here stay as they are.
+    /// Answers with the new file's path.
+    #[effect(returns, device_only)]
+    ConvertFile {
+        #[param("Absolute path of the file")]
+        file: String,
+        #[param(
+            "The format to write",
+            choices = crate::file_convert::CONVERSIONS.iter().copied()
+        )]
+        to: String,
+    },
     /// Find in document.
     #[effect(view, idempotent)]
     Find,

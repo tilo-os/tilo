@@ -397,6 +397,95 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart()
     assert_eq!(written(&root).as_deref(), Some(WRITTEN));
 }
 
+const OFFLOAD_TEST: &str =
+    "standalone::tests::the_session_hands_its_broker_the_route_its_home_relay_configures";
+
+/// The person's always-on relay at `address`, registered as retaining
+/// `room`, as enrollment writes it beside the identity.
+fn register_home_relay(
+    identity_dir: &Path,
+    user: [u8; 32],
+    room: &str,
+    address: iroh::EndpointAddr,
+) {
+    let relay_device = *address.id.as_bytes();
+    let registration = tilo_relay::HomePeerRegistration {
+        schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+        device_node_id: hex::encode(relay_device),
+        relay_service_node_id: hex::encode(relay_device),
+        relay_endpoint: Some(address),
+        label: "home".into(),
+        user_public_key: hex::encode(user),
+        device_cert: None,
+        relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(room).unwrap()],
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
+    };
+    let path = tilo_relay::home_peer_registry_path(identity_dir);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each session holds the profile for its whole phase on purpose"
+)]
+fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
+    let Some(root) = isolated_root(OFFLOAD_TEST) else {
+        return;
+    };
+    // No home relay: the broker has no route, and every offloadable action
+    // runs through its app's handler exactly as before.
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    assert!(state.action_offload().is_none(), "unconfigured: no route");
+    let session_room = session.room().to_owned();
+    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_room).unwrap();
+    drop(state);
+    drop(session);
+
+    // The person's home relay retains the room: the session's broker gets
+    // the route. This relay never answers, so the route cannot place
+    // anything elsewhere, and says so: the door runs the app's handler.
+    let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
+    let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+    register_home_relay(
+        &identity_root,
+        cert.user_public_key,
+        &session_room,
+        unreachable,
+    );
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    let route = state
+        .action_offload()
+        .expect("the configured home relay routes the room's offloadable actions")
+        .clone();
+    let request = tilo_actions::offload::OffloadRequest {
+        room: session_room,
+        app_id: "so.tilo.photos".into(),
+        address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
+        offload: tilo_actions::Offload {
+            app: "so.tilo.thumbnails".into(),
+            entrypoint: "thumbnail-batch".into(),
+            gpu: false,
+            cpu_time_ms: 120_000,
+            memory_bytes: 1024 * 1024 * 1024,
+            output_bytes: 16 * 1024 * 1024,
+        },
+        inputs: vec![hex::encode([1; 32])],
+    };
+    let answer = tilo_rt::app().handle().block_on(route.offload(request));
+    let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+        panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+    };
+    assert!(reason.contains("offload route"), "{reason}");
+    drop(route);
+    drop(state);
+    drop(session);
+}
+
 fn listed_room(root: &Path) -> String {
     let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
     tree.workspaces[0].room.to_string()
@@ -451,6 +540,7 @@ fn task(id: &str) -> tilo_desktop_model::WorkspaceTask {
         route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
         status: WorkspaceTaskStatus::Queued,
         resource: None,
+        subject: None,
         created_at: 1,
         updated_at: 1,
         audit: Vec::new(),

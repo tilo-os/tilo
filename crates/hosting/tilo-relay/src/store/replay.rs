@@ -10,7 +10,7 @@ use crate::store::bounded::Invariant;
 use crate::transport::{self, Envelope};
 use std::{
     collections::VecDeque,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -29,6 +29,13 @@ pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
 /// Names one replay's work directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplayId(pub [u8; 16]);
+
+// Captures that listed a lineage from what an earlier one learned, on this
+// thread: what a test reads to see the listing remembered.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LISTING_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// A capture lists the retained frames it replays in its owner turn and
 /// pins them (one hard link each) when it is prepared, off the owner: the
@@ -56,6 +63,8 @@ pub(crate) struct CaptureLeases {
     /// channel's steward reads. A lineage's route names its kind of message
     /// for good, so the answer never changes: each is read once.
     steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
+    /// What each lineage's current generation held when last listed.
+    listed: std::sync::Mutex<ListedLineages>,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -120,8 +129,7 @@ impl WorkspaceStore {
         let known = self
             .capture_leases
             .steward_only
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(name)
             .copied();
         if let Some(known) = known {
@@ -150,10 +158,95 @@ impl WorkspaceStore {
         };
         self.capture_leases
             .steward_only
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .insert(name.to_owned(), steward_only);
         Ok(steward_only)
+    }
+
+    fn listed_lineages(&self) -> std::sync::MutexGuard<'_, ListedLineages> {
+        self.capture_leases.listed.lock_recover()
+    }
+
+    /// Forget what captures listed of the lineage directories `touched`, or
+    /// of every lineage when `None` ([`ListedLineages`]).
+    pub(crate) fn forget_listed(&self, touched: Option<&[OsString]>) {
+        let mut listed = self.listed_lineages();
+        match touched {
+            None => *listed = ListedLineages::default(),
+            Some(touched) => {
+                for name in touched {
+                    if let Some(gone) = listed.lineages.remove(name) {
+                        // Counted: remembered listings a write ended.
+                        crate::timing::window("capture.lineage_forgotten", crate::timing::start());
+                        listed.frames = listed.frames.saturating_sub(gone.frames.len());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Forget what captures listed of every lineage on `channel`, of any
+    /// author.
+    pub(crate) fn forget_channel_listing(&self, channel: &[u8; 32]) {
+        let suffix = format!("-{}", hex::encode(channel));
+        let mut listed = self.listed_lineages();
+        let mut gone = 0usize;
+        listed.lineages.retain(|name, known| {
+            let keep = !name.to_string_lossy().ends_with(&suffix);
+            if !keep {
+                gone = gone.saturating_add(known.frames.len());
+            }
+            keep
+        });
+        listed.frames = listed.frames.saturating_sub(gone);
+    }
+
+    /// Forget what captures listed of the lineage directory `lineage`, about
+    /// to change: retention does so for every lineage it writes, whoever
+    /// drives it.
+    pub(crate) fn forget_lineage_listing(&self, lineage: &Path) {
+        if let Some(name) = lineage.file_name() {
+            self.forget_listed(Some(&[name.to_owned()]));
+        }
+    }
+
+    /// The lineages whose listing captures remember, sorted.
+    #[cfg(test)]
+    pub(crate) fn listed_lineage_names(&self) -> Vec<OsString> {
+        let mut names: Vec<_> = self.listed_lineages().lineages.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// What a capture last listed of lineage `name`, while no owner job
+    /// changed it since.
+    fn known_listing(&self, name: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
+        if self.shell_binding().is_some() {
+            return None;
+        }
+        let known = self
+            .listed_lineages()
+            .lineages
+            .get(name)
+            .map(|known| (known.generation.clone(), known.frames.clone()))?;
+        #[cfg(test)]
+        LISTING_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+        Some(known)
+    }
+
+    /// Remember that lineage `name`'s current `generation` holds `frames`.
+    fn learn_listing(&self, name: OsString, generation: PathBuf, frames: Vec<OsString>) {
+        if self.shell_binding().is_some() {
+            return;
+        }
+        let mut listed = self.listed_lineages();
+        if listed.frames.saturating_add(frames.len()) > MAX_LISTED_FRAMES {
+            return;
+        }
+        listed.frames = listed.frames.saturating_add(frames.len());
+        if let Some(replaced) = listed.lineages.insert(name, Listed { generation, frames }) {
+            listed.frames = listed.frames.saturating_sub(replaced.frames.len());
+        }
     }
 
     fn lease_capture(&self) -> CaptureLease {
@@ -212,6 +305,9 @@ impl Default for ReplayLimits {
 #[derive(Clone, Copy, Debug)]
 pub struct ReplaySummary {
     pub total_frames: u64,
+    /// Of `total_frames`, those replayed from the device's pending queue
+    /// rather than retained history.
+    pub pending_frames: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
@@ -423,7 +519,7 @@ pub struct ReplayBuild {
     held_listed: bool,
     phase: u8,
     outer: Option<fs::ReadDir>,
-    child: Option<(OsString, PathBuf, fs::ReadDir)>,
+    child: Option<Lineage>,
     sorter: Option<Sorter>,
     next_pin: u64,
     continuity: Option<File>,
@@ -435,9 +531,69 @@ pub struct ReplayBuild {
     /// (`capture.manifest`): the retained frames, with the lease that keeps
     /// them in place until then ([`CaptureLeases`]), or a final cut's held
     /// commits, which nothing changes once the cut is taken. The device's
-    /// own queue is pinned at once.
-    listed: Option<(File, Option<CaptureLease>)>,
+    /// own queue is pinned at once. Buffered: a capture lists a frame per
+    /// entry in the owner's turn, and two writes each were most of it.
+    listed: Option<(io::BufWriter<File>, Option<CaptureLease>)>,
 }
+/// The order a capture lists retained frame `name` of lineage `channel` in:
+/// by the lineage's rank, the lineage, its checkpoint first, then by name.
+fn lineage_key(channel: &OsStr, name: OsString) -> Vec<OsString> {
+    let order = if name == "checkpoint.delta" { "0" } else { "1" };
+    let rank = lineage_rank(&channel.to_string_lossy());
+    vec![rank.into(), channel.to_owned(), order.into(), name]
+}
+
+/// The retained lineage a capture is listing: from its generation, or from
+/// what an earlier capture learned of it ([`ListedLineages`]).
+enum Lineage {
+    Reading {
+        channel: OsString,
+        generation: PathBuf,
+        entries: fs::ReadDir,
+        /// The frames listed so far, to remember once the generation is
+        /// listed whole; `None` past what one lineage remembers.
+        learned: Option<Vec<OsString>>,
+    },
+    Known {
+        channel: OsString,
+        generation: PathBuf,
+        frames: std::vec::IntoIter<OsString>,
+    },
+}
+
+/// Frames one lineage's listing is remembered for: a capture lists larger
+/// lineages from their generation every time.
+const MAX_LISTED_LINEAGE: usize = 256;
+/// Frames remembered over every lineage of a store. Past it, a capture
+/// remembers no more lineages until an owner job changes one.
+const MAX_LISTED_FRAMES: usize = 65_536;
+
+/// What each retained lineage's current generation held when a capture
+/// listed it, until an owner job changes the lineage. In a room every
+/// newcomer's capture listed every lineage again, a generation's `CURRENT`
+/// and its entries each time, in the owner's turn; now it lists only the
+/// lineages that changed since the last capture.
+///
+/// It is exact, not a cache to validate. Retention forgets a lineage before
+/// it writes it ([`WorkspaceStore::forget_lineage_listing`]), whoever
+/// drives it. A current generation changes only in an owner job, and after
+/// every normal job but one that says it changed retained history only
+/// through retention, the owner forgets every lineage
+/// ([`WorkspaceStore::forget_listed`]). What changes off the owner (a
+/// stage, a collection, a discard) is never a lineage's current
+/// generation. A store with a shell binding remembers nothing: its
+/// selection retires retained records itself.
+#[derive(Default)]
+pub(crate) struct ListedLineages {
+    lineages: std::collections::HashMap<OsString, Listed>,
+    frames: usize,
+}
+
+struct Listed {
+    generation: PathBuf,
+    frames: Vec<OsString>,
+}
+
 /// Retained frames a resuming device already holds, by
 /// [`super::resume::frame_digest`]; a replay for it leaves them out.
 pub(crate) type ResumeSkip = std::sync::Arc<std::collections::HashSet<[u8; 32]>>;
@@ -499,6 +655,7 @@ pub struct ReplaySnapshot {
     cleanup: File,
     ready: bool,
     count: u64,
+    pending_count: u64,
     read_offset: u64,
     cleanup_offset: u64,
     batch_number: u64,
@@ -694,6 +851,9 @@ impl ReplaySnapshot {
                 meta.key = vec![charge.to_string().into()];
                 write_meta(&mut self.output, &meta)?;
                 increment(&mut self.count)?;
+                if meta.pending {
+                    increment(&mut self.pending_count)?;
+                }
             }
         }
         Ok(())
@@ -737,6 +897,16 @@ impl WorkspaceStore {
         device: [u8; 32],
         held: Option<PathBuf>,
     ) -> Result<ReplayBuild, StoreError> {
+        crate::timing::windowed("owner.replay.capture_start", || {
+            self.start_replay_capture_in(id, device, held)
+        })
+    }
+    fn start_replay_capture_in(
+        &self,
+        id: ReplayId,
+        device: [u8; 32],
+        held: Option<PathBuf>,
+    ) -> Result<ReplayBuild, StoreError> {
         let pending_only = held.is_some();
         let root = self.root.join(WORK_DIR);
         fs::create_dir_all(&root)?;
@@ -773,7 +943,7 @@ impl WorkspaceStore {
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
             listed: Some((
-                File::create(root.join("capture.manifest"))?,
+                io::BufWriter::new(File::create(root.join("capture.manifest"))?),
                 (!pending_only).then(|| self.lease_capture()),
             )),
         })
@@ -845,7 +1015,12 @@ impl WorkspaceStore {
                 // open for theirs; it is read once they are pinned.
                 let link = match build.listed.take() {
                     Some((listed, lease)) => {
-                        drop(listed);
+                        // Written out before it is read back.
+                        drop(
+                            listed
+                                .into_inner()
+                                .map_err(io::IntoInnerError::into_error)?,
+                        );
                         Some(Link {
                             listed: File::open(build.root.join("capture.manifest"))?,
                             continuity: build.continuity.take().invariant("continuity missing")?,
@@ -888,6 +1063,7 @@ impl WorkspaceStore {
                     cleanup,
                     ready: false,
                     count: 0,
+                    pending_count: 0,
                     read_offset: 0,
                     cleanup_offset: 0,
                     batch_number: 0,
@@ -955,55 +1131,119 @@ impl WorkspaceStore {
                     continue;
                 }
             }
-            let selected = if let Some((channel, _, child)) = &mut build.child {
-                if let Some(entry) = child.next() {
-                    let entry = entry?;
-                    let name = entry.file_name();
-                    let valid = name.to_string_lossy().ends_with(".delta")
-                        && !name.to_string_lossy().starts_with('.');
-                    if entry.file_type()?.is_file() && valid {
-                        let order = if name == "checkpoint.delta" { "0" } else { "1" };
-                        let rank = lineage_rank(&channel.to_string_lossy());
-                        Some((
-                            entry.path(),
-                            vec![rank.into(), channel.clone(), order.into(), name],
-                        ))
-                    } else {
-                        None
-                    }
-                } else {
-                    build.child = None;
-                    None
-                }
-            } else {
-                if let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() {
-                    let entry = entry?;
-                    let name = entry.file_name();
-                    let kind = entry.file_type()?;
-                    match build.phase {
-                        2 if kind.is_dir() => {
-                            let lineage = entry.path();
-                            if !self.leaves_out(&name, &lineage)?
-                                && let Some(active) = retained::current(&lineage)?
-                            {
-                                build.child = Some((name, active.clone(), fs::read_dir(active)?));
+            let selected = if let Some(lineage) = &mut build.child {
+                match lineage {
+                    Lineage::Reading {
+                        channel,
+                        generation,
+                        entries,
+                        learned,
+                    } => {
+                        if let Some(entry) = entries.next() {
+                            let entry = entry?;
+                            let name = entry.file_name();
+                            let valid = name.to_string_lossy().ends_with(".delta")
+                                && !name.to_string_lossy().starts_with('.');
+                            if entry.file_type()?.is_file() && valid {
+                                if let Some(frames) = learned {
+                                    if frames.len() < MAX_LISTED_LINEAGE {
+                                        frames.push(name.clone());
+                                    } else {
+                                        *learned = None;
+                                    }
+                                }
+                                Some((entry.path(), lineage_key(channel, name)))
+                            } else {
+                                None
                             }
+                        } else {
+                            if let Some(frames) = learned.take() {
+                                self.learn_listing(
+                                    std::mem::take(channel),
+                                    std::mem::take(generation),
+                                    frames,
+                                );
+                            }
+                            build.child = None;
                             None
                         }
-                        3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
-                            Some((entry.path(), vec!["2".into(), name]))
-                        }
-                        _ => None,
                     }
-                } else {
-                    build.outer = None;
-                    listed(
-                        &mut build.phase,
-                        build.held.is_some(),
-                        &mut build.held_listed,
-                    );
-                    None
+                    Lineage::Known {
+                        channel,
+                        generation,
+                        frames,
+                    } => {
+                        if let Some(name) = frames.next() {
+                            Some((generation.join(&name), lineage_key(channel, name)))
+                        } else {
+                            build.child = None;
+                            None
+                        }
+                    }
                 }
+            } else if let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() {
+                let entry = entry?;
+                let name = entry.file_name();
+                let kind = entry.file_type()?;
+                match build.phase {
+                    2 if kind.is_dir() => {
+                        let lineage = entry.path();
+                        if !self.leaves_out(&name, &lineage)? {
+                            // Counted: lineages listed from memory and
+                            // from their generation.
+                            build.child =
+                                if let Some((generation, frames)) = self.known_listing(&name) {
+                                    crate::timing::window(
+                                        "capture.lineage_known",
+                                        crate::timing::start(),
+                                    );
+                                    Some(Lineage::Known {
+                                        channel: name,
+                                        generation,
+                                        frames: frames.into_iter(),
+                                    })
+                                } else if let Some(active) = retained::current(&lineage)? {
+                                    crate::timing::window(
+                                        "capture.lineage_read",
+                                        crate::timing::start(),
+                                    );
+                                    Some(Lineage::Reading {
+                                        channel: name,
+                                        entries: fs::read_dir(&active)?,
+                                        generation: active,
+                                        learned: Some(Vec::new()),
+                                    })
+                                } else {
+                                    // A lineage whose first checkpoint is staged
+                                    // but not committed yet.
+                                    None
+                                };
+                        }
+                        None
+                    }
+                    3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
+                        // Counted: what a final cut takes from the commits
+                        // its catch-up held, and from the device's queue.
+                        crate::timing::window(
+                            if build.held.is_some() && !build.held_listed {
+                                "capture.held_entry"
+                            } else {
+                                "capture.queued_entry"
+                            },
+                            crate::timing::start(),
+                        );
+                        Some((entry.path(), vec!["2".into(), name]))
+                    }
+                    _ => None,
+                }
+            } else {
+                build.outer = None;
+                listed(
+                    &mut build.phase,
+                    build.held.is_some(),
+                    &mut build.held_listed,
+                );
+                None
             };
             if let Some((source, key)) = selected {
                 let pin = build.next_pin;
@@ -1133,6 +1373,7 @@ impl WorkspaceStore {
         if snapshot.ready {
             return Ok(Step::Done(ReplaySummary {
                 total_frames: snapshot.count,
+                pending_frames: snapshot.pending_count,
             }));
         }
         snapshot.stats.last_step_work = 0;
@@ -1262,6 +1503,7 @@ impl WorkspaceStore {
                 snapshot.ready = true;
                 return Ok(Step::Done(ReplaySummary {
                     total_frames: snapshot.count,
+                    pending_frames: snapshot.pending_count,
                 }));
             }
         }

@@ -6,7 +6,7 @@
 use super::*;
 use crate::search::{ScopeDecl, SearchRequest, SearchResult, search_button};
 use crate::widget::TaffyTreeExt;
-use crate::widget::{Button, ModelPath, Widget};
+use crate::widget::{Button, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use tilo_actions::{ActionSpec, Resource};
@@ -74,8 +74,6 @@ impl Widget for MailRoot {
 impl crate::search::capability::SearchSource for MailRoot {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(Mailbox)]
-    }
-    fn activate_search_result(&mut self, _: &str, _: &mut crate::widget::Edits<'_>, _: &ModelPath) {
     }
 }
 

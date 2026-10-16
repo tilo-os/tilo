@@ -8,7 +8,7 @@ pub(crate) fn governor() -> (SigningKey, DeviceCert) {
 }
 
 /// A relay device of the person's own, certified with `capabilities`.
-fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+pub(crate) fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {
@@ -330,7 +330,12 @@ async fn assert_view_reader_refused(
     );
 }
 
-async fn admit_view_reader(rooms: &Rooms, room: &str, key: &SigningKey, member: &DeviceCert) {
+pub(crate) async fn admit_view_reader(
+    rooms: &Rooms,
+    room: &str,
+    key: &SigningKey,
+    member: &DeviceCert,
+) {
     let state = rooms.room(room).await.unwrap();
     let mut room = state.lock().await;
     let now = SystemTime::now();
@@ -435,6 +440,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         candidate
+            .governance_mut()
             .publish_governed_revocations(&[revoked], &key, now)
             .unwrap();
         let collaboration = room.collaboration().clone();
@@ -722,6 +728,7 @@ async fn legacy_window_write_respects_current_member_grants() {
         )
         .with_lifetime(Lifetime::Until(deadline.saturating_mul(1000)));
         candidate
+            .governance_mut()
             .put_governed_grants(&[read_only], &key, now)
             .unwrap();
         let collaboration = room.collaboration().clone();
@@ -1134,6 +1141,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let guard = current.lock().await;
     let binding = guard
         .peer()
+        .media()
         .resolve_media_binding("so.tilo.chat", "", &voice)
         .expect("the same native source resolves through production voice admission");
     assert_eq!(binding.channel_id, voice);
@@ -1206,14 +1214,20 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     let path = {
         let state = rooms.room(&created.room).await.unwrap();
         let governed = state.lock().await;
-        assert_eq!(governed.peer().room_name().as_deref(), Some("Plaza"));
+        assert_eq!(
+            governed.peer().governance().room_name().as_deref(),
+            Some("Plaza")
+        );
         governed.path.clone()
     };
     drop(rooms);
     relay.shutdown().await;
     let restored = GovernedRoom::open(path, &cert, &key).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
-    assert_eq!(restored.peer().room_name().as_deref(), Some("Plaza"));
+    assert_eq!(
+        restored.peer().governance().room_name().as_deref(),
+        Some("Plaza")
+    );
 }
 
 #[tokio::test]
@@ -1452,7 +1466,12 @@ fn install_bot(
         device: Some(bot_device(id, peer.room(), seed)),
     }));
     assert_eq!(
-        peer.apply_workspace_membership_command(cert, &command, key, SystemTime::now()),
+        peer.workspace_mut().apply_workspace_membership_command(
+            cert,
+            &command,
+            key,
+            SystemTime::now()
+        ),
         Ok(true)
     );
 }

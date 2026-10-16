@@ -612,8 +612,8 @@ site that may frame the page as a live preview: the page sends
 to it alone; unset, only the page itself frames it. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages, `entry.json` and `version.json`
 revalidate. The image a deploy rolls out also serves the version of the
-image it replaces (`container/carry.sh`, built by `web-entry.yml` against
-what production serves), so a page opened before that deploy still opens
+image it replaces (`container/carry.sh`, built by t's `carry-web-entry` on
+stable against what production serves), so a page opened before that deploy still opens
 apps it had not loaded. Only that one version is carried, never one it
 carried itself: an image holds at most two, and a page survives one deploy.
 A page older than that finds its version's app modules gone the first time

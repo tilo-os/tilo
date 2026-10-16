@@ -509,6 +509,20 @@ pub enum RichTextAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body: Vec<ClipBlock>,
     },
+    /// Replace characters `start..end` of `block` with `text` (insert when
+    /// they are equal), leaving the rest of the block, its kind and its
+    /// marks as they are. With `markdown`, `text` is inline Markdown whose
+    /// marks (**bold**, _italic_, `code`, [link](url)) cover what it writes.
+    /// The edit stays inside the block, so the body keeps its blocks: what a
+    /// person selected and asked an agent to change.
+    ReplaceBlockRange {
+        block: String,
+        start: usize,
+        end: usize,
+        text: String,
+        #[serde(default)]
+        markdown: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,6 +583,7 @@ impl RichTextAction {
             Self::InsertBlocks { .. }
             | Self::InsertMarkdown { .. }
             | Self::SetBlockText { .. }
+            | Self::ReplaceBlockRange { .. }
             | Self::SetBlockShape { .. }
             | Self::SetBlockDone { .. }
             | Self::ShiftIndent { .. }
@@ -743,6 +758,10 @@ impl<'a> ActionValidator<'a> {
             "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
             "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
             "alt" => matches!(value, AttrVal::Str(v) if Self::valid_alt(v)),
+            // A callout: the GitHub alert a quote is set apart as.
+            "alert" => {
+                matches!(value, AttrVal::Str(v) if crate::block_markdown::CALLOUTS.contains(&v.as_str()))
+            }
             _ => false,
         }
     }
@@ -791,7 +810,14 @@ impl<'a> ActionValidator<'a> {
     fn clearable_attr(key: &str) -> bool {
         matches!(
             key,
-            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source" | "alt"
+            "checked"
+                | "code"
+                | "lang"
+                | "code_group"
+                | "nesting"
+                | "table_source"
+                | "alt"
+                | "alert"
         )
     }
 

@@ -18,7 +18,7 @@ license = "MIT OR Apache-2.0"
 test-support = ["dep:tokio"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Retained frames are relay envelopes carrying co-edit payloads.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 tilo-relay-client = { path = "../tilo-relay-client" }

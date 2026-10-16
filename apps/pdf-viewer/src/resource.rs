@@ -914,6 +914,9 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
     fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfMarkup, Self>) -> EffectAnswer {
         match effect {
             PdfEffect::OpenPdf { path } => self.open_effect(path, cx),
+            PdfEffect::ReadText { from_page, to_page } => self
+                .read_text(from_page, to_page)
+                .map(ui::framework::Effected::value),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

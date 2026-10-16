@@ -1,9 +1,7 @@
 //! Shared shell navigation, chord ownership, geometry and peer wire input encoding.
 use crate::shell::frame::FrameBuilder;
 use crate::shell::overlay_host::ShellOverlayHost;
-use crate::shell::state::{
-    GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
-};
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
 use vello::kurbo::{Point as KurboPoint, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -740,11 +738,15 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
 
-pub fn insert_foreign_group(
+/// Splice a foreign window's group into the active strip and focus it, for
+/// tests that need a client tile without driving the Wayland protocol.
+#[cfg(test)]
+pub(crate) fn insert_foreign_group(
     tree: &mut WorkspaceTree,
     surface_id: u64,
     app_id: Option<&str>,
 ) -> Option<(StripId, GroupId)> {
+    use crate::shell::state::{Tab, WindowGroup, WindowWidth, next_id};
     let active_ws = tree.desktop.active;
     let preferred_strip = tree.desktop.active_strip.get(&active_ws).copied();
     let ws = tree
@@ -785,75 +787,8 @@ pub fn insert_foreign_group(
     Some((strip_id, group_id))
 }
 
-pub fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
-    let mut vacated: Option<(StripId, GroupId)> = None;
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            let mut hit_group: Option<GroupId> = None;
-            for group in &mut strip.window_groups {
-                let Some(pos) = group.tabs.iter().position(|t| {
-                    matches!(&t.tile, TileContent::Foreign { surface_id: s, .. } if *s == surface_id)
-                }) else {
-                    continue;
-                };
-                let removed = group.tabs.remove(pos);
-                if group.active_tab == removed.id {
-                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                }
-                hit_group = Some(group.id);
-                break;
-            }
-            let Some(gid) = hit_group else { continue };
-            let strip_id = strip.id;
-            strip
-                .window_groups
-                .retain(|g| g.id != gid || !g.tabs.is_empty());
-            let group_gone = !strip.window_groups.iter().any(|g| g.id == gid);
-            if group_gone {
-                vacated = Some((strip_id, gid));
-            }
-            if let Some((sid, gone)) = vacated {
-                let fallback = strip.window_groups.last().map(|g| g.id);
-                if tree.desktop.active_group.get(&sid) == Some(&gone) {
-                    match fallback {
-                        Some(next) => {
-                            tree.desktop.active_group.insert(sid, next);
-                        }
-                        None => {
-                            tree.desktop.active_group.remove(&sid);
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-    }
-    false
-}
-
-pub fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &str) -> bool {
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    if let TileContent::Foreign {
-                        surface_id: s,
-                        app_id,
-                    } = &mut tab.tile
-                        && *s == surface_id
-                    {
-                        *app_id = new_app_id.to_string();
-                        tab.title = foreign_tab_title(new_app_id);
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-pub fn foreign_tab_title(app_id: &str) -> String {
+#[cfg(test)]
+fn foreign_tab_title(app_id: &str) -> String {
     let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
     if trimmed.len() <= 32 {
         return trimmed.to_string();
@@ -1016,7 +951,9 @@ mod super_tap_tests {
 )]
 mod tests {
     use super::*;
-    use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
+    use crate::shell::state::{
+        AppKind, Strip, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId, next_id,
+    };
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
@@ -1158,10 +1095,11 @@ mod tests {
             .expect("group")
             .get_rect();
         let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
-        assert!(
-            fb.host_mut()
-                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
-        );
+        assert!(fb.host_mut().update_active_strip_pan(
+            initial.x0 - viewport.x0 + 80.0,
+            true,
+            std::time::Instant::now()
+        ));
         let _ = fb.paint_settled();
         let rect = fb
             .host_mut()
@@ -1872,104 +1810,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn foreign_groups_insert_remove_rename_and_hit_test_in_the_tree() {
-        fn insert_foreign_group_lands_in_the_active_strip_and_takes_focus() {
-            let (mut tree, strip, _) = tree_with_foreign(1);
-            let before = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap()
-                .window_groups
-                .len();
-            let placed = insert_foreign_group(&mut tree, 99, Some("org.example.late"))
-                .expect("adoption must land in the active strip");
-            assert_eq!(placed.0, strip);
-            let live = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap();
-            assert_eq!(live.window_groups.len(), before + 1);
-            assert_eq!(
-                tree.desktop.active_group_for(strip),
-                Some(placed.1),
-                "a newly-mapped window takes the active-group slot"
-            );
-            assert_eq!(
-                active_foreign_surface(&tree),
-                Some(99),
-                "and therefore the keyboard focus"
-            );
-        }
-
-        fn remove_foreign_tab_drops_the_group_and_moves_focus_off_it() {
-            let (mut tree, strip, foreign_group) = tree_with_foreign(1);
-            let placed = insert_foreign_group(&mut tree, 99, None).unwrap();
-            assert_eq!(active_foreign_surface(&tree), Some(99));
-            assert!(remove_foreign_tab(&mut tree, 99));
-            let live = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap();
-            assert!(
-                !live.window_groups.iter().any(|g| g.id == placed.1),
-                "an emptied group must not linger in the strip"
-            );
-            assert_eq!(
-                tree.desktop.active_group_for(strip),
-                Some(foreign_group),
-                "focus must move off the destroyed group onto a surviving sibling"
-            );
-            assert_eq!(
-                active_foreign_surface(&tree),
-                Some(1),
-                "the keyboard lands on the surviving window, never on the dead one"
-            );
-            // A second removal is a no-op.
-            assert!(!remove_foreign_tab(&mut tree, 99));
-
-            // Draining the last foreign group leaves the shell-owned group active, so no client holds the keyboard.
-            assert!(remove_foreign_tab(&mut tree, 1));
-            assert_eq!(
-                active_foreign_surface(&tree),
-                None,
-                "no client holds the keyboard once every client window is gone"
-            );
-        }
-
-        fn rename_rewrites_the_app_id_and_title() {
-            let (mut tree, _, _) = tree_with_foreign(1);
-            insert_foreign_group(&mut tree, 99, None).unwrap();
-            assert!(rename_foreign_tab(&mut tree, 99, "org.example.Renamed"));
-            let tab = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .flat_map(|s| s.window_groups.iter())
-                .flat_map(|g| g.tabs.iter())
-                .find(|t| matches!(&t.tile, TileContent::Foreign { surface_id: 99, .. }))
-                .expect("mirrored tab still present");
-            assert_eq!(tab.title, "Renamed");
-            match &tab.tile {
-                TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Renamed"),
-                other => panic!("expected Foreign tile, got {other:?}"),
-            }
-            assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
-        }
-
+    fn a_foreign_group_is_laid_out_and_hit_testable() {
         fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
@@ -2026,9 +1867,6 @@ mod tests {
             );
         }
 
-        insert_foreign_group_lands_in_the_active_strip_and_takes_focus();
-        remove_foreign_tab_drops_the_group_and_moves_focus_off_it();
-        rename_rewrites_the_app_id_and_title();
         a_mirrored_foreign_group_is_laid_out_and_hit_testable();
     }
     #[test]

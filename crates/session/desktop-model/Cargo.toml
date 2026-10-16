@@ -34,6 +34,8 @@ web-time = "1"
 [dev-dependencies]
 # Tests take a peer's changes in the way production does (clippy.toml).
 tilo-automerge.workspace = true
+# The binary form owner commits carry task records in.
+postcard = { workspace = true, features = ["alloc"] }
 
 [[test]]
 name = "it"

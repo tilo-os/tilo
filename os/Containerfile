@@ -730,7 +730,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -1175,6 +1175,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && XDG_CACHE_HOME=/tmp/fontconfig-cache python3 /usr/local/bin/make-plymouth-assets.py /out/tilo \
     && test -s /out/tilo/tilo-logo.png \
     && dnf clean all
+
+# ---- The wallpapers ------------------------------------------------------------
+# The pictures the desktop ships and their credits. They are binaries, so they
+# are not in Git: tools/wallpapers.py fetches the files
+# crates/platform/tilo-wallpapers/catalog.toml pins, verifying each by size
+# and SHA-256, and writes the credits beside them; rootfs-base copies /out.
+FROM ${BASE_REF} AS os-wallpapers
+RUN --mount=type=cache,id=tilo-wallpaper-artifacts,target=/var/cache/tilo-wallpaper-artifacts \
+    --mount=type=bind,source=tools/wallpapers.py,target=/tilo-src/tools/wallpapers.py,ro \
+    --mount=type=bind,source=crates/platform/tilo-wallpapers/catalog.toml,target=/tilo-src/crates/platform/tilo-wallpapers/catalog.toml,ro \
+    python3 /tilo-src/tools/wallpapers.py prepare /out \
+        --cache /var/cache/tilo-wallpaper-artifacts
 
 # The runtimes travel with their publishers' keys from the one builder result:
 # a non-publishing build signs them with keys it generates, so a key taken from
@@ -2086,6 +2098,9 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
+# The desktop's wallpapers (os-wallpapers) and their credits.
+COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
+COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/
 RUN plymouth-set-default-theme tilo \
     && test "$(plymouth-set-default-theme)" = tilo
 COPY \
@@ -2393,7 +2408,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
-COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
+COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf os/usr/share/user-tmpfiles.d/tilo-secret-service.conf /usr/share/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why

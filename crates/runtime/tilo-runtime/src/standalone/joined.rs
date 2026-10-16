@@ -181,7 +181,7 @@ impl Joined {
                 Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
             workspace.set_room(room);
             workspace.policy = policy;
-            workspace.sandbox = view.peer().governed_sandbox()?;
+            workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))
         })
     }

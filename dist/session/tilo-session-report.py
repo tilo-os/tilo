@@ -143,16 +143,25 @@ def trace_report(path: Path) -> dict[str, object]:
     return report
 
 
-def flight_report(path: Path) -> dict[str, object]:
+def flight_report(path: Path, events_path: Path | None = None) -> dict[str, object]:
     if not path.is_file():
         return {"available": False, "path": str(path)}
     try:
         lines = path.read_text(errors="replace").splitlines()
     except OSError as error:
         return {"available": False, "path": str(path), "error": str(error)}
+    # The recorder keeps the log events (launch timing, launch failures) in
+    # their own record, where hours of measurement lines cannot displace
+    # them. A record from before it did has them in the full record only.
+    event_lines = lines
+    if events_path is not None and events_path.is_file():
+        try:
+            event_lines = events_path.read_text(errors="replace").splitlines()
+        except OSError:
+            event_lines = lines
     paint = [match.groupdict() for line in lines if (match := PAINT.search(line))]
     failures = Counter()
-    for line in lines:
+    for line in event_lines:
         if "application stopped before presenting a window" not in line:
             continue
         match = APP_FAILURE.search(ANSI.sub("", line))
@@ -174,11 +183,6 @@ def flight_report(path: Path) -> dict[str, object]:
         clean = ANSI.sub("", line)
         if match := KMS_MODE.search(clean):
             kms_modes.append({key: int(value) for key, value in match.groupdict().items()})
-        launch_fields = {key: int(value) for key, value in LAUNCH_FIELD.findall(clean)}
-        if launch_fields and (package := LAUNCH_PACKAGE.search(clean)):
-            metrics = launch_samples.setdefault(package.group("id"), {})
-            for key, value in launch_fields.items():
-                metrics.setdefault(key, []).append(value)
         if match := DIRECT_STATUS.search(clean):
             direct_status_samples.append(match.groupdict())
         if match := KEY_LATENCY.search(clean):
@@ -197,6 +201,13 @@ def flight_report(path: Path) -> dict[str, object]:
             for key in ("frames", "window_us", "readback_bytes", "output_bytes")
         ):
             render_phases.append(fields)
+    for line in event_lines:
+        clean = ANSI.sub("", line)
+        launch_fields = {key: int(value) for key, value in LAUNCH_FIELD.findall(clean)}
+        if launch_fields and (package := LAUNCH_PACKAGE.search(clean)):
+            metrics = launch_samples.setdefault(package.group("id"), {})
+            for key, value in launch_fields.items():
+                metrics.setdefault(key, []).append(value)
     direct_enabled = any("DRM direct scanout enabled" in line for line in lines)
     direct_fallback = [
         ANSI.sub("", line)
@@ -350,10 +361,11 @@ def main() -> int:
     parser.add_argument("--frame-work-budget-ms", type=int, default=16)
     args = parser.parse_args()
     flight_name = "previous.log" if args.previous else "latest.log"
+    events_name = "previous-events.log" if args.previous else "events.log"
     trace_name = "previous-frame-trace.csv" if args.previous else "frame-trace.csv"
     report = {
         "schema": "tilo-session-report-v1",
-        "flight": flight_report(args.root / flight_name),
+        "flight": flight_report(args.root / flight_name, args.root / events_name),
         "frames": trace_report(args.root / trace_name),
     }
     if args.key_latency:

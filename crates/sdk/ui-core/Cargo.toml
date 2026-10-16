@@ -54,6 +54,12 @@ ux-bench = []
 # between words. The browser desktop uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
+# The image decoders a web page's images need (`image`: PNG, JPEG, WebP)
+# are not linked into page drawing: the program fetches their code the first
+# time a page draws an image and hands it over (`defer_page_image_decoder`,
+# `install_page_image_decoder`); until then images are left out. The browser
+# desktop uses this to keep them out of its start module.
+lazy-image-decode = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
@@ -96,7 +102,7 @@ priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 mime_guess.workspace = true
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
@@ -167,7 +173,7 @@ zeroize.workspace = true
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
-skrifa = "0.40.0"
+skrifa = "0.44.0"
 pollster.workspace = true
 rustc-hash.workspace = true
 

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
@@ -33,7 +33,8 @@ pub(super) fn class<'local>(
     name: &'static str,
 ) -> jni::errors::Result<JClass<'local>> {
     static CLASSES: Mutex<Vec<(&'static str, GlobalRef)>> = Mutex::new(Vec::new());
-    let cached = lock(&CLASSES)
+    let cached = CLASSES
+        .lock_recover()
         .iter()
         .find(|(loaded, _)| *loaded == name)
         .map(|(_, class)| class.clone());
@@ -58,7 +59,7 @@ pub(super) fn class<'local>(
         env.register_native_methods(&class, &natives)?;
     }
     let global = env.new_global_ref(&class)?;
-    lock(&CLASSES).push((name, global));
+    CLASSES.lock_recover().push((name, global));
     Ok(class)
 }
 
@@ -85,10 +86,6 @@ fn natives(class: &str) -> Vec<NativeMethod> {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock_recover()
-}
-
 /// Callbacks waiting for Java, keyed by the token Java hands back.
 struct Waiters<T>(OnceLock<Mutex<HashMap<jlong, T>>>);
 
@@ -100,12 +97,16 @@ impl<T> Waiters<T> {
     fn insert(&self, waiter: T) -> jlong {
         static NEXT_TOKEN: AtomicI64 = AtomicI64::new(1);
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
-        lock(self.0.get_or_init(Mutex::default)).insert(token, waiter);
+        (self.0.get_or_init(Mutex::default))
+            .lock_recover()
+            .insert(token, waiter);
         token
     }
 
     fn take(&self, token: jlong) -> Option<T> {
-        lock(self.0.get_or_init(Mutex::default)).remove(&token)
+        (self.0.get_or_init(Mutex::default))
+            .lock_recover()
+            .remove(&token)
     }
 }
 

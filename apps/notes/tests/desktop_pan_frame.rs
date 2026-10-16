@@ -1,7 +1,9 @@
 //! Six Notes windows in the desktop surface the browser desktop hosts apps
 //! in, panned by coalesced trackpad wheels. A pan moves laid-out windows and
 //! nothing else, so a wheel's own host tick is left to the frame, and that
-//! frame, which nothing new reached, neither ticks, syncs nor publishes.
+//! frame, which nothing new reached, neither ticks, syncs nor publishes, nor
+//! asks the windows' History again what the frame before it answered, nor
+//! draws a window at rest again.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -130,6 +132,8 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     let frames: usize = 60;
     let start = pan_offset(&handle);
     let quiet = harness.quiet_frames();
+    let settled = harness.settled_history_frames();
+    let replayed = harness.replayed_window_draws();
     let ((), rows) = observe(|| {
         for index in 0..frames {
             let dx = if (index / 10) % 2 == 0 { -6.0 } else { 6.0 };
@@ -157,11 +161,24 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         u64::try_from(frames).unwrap(),
         "every pan frame was quiet: {rows:?}"
     );
+    // Nor does it ask each window's History again whether the app still
+    // has the document owners it registered, or whether a committed
+    // frontier moved: the frame before asked, and its witness proves that
+    // nothing either reads has moved since. Each such question walks a
+    // whole app.
+    assert_eq!(
+        harness.settled_history_frames() - settled,
+        u64::try_from(frames).unwrap(),
+        "every pan frame took its History answer from the frame before: {rows:?}"
+    );
     for phase in [
         "ui.host_tick",
         "ui.frame_sync",
         "ui.publish_undo_status",
         "ui.bound_discovery_miss",
+        "ui.history_root_validation",
+        "ui.history_heads",
+        "ui.settle_replayed_draws",
     ] {
         assert_eq!(
             calls(&rows, phase),
@@ -183,14 +200,81 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         "{records} record admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
     );
+    assert_pan_frames_replay(&mut harness, replayed, frames);
 
     // Any change still reaches its own frame: a click into a window syncs
     // the windows and publishes undo on the frame that shows it.
     let ((), rows) = observe(|| harness.click_at(300.0, 450.0));
+    assert_eq!(
+        calls(&rows, "ui.settle_replayed_draws"),
+        1,
+        "the replayed windows are drawn again before the click: {rows:?}"
+    );
     assert!(
         calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,
         "a click syncs and publishes on its frame: {rows:?}"
     );
+    assert!(
+        calls(&rows, "ui.history_root_validation") >= WINDOWS,
+        "a click's frame asks every window's History again: {rows:?}"
+    );
+}
+
+/// A window at rest is not drawn again on a pan frame: the frame shows its
+/// last drawing moved by the pan. Every one of `frames` pan frames since
+/// `replayed` replayed at least one window, and the last shows what a frame
+/// drawing every window shows. Panned once more, the next frame replays
+/// again (the first frame after a full one may draw).
+fn assert_pan_frames_replay(harness: &mut FrameHarness, replayed: u64, frames: usize) {
+    let windows = harness.replayed_window_draws().saturating_sub(replayed);
+    assert!(
+        windows >= u64::try_from(frames).unwrap(),
+        "{windows} windows replayed over {frames} pan frames"
+    );
+    let shown = harness.render_rgba();
+    let before = harness.replayed_window_draws();
+    harness.settle_replayed_draws();
+    assert_eq!(
+        harness.replayed_window_draws(),
+        before,
+        "settling draws every window"
+    );
+    let drawn = harness.render_rgba();
+    assert_eq!(
+        ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&shown, &drawn),
+        0,
+        "a pan frame that replayed windows shows what drawing them shows; they differ within {:?}",
+        differing_bounds(&shown, &drawn, 1800)
+    );
+    for _ in 0..2 {
+        wheel(harness, -6.0);
+        assert!(harness.poll_frame().unwrap());
+    }
+    assert!(harness.replayed_window_draws() > before);
+}
+
+/// The pixel rectangle `(x0, y0, x1, y1)` holding every pixel of two
+/// `width`-wide RGBA frames that differs by more than antialiasing, to say
+/// where a failed comparison looked different.
+fn differing_bounds(a: &[u8], b: &[u8], width: usize) -> Option<(usize, usize, usize, usize)> {
+    a.chunks_exact(4)
+        .zip(b.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (x, y))| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
+        .map(|(index, _)| {
+            (
+                index.checked_rem(width).unwrap_or(0),
+                index.checked_div(width).unwrap_or(0),
+            )
+        })
+        .fold(None, |bounds, (x, y)| {
+            Some(bounds.map_or(
+                (x, y, x, y),
+                |(x0, y0, x1, y1): (usize, usize, usize, usize)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                },
+            ))
+        })
 }
 
 /// How many widgets lie inside a hosted component.

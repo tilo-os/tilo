@@ -252,17 +252,6 @@ fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) 
     total
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 impl Widget for Breadcrumb {
     fn build_layout(
         &mut self,
@@ -377,7 +366,7 @@ impl Widget for Breadcrumb {
                     scene,
                     label,
                     color,
-                    translated(transform, x, text_y),
+                    transform.pre_translate((x, text_y).into()),
                     None,
                     &style,
                 );

@@ -193,6 +193,7 @@ pub(super) async fn handle_subscribe(
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
     *replay = Some((workspace_id, ticket, handle, catchup));
+    session.metrics.inc_subscribes();
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
     }

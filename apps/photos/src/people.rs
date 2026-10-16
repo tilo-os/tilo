@@ -285,6 +285,7 @@ impl PeopleController {
     /// Admit a signed local face capability after the runtime independently
     /// validates it. Empty identities are refused, avoiding an accidental
     /// upgrade from generic local vision/OCR.
+    #[cfg(test)]
     pub fn set_verified_local_face_model(
         &mut self,
         model_id: impl Into<String>,
@@ -536,49 +537,6 @@ impl PeopleController {
             self.save();
             PeopleChange::Updated
         }
-    }
-
-    /// Split explicitly chosen mistaken members into a fresh private review
-    /// suggestion. The new id is supplied by the local runtime/UI so this
-    /// operation has no global identity and cannot accidentally become a
-    /// shared person. At least one photo remains in each side of the split.
-    pub fn split_cluster(
-        &mut self,
-        id: &str,
-        new_id: impl Into<String>,
-        photo_ids: impl IntoIterator<Item = String>,
-    ) -> PeopleChange {
-        let new_id = new_id.into();
-        if !valid_cluster_id(&new_id) || self.clusters.contains_key(&new_id) {
-            return PeopleChange::Unchanged;
-        }
-        let chosen: BTreeSet<_> = photo_ids
-            .into_iter()
-            .map(|photo_id| LocalClusterPhoto { photo_id })
-            .collect();
-        let Some(cluster) = self.clusters.get_mut(id) else {
-            return PeopleChange::Unchanged;
-        };
-        if chosen.is_empty() || !chosen.is_subset(&cluster.photos) || chosen == cluster.photos {
-            return PeopleChange::Unchanged;
-        }
-        let origin = cluster.origin;
-        for photo in &chosen {
-            cluster.photos.remove(photo);
-        }
-        self.clusters.insert(
-            new_id.clone(),
-            LocalPersonCluster {
-                id: new_id,
-                display_name: None,
-                photos: chosen,
-                origin,
-                hidden: false,
-                rejected: false,
-            },
-        );
-        self.save();
-        PeopleChange::Updated
     }
 
     /// Merge two local clusters. Names remain local until the caller has
@@ -841,18 +799,8 @@ mod tests {
         assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
 
         let mut people = PeopleController::new();
-        assert!(people.add_cluster(
-            "mixed",
-            [A.to_owned(), B.to_owned()],
-            ProposalOrigin::ImportedOrManual
-        ));
-        assert_eq!(
-            people.split_cluster("mixed", "separate", [B.to_owned()]),
-            PeopleChange::Updated
-        );
-        assert_eq!(people.cluster("mixed").unwrap().visible_photo_ids(), [A]);
-        assert_eq!(people.cluster("separate").unwrap().visible_photo_ids(), [B]);
-        assert_eq!(people.remove_photo("separate", B), PeopleChange::Deleted);
-        assert_eq!(people.restore_suggestion("mixed"), PeopleChange::Unchanged);
+        assert!(people.add_cluster("single", [B.to_owned()], ProposalOrigin::ImportedOrManual));
+        assert_eq!(people.remove_photo("single", B), PeopleChange::Deleted);
+        assert!(people.cluster("single").is_none());
     }
 }

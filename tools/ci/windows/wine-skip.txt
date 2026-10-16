@@ -1,0 +1,48 @@
+# Unit tests of the Windows imager that cannot pass under Wine, one per line:
+# the test name libtest knows it by, then why. They still run on Windows.
+app::tests::owner_ssh_key_can_be_typed_before_the_complete_key_is_validated	app state publishes only to volumes with local-disk evidence, which Wine's lack
+app::tests::wizard_semantics_labels_live_regions_and_keyboard_order	app state publishes only to volumes with local-disk evidence, which Wine's lack
+app::tests::step_body_and_footer_reflow_without_overlap	app state publishes only to volumes with local-disk evidence, which Wine's lack
+app::tests::wizard_advance_and_confirm_require_valid_choices_and_capability	the media writer does not start under Wine
+app::tests::write_setup_wifi_and_owner_key_stage_without_identity_enrollment	the media writer does not start under Wine
+handoff::tests::handoff_writes_wifi_and_a_certified_device_without_the_root_secret	local identity enrollment needs Windows' identity services
+resource::tests::every_scenario_captures_its_flow_without_touching_the_machine	app state publishes only to volumes with local-disk evidence, which Wine's lack
+resource::tests::one_tree_holds_the_profile_actions_effects_drives_and_job	no privileged writer under Wine
+setup::destination_security::windows::tests::windows_parent_acls_and_private_creation_are_enforced	Wine does not enforce NTFS ACLs
+setup::import_view::tests::continuation_batches_retarget_and_retry_without_duplicate_operations	Wine cannot protect a directory ACL
+setup::import_view::tests::copy_action_completes_only_after_the_reviewed_worker_finishes	Wine cannot protect a directory ACL
+setup::import_view::tests::every_import_scenario_stages_real_worker_results_in_fixture_folders	crashes Wine with a page fault
+setup::import_view::tests::failed_checkpoints_never_report_completion_or_create_output	Wine cannot protect a directory ACL
+setup::import_view::tests::import_resources_and_status_publish_reviewed_endpoints_from_real_events	Wine cannot protect a directory ACL
+setup::import_view::tests::issue_detail_pages_publish_restore_and_refuse_when_closed	Wine cannot protect a directory ACL
+setup::import_view::tests::journey_copy_later_restart_keeps_identity_gate_and_completion_destinations	Wine cannot protect a directory ACL
+setup::import_view::tests::journey_import_screenshots_follow_trusted_fixture_readiness_across_themes	its fixtures need the import state Wine cannot protect
+setup::import_view::tests::journey_portal_refusal_is_observed_and_can_be_retried	Wine cannot protect a directory ACL
+setup::import_view::tests::retained_and_continuation_actions_keep_revision_identities	Wine cannot protect a directory ACL
+setup::import_view::tests::retry_and_restart_resume_the_journaled_worker_honestly	Wine cannot protect a directory ACL
+setup::import_view::tests::review_action_fails_or_cancels_with_its_picker_and_index	Wine cannot protect a directory ACL
+setup::import_view::tests::slow_start_checkpoint_keeps_stop_responsive_and_ownership_until_worker_exit	Wine cannot protect a directory ACL
+setup::import_view::tests::slow_terminal_checkpoint_never_reports_premature_completion	Wine cannot protect a directory ACL
+setup::internal_bundle::tests::windows_unicode_ancestors_are_exact_bounded_and_lossless	Wine does not resolve these Unicode ancestor paths
+setup::internal_cache::windows::tests::native::windows_cache_acls_are_protected_and_never_repaired	Wine does not keep NTFS ACL inheritance
+setup::internal_cache::windows::tests::native::windows_cancellation_collisions_and_reopen_keep_residue_honest	the internal cache refuses Wine's volumes as nonlocal
+setup::internal_cache::windows::tests::native::windows_locks_handles_and_ancestry_refuse_substitution	the internal cache refuses Wine's volumes as nonlocal
+setup::internal_cache::windows::tests::native::windows_preparation_and_settlement_never_grant_publication	the internal cache refuses Wine's volumes as nonlocal
+setup::internal_cache::windows::tests::native::windows_record_faults_and_crashes_recover_without_claiming_success	the internal cache refuses Wine's volumes as nonlocal
+setup::migration::tests::copy_reproduces_supported_trees_and_refuses_unsupported_entries	Wine cannot protect a directory ACL
+setup::migration::tests::migration_cancellation_keeps_verified_files_and_cleans_only_temps	Wine cannot protect a directory ACL
+setup::migration::tests::pinned_paths_resist_parent_and_descendant_swaps	Wine cannot protect a directory ACL
+setup::migration::tests::publication_requires_verified_unchanged_bytes_and_preserves_conflicts	Wine cannot protect a directory ACL
+setup::migration_store::tests::issue_details_and_pages_stay_attempt_scoped_and_bounded	Wine cannot protect a directory ACL
+setup::migration_store::tests::operation_records_reopen_review_and_round_trip_truthfully	Wine cannot protect a directory ACL
+setup::migration_store::tests::store_ownership_is_exclusive_and_released_on_process_death	Wine cannot protect a directory ACL
+setup::migration_worker::tests::migration_worker_terminal_events_are_ordered_and_distinct	durable journaled copying needs native directory persistence
+setup::staging::fake::tests::an_injected_failure_is_recorded_and_retry_completes	its recorded staging needs local-disk evidence Wine lacks
+setup::staging::fake::tests::full_stages_write_exact_sectors_and_follow_bundle_minimums	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::fake::tests::linux_resumes_after_a_crash_at_every_mutation	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::fake::tests::pending_stages_block_and_arming_reverifies_ownership	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::fake::tests::remove_after_a_crash_at_every_stage_mutation_leaves_nothing	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::fake::tests::remove_restores_owned_state_and_never_touches_changed_objects	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::fake::tests::windows_resumes_after_a_crash_at_every_mutation	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::record::tests::staging_records_track_steps_persist_atomically_and_reject_foreign_owners	storage publishes only to volumes with local-disk evidence, which Wine's lack
+setup::staging::windows::tests::final_boot_geometry_snapshot_executes_without_shrink_probe	Windows' disk geometry query returns nothing under Wine

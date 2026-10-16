@@ -15,7 +15,6 @@ use collab_types::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event,
 
 pub const FILE_INVITE_DOMAIN_TAG: &str = "tilo-file-invite-v1";
 pub const FILE_INVITE_LINK_PREFIX: &str = "tilo-file://v1/";
-pub const MAX_FILE_INVITE_TOKEN_BYTES: usize = 16 * 1024;
 const BEARER_HASH_DOMAIN: &[u8] = b"tilo-file-bearer-v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,61 +73,6 @@ pub struct FileInviteSpec {
 pub struct BearerFileInvite {
     pub token: FileInviteV1,
     pub secret: [u8; 32],
-}
-
-impl BearerFileInvite {
-    /// Encode the version-1 portable invite credential. The secret is placed
-    /// after `#`, keeping it out of conventional request logs. V1 deliberately
-    /// carries no network locator; an application needs an independently known
-    /// workspace authority. The FS layer's endpoint-bound V2 share link should
-    /// be used for a self-routing link copied between devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails or the token exceeds the wire bound.
-    pub fn encode_link(&self) -> Result<String, FileInviteError> {
-        let token = collab_types::canonical::canonical_bytes(&self.token)?;
-        if token.len() > MAX_FILE_INVITE_TOKEN_BYTES {
-            return Err(FileInviteError::TokenTooLarge);
-        }
-        Ok(format!(
-            "{FILE_INVITE_LINK_PREFIX}{}#{}",
-            hex::encode(token),
-            hex::encode(self.secret)
-        ))
-    }
-
-    /// Decode, authenticate, and expiry-check a copied link. A token carrying
-    /// a redemption limit still needs online FS-side authority redemption;
-    /// decoding never consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, oversized, expired, wrongly signed, or
-    /// secret-mismatched links.
-    pub fn decode_link_at(link: &str, now_ms: u64) -> Result<Self, FileInviteError> {
-        let rest = link
-            .strip_prefix(FILE_INVITE_LINK_PREFIX)
-            .ok_or(FileInviteError::InvalidLink)?;
-        let (token_hex, secret_hex) = rest.split_once('#').ok_or(FileInviteError::InvalidLink)?;
-        if token_hex.len() > MAX_FILE_INVITE_TOKEN_BYTES * 2 || secret_hex.len() != 64 {
-            return Err(FileInviteError::InvalidLink);
-        }
-        let token_bytes = hex::decode(token_hex).map_err(|_| FileInviteError::InvalidLink)?;
-        let secret_bytes = hex::decode(secret_hex).map_err(|_| FileInviteError::InvalidLink)?;
-        let secret: [u8; 32] = secret_bytes
-            .try_into()
-            .map_err(|_| FileInviteError::InvalidLink)?;
-        let token: FileInviteV1 = collab_types::canonical::from_canonical_bytes(&token_bytes)?;
-        token.verify_at(now_ms)?;
-        let FileInviteSubject::Bearer { secret_hash } = token.subject else {
-            return Err(FileInviteError::NotBearer);
-        };
-        if bearer_secret_hash(&secret) != secret_hash {
-            return Err(FileInviteError::WrongSecret);
-        }
-        Ok(Self { token, secret })
-    }
 }
 
 #[derive(Serialize)]
@@ -278,10 +222,6 @@ pub enum FileInviteError {
     AuthorityRequired,
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
-    #[error("file invite link is malformed")]
-    InvalidLink,
-    #[error("file invite token exceeds its wire bound")]
-    TokenTooLarge,
 }
 
 #[cfg(test)]
@@ -371,29 +311,6 @@ mod tests {
             assert!(matches!(
                 invite.token.verify_bearer_at(&invite.secret, 1_000),
                 Err(FileInviteError::AuthorityRequired)
-            ));
-        }
-
-        // Phase: copied_link_round_trips_and_authenticates_before_redemption.
-        {
-            let mut rng = UnwrapErr(SysRng);
-            let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
-            let mut limited = spec(FileInviteSubject::Bearer {
-                secret_hash: [0; 32],
-            });
-            limited.max_redemptions = Some(1);
-            let invite = mint_bearer_file_invite(limited, &issuer, &mut rng).unwrap();
-            let link = invite.encode_link().unwrap();
-            assert!(link.starts_with(FILE_INVITE_LINK_PREFIX));
-            let decoded = BearerFileInvite::decode_link_at(&link, 1_000).unwrap();
-            assert_eq!(decoded, invite);
-
-            let mut wrong = link;
-            let last = wrong.pop().unwrap();
-            wrong.push(if last == '0' { '1' } else { '0' });
-            assert!(matches!(
-                BearerFileInvite::decode_link_at(&wrong, 1_000),
-                Err(FileInviteError::WrongSecret)
             ));
         }
     }

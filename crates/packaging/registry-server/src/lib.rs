@@ -29,6 +29,7 @@ pub mod allowlist;
 pub mod applications;
 pub mod bot_review;
 pub mod bundle_review;
+mod catalogue;
 pub mod moderation;
 pub mod moderation_api;
 pub mod serve;

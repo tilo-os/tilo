@@ -123,6 +123,7 @@ members = [
     "apps/store",
     "apps/terminal",
     "apps/themes",
+    "apps/thumbnails",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",
@@ -130,6 +131,7 @@ members = [
     "apps/video-player",
     "apps/vpn",
     "apps/weather",
+    "apps/web-search",
     "apps/windows",
     "apps/word-processor",
 
@@ -139,9 +141,9 @@ members = [
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
-    "crates/agent/provider-settings-ui",
 
     # SDK
+    "crates/sdk/provider-settings-ui",
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
@@ -276,6 +278,7 @@ members = [
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-invidious",
+    "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
@@ -288,6 +291,7 @@ members = [
     "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
+    "crates/platform/tilo-wallpapers",
 
     # Runtime
     "crates/runtime/cli",
@@ -297,9 +301,14 @@ members = [
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
-    # Single-app engines shipped beside it in the runtime bundle.
+    # Engines a few apps load, shipped beside it in the runtime bundle.
+    "crates/runtime/engines/accounts",
+    "crates/runtime/engines/contact-directory",
+    "crates/runtime/engines/paint",
     "crates/runtime/engines/spotify",
+    "crates/runtime/engines/timezone",
     "crates/runtime/engines/typst",
+    "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
@@ -358,6 +367,7 @@ members = [
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/image-policy-check",
+    "crates/system/tilo-pycompat",
     "crates/system/install-helpers",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
@@ -368,7 +378,6 @@ members = [
     "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
-    "crates/system/ssh-agent-client",
     "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",

@@ -25,6 +25,7 @@ mod i18n;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;
+pub mod offload;
 mod os_search;
 pub mod profile;
 pub mod session_door;
