@@ -17,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
@@ -36,9 +36,21 @@ struct NavigationRequests {
     pending: HashMap<u32, String>,
 }
 
+/// Whether the host reports the document's size, and what this tab asked
+/// and told it: told once the host said it can, so an older host never sees
+/// the command.
+#[derive(Default)]
+struct DocumentSizeReports {
+    can: AtomicBool,
+    /// 0 never asked, 1 off, 2 on.
+    asked: AtomicU8,
+    told: AtomicU8,
+}
+
 #[derive(Default)]
 struct Shared {
     audio: audio::PageAudio,
+    document_size: DocumentSizeReports,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -476,6 +488,7 @@ impl UnavailableEngine {
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
                 native_caret_text_input: AtomicBool::new(false),
+                document_size: DocumentSizeReports::default(),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -1155,6 +1168,28 @@ impl ChromiumEngine {
     }
 }
 
+impl ChromiumEngine {
+    /// Tell the host what this tab last asked of document size reports,
+    /// once the host said it can measure.
+    fn tell_document_size(&self) {
+        let reports = &self.shared.document_size;
+        let asked = reports.asked.load(Ordering::Acquire);
+        if asked == 0
+            || !reports.can.load(Ordering::Acquire)
+            || reports.told.swap(asked, Ordering::AcqRel) == asked
+        {
+            return;
+        }
+        if self
+            .tx
+            .push(json!({"op":"document_size","tab":self.tab,"enabled":asked == 2}))
+            .is_err()
+        {
+            reports.told.store(0, Ordering::Release);
+        }
+    }
+}
+
 impl WebViewEngine for ChromiumEngine {
     fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
         if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
@@ -1167,6 +1202,10 @@ impl WebViewEngine for ChromiumEngine {
         self.tx
             .push(json!({"op":"edit_history","tab":self.tab,"direction":direction}))
             .is_ok()
+    }
+
+    fn measures_document(&self) -> bool {
+        self.shared.document_size.can.load(Ordering::Acquire)
     }
 
     fn supports_guarded_edit_history(&self) -> bool {
@@ -1300,6 +1339,14 @@ impl WebViewEngine for ChromiumEngine {
                 }
                 return;
             }
+            WebViewCommand::ReportDocumentSize(enabled) => {
+                self.shared
+                    .document_size
+                    .asked
+                    .store(if enabled { 2 } else { 1 }, Ordering::Release);
+                self.tell_document_size();
+                return;
+            }
             WebViewCommand::CancelScopedNavigation { request_id } => {
                 let _ordering = self.shared.navigation_commands.lock_recover();
                 self.shared.cancel_navigation(request_id);
@@ -1396,6 +1443,7 @@ impl WebViewEngine for ChromiumEngine {
     }
 
     fn drain_events(&self) -> Vec<WebViewEvent> {
+        self.tell_document_size();
         self.shared
             .events
             .lock()
@@ -1505,6 +1553,10 @@ fn route_native_event(
             );
             shared.native_edit_history.store(
                 value["native_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.document_size.can.store(
+                value["document_size"].as_bool() == Some(true),
                 Ordering::Release,
             );
         }
@@ -1763,6 +1815,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && value
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)
+                && value.get("document_size").is_none_or(Value::is_boolean)
         }
         "tab_ready" => {
             value
@@ -1774,7 +1827,13 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && value
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)
+                && value.get("document_size").is_none_or(Value::is_boolean)
         }
+        "document_size" => ["width", "height", "scroll_y"].iter().all(|key| {
+            value[*key]
+                .as_f64()
+                .is_some_and(|n| n.is_finite() && (0.0..=1e7).contains(&n))
+        }),
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()
@@ -2161,6 +2220,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "document_size" => WebViewEvent::DocumentSize {
+            width: value["width"].as_f64()?,
+            height: value["height"].as_f64()?,
+            scroll_y: value["scroll_y"].as_f64()?,
+        },
         "paint_snapshot" => WebViewEvent::PaintSnapshot {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             snapshot: value["ok"]
@@ -2323,6 +2387,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         }
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
+        WebViewCommand::ReportDocumentSize(enabled) => {
+            json!({"op":"document_size","enabled":enabled})
+        }
         WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),
         WebViewCommand::CancelAllDownloads => json!({"op":"download_cancel_all"}),

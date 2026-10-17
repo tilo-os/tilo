@@ -250,6 +250,11 @@ pub enum WebViewCommand {
         command: u32,
     },
     SetZoomLevel(f64),
+    /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
+    /// whenever they change, or stop. Off until asked: an embedder that sizes
+    /// the view to its content asks (a mail reader scrolling as one page).
+    /// An engine that cannot measure never reports.
+    ReportDocumentSize(bool),
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -510,6 +515,14 @@ pub enum WebViewEvent {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     },
+    /// The page's document in CSS pixels: its laid-out size, never less than
+    /// the view's, and how far it is scrolled down. Sent while
+    /// [`WebViewCommand::ReportDocumentSize`] asks for it, when any changes.
+    DocumentSize {
+        width: f64,
+        height: f64,
+        scroll_y: f64,
+    },
     /// The raw layout snapshot (JSON), or `None` when the engine could not
     /// take one.
     PaintSnapshot {
@@ -610,6 +623,13 @@ pub trait WebViewEngine: Send + Sync {
     /// Whether this backend accepts source rules instead of `WebKit` JSON.
     fn supports_native_filtering(&self) -> bool {
         false
+    }
+
+    /// Whether [`WebViewCommand::ReportDocumentSize`] is answered: the
+    /// engine measures its document. Known once the engine is ready.
+    fn measures_document(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.measures_document())
     }
 
     /// Enqueue a command. Must never block on engine work.
