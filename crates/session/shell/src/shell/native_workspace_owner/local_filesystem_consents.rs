@@ -1,10 +1,12 @@
-//! Provenance for an existing device-issued Files session home grant.
-//! This ledger cannot issue a grant: only exact rows still present in the
-//! current workspace can survive a signed native projection. It is never
-//! serialized, replicated, or reconstructed after session expiry.
+//! Provenance for the session file grants this device issued on its
+//! person's own action: Files' home, and the read of a document the person
+//! opened in the app that owns its type. This ledger cannot issue a grant:
+//! only exact rows still present in the current workspace can survive a
+//! signed native projection. It is never serialized, replicated, or
+//! reconstructed after session expiry.
 use super::store::NativeStateRuntime;
 use crate::shell::state::{
-    CapOverride, Effect, Expiry, Principal, RoomId, Scope, Subject, Workspace, WorkspaceId,
+    Access, CapOverride, Effect, Expiry, Principal, RoomId, Scope, Subject, Workspace, WorkspaceId,
 };
 use std::collections::HashMap;
 use tilo_identity_host::broker::{LocalDeviceIdentity, trusted_current_device_public};
@@ -23,6 +25,36 @@ impl NativeStateRuntime {
         workspace: &Workspace,
         ids: &[String],
     ) -> bool {
+        self.remember_session_file_grants(workspace, ids, |capability| {
+            capability.subject
+                == Subject::Principal(Principal::App(
+                    crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER.into(),
+                ))
+        })
+    }
+
+    /// Remember the read of one document the person opened in `app_id`, the
+    /// app that owns its type, so the room's next signed projection keeps
+    /// it for the session instead of withdrawing it from the running app.
+    /// Only a read-only session grant to exactly that app qualifies.
+    pub(crate) fn remember_document_read(
+        &self,
+        workspace: &Workspace,
+        ids: &[String],
+        app_id: &str,
+    ) -> bool {
+        self.remember_session_file_grants(workspace, ids, |capability| {
+            capability.subject == Subject::Principal(Principal::App(app_id.into()))
+                && capability.access == Access::Read
+        })
+    }
+
+    fn remember_session_file_grants(
+        &self,
+        workspace: &Workspace,
+        ids: &[String],
+        subject_and_access: impl Fn(&CapOverride) -> bool,
+    ) -> bool {
         let Ok(identity) = trusted_current_device_public(&workspace.room.to_string()) else {
             return false;
         };
@@ -32,11 +64,7 @@ impl NativeStateRuntime {
             .filter(|capability| {
                 ids.contains(&capability.id)
                     && capability.effect == Effect::Grant
-                    && capability.subject
-                        == Subject::Principal(Principal::App(
-                            crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER
-                                .into(),
-                        ))
+                    && subject_and_access(capability)
                     && capability.expiry == Expiry::EndOfSession
                     && matches!(capability.scope, Scope::FsPath(_))
             })
