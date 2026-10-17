@@ -983,6 +983,7 @@ impl ResourceRoot {
     }
 
     /// The last action refused here, by the door or by the room.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refused(&self) -> Option<super::dispatch::Refused> {
         self.dispatch.last_refused()
     }
@@ -2072,30 +2073,7 @@ impl RootModel for ResourceRoot {
         if let Some(started) = self.view_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
-        // View openers from the resource/presentation catalogue and from its
-        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
-        // editor/compact) are already mounted; accept them so agents and
-        // Ctrl+K can switch without a missing-handler fault.
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.kind != tilo_actions::OperationKind::View {
-            return Ok(None);
-        }
-        let known = (self.resource.local_operations)()
-            .into_iter()
-            .chain(self.presentation.iter().cloned())
-            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
-            || self.nested_views().contains(request.type_id);
-        if known {
-            Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ),
-            ))
-        } else {
-            Ok(None)
-        }
+        Ok(self.start_catalogue_view(op))
     }
 }
 
@@ -2183,6 +2161,30 @@ impl ResourceRoot {
 }
 
 impl ResourceRoot {
+    fn start_catalogue_view(
+        &self,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+    ) -> Option<ui_core::host_operation::ResourceOperationStart> {
+        // View openers from the resource/presentation catalogue and from its
+        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
+        // editor/compact) are already mounted; accept them so agents and
+        // Ctrl+K can switch without a missing-handler fault.
+        let request = op.unscoped()?;
+        if request.kind != tilo_actions::OperationKind::View {
+            return None;
+        }
+        let known = (self.resource.local_operations)()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
+            || self.nested_views().contains(request.type_id);
+        known.then(|| {
+            ui_core::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )
+        })
+    }
+
     /// Start minting a link to one of the resources this root publishes.
     fn start_share(
         &mut self,
