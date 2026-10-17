@@ -426,7 +426,7 @@ palette-results = Results
 palette-placeholder = Search…
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
-palette-no-results-hint = Try fewer words, or widen the scope
+palette-no-results-hint = Check the spelling, or try another word
 palette-searching = Searching…
 
 # Calendar section headings in the workspace activity timeline.

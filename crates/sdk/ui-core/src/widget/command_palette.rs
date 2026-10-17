@@ -3499,7 +3499,8 @@ mod tests {
             let results = &node.children[1];
             assert!(results.children.iter().any(|child| child.name.as_deref()
                 == Some("No results for “missing”")
-                && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
+                && child.description.as_deref()
+                    == Some("Check the spelling, or try another word")));
         }
 
         typing_filters_visible_entries();
