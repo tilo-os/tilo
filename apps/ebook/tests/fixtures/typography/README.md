@@ -1,6 +1,6 @@
 # Reader typography references
 
-The original `serif-reader.png` and `math-reader.png` are the Linux references.
+`serif-reader.png` and `math-reader.png` are the Linux references.
 Windows uses the `-windows.png` references with the controlled font
 catalog (`crates/sdk/ui-core/assets/fonts`). Both tests retain the same pixel comparison and
 fail when an offscreen renderer is unavailable.
@@ -10,12 +10,22 @@ structure, and clipping. They are renderer outputs, not edited screenshots.
 Keep baseline changes explicit; a successful render alone does not approve a
 new reference image.
 
-`artifacts.json` preserves all four original images by public immutable URL,
-SHA-256 and byte length. The images retain the repository's license; font
-licenses and provenance remain in `crates/sdk/ui-core/assets/fonts`. The Linux
-references were introduced at `821fb29daeaec3698c60408b29722b37333c9a0d`;
-the Windows references were retained at
-`c865dc7526ee7ca4a3d4882f21b2561c56774476`. These original bytes are unchanged.
+`artifacts.json` pins all four images by public immutable URL, SHA-256 and byte
+length. The images retain the repository's license; font licenses and provenance
+remain in `crates/sdk/ui-core/assets/fonts`. The original Linux references were
+introduced at `821fb29daeaec3698c60408b29722b37333c9a0d`; the unchanged Windows
+references were retained at `c865dc7526ee7ca4a3d4882f21b2561c56774476`.
+
+The Linux references include the intentional area-coverage correction from
+`6b530c69fc595b520e38583235266529c33316f1`: factoring the coverage expression
+avoids floating-point cancellation and makes whole-pixel translations stable.
+A controlled comparison on the pinned golden builder, with identical selected
+font bytes, axes and llvmpipe driver, restored both original comparisons by
+changing only the two WGSL coverage expressions back. Independent image review
+confirmed unchanged glyphs, formula structure, wrapping, spacing and geometry;
+the corrected antialiasing changes sparse edge pixels by at most 12 channel
+steps. Only these two Linux references changed; comparison tolerances and
+retained-pan coverage remain unchanged.
 
 Prewarm the ignored cache before testing offline:
 
