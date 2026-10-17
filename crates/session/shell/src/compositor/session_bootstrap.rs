@@ -597,7 +597,7 @@ mod tests {
             let held = route(&chrome)
                 .expect("the configured home relay routes the session's offloadable actions");
             let request = tilo_actions::offload::OffloadRequest {
-                room: room.clone(),
+                room,
                 app_id: "so.tilo.photos".into(),
                 address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
                 offload: tilo_actions::Offload {
