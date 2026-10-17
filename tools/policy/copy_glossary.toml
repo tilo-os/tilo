@@ -1,0 +1,28 @@
+# One thing, one name. check_copy_language.py fails on a catalogue message that
+# uses an avoided word for a thing this glossary names, so people can search
+# for what they saw and never wonder whether two names are two things.
+#
+# Each [[term]] gives its reason and, per language, the word to `use`, the
+# words to `avoid`, and optionally `keys`, a regular expression over message
+# ids when an avoided word is ordinary language elsewhere ("Session" is the
+# right word for a terminal session, not for the power menu).
+
+[[term]]
+reason = "The secret that unlocks an account is the same on the greeter, the lock screen, Settings and onboarding."
+en = { use = "Password", avoid = ["Passcode", "Passcodes", "pass code"] }
+de = { use = "Passwort", avoid = ["Passcode", "Kenncode", "Zugangscode"] }
+
+[[term]]
+reason = "The panel with Lock, Log out, Restart and Shut down is opened from the Power tile and is called Power everywhere."
+en = { use = "Power", avoid = ["Session"], keys = "^(?:power-|qs-tile-power)" }
+de = { use = "Ein/Aus", avoid = ["Sitzung"], keys = "^(?:power-|qs-tile-power)" }
+
+[[term]]
+reason = "Ending the session is the Log out button; a description that calls it something else reads as a second action."
+en = { use = "Log out", avoid = ["leave", "sign out"], keys = "^(?:power-|qs-tile-power)" }
+de = { use = "Abmelden", avoid = ["verlassen"], keys = "^(?:power-|qs-tile-power)" }
+
+[[term]]
+reason = "The F1 sheet that lists the desktop's keys has one name, so searching for it finds it."
+en = { use = "Keyboard shortcuts", avoid = ["Keyboard guide", "Desktop help", "keyboard and mouse guide", "shortcut guide", "Keyboard map"] }
+de = { use = "Tastenkürzel", avoid = ["Tastaturhilfe", "Desktop-Hilfe", "Tastatur- und Mausübersicht", "Tastaturübersicht"] }

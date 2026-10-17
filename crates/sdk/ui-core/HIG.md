@@ -224,6 +224,24 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   videos" → "Search"; no "no ads" pill).
 - No internal / implementation labels in user-facing chrome (e.g. "CRDT-synced",
   "Stored in the document CRDT", a leaked `/var/workspace` path).
+- Copy states what the person needs: the state ("Offline"), the outcome
+  ("Version restored."), or the next step ("Unlock the keyring and try
+  again"). It never narrates what the software does ("Tilo checks the account
+  before it saves", "Your files appear here", "This page shows…") and never
+  speaks implementation ("compositor", "the workspace document did not…",
+  "certified", "admitted", a job, surface or process number, Rust `{:?}`
+  output). An error is mapped to its outcome and next step and shown once,
+  on the surface that failed.
+- One clause per row: sentence case, no all-caps words, at most one " · "
+  (a name and its value). A row that is one action shows a button named for
+  it ("Stop", "Try again"), never "select to stop". A confirming button names
+  its outcome ("Move", "Allow"), never "Continue" or "OK".
+- One thing has one name everywhere; `tools/policy/copy_glossary.toml` lists
+  the names that had rivals ("Password", "Power", "Keyboard shortcuts").
+- `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
+  these classes (old copy is listed per catalogue in
+  `copy_language_baseline/`, which only shrinks), and `tilo_copy_lint`
+  rejects `{:?}` handed to a copy builder.
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.
 - Never present fabricated content as live data (no synthesized "video feed"
