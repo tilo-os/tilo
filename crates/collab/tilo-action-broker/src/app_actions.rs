@@ -66,6 +66,85 @@ pub struct AppActionConsentRequest {
     /// The person confirms this one invocation, which `app_id` (an agent or
     /// an application) makes for them, rather than granting anything.
     pub confirming: bool,
+    /// Exact external disclosure, decoded by the host rather than supplied as a label.
+    pub moderation: Option<ModerationConsentPreview>,
+}
+
+/// The Store moderation disclosure and the root identity the host will use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModerationConsentPreview {
+    pub purpose: ModerationConsentPurpose,
+    pub destination: String,
+    pub owner_root: String,
+    /// Derived from the admitted caller or the host's trusted device certificate.
+    pub signing_root: String,
+    /// Package for a report; case for an appeal.
+    pub target: String,
+    pub category: Option<String>,
+    pub content: String,
+    pub evidence_digest: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModerationConsentPurpose {
+    Report,
+    Appeal,
+}
+
+impl ModerationConsentPreview {
+    /// Decode the nested operation string in the original invocation. The signing
+    /// identity is separate: no field in the operation may select it.
+    pub(crate) fn from_argument(
+        action: &str,
+        argument: &tilo_actions::remote::InvokeArgument,
+        signing_root: &[u8; 32],
+    ) -> Option<Self> {
+        let slot = argument.to_slot()?;
+        let json = slot
+            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .unwrap_or(&slot);
+        let arguments: serde_json::Value = serde_json::from_str(json).ok()?;
+        let operation: registry_types::ExternalModerationOperation =
+            serde_json::from_str(arguments.get("operation")?.as_str()?).ok()?;
+        runtime_collab::external_moderation::validate_action(action, json, &operation).ok()?;
+        use registry_types::ModerationMutation;
+        let (purpose, target, category, content, evidence_digest) = match operation.mutation {
+            ModerationMutation::FileReport {
+                package_id,
+                category,
+                summary,
+                evidence_digest_hex,
+            } => (
+                ModerationConsentPurpose::Report,
+                package_id,
+                Some(category),
+                summary,
+                Some(evidence_digest_hex),
+            ),
+            ModerationMutation::PublisherAppeal {
+                case_id,
+                reason,
+                evidence_digest_hex,
+            } => (
+                ModerationConsentPurpose::Appeal,
+                case_id,
+                None,
+                reason,
+                evidence_digest_hex,
+            ),
+            _ => return None,
+        };
+        Some(Self {
+            purpose,
+            destination: operation.destination.base_url,
+            owner_root: operation.destination.owner_pubkey_hex,
+            signing_root: hex::encode(signing_root),
+            target,
+            category,
+            content,
+            evidence_digest,
+        })
+    }
 }
 
 /// The person's answer.
@@ -121,6 +200,99 @@ pub trait AppActionConsentPrompter: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn moderation_argument(appeal: bool) -> tilo_actions::remote::InvokeArgument {
+        let mutation = if appeal {
+            serde_json::json!({"kind": "publisher_appeal",
+                "case_id": "case-one", "reason": "The problem has been fixed",
+                "evidence_digest_hex": null
+            })
+        } else {
+            serde_json::json!({"kind": "file_report",
+                "package_id": "org.example.app", "category": "policy",
+                "summary": "The package description is misleading",
+                "evidence_digest_hex": "cd".repeat(32)
+            })
+        };
+        let operation = serde_json::json!({
+            "destination": {"base_url": "https://registry.example", "owner_pubkey_hex": "ab".repeat(32)},
+            "request_id": "report-one", "issued_at_unix": 100, "expires_at_unix": 200,
+            "mutation": mutation
+        });
+        tilo_actions::remote::InvokeArgument::Json(
+            serde_json::json!({
+                "app": "org.example.app", "operation": operation.to_string()
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    }
+
+    #[test]
+    fn moderation_preview_decodes_report_and_appeal_and_uses_admitted_identity() {
+        for (appeal, action, purpose, target, content) in [
+            (
+                false,
+                "submit-report",
+                ModerationConsentPurpose::Report,
+                "org.example.app",
+                "The package description is misleading",
+            ),
+            (
+                true,
+                "appeal",
+                ModerationConsentPurpose::Appeal,
+                "case-one",
+                "The problem has been fixed",
+            ),
+        ] {
+            let preview = ModerationConsentPreview::from_argument(
+                action,
+                &moderation_argument(appeal),
+                &[0x12; 32],
+            )
+            .unwrap();
+            assert_eq!(preview.purpose, purpose);
+            assert_eq!(preview.target, target);
+            assert_eq!(preview.content, content);
+            assert_eq!(preview.signing_root, "12".repeat(32));
+            assert_eq!(preview.owner_root, "ab".repeat(32));
+            assert_eq!(preview.destination, "https://registry.example");
+            assert_eq!(preview.category.as_deref(), (!appeal).then_some("policy"));
+            assert_eq!(preview.evidence_digest, (!appeal).then(|| "cd".repeat(32)));
+        }
+    }
+
+    #[test]
+    fn moderation_preview_refuses_missing_malformed_and_mismatched_operations() {
+        use tilo_actions::remote::InvokeArgument;
+        for argument in [
+            InvokeArgument::None,
+            InvokeArgument::Text("not json".into()),
+            InvokeArgument::Json(
+                serde_json::json!({"operation": "{}"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            moderation_argument(true),
+        ] {
+            assert!(
+                ModerationConsentPreview::from_argument("submit-report", &argument, &[1; 32])
+                    .is_none()
+            );
+        }
+        let slot = moderation_argument(false).to_slot().unwrap();
+        assert!(
+            ModerationConsentPreview::from_argument(
+                "submit-report",
+                &InvokeArgument::Text(slot),
+                &[2; 32]
+            )
+            .is_some()
+        );
+    }
 
     #[test]
     fn each_answer_records_the_matching_lifetime() {

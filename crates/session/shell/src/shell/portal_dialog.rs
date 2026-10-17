@@ -1920,19 +1920,23 @@ impl PortalDialogController {
         let view = self.view()?;
         // Verified field reviews contain exact file/endpoint/certificate text,
         // rather than a one-line caption. Never overlap it with the entry.
-        let field_review = matches!(
-            view,
-            DialogView::ShortcutStep {
-                field_review: true,
-                ..
-            }
-        );
+        let moderation_review = matches!(&view, DialogView::ActionGrant { detail, .. }
+            if detail.lines().count() > 1);
+        let field_review = moderation_review
+            || matches!(
+                view,
+                DialogView::ShortcutStep {
+                    field_review: true,
+                    ..
+                }
+            );
         let extra_detail = if field_review {
             small_count_as_f64(view.detail().lines().count().saturating_sub(1)) * 24.0
         } else {
             0.0
         };
-        let width = bounds.width().min(560.0);
+        let review_width = if moderation_review { 900.0 } else { 560.0 };
+        let width = bounds.width().min(review_width);
         let row_count = view.selectable_count().min(6);
         let launcher_editor = view.launcher_editor();
         let launcher_rows = launcher_editor.map_or(0, |editor| {
@@ -1955,7 +1959,7 @@ impl PortalDialogController {
             + small_count_as_f64(
                 row_count + launcher_rows + secret_rows + network_fields + remember_row,
             ) * 48.0;
-        if field_review && (height > bounds.height() || width < 560.0) {
+        if field_review && (height > bounds.height() || width < review_width) {
             // A clipped security review cannot approve anything invisibly.
             return None;
         }
@@ -2586,6 +2590,9 @@ fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActio
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if let Some(preview) = &request.moderation {
+        return moderation_detail(preview);
+    }
     if request.confirming {
         return t_args("portal-confirm-detail", &[("risk", risk.into())]);
     }
@@ -2595,6 +2602,60 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
         "portal-grant-detail-unattended"
     };
     t_args(key, &[("risk", risk.into())])
+}
+
+/// Keep the complete disclosure readable on the trusted sheet. Wrapping uses a
+/// conservative glyph bound at 14 px in the 852 px content area. Oversized
+/// reviews fail closed in `layout`, rather than hiding content behind Allow.
+fn moderation_detail(
+    preview: &tilo_action_broker::app_actions::ModerationConsentPreview,
+) -> String {
+    use tilo_action_broker::app_actions::ModerationConsentPurpose;
+    let purpose = match preview.purpose {
+        ModerationConsentPurpose::Report => "portal-moderation-report",
+        ModerationConsentPurpose::Appeal => "portal-moderation-appeal",
+    };
+    let mut detail = t(purpose);
+    for (key, value) in [
+        (
+            "portal-moderation-destination",
+            Some(preview.destination.as_str()),
+        ),
+        ("portal-moderation-owner", Some(preview.owner_root.as_str())),
+        (
+            "portal-moderation-identity",
+            Some(preview.signing_root.as_str()),
+        ),
+        ("portal-moderation-target", Some(preview.target.as_str())),
+        ("portal-moderation-category", preview.category.as_deref()),
+        ("portal-moderation-content", Some(preview.content.as_str())),
+        (
+            "portal-moderation-evidence",
+            preview.evidence_digest.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            detail.push('\n');
+            detail.push_str(&t(key));
+            detail.push('\n');
+            // Escape controls and directional overrides: payload text cannot
+            // impersonate a trusted field label by rearranging the sheet.
+            let visible: String = value.chars().flat_map(|c| {
+                if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                    c.escape_default().collect::<Vec<_>>()
+                } else {
+                    vec![c]
+                }
+            }).collect();
+            for (index, c) in visible.chars().enumerate() {
+                if index > 0 && index % 56 == 0 {
+                    detail.push('\n');
+                }
+                detail.push(c);
+            }
+        }
+    }
+    detail
 }
 
 fn friendly_app_name(app_id: &str) -> String {

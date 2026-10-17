@@ -230,6 +230,24 @@ impl CapnpBrokerState {
             tilo_actions::remote::CallerPrincipal::Bot(bot) => format!("bot:{bot}"),
             tilo_actions::remote::CallerPrincipal::Person(id) => id.clone(),
         };
+        // Only the Store's typed external actions use this disclosure. A broken
+        // payload or unavailable identity must not fall back to a generic prompt.
+        let moderation = if app_id == "so.tilo.store"
+            && matches!(address.action.as_str(), "submit-report" | "appeal")
+        {
+            let root = caller.user_public_key().copied().or_else(|| {
+                tilo_identity_host::broker::trusted_current_device(room)
+                    .ok()
+                    .map(|(_, certificate)| certificate.user_public_key)
+            })?;
+            Some(crate::app_actions::ModerationConsentPreview::from_argument(
+                &address.action,
+                &request.argument,
+                &root,
+            )?)
+        } else {
+            None
+        };
         Some(Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", request.invocation.0),
@@ -244,6 +262,7 @@ impl CapnpBrokerState {
                 risk,
                 needs_confirmation: true,
                 confirming: true,
+                moderation,
             },
             actor,
             shown,
