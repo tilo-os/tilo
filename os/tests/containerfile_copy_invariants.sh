@@ -223,7 +223,9 @@ containerfile="$repo/os/Containerfile"
 # Miracast moved into tilo-projector (the miracast crate), so the Python
 # sender's rows are gone: its source tree, its wrapper and the wpa_supplicant
 # D-Bus policy only it used.
-expected_contract=8e2a2c0b6448c4ff9025d956c8d1e8e979ca7142581077dfcd785567195c83b9
+# xwayland-satellite is built from patched source (xwayland-satellite-builder):
+# its binary and license directory are two new rows in place of the RPM.
+expected_contract=125afe6843ceb7da7556a35120f1f82634b817babbd5f68f7db0eb231353cbc1
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
