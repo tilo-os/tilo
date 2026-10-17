@@ -4820,3 +4820,62 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
         }
     }
 }
+
+#[test]
+fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
+    let mut ti = TextInput::local().with_initial_value("hello world");
+    assert!(
+        !ti.replace_range(0..5, "hullo", "HELLO"),
+        "a range that no longer holds the expected text is refused"
+    );
+    assert!(!ti.replace_range(6..40, "world", "there"));
+    assert_eq!(ti.value(), "hello world");
+    assert!(ti.replace_range(6..11, "world", "there"));
+    assert_eq!(ti.value(), "hello there");
+    assert_eq!(ti.selection_range(), Some((6, 11)));
+
+    let mut read_only = TextInput::local()
+        .with_initial_value("hello")
+        .with_read_only(true);
+    assert!(!read_only.replace_range(0..5, "hello", "HELLO"));
+    assert_eq!(read_only.value(), "hello");
+
+    // A spelling fix chosen from the menu refuses a word that changed
+    // while the menu was open.
+    let mut ti = TextInput::local()
+        .with_spell_language("en_US")
+        .with_initial_value("teh");
+    ti.core.set_selection(0, 3);
+    ti.open_context_menu([10.0, 10.0]);
+    let fix = ti
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::ApplySpelling { .. })))
+        .expect("a correction is offered");
+    ti.set_text("ten");
+    assert!(!ti.dispatch_context_action(fix));
+    assert_eq!(ti.value(), "ten");
+}
+
+#[test]
+fn a_secret_field_never_hands_its_text_to_a_text_action() {
+    for field in [
+        TextInput::local().with_secret(true),
+        TextInput::local().with_kind(TextInputKind::Password),
+        TextInput::local().with_kind(TextInputKind::Secret),
+    ] {
+        let mut ti = field
+            .with_text_action("translate", "Translate")
+            .with_initial_value("hunter2");
+        ti.core.set_selection(0, 7);
+        ti.open_context_menu([10.0, 10.0]);
+        assert!(
+            !ti.context_actions
+                .iter()
+                .any(|action| matches!(action, Some(CtxAction::TextAction(_)))),
+            "{:?}",
+            ti.context_menu_labels()
+        );
+        assert_eq!(ti.take_text_action_request(), None);
+    }
+}

@@ -3121,8 +3121,8 @@ mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
 pub use text_input::{
-    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
-    paint_preedit_underline,
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
+    TextInputKind, paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
