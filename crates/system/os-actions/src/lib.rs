@@ -144,9 +144,9 @@ pub use time::{
 // Typed tool requests are a sandbox service client, kept with the others in
 // runtime-portal; the shell and Settings name them through this crate.
 pub use runtime_portal::tools::{
-    BackupsRoute, ContainerEngine, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV,
-    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
-    open_tool, tool_intent_from_env,
+    BackupsRoute, ContainerEngine, DisksRoute, DriveEntry, FirewallRoute, MAX_LISTED_DRIVES,
+    MAX_REPLY_BYTES, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
+    VpnRoute, WorkspaceSettingsRoute, list_drives, open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 

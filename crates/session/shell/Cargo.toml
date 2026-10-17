@@ -386,6 +386,9 @@ tilo-copy-lint = { path = "../../dev/copy-lint" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
 runtime-portal = { path = "../../runtime/runtime-portal" }
+# The NTFS mount service's socket loop, served by a stand-in backend, for
+# the drive worker's tests.
+tilo-ntfs-mount = { path = "../../system/ntfs-mount" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
@@ -449,6 +452,8 @@ workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 account-custody = { path = "../../system/account-custody" }
 browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
+# The consent-gated NTFS mount service's protocol (shell::drives).
+tilo-ntfs-mount = { path = "../../system/ntfs-mount", default-features = false }
 tilo-secret-service = { path = "../../system/secret-service" }
 signal-hook-registry = "1.4.8"
 # Raw Vulkan for returning the device memory lavapipe freed
