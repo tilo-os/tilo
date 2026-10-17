@@ -15,6 +15,7 @@ const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
 const TASK_PREFIX: &str = "desktop:task:";
+const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
 impl CapnpBrokerState {
     pub(crate) fn invoke_workspace_membership(
@@ -42,7 +43,7 @@ impl CapnpBrokerState {
                     tilo_actions::ARGUMENTS_JSON_PREFIX,
                     serde_json::json!({"app": app})
                 );
-                (WORKSPACE.into(), "grant-app-authorship", Some(argument))
+                (WORKSPACE.into(), GRANT_APP_AUTHORSHIP, Some(argument))
             }
             WorkspaceMembershipCommand::GrantForTask {
                 task,
@@ -208,15 +209,20 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         })?;
         for (room, name, mut actions, current_agents) in rooms {
-            if !service.requires_room(&room) {
+            if service.requires_room(&room) {
+                actions.extend(super::workspace_checkpoints::actions());
+                actions.extend(super::workspace_tasks::actions(
+                    &service.task_snapshot(&room)?,
+                    &name,
+                    &current_agents,
+                ));
+            } else if service.grants_authorship_at_host(&room) {
+                // Governed by the node that stewards it: the one change
+                // this device asks there is an opening app's authorship.
+                actions.retain(|action| action.action == GRANT_APP_AUTHORSHIP);
+            } else {
                 continue;
             }
-            actions.extend(super::workspace_checkpoints::actions());
-            actions.extend(super::workspace_tasks::actions(
-                &service.task_snapshot(&room)?,
-                &name,
-                &current_agents,
-            ));
 
             let existing = self
                 .workspace_membership_peers
@@ -393,7 +399,7 @@ impl CapnpBrokerState {
         if key.room != room
             || key.invocation != envelope.invocation
             || key.owner != pending.owner
-            || !service.requires_room(room)
+            || !(service.requires_room(room) || service.grants_authorship_at_host(room))
         {
             return Err("membership invocation binding changed".into());
         }
@@ -649,7 +655,7 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
     )];
     actions.push(membership_action(
         WORKSPACE,
-        "grant-app-authorship",
+        GRANT_APP_AUTHORSHIP,
         "Workspace",
         "Allow app authorship",
         vec![tilo_actions::ActionParam::required(

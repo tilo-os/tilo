@@ -236,6 +236,13 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn requires_room(&self, room: &str) -> bool;
 
+    /// Whether `room` is held here but governed by the node that stewards
+    /// it, where the one membership change this device asks is the
+    /// authorship an app opening there needs, committed by that host.
+    fn grants_authorship_at_host(&self, _room: &str) -> bool {
+        false
+    }
+
     /// Confirm that the canonical owner's durable store is still usable.
     ///
     /// # Errors
