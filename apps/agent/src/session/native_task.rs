@@ -22,7 +22,9 @@ pub(super) struct NativeTaskState {
     pub task_id: String,
     pub base: String,
     pub revision: u64,
-    pub ordinal: u32,
+    /// How many children each request (by [`child_request_digest`]) has
+    /// started in this run so far.
+    pub children: std::collections::HashMap<[u8; 32], u32>,
     pub epoch: Option<u64>,
     pub pending: Option<runtime_collab::TaskRunControl>,
 }
@@ -280,9 +282,21 @@ impl Session {
         Ok(())
     }
 
+    /// The stable id of the native child that performs `action` with
+    /// `arguments` in `run`, at the run's instruction revision.
+    ///
+    /// The id is derived from the request itself, plus how many identical
+    /// requests this run made before it. A run delivered again after its
+    /// agent restarted makes the same id only for the same request: an
+    /// identical step finds its earlier child (and its outcome) instead of
+    /// running twice, and a different one, as a model that plans afresh
+    /// asks, is a new child rather than "an identity reused with another
+    /// request" that the host must refuse.
     pub(super) fn task_child_id(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
+        action: &super::TaskAction,
+        arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_actions::InvocationId> {
         let Some(state) = self
             .native_task
@@ -291,17 +305,40 @@ impl Session {
         else {
             return Ok(tilo_actions::InvocationId::new());
         };
-        let revision = u32::try_from(state.revision)?;
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&run.run_id.to_le_bytes());
-        bytes[8..12].copy_from_slice(&revision.to_le_bytes());
-        bytes[12..].copy_from_slice(&state.ordinal.to_le_bytes());
-        state.ordinal = state
-            .ordinal
+        let request = child_request_digest(run.run_id, state.revision, action, arguments);
+        let occurrence = state.children.entry(request).or_default();
+        let bytes = blake3::Hasher::new_derive_key("Tilo native task child v2")
+            .update(&request)
+            .update(&occurrence.to_le_bytes())
+            .finalize();
+        *occurrence = occurrence
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("native task step index exhausted"))?;
-        Ok(tilo_actions::InvocationId(Uuid::from_bytes(bytes)))
+        let mut id = [0; 16];
+        id.copy_from_slice(&bytes.as_bytes()[..16]);
+        Ok(tilo_actions::InvocationId(Uuid::from_bytes(id)))
     }
+}
+
+/// What names one request of a native task: its run, the instruction
+/// revision, the exact target and the arguments (digested canonically, so
+/// key order does not matter).
+fn child_request_digest(
+    run_id: u64,
+    revision: u64,
+    action: &super::TaskAction,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new_derive_key("Tilo native task child request v1");
+    hasher.update(&run_id.to_le_bytes());
+    hasher.update(&revision.to_le_bytes());
+    hasher.update(&action.peer_id.to_le_bytes());
+    for part in [&action.provider, &action.resource, &action.action] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher.update(&tilo_actions::draft::arguments_digest(arguments));
+    *hasher.finalize().as_bytes()
 }
 
 /// Take in the answer to the re-ask `request_id`: the child's newer state,

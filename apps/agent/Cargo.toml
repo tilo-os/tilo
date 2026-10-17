@@ -38,6 +38,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { default-features = false, path = "../../crates/agent/model-gateway" }
 tilo-content = { path = "../../crates/system/content", features = ["device"] }
+blake3.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true

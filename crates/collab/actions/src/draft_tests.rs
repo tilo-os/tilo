@@ -199,3 +199,38 @@ fn a_tag_opts_an_action_into_the_message_preview() {
         Some("Hi all".into())
     );
 }
+
+#[test]
+fn a_draft_gives_back_the_arguments_it_shows_and_no_others() {
+    let rename = descriptor(
+        "Rename an entry here",
+        vec![
+            ActionParam::required("entry", ParamType::Text, "Entry"),
+            ActionParam::required("name", ParamType::Text, "New name"),
+            ActionParam::optional("keep", ParamType::Boolean, "Keep a copy"),
+            ActionParam::optional("count", ParamType::Integer, "Count"),
+        ],
+    );
+    let arguments = args(json!({
+        "entry": "doc (3).txt", "name": "Meeting notes.txt", "keep": false, "count": 3
+    }));
+    let rebuilt = Draft::render(&rename, &arguments)
+        .arguments()
+        .expect("all shown");
+    assert_eq!(arguments_digest(&rebuilt), arguments_digest(&arguments));
+
+    // A null the draft leaves out rebuilds to other arguments: the digest
+    // tells them apart.
+    let with_null = args(json!({"entry": "a", "name": "b", "keep": null}));
+    let rebuilt = Draft::render(&rename, &with_null)
+        .arguments()
+        .expect("shown");
+    assert_ne!(arguments_digest(&rebuilt), arguments_digest(&with_null));
+
+    // What a draft shows only in part gives back nothing.
+    assert!(
+        Draft::render(&send(), &mail_arguments())
+            .arguments()
+            .is_none()
+    );
+}

@@ -48,6 +48,8 @@ use crate::plan::{self, ConfirmationEvidence, Instruction};
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
 
+mod resume;
+
 /// Most model turns one task may take. Turns are cheap (well under two
 /// seconds each); what they must not do is wander, which the discovery
 /// nudge below and the wall-clock budget bound.
@@ -947,9 +949,14 @@ impl Session {
         // the operations named for it included, so a run that acted at the
         // wrong place can be told apart from one that was never told where.
         tracing::info!(task_id = %run.task_id, %request, "task request");
+        let resumed = match self.resume_paused_step(run, state)? {
+            resume::Resumed::Fresh => String::new(),
+            resume::Resumed::Told(told) => format!("\n\n{told}"),
+            resume::Resumed::Ended(end) => return Ok(end),
+        };
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!("{}The request:\n\n{request}", self.memory.render()),
+            task: format!("{}The request:\n\n{request}{resumed}", self.memory.render()),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
             Conversation::neutral_first(LOOP_SYSTEM, &first)
@@ -2701,6 +2708,9 @@ mod tests {
         /// The host answers a re-ask at once even when it asks to be held,
         /// as a host from before held re-asks does.
         answers_reasks_at_once: bool,
+        /// An action that asks its person first, and how many more asks the
+        /// host answers with its draft waiting before the person confirms.
+        awaiting: Option<(String, usize)>,
     }
 
     /// How the desktop's open of Writer behaves in the fixture world.
@@ -3107,6 +3117,10 @@ mod tests {
                 self.sent.borrow_mut().push(request);
                 return Ok(());
             }
+            if self.answer_awaiting(&request) {
+                self.sent.borrow_mut().push(request);
+                return Ok(());
+            }
             match &request {
                 CollabRequest::InvokeTaskAction {
                     request_id,
@@ -3193,6 +3207,39 @@ mod tests {
     }
 
     impl Broker {
+        /// Answer an ask of the action that waits for its person with its
+        /// draft still waiting, as the host's confirmation gate does;
+        /// `false` once the person confirmed it, or for anything else.
+        fn answer_awaiting(&mut self, request: &CollabRequest) -> bool {
+            let CollabRequest::InvokeTaskAction {
+                request_id,
+                action,
+                wait: None,
+                ..
+            } = request
+            else {
+                return false;
+            };
+            let mut world = self.world.borrow_mut();
+            let Some((_, left)) = world
+                .awaiting
+                .as_mut()
+                .filter(|(waiting, left)| waiting == action && *left > 0)
+            else {
+                return false;
+            };
+            *left -= 1;
+            drop(world);
+            self.events.push(CollabEvent::TaskActionInvocationResult {
+                request_id: *request_id,
+                result: Err(format!(
+                    "Failed: {}: {action} waits for the person",
+                    tilo_actions::draft::AWAITING_CONFIRMATION
+                )),
+            });
+            true
+        }
+
         /// The state of a started child as the host holds it now.
         fn child_state(
             &self,
@@ -3456,6 +3503,7 @@ mod tests {
             holding: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
+            paused: None,
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
