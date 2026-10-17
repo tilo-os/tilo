@@ -1333,8 +1333,8 @@ mod tests {
         /// never pressed — and none drops under the minimum pointer target.
         fn a_capped_panel_still_tiles_every_row_inside_it() {
             for (viewport, scale) in [
-                (Rect::new(0.0, 0.0, 1280.0, 350.0), 3.0_f32),
-                (Rect::new(0.0, 0.0, 1280.0, 400.0), 4.0),
+                (Rect::new(0.0, 0.0, 1280.0, 338.0), 3.0_f32),
+                (Rect::new(0.0, 0.0, 1280.0, 388.0), 4.0),
             ] {
                 let m = PowerMenuMetrics::for_text_scale(scale);
                 let panel = panel_rect_with(viewport, m, ACTIONS.len());
