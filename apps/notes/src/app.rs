@@ -665,8 +665,11 @@ impl NotesApp {
                 ui::search::SearchRequest::this_app(),
             )),
         ];
+        // Maximized, the header lives in the window's bar: the note has the
+        // whole window until the person reaches for the top edge.
         NavShell::new()
             .with_id("notes-shell")
+            .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
             .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])

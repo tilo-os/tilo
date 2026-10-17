@@ -12,6 +12,51 @@ SCRIPT = (Path(__file__).resolve().parents[1] / 'dev/test-installer-cycle.sh').r
 
 
 class CycleGraphicsTests(unittest.TestCase):
+    def test_shot_ocr_initializes_its_own_name_under_nounset(self):
+        library = Path(__file__).resolve().parents[1] / 'dev/installer-cycle-lib.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            script = '''set -euo pipefail
+source "$1"
+run="$2"; out="$2"; vm=fixture
+fixture() { printf frame > "$run/$2.png"; }
+tesseract() { printf ready; }
+shot_ocr fresh
+'''
+            result = subprocess.run(['bash', '-c', script, 'test', str(library), temporary],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(Path(temporary) / 'fresh.png'))
+            self.assertEqual((Path(temporary) / 'fresh.txt').read_text(), 'ready')
+
+    def test_screen_observation_rejects_capture_ocr_and_artifact_failures(self):
+        library = Path(__file__).resolve().parents[1] / 'dev/installer-cycle-lib.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for failure in ('shot', 'ocr', 'copy'):
+                with self.subTest(failure=failure):
+                    script = r'''
+set -euo pipefail
+source "$1"
+run="$2"; out="$2"; vm=fixture
+fixture() {
+  if [ "$1" = shot ]; then
+    [ "$failure" != shot ] || return 7
+    printf 'frame' > "$run/$2.png"
+  else
+    printf 'stopped\n'
+  fi
+}
+tesseract() { printf 'ready\n'; [ "$failure" != ocr ]; }
+cp() { [ "$failure" != copy ] && command cp "$@"; }
+failure="$3"
+name=observe
+printf 'old frame' > "$run/observe.png"
+if wait_screen result ready 1 0; then exit 91; fi
+'''
+                    result = subprocess.run(['bash', '-c', script, 'test', str(library), str(base), failure],
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_graphics_selection_and_encoder_pin(self):
         with self.subTest(phase="selected_graphics_reaches_every_boot_with_either_tpm_mode"):
             parser = SCRIPT[SCRIPT.index('medium="${1:?'):SCRIPT.index('[ -f "$medium" ]')]

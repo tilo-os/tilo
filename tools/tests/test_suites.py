@@ -327,6 +327,23 @@ class CargoReaderTests(unittest.TestCase):
             self.assertEqual(suites.select_packages(manifest, ["os/share/deep/x.txt"]), ["ui"])
             self.assertEqual(suites.select_packages(manifest, ["apps/calc/Cargo.toml"]), [])
 
+    def test_office_fixture_changes_select_import_consumers(self):
+        manifest = suites.load()
+        prefix = "crates/system/cloud-source-gdrive/tests/fixtures/"
+        for fixture in ("docx.rs", "xlsx.rs", "pptx.rs"):
+            with self.subTest(fixture=fixture):
+                self.assertEqual(
+                    suites.select_packages(manifest, [prefix + fixture]),
+                    ["settings", "tilo-app-cli", "tilo-fs"],
+                )
+        self.assertEqual(
+            suites.select_packages(manifest, [prefix + "empty.svg"]),
+            ["tilo-app-cli", "tilo-fs"])
+        # The CLI's existing package audit selects the provider directory;
+        # import consumers should select only the fixtures they actually read.
+        self.assertEqual(
+            suites.select_packages(manifest, [prefix + "unrelated.rs"]), ["tilo-app-cli"])
+
     def test_cross_package_readers_must_be_declared_exactly(self):
         with self.subTest(phase='a declared reader passes'):
             self.assertEqual(self.audit({}), [])

@@ -165,7 +165,7 @@ EOF
 }
 
 step_settings() {
-    local file=/home/$user/.config/tilo/settings.json
+    local file=/home/$user/.config/tilo/session/settings.json
     [[ ! -f $file ]] || cat "$file"
 }
 
@@ -178,6 +178,10 @@ step_status() {
     log=$home/.local/state/tilo/session-logs/latest.log
     echo "compositor_pid=$(compositor_pid)"
     echo "modeset=$(grep -c 'DRM scanout: modeset complete' "$log" 2>/dev/null || echo 0)"
+    local topology
+    topology=$(grep -o 'DRM topology .*' "$log" 2>/dev/null | tail -n 1 || true)
+    echo "topology=$topology"
+    echo "driven_cards=$(sed -n 's/.* driven_cards=\([0-9]*\) .*/\1/p' <<<"$topology")"
     echo "crash_logs=$(find "$home/.cache/tilo/crashes" -type f 2>/dev/null | wc -l)"
     echo "coredumps=$(coredumpctl --no-pager --no-legend list /usr/bin/tilo-shell 2>/dev/null | wc -l)"
     echo "unexpected_exit=$(journalctl -b --no-pager -o cat -t tilo-session 2>/dev/null \
@@ -208,7 +212,7 @@ step_collect() {
     coredumpctl --no-pager info /usr/bin/tilo-shell >"$out/coredump-tilo-shell.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
-    cp "$home/.config/tilo/settings.json" "$out/settings.json" 2>/dev/null || true
+    cp "$home/.config/tilo/session/settings.json" "$out/settings.json" 2>/dev/null || true
     ps -eo pid,ppid,user,etimes,args --forest >"$out/processes.txt" 2>&1 || true
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring kernel-core mesa-vulkan-drivers \
         >"$out/packages.txt" 2>&1 || true

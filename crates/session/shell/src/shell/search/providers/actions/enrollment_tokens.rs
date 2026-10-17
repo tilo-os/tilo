@@ -55,11 +55,12 @@ pub(super) fn contract() -> tilo_actions::ActionContract {
         result: tilo_actions::ResultSpec::Json {
             schema: serde_json::json!({
                 "type": "object",
-                "required": ["token", "role", "expires_at_ns"],
+                "required": ["token", "role", "expires_at_ns", "copied"],
                 "properties": {
                     "token": { "type": "string" },
                     "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
-                    "expires_at_ns": { "type": "integer" }
+                    "expires_at_ns": { "type": "integer" },
+                    "copied": { "type": "boolean" }
                 }
             }),
         },
@@ -96,12 +97,15 @@ pub(super) fn mint(
     let token = crate::device_fleet::DeviceFleetStore::from_env()
         .and_then(|store| store.mint_enrollment(&profile.id, role.preset(), now, expires_at_ns))
         .map_err(|error| ActionError::Refused(error.to_string()))?;
-    // The row's subtitle states the copy and the code's life.
-    ui::text_selection::clipboard_copy(&token);
+    // The row's subtitle states the copy and the code's life. The clipboard
+    // holds the code no longer than the code lasts, and keeps it out of
+    // history and device sync: it admits a device.
+    let copied = ui::try_clipboard_copy_secret(&token, std::time::Duration::from_nanos(ttl));
     Ok(serde_json::json!({
         "token": token,
         "role": role.as_str(),
         "expires_at_ns": expires_at_ns,
+        "copied": copied,
     }))
 }
 
@@ -114,10 +118,15 @@ pub(super) fn mint_for_person(
     role: EnrollmentRole,
 ) -> Result<(), ActionError> {
     let minutes = ttl_ns(args)?.div_ceil(60 * 1_000_000_000);
-    mint(state, args, role)?;
-    let key = match role {
-        EnrollmentRole::PersonalDevice => "search-action-enrollment-copied",
-        EnrollmentRole::HomePeer => "search-action-home-server-copied",
+    let minted = mint(state, args, role)?;
+    let copied = minted
+        .get("copied")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let key = match (role, copied) {
+        (_, false) => "search-action-enrollment-copy-failed",
+        (EnrollmentRole::PersonalDevice, true) => "search-action-enrollment-copied",
+        (EnrollmentRole::HomePeer, true) => "search-action-home-server-copied",
     };
     state.acknowledge(crate::shell::i18n::t_args(
         key,
@@ -173,6 +182,7 @@ mod tests {
                 "token": "ABCD",
                 "role": EnrollmentRole::HomePeer.as_str(),
                 "expires_at_ns": 1,
+                "copied": true,
             })),
             resources: Vec::new(),
         };

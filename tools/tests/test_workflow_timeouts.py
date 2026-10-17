@@ -9,6 +9,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowTimeoutTests(unittest.TestCase):
+    def test_missing_empty_or_non_directory_workflow_inputs_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "not-a-directory").write_text("text", encoding="utf-8")
+            for workflows in (root / "missing", root, root / "not-a-directory"):
+                with self.subTest(workflows=workflows):
+                    violations = audit(workflows)
+                    self.assertTrue(violations)
+                    self.assertIn("no workflows found", str(violations[0]))
+
     def test_every_workflow_job_has_a_timeout_of_at_most_three_hours(self) -> None:
         with self.subTest(phase='reports only jobs without positive timeout'):
             with tempfile.TemporaryDirectory() as directory:

@@ -42,6 +42,8 @@ use crate::shell::quick_settings::refresh::QsField;
 use ui::TextRole;
 
 mod controller;
+mod desk;
+pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
 mod displays;
@@ -58,6 +60,7 @@ mod shortcuts;
 mod strip_indicators;
 mod switcher_layer;
 mod tab_menu;
+mod top_bar_reveal;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -723,6 +726,8 @@ pub struct ShellOverlayHost {
     /// Shows the ribbon and the rail while the position they report is
     /// changing, and fades them out once it stops.
     strip_indicators: strip_indicators::StripIndicators,
+    /// When the top bar the person hides shows over the windows.
+    top_bar_reveal: top_bar_reveal::TopBarReveal,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
     /// Its frames, and the frame it comes to rest on, are composited from
     /// layers drawn before it began, so the chrome they hold (the ribbon and
@@ -868,6 +873,8 @@ pub struct ShellOverlayHost {
     now_playing_preferred: Option<String>,
     /// When the visible card next repaints to advance its playhead.
     now_playing_tick: std::cell::Cell<Option<Instant>>,
+    /// The desk widgets and the Super surface.
+    desk: desk::DeskState,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::quick_settings::actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
@@ -1907,6 +1914,7 @@ impl ShellOverlayHost {
         );
         self.prepare_quick_settings_transition(theme, flags);
         self.prepare_strip_indicators(Instant::now());
+        self.sync_top_bar_presence(Instant::now());
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         // The panel, the ribbon and the rail are each a damage part of the
         // section: a change to one repaints that one.
@@ -2293,6 +2301,8 @@ impl ShellOverlayHost {
         host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
             crate::bluetooth::PairingPromptHandle::global(),
         );
+        // The live session keeps the desk choices made on the desk itself.
+        host.desk = desk::DeskState::persisting();
         host
     }
 
@@ -2462,6 +2472,7 @@ impl ShellOverlayHost {
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             strip_indicators: strip_indicators::StripIndicators::default(),
+            top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
@@ -2516,6 +2527,7 @@ impl ShellOverlayHost {
             now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
             now_playing_preferred: None,
             now_playing_tick: std::cell::Cell::new(None),
+            desk: desk::DeskState::default(),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
@@ -2796,10 +2808,12 @@ impl ShellOverlayHost {
             || self.agent_quick_composer.modal_capture().is_some()
     }
 
-    /// Whether the pointer is over the shell-owned controls painted above a
-    /// maximized client.  The client fills the output, so ordinary foreign
-    /// hit-testing would otherwise consume Restore/Close presses before the
-    /// `WindowGroup` which draws those controls can see them.
+    /// Whether the pointer is over the shell-owned bar a maximized window
+    /// shows over its client when the person reaches for it. The client
+    /// fills the window, so ordinary foreign hit-testing would otherwise
+    /// consume Restore/Close presses before the `WindowGroup` which draws
+    /// those controls can see them. Pointer only: the keyboard stays with the
+    /// client.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
         // Local input controls are above window chrome and preserve its seat.
         if self
@@ -2820,9 +2834,152 @@ impl ShellOverlayHost {
             let row: &GroupRow = unsafe { &*ptr };
             row.groups.iter().any(|group| {
                 group.id == group_id
-                    && group.should_show_maximized_chrome(self.last_cursor.map(|p| p.y))
+                    && self
+                        .last_cursor
+                        .is_some_and(|p| group.maximized_chrome_captures(p))
             })
         })
+    }
+
+    /// Run `f` on the maximized group, if there is one.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the group is reached through a raw row pointer; `&mut self` is what makes that access unaliased"
+    )]
+    fn with_maximized_group(&mut self, f: impl FnOnce(&mut ui::widget::WindowGroup)) {
+        let Some(group_id) = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().maximized_group())
+        else {
+            return;
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; `&mut self` gives unaliased access.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(group) = row.groups.iter_mut().find(|group| group.id == group_id) {
+                f(group);
+                return;
+            }
+        }
+    }
+
+    /// A press at the last pointer position, wherever it goes: one in the
+    /// maximized window's reveal band while its bar hides belongs to the
+    /// app and cancels the bar's reveal (`top_edge_reveal`).
+    pub fn note_pointer_press(&mut self) {
+        let Some(p) = self.last_cursor else {
+            return;
+        };
+        self.with_maximized_group(|group| group.note_maximized_press(p));
+        if let Some((display, bar)) = self.top_bar_reveal_geometry() {
+            self.top_bar_reveal.on_press(p, display, bar);
+        }
+    }
+
+    /// The display whose top edge the full bar stands on, and the strip the
+    /// bar takes there. `None` without a desktop surface.
+    fn top_bar_reveal_geometry(&self) -> Option<(Rect, Rect)> {
+        let display = self
+            .primary_output()
+            .map_or(self.rect, |output| output.rect());
+        let bar = self
+            .content
+            .as_any()?
+            .downcast_ref::<tilo_desktop::composition::DesktopSurface>()?
+            .topbar()?
+            .get_rect();
+        let bar = if bar.is_zero_area() {
+            Rect::new(
+                display.x0,
+                display.y0,
+                display.x1,
+                display.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
+            )
+        } else {
+            bar
+        };
+        Some((display, bar))
+    }
+
+    /// Whether something the bar opened holds it shown: one of its menus,
+    /// the workspace name being edited, or the bar's own editor or keyboard
+    /// focus.
+    fn top_bar_held_open(&self) -> bool {
+        let chrome_holds = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                || state.overlays.collaborators
+                || state.overlays.ws_settings
+                || state.overlays.clock
+                || state.editing_workspace_name.is_some()
+        });
+        chrome_holds
+            || self
+                .content
+                .as_any()
+                .and_then(|content| {
+                    content.downcast_ref::<tilo_desktop::composition::DesktopSurface>()
+                })
+                .and_then(tilo_desktop::composition::DesktopSurface::topbar)
+                .is_some_and(crate::shell::topbar_chrome::TopBarChrome::holds_itself_shown)
+    }
+
+    /// Bring the bar's presence up to date at `now`: the person's choice,
+    /// the pointer's requests, and what holds it open.
+    pub fn sync_top_bar_presence(&mut self, now: Instant) {
+        self.top_bar_reveal
+            .set_hide(self.desktop_controls.config().hide_top_bar);
+        self.top_bar_reveal.settle(now);
+        let presence = self.top_bar_reveal.presence(self.top_bar_held_open());
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_top_bar_presence(presence);
+        }
+        // While the bar shows over the windows' top edge, a maximized
+        // window's own bar stands below it rather than under it: the two
+        // read top to bottom as one stack.
+        let inset = if presence == tilo_desktop::chrome::TopBarPresence::Shown {
+            self.top_bar_reveal_geometry()
+                .map_or(0.0, |(_, bar)| bar.height())
+        } else {
+            0.0
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; `&mut self` gives unaliased access.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                group.set_top_overlay_inset(inset);
+            }
+        }
+    }
+
+    /// Whether the pointer is on the top bar the person hides while it shows
+    /// over the windows: it takes the pointer from the window under it, and
+    /// only the pointer.
+    pub(crate) fn top_bar_captures_pointer(&self) -> bool {
+        let shown = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome.borrow().top_bar_presence() == tilo_desktop::chrome::TopBarPresence::Shown
+        });
+        shown
+            && self.last_cursor.is_some_and(|p| {
+                self.top_bar_reveal_geometry()
+                    .is_some_and(|(_, bar)| bar.contains(p))
+            })
+    }
+
+    /// Test hook: as if the person had turned "hide the top bar" on or off.
+    pub fn set_hide_top_bar_for_tests(&mut self, hide: bool) {
+        let mut config = self.desktop_controls.config();
+        config.hide_top_bar = hide;
+        self.desktop_controls = DesktopControlsSource::Explicit(config);
+        self.sync_top_bar_presence(Instant::now());
+    }
+
+    /// When the top bar's reveal next has something to settle.
+    pub fn top_bar_reveal_deadline(&self) -> Option<Instant> {
+        self.top_bar_reveal.deadline()
     }
 
     pub fn open_screenshot_markup(
@@ -3313,7 +3470,7 @@ impl ShellOverlayHost {
         &self.layers.emoji_picker
     }
 
-    /// Open global search, as a lone Super tap does.
+    /// Open global search (the palette scoped to everything).
     pub fn open_global_search(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
         self.refresh_search_results(doc, root);
@@ -4838,20 +4995,23 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Decode the newest frame into the mounted peer view. The network inbox
-    /// already coalesces older frames, so this never accumulates video here.
+    /// Decode the next encoded unit (sequence number `seq`) into the mounted
+    /// peer view. Returns whether the decoder took it.
     pub fn push_peer_stream_frame(
         &mut self,
         source_peer: u64,
         surface_id: u64,
+        seq: u64,
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
         self.peer_stream_view_mut(source_peer, surface_id)
             .is_some_and(|view| {
-                !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                matches!(
+                    view.push_encoded_with_latency(seq, encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::Decoded
+                        | crate::shell::peer_view::PushOutcome::DroppedOldest
+                        | crate::shell::peer_view::PushOutcome::Pending
                 )
             })
     }
@@ -5356,6 +5516,35 @@ impl ShellOverlayHost {
                 unsafe { (*row).group_ids().contains(&group) }
             })
         })
+    }
+
+    /// Capture Studio covers the focused display: its picker bars sit along
+    /// that display's top and bottom edges and "Screen" is that display.
+    /// Across the whole desktop of a docked laptop the bars were centred on
+    /// the combined width and hung from its tallest edge, which put them on
+    /// the other display, partly below the panel's bottom, while the panel
+    /// only greyed: Print looked broken until Escape.
+    fn place_capture_studio(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
+        let Some(display) = self.focused_output() else {
+            return;
+        };
+        let area = display.rect();
+        let Ok(style) = taffy.style(node) else {
+            return;
+        };
+        let mut style = style.clone();
+        style.position = Position::Absolute;
+        style.inset = TaffyRect {
+            left: LengthPercentageAuto::length(f32_of_f64(area.x0 - self.rect.x0)),
+            right: LengthPercentageAuto::auto(),
+            top: LengthPercentageAuto::length(f32_of_f64(area.y0 - self.rect.y0)),
+            bottom: LengthPercentageAuto::auto(),
+        };
+        style.size = Size {
+            width: Dimension::length(f32_of_f64(area.width())),
+            height: Dimension::length(f32_of_f64(area.height())),
+        };
+        let _ = taffy.set_style(node, style);
     }
 
     /// An expanded (maximized) window owns the left edge: the workspace
@@ -9511,6 +9700,18 @@ impl ShellOverlayHost {
     /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
+        // The maximized window's bar reads the pointer's path even while the
+        // client under it takes the motion (`top_edge_reveal`).
+        self.with_maximized_group(|group| {
+            group.note_maximized_pointer(p);
+        });
+        // So does the top bar the person hides, by the same model.
+        if let Some((display, bar)) = self.top_bar_reveal_geometry() {
+            let now = Instant::now();
+            if self.top_bar_reveal.on_motion(p, display, bar, now) {
+                self.sync_top_bar_presence(now);
+            }
+        }
     }
 
     /// Retire raw direct-touch contacts at a compositor ownership boundary
@@ -10312,6 +10513,20 @@ impl ShellOverlayHost {
     }
 
     /// See [`Self::force_palette_settled`].
+    /// Show `agent`'s answers in the Agents tab, with `open`'s expanded:
+    /// what pressing its Review access and then an app does.
+    pub fn open_agent_review_for_shots(
+        &mut self,
+        agent: &str,
+        open: Option<tilo_action_policy::agent_answers::AnswerScope>,
+    ) {
+        self.workspace_settings_overlay
+            .open_agent_review(agent.to_owned());
+        if let Some(scope) = open {
+            self.workspace_settings_overlay.toggle_agent_app(scope);
+        }
+    }
+
     pub fn force_ws_settings_settled(&mut self) {
         if !self.overlay_flags().ws_settings {
             return;
@@ -11011,7 +11226,7 @@ impl ShellOverlayHost {
             hovered: self.strip_ribbon_hover.is_some() || self.strip_rail_hover.is_some(),
         };
         if std::mem::take(&mut self.strip_pan_active) {
-            self.strip_indicators.rebase(position);
+            self.strip_indicators.settle_after_pan(position);
         } else {
             self.strip_indicators.observe(position, now);
         }
@@ -11431,6 +11646,11 @@ impl ShellOverlayHost {
             self.room_activity
                 .refresh_observed_local(&tree, &records, &local, Instant::now())
         };
+        // A run newly paused at an action asking first: a banner points at
+        // it, and the person answers in Task Center when they choose.
+        for notice in self.room_activity.take_confirmation_notices() {
+            chrome.borrow_mut().push_task_confirmation(&notice);
+        }
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
         let away_changes = self.room_activity.away_change_count(workspace);
@@ -12347,10 +12567,11 @@ impl ShellOverlayHost {
     fn track_cursor_position(&mut self, event: &WindowEvent, scale_factor: f64) {
         // A pointer that left the window is nowhere a peer can be shown. Only
         // the shared desk forgets it: `last_cursor` still hit-tests.
-        if matches!(event, WindowEvent::CursorLeft { .. })
-            && let Some(desk) = &self.shared_desk
-        {
-            desk.set_pointer(None);
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.desk_pointer_left(Instant::now());
+            if let Some(desk) = &self.shared_desk {
+                desk.set_pointer(None);
+            }
         }
         // Focus loss or a fresh press ends an abandoned navigation gesture.
         // Escape alone keeps the matching release owned across page changes.
@@ -12371,6 +12592,7 @@ impl ShellOverlayHost {
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(Some((p.x, p.y)));
             }
+            self.desk_pointer(p, Instant::now());
             self.focus_display_at(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
@@ -15014,6 +15236,16 @@ impl ShellOverlayHost {
     }
 
     fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
+        // The field alone (the Super surface before anything is typed) has
+        // no filter band to hit.
+        if self.palette.shows_field_only() {
+            if self.palette.get_rect().contains(p) {
+                return false;
+            }
+            self.palette_visible = false;
+            self.palette.close();
+            return true;
+        }
         // Scope can be swapped without dismissing the palette. The target
         // is the segment's full-height slice of the track — the same rect
         // its semantic node publishes.
@@ -17084,21 +17316,31 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    let subject_index = st.tree().desktop.active_workspace().and_then(|ws| {
-                        tilo_desktop::workspace_settings::grant_subjects(ws)
-                            .iter()
-                            .position(|subject| {
-                                subject.kind == tilo_desktop::workspace_settings::SubjectKind::Agent
-                                    && subject.id == agent
-                            })
-                    });
-                    if let Some(subject_index) = subject_index {
-                        st.ws_grant_draft.subject_index = subject_index;
-                        st.open_workspace_settings(WsTab::Permissions);
-                        st.bump();
-                    }
+                // Anyone in the workspace may see what an agent may do; only
+                // someone who governs it gets live controls (`owner_controls`).
+                self.workspace_settings_overlay.open_agent_review(agent);
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::CloseAgentReview => {
+                self.workspace_settings_overlay.close_agent_review();
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::ToggleAgentApp(scope) => {
+                self.workspace_settings_overlay.toggle_agent_app(scope);
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::SetAgentAnswers { agent, answers } => {
+                if self.may_govern_active(tilo_action_policy::roles::governance::GRANT)
+                    && let Some(chrome) = self.chrome.clone()
+                {
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::agent_access::set_agent_answers(
+                                ws, actor, &agent, &answers,
+                            )
+                        },
+                    );
                 }
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
@@ -17539,7 +17781,8 @@ impl ShellOverlayHost {
             ..
         } = event
         {
-            if !repeat {
+            // Nothing is listed while the field stands alone.
+            if !repeat && !self.palette.shows_field_only() {
                 self.activate_selected_result(&mut ctx.state, ctx.path);
             }
             *ctx.handled = true;
@@ -18537,9 +18780,11 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
+        let desk_dirty = self.update_desk(Instant::now());
         steps.mark("commit");
         drop(steps);
-        agent_quick_dirty
+        desk_dirty
+            || agent_quick_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -18586,6 +18831,7 @@ impl Widget for ShellOverlayHost {
             // dedicated tree so the chooser has both geometry and an input
             // target while OOBE is active.
             let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+            self.place_capture_studio(taffy, capture_node);
             self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
@@ -18650,6 +18896,7 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+        self.place_capture_studio(taffy, capture_node);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
             .screenshot_markup
@@ -19561,6 +19808,12 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
+        // Desk widgets above the windows: a press on a showing one is
+        // theirs, before the palette reads it as a click away.
+        if self.route_desk_event(event) {
+            *ctx.handled = true;
+            return;
+        }
         if self.handle_shell_mouse_click_event(event, ctx.handled) {
             return;
         }
@@ -20330,6 +20583,9 @@ impl Widget for ShellOverlayHost {
             // the query must use the same row as its editable semantic node.
             targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
         }
+        if self.onboarding.is_none() {
+            targets.extend(self.desk_test_rects());
+        }
         targets
     }
 
@@ -20483,7 +20739,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 15] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 17] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20558,6 +20814,7 @@ impl ShellOverlayHost {
                 "strip-indicators",
                 self.strip_indicators.next_wake_deadline_at(now),
             ),
+            ("top-bar-reveal", self.top_bar_reveal.deadline()),
             (
                 "launchpad-app",
                 self.pending_launchpad_app
@@ -20571,6 +20828,7 @@ impl ShellOverlayHost {
                     .flatten(),
             ),
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
+            ("desk", self.desk_wake_deadline(now)),
         ]
     }
 
@@ -20722,6 +20980,7 @@ impl ShellOverlayHost {
                 .is_some_and(|ack| ack.fading_at(now, self.acknowledgement_reduce_motion.get()))
         };
         self.transition_started.is_some()
+            || self.desk_animating(now)
             || self.strip_indicators.needs_animation_frame_at(now)
             || self.workspace_switch_holding_at(now)
             || qs_in_flight
@@ -21816,26 +22075,10 @@ impl ShellOverlayHost {
             let now = std::time::SystemTime::now();
             let interactions = presence.visible_interactions(std::time::Instant::now());
             for row in &mut rows {
-                let direct = ui::permissions::UserId(row.id.clone());
-                let presence_id = presence
-                    .status_for(&direct, now)
-                    .map(|_| direct.clone())
-                    .or_else(|| {
-                        presence.names.iter().find_map(|(id, name)| {
-                            name.eq_ignore_ascii_case(&row.label).then(|| id.clone())
-                        })
-                    });
-                if let Some(id) = presence_id {
-                    row.status = presence.status_for(&id, now).map(|status| {
-                        tilo_desktop::collaborators::RosterStatus {
-                            text: status.text.clone(),
-                            source: if matches!(status.origin, ui::StatusOrigin::Inferred { .. }) {
-                                tilo_desktop::collaborators::LineSource::Generated
-                            } else {
-                                tilo_desktop::collaborators::LineSource::Written
-                            },
-                        }
-                    });
+                if let Some(status) =
+                    crate::shell::desk_widgets::team::status_line(presence, row, now)
+                {
+                    row.status = Some(status);
                 }
                 if let Some(interaction) = interactions.iter().find(|interaction| {
                     interaction.actor.id == row.id
@@ -23077,23 +23320,8 @@ impl ShellOverlayHost {
             },
             ui::Curve::EaseOut,
         );
-        let palette_now = Instant::now();
-        let palette_shown = self.palette_transition.is_visible(palette_now);
         let desktop = transform.transform_rect_bbox(self.rect);
-        // The scrim dims the whole desktop and the card floats over it: two
-        // parts, so a keystroke in the open palette repaints the card alone.
-        overlay_part(scene, "shell.palette-scrim", desktop, |scene| {
-            if palette_shown {
-                let openness = self.palette_transition.value(palette_now);
-                draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            }
-            None
-        });
-        overlay_part(scene, "shell.palette", desktop, |scene| {
-            palette_shown
-                .then(|| self.draw_palette_card(scene, transform, text_renderer, theme, presence))
-                .flatten()
-        });
+        self.draw_search_and_desk(scene, transform, text_renderer, theme, presence);
 
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
@@ -23241,7 +23469,9 @@ impl ShellOverlayHost {
             &palette_theme,
             presence,
         );
-        self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
+        if !self.palette.shows_field_only() {
+            self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
+        }
         if in_flight {
             scene.pop_layer();
         }

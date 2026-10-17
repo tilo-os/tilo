@@ -6,7 +6,8 @@ use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTIO
 use collab_types::caps::CapOverride;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
@@ -17,7 +18,33 @@ struct RoomPolicy {
     policy: tilo_action_policy::RoomPolicy,
     sandbox: Vec<CapOverride>,
     runtime: crate::shell::native_workspace_owner::NativeStateWitness,
-    authority: crate::shell::native_workspace_owner::NativeAuthorityStorage,
+    authority: Arc<crate::shell::native_workspace_owner::NativeAuthorityStorage>,
+}
+
+impl RoomPolicy {
+    /// Whether the record this policy was exported with is still the one its
+    /// writer holds. A record the writer accepted after it, whose own export
+    /// is taken but not yet published, does not make it stale: that export
+    /// replaces this policy and judges every sandbox again when it lands.
+    fn accepted_status(
+        &self,
+        room: RoomId,
+    ) -> Result<(), crate::shell::native_workspace_owner::store::AuthorityRejection> {
+        self.runtime
+            .authority_status_awaiting(&self.authority, room, |accepted| {
+                // Read after the writer's record: an owner publication takes
+                // its export before it changes that record.
+                let exporting: Vec<_> = lock(&EXPORTING)
+                    .iter()
+                    .filter(|export| export.1.same_writer(&self.runtime))
+                    .map(|export| export.2.clone())
+                    .collect();
+                exporting.iter().any(|authority| {
+                    crate::shell::native_workspace_owner::store::encode_authority(authority, None)
+                        .is_ok_and(|digest| digest == accepted)
+                })
+            })
+    }
 }
 
 type Binding = (RoomId, String, String);
@@ -46,15 +73,39 @@ struct SaveFailure {
     message: String,
 }
 static PUBLISHED: LazyLock<Mutex<Published>> = LazyLock::new(|| Mutex::new(Published::default()));
+/// Every [`Export`] taken and neither published nor dropped yet: its id, the
+/// writer it was taken from and the record that writer held for it. Taken
+/// after `PUBLISHED` when both are held, never before it.
+type Exporting = (
+    u64,
+    crate::shell::native_workspace_owner::NativeStateWitness,
+    Arc<crate::shell::native_workspace_owner::NativeAuthorityStorage>,
+);
+static EXPORTING: Mutex<Vec<Exporting>> = Mutex::new(Vec::new());
+static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
 /// Signalled whenever [`Export::publish`] replaces the published policy.
 static PUBLISHED_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// Capture policy for publication only after the normal state writer accepts
 /// this exact tree. Superseded/refused state writes never call `publish`.
-pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64);
+pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64, Pending);
+
+/// An export's place in [`EXPORTING`], from when it is taken until it is
+/// published or dropped.
+struct Pending(u64);
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        lock(&EXPORTING).retain(|export| export.0 != self.0);
+    }
+}
 
 impl Export {
     pub(crate) fn of(tree: &crate::shell::state::WorkspaceTree) -> Self {
+        let runtime = tree.native_runtime.authority_witness();
+        let authority = Arc::new(tree.native_authority.clone());
+        let id = NEXT_EXPORT.fetch_add(1, Ordering::Relaxed);
+        lock(&EXPORTING).push((id, runtime.clone(), authority.clone()));
         Self(
             tree.desktop
                 .workspaces
@@ -65,13 +116,14 @@ impl Export {
                         RoomPolicy {
                             policy: workspace.policy.clone(),
                             sandbox: workspace.sandbox.clone(),
-                            runtime: tree.native_runtime.authority_witness(),
-                            authority: tree.native_authority.clone(),
+                            runtime: runtime.clone(),
+                            authority: authority.clone(),
                         },
                     )
                 })
                 .collect(),
             tree.policy_revision,
+            Pending(id),
         )
     }
 
@@ -94,6 +146,8 @@ impl Export {
                 tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority update failed closed");
             }
         }
+        // Only now is this export's record what observers hold.
+        drop(self.2);
         drop(published);
         PUBLISHED_CHANGED.notify_all();
     }
@@ -217,11 +271,7 @@ fn projection(published: &Published, binding: &Binding) -> AppActionAuthorityPro
     let current = published
         .rooms
         .get(&binding.0)
-        .filter(|policy| {
-            policy
-                .runtime
-                .authority_is_current(&policy.authority, binding.0)
-        })
+        .filter(|policy| policy.accepted_status(binding.0).is_ok())
         .map(|policy| policy.policy.clone());
     // A room whose accepted policy is not current names nobody: the app's
     // host decides every action against it, so it allows nothing.
@@ -512,19 +562,22 @@ pub(crate) fn tick(now: Instant) {
     }
     published.next_refresh = now.checked_add(Duration::from_secs(1));
     drop(published);
-    crate::shell::durable_writer::global().submit(authority_root().join("heartbeat"), || {
-        let mut published = lock(&PUBLISHED);
-        #[cfg(target_os = "linux")]
-        sandbox_revocation::reconcile(&mut published);
-        let bindings: Vec<_> = published.bindings.keys().cloned().collect();
-        for binding in bindings {
-            if let Err(error) = write_binding(&mut published, &binding, true) {
-                let _ = std::fs::remove_file(binding_path(&binding));
-                tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority renewal failed closed");
-            }
+    crate::shell::durable_writer::global().submit(authority_root().join("heartbeat"), renew);
+}
+
+/// Judge the running sandboxes again and renew every live projection.
+fn renew() {
+    let mut published = lock(&PUBLISHED);
+    #[cfg(target_os = "linux")]
+    sandbox_revocation::reconcile(&mut published);
+    let bindings: Vec<_> = published.bindings.keys().cloned().collect();
+    for binding in bindings {
+        if let Err(error) = write_binding(&mut published, &binding, true) {
+            let _ = std::fs::remove_file(binding_path(&binding));
+            tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority renewal failed closed");
         }
-        drop(published);
-    });
+    }
+    drop(published);
 }
 
 #[cfg(test)]
@@ -779,6 +832,7 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            opens_secondary: false,
             offers: Vec::new(),
         };
         let room = RoomId::new();
@@ -1027,5 +1081,94 @@ mod tests {
             waited < PUBLICATION_STALL,
             "ended by the failure, not the stall"
         );
+    }
+
+    /// A document commit in an admitted room (a paste, undo or redo there)
+    /// changes the record the state writer holds but no grant. The writer
+    /// accepts the record before the export carrying it is published, and
+    /// meanwhile the state writer is still busy with an earlier write. A
+    /// renewal judging the sandboxes in that gap interrupts none of them.
+    /// A grant withdrawn afterwards still interrupts its sandbox, and so does
+    /// an export of a record the writer has moved past with nothing newer on
+    /// the way.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_owner_commit_awaiting_its_export_interrupts_no_sandbox() {
+        let _turn = serial();
+        let (_directory, owner, room, now, key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+        let kept = grant("so.tilo.kept", "/disposable/kept");
+        let withdrawn = grant("so.tilo.withdrawn", "/disposable/withdrawn");
+        let mut write = tree.write();
+        write.append_empty_workspace("Ordinary room");
+        let workspace = write.desktop.workspaces.last_mut().unwrap();
+        workspace.sandbox.extend([kept.clone(), withdrawn.clone()]);
+        let ordinary = workspace.room;
+        drop(write);
+        crate::shell::persist::wait_for_saves();
+        let mut children = [live_child(), live_child()];
+        {
+            let mut published = lock(&PUBLISHED);
+            for (child, grant) in children.iter().zip([&kept, &withdrawn]) {
+                let sandbox = sandbox_revocation::Sandbox::capture(
+                    child.id(),
+                    (ordinary, grant.id.clone(), "person".into()),
+                    std::slice::from_ref(grant),
+                )
+                .unwrap();
+                sandbox.authorization_status(&published).unwrap();
+                published.sandboxes.insert(child.id(), sandbox);
+            }
+        }
+        let running = |child: &std::process::Child| {
+            lock(&PUBLISHED).sandboxes.contains_key(&child.id())
+                && super::super::proc_stat(child.id()).is_some()
+        };
+        let before = Export::of(&tree.read());
+
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (started, starting) = std::sync::mpsc::channel();
+        crate::shell::durable_writer::global().submit(PathBuf::from("earlier-write"), move || {
+            let _ = started.send(());
+            let _ = held.recv();
+        });
+        starting.recv().unwrap();
+        let (request, _) =
+            crate::shell::native_workspace_owner::test_document_edit(&owner, room, &key, now, 1);
+        owner.commit_document(request, now).unwrap();
+        renew();
+        assert!(
+            children.iter().all(running),
+            "the accepted record's export is on its way; nothing was withdrawn"
+        );
+        drop(release);
+        crate::shell::persist::wait_for_saves();
+        assert!(children.iter().all(running));
+
+        tree.write()
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == ordinary)
+            .unwrap()
+            .sandbox
+            .retain(|cap| cap.id != withdrawn.id);
+        crate::shell::persist::wait_for_saves();
+        assert!(!running(&children[1]), "a withdrawn grant interrupts");
+        assert!(running(&children[0]));
+
+        before.publish();
+        assert!(
+            !running(&children[0]),
+            "an export of a record the writer moved past, with nothing newer pending, is stale"
+        );
+        for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let mut published = lock(&PUBLISHED);
+        published.sandboxes.clear();
+        published.rooms.clear();
     }
 }

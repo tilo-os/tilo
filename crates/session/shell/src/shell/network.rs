@@ -2618,37 +2618,10 @@ impl ShellNetwork {
         let Ok(mut queue) = self.inbound_legacy.lock() else {
             return;
         };
-        if let NeighbourMsg::SurfaceFrame {
-            surface,
-            source_peer,
-            ts,
-            ..
-        } = &message
-        {
-            // Video is drop-oldest/latest-wins. Control and input retain
-            // ordering; only an older frame for this exact stream is removed.
-            if let Some((index, queued_ts)) =
-                queue
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, event)| match &event.message {
-                        NeighbourMsg::SurfaceFrame {
-                            surface: queued_surface,
-                            source_peer: queued_peer,
-                            ts: queued_ts,
-                            ..
-                        } if queued_surface == surface && queued_peer == source_peer => {
-                            Some((index, *queued_ts))
-                        }
-                        _ => None,
-                    })
-            {
-                if queued_ts >= *ts {
-                    return;
-                }
-                queue.remove(index);
-            }
-        }
+        // Encoded frames stay in arrival order, every one of them: a delta
+        // references the units before it, so dropping an older frame for a
+        // newer one breaks the decoder's chain until the next keyframe. The
+        // view drops stale and duplicate units by their sequence numbers.
         while queue.len() >= LEGACY_INBOX_CAP {
             let frame_index = queue
                 .iter()
@@ -12329,7 +12302,7 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn legacy_inbox_and_tick_bound_and_order_actor_work() {
-        fn legacy_inbox_coalesces_frames_but_keeps_control_order() {
+        fn legacy_inbox_keeps_every_frame_and_control_in_order() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _commands) = shell_network_for_test(tree, 99);
             let start = NeighbourMsg::SurfaceStreamStart {
@@ -12355,11 +12328,12 @@ mod tests {
                         source_peer: 5,
                         encoded_h264: vec![u8::try_from(ts).unwrap_or_default()],
                         ts,
+                        seq: ts,
                     },
                 );
             }
-            // Separate QUIC uni streams may complete out of order, and the host
-            // fallback may deliver an older duplicate after the direct path.
+            // The host fallback may deliver an older duplicate after the
+            // direct path; the view drops it by its sequence number.
             net.queue_legacy_message(
                 42,
                 NeighbourMsg::SurfaceFrame {
@@ -12367,6 +12341,7 @@ mod tests {
                     source_peer: 5,
                     encoded_h264: vec![19],
                     ts: 19,
+                    seq: 19,
                 },
             );
             net.queue_legacy_message(
@@ -12379,18 +12354,25 @@ mod tests {
             );
 
             let drained = net.take_inbound_legacy();
-            assert_eq!(drained.len(), 3);
             assert_eq!(drained[0].workspace_topic, 42);
             assert!(matches!(
                 drained[0].message,
                 NeighbourMsg::SurfaceStreamStart { .. }
             ));
+            let frames: Vec<u64> = drained[1..drained.len() - 1]
+                .iter()
+                .map(|event| match event.message {
+                    NeighbourMsg::SurfaceFrame { seq, .. } => seq,
+                    _ => panic!("frames between the start and the end"),
+                })
+                .collect();
+            assert_eq!(
+                frames,
+                (2..=20).chain([19]).collect::<Vec<_>>(),
+                "no encoded unit is dropped for a newer one"
+            );
             assert!(matches!(
-                drained[1].message,
-                NeighbourMsg::SurfaceFrame { ts: 20, .. }
-            ));
-            assert!(matches!(
-                drained[2].message,
+                drained[drained.len() - 1].message,
                 NeighbourMsg::SurfaceStreamEnd { .. }
             ));
         }
@@ -12405,6 +12387,7 @@ mod tests {
                     source_peer: 99,
                     encoded_h264: vec![1],
                     ts: 1,
+                    seq: 0,
                 },
             );
             assert!(net.take_inbound_legacy().is_empty());
@@ -12443,7 +12426,7 @@ mod tests {
             net.tick();
         }
 
-        legacy_inbox_coalesces_frames_but_keeps_control_order();
+        legacy_inbox_keeps_every_frame_and_control_in_order();
         legacy_inbox_drops_local_gossip_echo();
         tick_bounds_actor_event_work_per_frame();
         tick_with_no_events_is_noop();

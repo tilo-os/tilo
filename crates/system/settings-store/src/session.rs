@@ -63,21 +63,35 @@ impl SessionPaths {
     /// Records in a `records` directory beside `copy`.
     #[must_use]
     pub fn beside(copy: PathBuf) -> Self {
-        let records = copy
-            .parent()
-            .map_or_else(|| PathBuf::from("records"), |dir| dir.join("records"));
+        let dir = copy.parent().map(Path::to_path_buf).unwrap_or_default();
+        Self::in_root(&dir, copy)
+    }
+
+    /// The configured settings file ([`crate::settings_path`]) with the
+    /// records in `records` under the config root, where they have always
+    /// been: the copy moved into its own directory
+    /// ([`crate::SESSION_DIR`]), the records did not, so a process given
+    /// that directory cannot rewrite the person's records. A copy named by
+    /// [`crate::SESSION_SETTINGS_ENV`] keeps its records beside it.
+    #[must_use]
+    pub fn configured() -> Option<Self> {
+        let copy = crate::settings_path()?;
+        let named = std::env::var_os(crate::SESSION_SETTINGS_ENV).is_some_and(|v| !v.is_empty());
+        match crate::config_root() {
+            Some(root) if !named => Some(Self::in_root(&root, copy)),
+            _ => Some(Self::beside(copy)),
+        }
+    }
+
+    /// Records in `root/records`, with the copy at `copy`.
+    #[must_use]
+    pub fn in_root(root: &Path, copy: PathBuf) -> Self {
+        let records = root.join("records");
         Self {
             person: records.join("person.json"),
             device: records.join("device.json"),
             copy,
         }
-    }
-
-    /// The records beside the configured settings file
-    /// ([`crate::settings_path`]).
-    #[must_use]
-    pub fn configured() -> Option<Self> {
-        crate::settings_path().map(Self::beside)
     }
 
     /// The bounded log of who changed which leaf, beside the records.

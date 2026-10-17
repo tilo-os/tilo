@@ -98,6 +98,20 @@ refuses a Moderator who removes or bans a Moderator or the Owner. `ban` and `unb
 are new governance actions: a ban is a removal plus the `block:<person>` Deny
 (`RoomPolicy::block`) that keeps the person out until `unban` revokes it.
 
+A room's shared desktop follows the same rule. It keeps every strip and
+window as an entry of its own, with who made it
+(`tilo_desktop_model::shared_record`), so concurrent changes merge; people
+close, move and rename what they made as an ordinary edit, and doing it to
+what someone else made (or to a strip the room itself lists) is moderation on
+that item's `moderation` node (`tilo_desktop_model::ownership`). The relay
+decides every write of the desktop against it before keeping it, and a
+desktop asks the room (`RoomsRequest::Permits`) before it offers a close or a
+drag on someone else's window.
+
+A room's administrators moderate it too: beside their governance grant they
+hold one on `room/**/moderation/*`, which outranks an Editor's Deny there, so
+an Owner or administrator need not also be named a Moderator.
+
 ## 4. Delegation
 
 An agent, a task, a Shortcut, a bot or an app acting for a person acts with

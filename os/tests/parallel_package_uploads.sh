@@ -75,9 +75,11 @@ case "$method:$name" in
     ;;
   GET:identical.tapp)
     cp "$upload_fixture" "$output"
+    printf '200'
     ;;
   GET:conflict.tapp)
     printf 'different bytes\n' > "$output"
+    printf '200'
     ;;
   *) exit 88 ;;
 esac

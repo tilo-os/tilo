@@ -27,14 +27,16 @@ case ${1:-} in
       "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
       "wasm-bindgen-0.2.108-$arch-unknown-linux-musl.tar.gz" \
       "cargo-xwin-v0.23.1.$arch-unknown-linux-musl.tar.gz" \
-      "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" "${extra[@]}"
+      "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" "$(bash tools/ci/install-xwayland-satellite.sh --asset-name)" \
+      "${extra[@]}"
     # buildah bind-mounts single files only from a writable context, so the build gets a copy
     # of exactly the files the Containerfile uses.
     context=$scratch/ci-builder-context
     rm -rf "$context"
     for file in dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv \
       tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh \
-      tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh; do
+      tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh \
+      tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch; do
       install -D -m 0644 "$file" "$context/$file"
     done
     bash tools/ci/publish/oci-build.sh "$context" os/Containerfile.builder "$out" \

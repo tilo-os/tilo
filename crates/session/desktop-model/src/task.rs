@@ -369,6 +369,11 @@ pub enum WorkspaceTaskMutationResult {
     ExecutionBudgetSet {
         task_id: String,
     },
+    /// A confirmation was asked, answered or settled. Appended to preserve
+    /// existing encoded result indices.
+    ConfirmationRecorded {
+        task_id: String,
+    },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -411,6 +416,104 @@ pub struct WorkspaceTaskControl {
         std::collections::BTreeMap<String, collab_types::task_presentation::TaskPresentation>,
     #[serde(default)]
     pub receipts: Vec<WorkspaceTaskMutationReceipt>,
+    /// The action of the active run that waits for the person's answer.
+    /// The run stays in progress, paused at that action, until the person
+    /// answers, the run ends, or the agent asks for something else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<WorkspaceTaskConfirmation>,
+}
+
+/// An action an agent's run would take that its person is asked about
+/// first, shown as the draft of exactly what would happen.
+///
+/// The arguments themselves are not kept: the draft shows them (secrets
+/// withheld), and the agent asks again with the same arguments, which must
+/// digest to [`Self::arguments_digest`]. What runs is those arguments with
+/// the person's edits, so a confirmation answers that one draft only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskConfirmation {
+    /// Names this request: the lowercase hex of its arguments' digest and
+    /// address.
+    pub id: String,
+    /// Names this one asking: asking again for a draft another replaced is
+    /// a new request, not a replay of the first.
+    pub asking: uuid::Uuid,
+    pub run_epoch: u64,
+    pub agent_id: String,
+    pub app: String,
+    pub resource_kind: String,
+    pub resource: String,
+    pub action: String,
+    pub kind: tilo_action_policy::ActionKind,
+    pub risk: tilo_actions::RiskLevel,
+    pub draft: tilo_actions::Draft,
+    /// [`tilo_actions::draft::arguments_digest`] of the agent's arguments.
+    pub arguments_digest: [u8; 32],
+    pub requested_at: i64,
+    pub state: WorkspaceTaskConfirmationState,
+}
+
+impl WorkspaceTaskConfirmation {
+    /// The id of the request to take `action` on `resource` with arguments
+    /// digesting to `digest`.
+    #[must_use]
+    pub fn id_for(resource: &str, action: &str, digest: &[u8; 32]) -> String {
+        let id = blake3::Hasher::new_derive_key("Tilo task confirmation id v1")
+            .update(resource.as_bytes())
+            .update(&[0])
+            .update(action.as_bytes())
+            .update(&[0])
+            .update(digest)
+            .finalize();
+        id.to_hex().chars().take(32).collect()
+    }
+
+    /// Whether it still waits for the person.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        self.state == WorkspaceTaskConfirmationState::Waiting
+    }
+
+    /// The draft as it will run: with the person's edits once they confirmed.
+    #[must_use]
+    pub fn reviewed_draft(&self) -> tilo_actions::Draft {
+        match &self.state {
+            WorkspaceTaskConfirmationState::Confirmed { edits, .. } => self.draft.edited(edits),
+            _ => self.draft.clone(),
+        }
+    }
+}
+
+/// Where a confirmation stands.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WorkspaceTaskConfirmationState {
+    Waiting,
+    /// The person confirmed the draft, as they changed it.
+    Confirmed {
+        person: String,
+        at: i64,
+        #[serde(default)]
+        edits: Vec<tilo_actions::DraftEdit>,
+    },
+    /// The person declined; the agent is told why, if they said.
+    Declined {
+        person: String,
+        at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+/// A person's answer to a [`WorkspaceTaskConfirmation`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskConfirmationAnswer {
+    /// Run it, with these changes to the draft's fields.
+    Confirm { edits: Vec<tilo_actions::DraftEdit> },
+    /// Do not run it.
+    Decline { reason: Option<String> },
 }
 
 /// Append-only, broker-authenticated record of an external side effect.

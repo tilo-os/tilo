@@ -79,6 +79,16 @@ const PRIMARY_ROUTE_REPLY_SLACK: Duration = Duration::from_millis(500);
 /// The one error a primary route that missed its deadline reports, whichever
 /// side noticed.
 const PRIMARY_ROUTE_TIMED_OUT: &str = "collaboration primary route timed out";
+/// Whether the identity service answered and declined to sign, as opposed
+/// to being unreachable: it reports a refusal as permission denied.
+fn signing_refused(error: &runtime_portal::NotAvailable) -> bool {
+    matches!(
+        error,
+        runtime_portal::NotAvailable::ConnectionFailed(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+    )
+}
+
 /// One absolute deadline for each host identity request/response exchange.
 /// The identity client drops a failed stream, so this also bounds shutdown of
 /// partial and late replies without blocking the shovel's `LocalSet`.
@@ -732,6 +742,13 @@ impl CollabTransport for BrokerTransport {
 
     fn document_publication_failed(&self) -> bool {
         self.state.publication_result().is_err()
+    }
+
+    fn document_change_refused(&self) -> bool {
+        matches!(
+            self.state.publication_result(),
+            Err(DocumentPublicationError::Refused(_))
+        )
     }
 
     fn fail_closed(&self, reason: &'static str) {
@@ -2010,6 +2027,17 @@ impl BridgeState {
         failure
     }
 
+    /// The identity service declined to sign a change on the workspace's
+    /// behalf. Later changes build on the declined one, so publication stops
+    /// as it does for any failure; but the reason is kept apart, so nobody is
+    /// told they are offline when the workspace said no.
+    fn publication_refused(&self, error: impl std::fmt::Display) -> DocumentPublicationError {
+        let refusal = DocumentPublicationError::Refused(error.to_string());
+        self.record_publication_failure(refusal.clone());
+        self.fail_closed("document signing refused");
+        refusal
+    }
+
     fn fail_closed(&self, direction: &'static str) {
         self.fail_closed_with_rpc_error(direction, None);
     }
@@ -2602,6 +2630,20 @@ impl SdkConnectSource {
 /// Build the certified device presentation used for a launcher-bound join.
 /// A launcher identity without a device certificate cannot enter the
 /// collaboration session.
+/// The participant kind of a headless service that holds no document of its
+/// own ([`CollaborationManager::for_service`]). It stays on this side: the
+/// broker admits the service as the person whose launch it is.
+const SERVICE_PARTICIPANT: &str = "service";
+
+/// The kind the broker is asked to admit a participant of `kind` as.
+fn broker_participant_kind(kind: &str) -> &str {
+    if kind == SERVICE_PARTICIPANT {
+        "person"
+    } else {
+        kind
+    }
+}
+
 struct SdkJoinIdentity {
     presentation: Vec<u8>,
     /// Requested broker principal kind. The broker only accepts `agent`
@@ -2991,6 +3033,30 @@ impl CollaborationManager {
             handle,
             None,
             "person",
+        )
+    }
+
+    /// Connect a headless service of `app_id` in `cluster_id` that holds no
+    /// document of its own: it publishes actions and answers them. It never
+    /// asks the broker for a committed document, which a room holds only for
+    /// apps that declare resource kinds; asking would fail the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the launcher did not
+    /// hand down a collab service connection.
+    pub fn for_service(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            None,
+            None,
+            None,
+            SERVICE_PARTICIPANT,
         )
     }
 
@@ -4668,7 +4734,7 @@ async fn ensure_sdk_route(
             &channel_id,
             identity_bytes,
             participant_handle.unwrap_or(""),
-            participant_kind,
+            broker_participant_kind(participant_kind),
             record_kind,
         )
         .await
@@ -5827,6 +5893,9 @@ async fn try_send_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
+                if signing_refused(&error) {
+                    return FrameSend::Failed(state.publication_refused(error));
+                }
                 return FrameSend::Failed(state.publication_failed(
                     "document signing or encoding",
                     error,
@@ -10080,6 +10149,10 @@ mod tests {
         );
         assert!(captures.lock().unwrap().signed_ops.is_empty());
         assert!(!manager.is_connected());
+        assert!(
+            manager.document_change_refused(),
+            "a refusal is told apart from a lost connection"
+        );
         drop(manager);
         thread.join().unwrap();
     }

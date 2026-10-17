@@ -85,6 +85,9 @@ pub enum OsdKind {
     /// The ask-agent chord with no agent in the workspace live to take a
     /// task. Saying so beats a chord that silently does nothing.
     NoAgent,
+    /// The ask-agent chord started the workspace's agent; the composer
+    /// opens once it takes tasks.
+    StartingAgent,
 }
 
 /// A short caption carried inline so a readout stays `Copy`: the slab is
@@ -250,6 +253,10 @@ impl Osd {
         Self::at(OsdKind::NoAgent, 0.0)
     }
 
+    pub fn starting_agent() -> Self {
+        Self::at(OsdKind::StartingAgent, 0.0)
+    }
+
     pub fn input_source(name: &str) -> Self {
         Self::at(OsdKind::InputSource(OsdLabel::new(name)), 0.0)
     }
@@ -288,6 +295,7 @@ impl Osd {
             ),
             OsdKind::NoBacklight => t("osd-no-backlight"),
             OsdKind::NoAgent => t("osd-no-agent"),
+            OsdKind::StartingAgent => t("osd-starting-agent"),
             OsdKind::AirplaneMode { on: true } => t("osd-airplane-mode-on"),
             OsdKind::AirplaneMode { on: false } => t("osd-airplane-mode-off"),
             OsdKind::Touchpad { enabled: true } => t("osd-touchpad-on"),
@@ -626,6 +634,7 @@ fn draw_glyph(
         }
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::NoAgent => (ui::icons::Icon::Bot, colors.text_dim),
+        OsdKind::StartingAgent => (ui::icons::Icon::Bot, colors.text_primary),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
         OsdKind::Touchpad { enabled } | OsdKind::MouseKeys { enabled } => (

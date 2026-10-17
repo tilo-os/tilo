@@ -665,9 +665,12 @@ pub(crate) fn decide_in(
 
 /// Whether `role`'s preset lets its members make undoable changes across a
 /// governed room ([`tilo_action_policy::roles::role_rules`]): the roles that
-/// write records.
+/// write records. A Moderator writes as an Editor does, and moderates too.
 pub(crate) fn role_writes(role: collab_types::Role) -> bool {
-    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
+    matches!(
+        role,
+        collab_types::Role::Owner | collab_types::Role::Moderator | collab_types::Role::Editor
+    )
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 counter = Value: { $count }
 tab-modified = Unsaved changes
+tab-held-by = { $name }’s window
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history
@@ -180,6 +181,7 @@ history-sync-finish-edit = Finish the current edit before receiving remote chang
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
+history-sync-refused = Syncing stopped: this workspace didn't accept a change. Your edits stay on this device.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
 

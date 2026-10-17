@@ -216,7 +216,14 @@ containerfile="$repo/os/Containerfile"
 # The VM install proof emitter is compiled too (one more install-helpers row).
 # The gateway's HTTP adapter is installed alongside the socket daemon at
 # /usr/bin/tilo-model-http (one new model-gateway component row).
-expected_contract=eac8df8029cc7cbffb23642c75af0dac10366d0cf6fc738c8152836e426c0ecb
+# The desktop's wallpapers and their credits arrive from the os-wallpapers
+# stage, which fetches the files the tilo-wallpapers catalog pins: two
+# intentional payload rows, /usr/share/backgrounds/tilo and
+# /usr/share/licenses/tilo-wallpapers, each with a COPY of its own.
+# Miracast moved into tilo-projector (the miracast crate), so the Python
+# sender's rows are gone: its source tree, its wrapper and the wpa_supplicant
+# D-Bus policy only it used.
+expected_contract=8e2a2c0b6448c4ff9025d956c8d1e8e979ca7142581077dfcd785567195c83b9
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

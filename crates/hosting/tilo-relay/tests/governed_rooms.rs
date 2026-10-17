@@ -1126,3 +1126,6 @@ mod app_records;
 
 #[path = "governed_rooms/sealed_records.rs"]
 mod sealed_records;
+
+#[path = "governed_rooms/shared_desktop.rs"]
+mod shared_desktop;

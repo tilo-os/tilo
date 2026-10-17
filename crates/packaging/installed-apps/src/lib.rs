@@ -42,6 +42,9 @@ pub struct InstalledApp {
     pub opens_mime_types: Vec<String>,
     /// Normalized URI schemes from `[providers].schemes`.
     pub opens_uri_schemes: Vec<String>,
+    /// `[providers].secondary`: another app claiming the same resource is
+    /// the default for it.
+    pub opens_secondary: bool,
     /// The signed manifest's `[[offers]]`: actions the app offers while it
     /// is not running, which the action catalogue lists for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
@@ -84,6 +87,7 @@ impl InstalledApp {
             opens_extensions: manifest.opens_ext.clone(),
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
+            opens_secondary: manifest.opens_secondary,
             offers,
         })
     }
@@ -130,6 +134,21 @@ impl InstalledApp {
         self.signed_manifest()
             .map(|manifest| manifest.resources.kinds)
             .unwrap_or_default()
+    }
+
+    /// Whether the signed manifest's `[capabilities]` lists `capability`
+    /// (a `tilo-caps` name such as `open-uri`), required or optional; never
+    /// for an unreadable manifest.
+    #[must_use]
+    pub fn declares_capability(&self, capability: &str) -> bool {
+        self.signed_manifest().is_some_and(|manifest| {
+            let declared = manifest.capabilities;
+            declared
+                .required
+                .iter()
+                .chain(&declared.optional)
+                .any(|name| name == capability)
+        })
     }
 
     fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
@@ -494,6 +513,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
                 offers: Vec::new(),
             }
         };

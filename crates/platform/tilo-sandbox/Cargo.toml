@@ -24,7 +24,7 @@ memmap2 = "0.9.10"
 # Landlock rulesets, the seccomp parser policy and the CI job policy.
 tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
 # Jobs: their child is born in its cgroup with clone3.
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
 tempfile.workspace = true

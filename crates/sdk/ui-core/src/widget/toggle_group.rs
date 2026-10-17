@@ -399,6 +399,13 @@ pub struct ToggleGroup {
 }
 
 impl ToggleGroup {
+    /// Box this widget in the SDK so thin apps reuse its shared implementation.
+    /// This keeps the widget's vtable instantiation out of the app.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     pub fn new(segments: Vec<Segment>, selected: usize) -> Self {
         let len = segments.len();
         // Saturate rather than panic on an out-of-bounds index — keeps

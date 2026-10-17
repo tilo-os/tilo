@@ -309,8 +309,17 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
             && quick_settings_bounds.y1 >= panel.y1 + shadow_reach,
         "the default settled damage bounds must include the enlarged e4 shadow"
     );
+    // The section's bounds also hold the strip rail and ribbon, which are painted before
+    // and after opening alike and so are no damage; what opening changes is the panel and
+    // its shadow.
+    let opened_extent = Rect::new(
+        panel.x0 - shadow_reach,
+        panel.y0 - shadow_reach,
+        panel.x1 + shadow_reach,
+        panel.y1 + shadow_reach,
+    );
     assert_damage_covers(
-        quick_settings_bounds,
+        opened_extent,
         open_damage,
         "large-shadow Quick Settings open",
     );
@@ -1094,15 +1103,7 @@ fn assert_foreign_pixel(
     assert_eq!(&pixels[at..at + 3], &xrgb, "actual foreign interior pixels");
 }
 
-struct ForeignFilterSettings(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-impl Drop for ForeignFilterSettings {
-    fn drop(&mut self) {
-        settings_store::install_source(self.0.take());
-    }
-}
-
-fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
-    let previous = settings_store::installed_source();
+fn foreign_filter_settings(frame: &FrameBuilder) -> crate::shell::test_support::InstalledSettings {
     let temperatures: serde_json::Map<_, _> = frame
         .chrome()
         .tree()
@@ -1123,8 +1124,7 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
             "read-only fixture settings",
         ))
     });
-    settings_store::install_source(Some(std::sync::Arc::new(source)));
-    ForeignFilterSettings(previous)
+    crate::shell::test_support::install_settings(std::sync::Arc::new(source))
 }
 
 // Exact client damage is published through the Linux capture seam
@@ -1591,10 +1591,14 @@ fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
             .map(|offset| offset + 121)
             .collect::<Vec<_>>()
     );
+    // The frame a pan rests on keeps the chrome the pan began with; the
+    // strip indicators show from the next one. Compare that frame, which
+    // draws them as the dense scene does, not the one before it.
+    let shown = frame.paint_with_damage();
     frame.set_retained_layer_width(None);
     acknowledge_notes_saves(&mut frame);
     let dense = frame.paint();
-    assert_layer_cpu_pixels_match(&panned.scene, &dense, SIZE);
+    assert_layer_cpu_pixels_match(&shown.scene, &dense, SIZE);
     // A policy transition restores fractional layout rather than rounding state.
     frame.host_mut().set_strip_pan_quantum(None);
     frame.relayout();
@@ -1672,7 +1676,10 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     );
 
     // The scene shows the strip where it is on screen, as a scene drawn
-    // without layers does.
+    // without layers does. The frame a pan rests on keeps the chrome the pan
+    // began with and the strip indicators show from the next one, so compare
+    // that next frame: it draws them as the dense scene does.
+    let shown = frame.paint_with_damage();
     frame.set_retained_layer_width(None);
     // Encode both paths before rasterizing either: app status bubbles use
     // monotonic linger deadlines, and CPU rendering may cross a deadline.
@@ -1680,7 +1687,7 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     // historical 1,034-pixel failure; startup is already durable on both paths.
     acknowledge_notes_saves(&mut frame);
     let dense_scene = frame.paint();
-    assert_layer_cpu_pixels_match(&panned.scene, &dense_scene, SIZE);
+    assert_layer_cpu_pixels_match(&shown.scene, &dense_scene, SIZE);
 
     frame.set_retained_layer_width(Some(8192));
     let mut independent = PopulatedShellFixture::new(SIZE, Theme::dark().with_reduce_motion(true));
@@ -1697,6 +1704,8 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         fractional.cache.is_none(),
         "a pan between pixels keeps its exact screen-space drawing, not layers"
     );
+    // As above: the indicators show from the frame after the pan's rest.
+    let fractional = frame.paint_with_damage();
     let dense_scene = frame.paint();
     assert_layer_cpu_pixels_match(&fractional.scene, &dense_scene, SIZE);
 

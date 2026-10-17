@@ -243,5 +243,122 @@ class InstallTests(fixtures.PublicBundleTests):
             with self.assertRaisesRegex(ValueError, 'installed development key differs'):
                 installer.origin.install_update_origin(self.image_root)
 
+class InstallFailureTests(unittest.TestCase):
+    """Exercise filesystem and manifest handling without a native crypto build."""
+
+    def setUp(self):
+        import hashlib
+        import tempfile
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / 'bundle'
+        self.source.mkdir()
+        for name in installer.trust.FILES:
+            label = 'CERTIFICATE' if name.endswith('.crt') else 'PUBLIC KEY'
+            data = (f'-----BEGIN {label}-----\nYWJj\n-----END {label}-----\n').encode()
+            (self.source / name).write_bytes(b'ab' * 32 if name == 'registry-owner.pub' else data)
+        manifest = {'schema': 1, 'purpose': 'tilo-development', 'sha256': {
+            name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
+            for name in installer.trust.FILES}}
+        raw = json.dumps(manifest).encode()
+        (self.source / 'manifest.json').write_bytes(raw)
+        self.digest = hashlib.sha256(raw).hexdigest()
+        self.official = self.root / 'official'
+        self.official.mkdir()
+        for name in installer.PRODUCTION_FILES:
+            (self.official / name).write_bytes((self.source / name).read_bytes())
+        self.image = self.root / 'image'
+        self.destination = self.image / 'usr/share/tilo'
+        self.crypto = mock.patch.object(installer.trust, 'rust_crypto', side_effect=lambda op, path:
+            (b'2048 ' + b'1' * 64 if op == 'rsa-public-key-info' else b'2' * 64))
+        self.crypto.start()
+        self.addCleanup(self.crypto.stop)
+
+    def install(self, mode='development'):
+        installer.install(self.source if mode == 'development' else self.official,
+                          self.official, self.destination, mode,
+                          self.digest if mode == 'development' else '',
+                          'ab' * 32, '127.0.0.1:5000/tilo-development/os:test', self.image)
+
+    def test_installs_only_the_validated_bundle_snapshot(self):
+        before = {name: (self.source / name).read_bytes()
+                  for name in (*installer.trust.FILES, 'manifest.json')}
+        validate = installer.trust.validate
+        def validate_then_change(*args, **kwargs):
+            result = validate(*args, **kwargs)
+            for name in before:
+                (self.source / name).write_bytes(b'substituted after validation')
+            return result
+        with mock.patch.object(installer.trust, 'validate', side_effect=validate_then_change):
+            self.install()
+        for name, data in before.items():
+            self.assertEqual((self.destination / 'development-trust' / name).read_bytes(), data)
+        for name in installer.PRODUCTION_FILES:
+            self.assertEqual((self.destination / name).read_bytes(), before[name])
+
+    def test_late_conflicts_leave_all_existing_trust_untouched(self):
+        for relative, directory in [('usr/share/tilo/development-trust', True),
+                                    ('etc/containers/policy.json', True),
+                                    ('etc/containers/registries.d', False)]:
+            with self.subTest(relative=relative):
+                shutil.rmtree(self.image, ignore_errors=True)
+                self.destination.mkdir(parents=True)
+                key = self.destination / 'cosign.pub'
+                key.write_bytes(b'old trusted key')
+                conflict = self.image / relative
+                conflict.parent.mkdir(parents=True, exist_ok=True)
+                conflict.mkdir() if directory else conflict.write_bytes(b'not a directory')
+                with self.assertRaises((ValueError, OSError)):
+                    self.install()
+                self.assertEqual(key.read_bytes(), b'old trusted key')
+                self.assertFalse((self.destination / 'tpm2-pcr-signing.public.pem').exists())
+                self.assertFalse((self.destination / 'trust').exists())
+
+    def test_redirected_outputs_never_modify_external_files(self):
+        for kind in ('key-link', 'key-hardlink', 'parent-link', 'policy-link'):
+            with self.subTest(kind=kind):
+                shutil.rmtree(self.image, ignore_errors=True)
+                self.destination.mkdir(parents=True)
+                external = self.root / 'external'
+                if external.exists():
+                    shutil.rmtree(external)
+                external.mkdir()
+                victim = external / 'victim'
+                victim.write_bytes(b'preserve outside image')
+                if kind in ('key-link', 'key-hardlink'):
+                    path = self.destination / 'cosign.pub'
+                    path.symlink_to(victim) if kind == 'key-link' else os.link(victim, path)
+                elif kind == 'parent-link':
+                    shutil.rmtree(self.destination)
+                    self.destination.symlink_to(external, target_is_directory=True)
+                else:
+                    path = self.image / 'etc/containers/policy.json'
+                    path.parent.mkdir(parents=True)
+                    path.symlink_to(victim)
+                with self.assertRaises(ValueError):
+                    self.install()
+                self.assertEqual(victim.read_bytes(), b'preserve outside image')
+                self.assertFalse((self.destination / 'tpm2-pcr-signing.public.pem').exists())
+
+    def test_production_rejects_stale_development_metadata(self):
+        marker = self.destination / 'development-trust'
+        marker.mkdir(parents=True)
+        key = self.destination / 'cosign.pub'
+        key.write_bytes(b'old development key')
+        with self.assertRaisesRegex(ValueError, 'development trust'):
+            self.install('production')
+        self.assertEqual(key.read_bytes(), b'old development key')
+        self.assertTrue(marker.is_dir())
+
+    def test_clean_production_and_development_installs_remain_supported(self):
+        self.install('production')
+        self.assertEqual((self.destination / 'cosign.pub').read_bytes(),
+                         (self.official / 'cosign.pub').read_bytes())
+        self.install()
+        self.assertEqual(json.loads((self.destination / 'development-trust/origin.json').read_text())
+                         ['manifest_sha256'], self.digest)
+
+
 if __name__ == '__main__':
     unittest.main()

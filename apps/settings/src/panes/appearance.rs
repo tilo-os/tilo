@@ -32,6 +32,7 @@ use vello::kurbo::Rect;
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::panes::keyboard_shortcuts::DesktopControls;
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -385,6 +386,7 @@ struct Shown {
     sunset: LocalState<String>,
     wallpaper_scope: LocalState<String>,
     wallpaper_target: LocalState<String>,
+    hide_top_bar: LocalState<bool>,
 }
 
 impl Shown {
@@ -400,6 +402,7 @@ impl Shown {
             sunset: LocalState::new(String::new()),
             wallpaper_scope: LocalState::new(String::new()),
             wallpaper_target: LocalState::new(String::new()),
+            hide_top_bar: LocalState::new(false),
         };
         shown.show(prefs);
         shown
@@ -424,6 +427,11 @@ impl Shown {
 pub struct AppearancePane {
     cx: PaneCx,
     prefs: Followed<AppearancePrefs>,
+    /// The desktop's chrome preferences (the top bar), kept beside the
+    /// shell's other desktop controls.
+    desktop: Followed<DesktopControls>,
+    /// The desk widgets' choices, edited on this pane too.
+    desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     shown: Shown,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
@@ -436,11 +444,16 @@ impl AppearancePane {
     /// `wallpaper_status`.
     pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
         let prefs = cx.follow::<AppearancePrefs>();
+        let desktop = cx.follow::<DesktopControls>();
+        let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
         let shown = Shown::of(prefs.get());
+        shown.hide_top_bar.set(desktop.get().hide_top_bar);
         let status_shown = wallpaper_status.get();
         Self {
             cx,
             prefs,
+            desktop,
+            desk,
             shown,
             wallpaper_status,
             status_shown,
@@ -512,6 +525,20 @@ impl AppearancePane {
             ]),
         );
 
+        let desktop_card = card(
+            &t("settings-appearance-desktop-card"),
+            rows(vec![
+                self.cx
+                    .row(t("settings-appearance-hide-top-bar"))
+                    .described(t("settings-appearance-hide-top-bar-desc"))
+                    .id("appearance.hide_top_bar")
+                    .toggle(
+                        &self.shown.hide_top_bar,
+                        DesktopControls::paths().hide_top_bar,
+                    ),
+            ]),
+        );
+
         let resolved = self.prefs().resolve_theme();
         let motion = if resolved.reduce_motion {
             t("settings-appearance-on")
@@ -543,6 +570,8 @@ impl AppearancePane {
             self.wallpaper_card(),
             theme_card,
             self.schedule_card(),
+            desktop_card,
+            self.desk_widgets_card(),
             access_card,
             preview,
             explainer,
@@ -715,6 +744,9 @@ impl Widget for AppearancePane {
             // The schedule's rows and the applied theme follow the values.
             self.composed.invalidate();
         }
+        if self.desktop.refresh() {
+            self.shown.hide_top_bar.set(self.desktop.get().hide_top_bar);
+        }
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
             self.status_shown = status;
@@ -882,6 +914,56 @@ mod tests {
         assert!(intent.reduce_motion);
     }
 
+    /// "Hide the top bar" is a desktop control: the toggle writes the
+    /// `desktop_controls` section the shell reloads live, leaves the section's
+    /// other keys alone, and the pane follows a change made elsewhere.
+    #[test]
+    fn the_top_bar_toggle_writes_the_desktop_controls_and_follows_them() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        edit_field(&mut app, "settings.desktop-controls", "vim_mode", true).unwrap();
+        edit_field(&mut app, "settings.desktop-controls", "hide_top_bar", true).unwrap();
+        let controls = app.settings::<DesktopControls>().get();
+        assert!(controls.hide_top_bar);
+        assert!(controls.vim_mode, "the other desktop control is kept");
+        let section = app
+            .settings::<DesktopControls>()
+            .document()
+            .section("desktop_controls");
+        let stored: settings_store::hardware::DesktopControlsConfig =
+            serde_json::from_value(serde_json::Value::Object(section)).unwrap();
+        assert!(
+            stored.hide_top_bar,
+            "the shell's schema reads the same leaf"
+        );
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
+        assert!(!pane.shown.hide_top_bar.get(), "visible by default");
+        cx.settings::<DesktopControls>()
+            .update(|controls| controls.hide_top_bar = true)
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        assert!(pane.shown.hide_top_bar.get());
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(
+            node_map
+                .values()
+                .filter_map(|&widget| unsafe { (*widget).test_id() })
+                .any(|id| id == "appearance.hide_top_bar"),
+            "the pane offers the toggle"
+        );
+        assert!(
+            crate::categories::Category::Appearance.matches("top bar"),
+            "searching for the top bar lands here"
+        );
+    }
+
     #[test]
     fn searching_for_wallpaper_lands_on_the_wallpaper_control() {
         use crate::categories::Category;
@@ -1020,6 +1102,9 @@ mod tests {
         );
     }
 }
+
+#[path = "appearance/desk_widgets.rs"]
+mod desk_widgets;
 
 #[cfg(test)]
 #[path = "appearance/inspection_tests.rs"]

@@ -825,6 +825,8 @@ impl super::Instance {
 
             unsafe {
                 profiling::scope!("vkCreateInstance");
+                // Tilo: see `LOADER_DEVICE_LISTS`.
+                let _lists = super::LOADER_DEVICE_LISTS.lock();
                 entry.create_instance(&create_info, None)
             }
             .map_err(|e| {
@@ -861,6 +863,8 @@ impl Drop for super::InstanceShared {
                     .destroy_debug_utils_messenger(du.messenger, None);
             });
             if self.drop_guard.is_none() {
+                // Tilo: see `LOADER_DEVICE_LISTS`.
+                let _lists = super::LOADER_DEVICE_LISTS.lock();
                 self.raw.destroy_instance(None);
             }
         }
@@ -932,7 +936,11 @@ impl crate::Instance for super::Instance {
     ) -> Vec<crate::ExposedAdapter<super::Api>> {
         use crate::auxil::db;
 
-        let raw_devices = match unsafe { self.shared.raw.enumerate_physical_devices() } {
+        // Tilo: see `LOADER_DEVICE_LISTS`.
+        let raw_devices = match {
+            let _lists = super::LOADER_DEVICE_LISTS.lock();
+            unsafe { self.shared.raw.enumerate_physical_devices() }
+        } {
             Ok(devices) => devices,
             Err(err) => {
                 log::error!("enumerate_adapters: {err}");

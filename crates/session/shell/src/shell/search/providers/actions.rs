@@ -4998,7 +4998,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-        settings_store::install_source(Some(session.host_view().unwrap()));
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
         let mut transaction =
             DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
         transaction.state = DisplayTransactionState::AwaitingConfirmation;
@@ -5037,7 +5037,7 @@ mod tests {
         }
         let _ = sent.send(());
         let responsive = release.join().unwrap();
-        settings_store::install_source(None);
+        drop(settings);
         assert!(
             responsive,
             "published Keep dispatch blocked on the real storage lock"
@@ -5085,7 +5085,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5118,7 +5119,7 @@ mod tests {
                 reopened.load()["display_transaction"],
                 copy["display_transaction"]
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -5132,7 +5133,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5154,7 +5156,7 @@ mod tests {
                 reopened.load()["display_transaction"],
                 serde_json::to_value(&transaction).unwrap()
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -5174,7 +5176,7 @@ mod tests {
             .unwrap()
             .clone();
         let source = Arc::new(settings_store::HostDocument::new(document, |_| Ok(())));
-        settings_store::install_source(Some(source.clone()));
+        let settings = crate::shell::test_support::install_settings(source.clone());
         let (entered, started) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         crate::shell::durable_writer::global()
@@ -5206,7 +5208,7 @@ mod tests {
             source.load()["display_transaction"]["state"],
             "confirm_requested"
         );
-        settings_store::install_source(None);
+        drop(settings);
     }
 
     #[test]
@@ -5219,7 +5221,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5254,7 +5257,7 @@ mod tests {
                 repaired["display_transaction"],
                 record["display_transaction"]
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -6810,17 +6813,10 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
-        struct Uninstall;
-        impl Drop for Uninstall {
-            fn drop(&mut self) {
-                settings_store::install_source(None);
-            }
-        }
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
-        settings_store::install_source(Some(std::sync::Arc::new(records)));
-        let _uninstall = Uninstall;
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();

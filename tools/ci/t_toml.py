@@ -50,11 +50,14 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba
 # history gets a .git whose HEAD is the commit under test. A `prepare` command
 # runs before the group's suites.
 GROUP_FIELDS = {
-    "os": {"why": "writes fixtures next to its sources and reads Git history",
-           "writable_sources": True, "git": True},
+    "os": {"why": "writes fixtures next to its sources and reads Git history, and as root builds bubblewrap "
+                  "namespaces and gives fixtures other owners, which the capability-less job sandbox cannot",
+           "writable_sources": True, "git": True, "isolation": "vm"},
     "dist": {"why": "writes under target/ in the source tree and reads Git history",
              "writable_sources": True, "git": True},
-    "vm-acceptance": {"why": "writes under target/ in the source tree", "writable_sources": True},
+    "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
+                               "another uid, which the capability-less job sandbox cannot",
+                      "writable_sources": True, "isolation": "vm"},
     "mount-source-cache-keys": {"why": "lists files through Git", "git": True},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git", "git": True,
                             "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
@@ -101,6 +104,7 @@ def suite_checks(manifest: suites.Manifest) -> str:
             'requires = ["arch=x86_64"]',
             *(["writable_sources = true"] if fields.get("writable_sources") else []),
             *(["git = true"] if fields.get("git") else []),
+            *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
@@ -256,6 +260,12 @@ CARGO_CHECKS: dict[str, dict] = {
                                             "fs-protocol", "tilo-user-identity", "shell"},
         "inputs": ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh",
                    "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    # The relay's privileged personal-device test, built here for the micro-VM
+    # check that runs it as real root (real-fuse-privileged).
+    "real-fuse-privileged-build": {
+        "packages": lambda packages, root: {"tilo-relay"},
+        "inputs": [],
     },
 }
 

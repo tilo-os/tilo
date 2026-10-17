@@ -51,7 +51,9 @@ visuals therefore come from `shots`. That belongs to the rendering owner.
 ## Palette information architecture
 
 **One door.** Super+Space and a bare Super tap open the same palette, scoped
-to Everywhere. Ctrl+K opens it scoped to the focused app. The scope is one toggle, not a chip.
+to Everywhere. The tap opens it as the Super surface: the field alone and
+empty at the top, a light scrim, the desk widgets open around it with the
+time and status; the first keystroke grows it into the same results. Ctrl+K opens it scoped to the focused app. The scope is one toggle, not a chip.
 
 ### Empty query: *Jump back in*
 

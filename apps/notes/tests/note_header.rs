@@ -104,10 +104,21 @@ fn the_header_is_one_group_on_the_content_gutter_and_clears_the_body() {
         assert!(handles > 0.0, "a note's blocks have a handle gutter");
         let title = panel.title_rect_for_test();
         let edge = title.x0;
+        let area = ui::widget::Widget::get_rect(panel);
+        // The text column is centred: whatever it stands in from the handle
+        // gutter on the left, it stands in from the gutter on the right.
+        let side = edge - area.x0 - (gutter + handles);
         assert!(
-            (edge - (gutter + handles)).abs() < 1e-6,
-            "title on the text edge, outside the handle gutter, at {width}x{scale}"
+            side >= -1e-6 && (area.x1 - gutter - title.x1 - side).abs() < 1.0,
+            "title on the text edge, outside the handle gutter, in a centred column, \
+             at {width}x{scale}: {title:?} in {area:?}"
         );
+        if width == 1000 && scale < 1.5 {
+            assert!(
+                side > 0.0,
+                "a wide panel reads in a column narrower than the panel"
+            );
+        }
         let widgets = panel.header_rects_for_test();
         assert!(
             widgets.len() >= 6,

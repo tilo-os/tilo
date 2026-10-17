@@ -117,6 +117,7 @@ impl ObserverState {
             self.artwork.retain(|url, _| wanted.contains(url));
         }
         self.publish_handoff(now);
+        super::now_playing_changed();
         missing
     }
 

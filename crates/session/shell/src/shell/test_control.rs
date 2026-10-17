@@ -981,6 +981,16 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
     }
 }
 
+/// What a build without development overrides answers to
+/// `deadlock_main_loop`: it never hangs its own main loop on request.
+#[must_use]
+pub fn deadlock_main_loop_refused() -> Response {
+    Response::Err {
+        code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
+        message: "a main-loop deadlock is injected only by development builds".into(),
+    }
+}
+
 /// Dispatch a single command against the live compositor state.
 ///
 /// Returns `(response, actions)`: read-only commands return no actions; mutating commands return the [`PlannedAction`]s the transport must run before replying — keeps the dispatcher pure (no I/O, no `&mut` state).

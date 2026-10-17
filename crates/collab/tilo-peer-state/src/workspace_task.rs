@@ -8,6 +8,8 @@ use automerge::{
     AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 use serde::{Deserialize, Serialize};
+mod confirmation;
+
 use tilo_desktop_model::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, WorkspaceTask, WorkspaceTaskActiveRun,
@@ -214,6 +216,28 @@ pub enum WorkspaceTaskCommand {
         route: WorkspaceTaskRoute,
         subject: Box<tilo_actions::SelectionSubject>,
     },
+    /// The run's host pauses the run at an action its person is asked
+    /// about first. Appended to preserve existing postcard indices.
+    RequestConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation: Box<tilo_desktop_model::WorkspaceTaskConfirmation>,
+    },
+    /// The person the run acts for answers the action it paused at.
+    /// Appended to preserve existing postcard indices.
+    AnswerConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+        answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer,
+    },
+    /// The run's host took the answer to the run. Appended to preserve
+    /// existing postcard indices.
+    SettleConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+    },
     /// Private coalesced model turn; appended to preserve command codec indices.
     Presentation {
         task_id: String,
@@ -299,6 +323,7 @@ pub(crate) fn apply(
         now,
     };
     let (task_id, result) = dispatch(&mut tasks, &mut controls, &context, command)?;
+    confirmation::lapse(&mut controls);
     let control = controls
         .get_mut(&task_id)
         .ok_or("task command lost its execution control")?;
@@ -425,6 +450,11 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+        command @ (WorkspaceTaskCommand::RequestConfirmation { .. }
+        | WorkspaceTaskCommand::AnswerConfirmation { .. }
+        | WorkspaceTaskCommand::SettleConfirmation { .. }) => {
+            confirmation::dispatch((tasks, controls), context, command)
+        }
     }
 }
 
@@ -1686,6 +1716,36 @@ pub(crate) fn project_controls(
 mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn presentation_is_appended_after_confirmation_commands() {
+        let settled = WorkspaceTaskCommand::SettleConfirmation {
+            task_id: "task-1".into(),
+            run_epoch: 1,
+            confirmation_id: "confirmation-1".into(),
+        };
+        assert_eq!(postcard::to_allocvec(&settled).unwrap()[0], 19);
+        let presentation = WorkspaceTaskCommand::Presentation {
+            task_id: "task-1".into(),
+            run_epoch: 1,
+            sequence: 1,
+            presentation: collab_types::task_presentation::TaskPresentation {
+                run: "turn-1".into(),
+                sequence: 1,
+                received_at: None,
+                text: "Working".into(),
+                reasoning: String::new(),
+                finish: None,
+                detail: String::new(),
+            },
+        };
+        let encoded = postcard::to_allocvec(&presentation).unwrap();
+        assert_eq!(encoded[0], 20);
+        assert!(matches!(
+            postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap(),
+            WorkspaceTaskCommand::Presentation { sequence: 1, .. }
+        ));
+    }
 
     #[test]
     fn presentation_history_grows_linearly_and_survives_reload() {

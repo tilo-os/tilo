@@ -1,6 +1,7 @@
 //! A device's route for offloadable actions, as its session starts it: from
 //! the person's home relay this device is registered with, over the
-//! session's own document media.
+//! session's own document media — in process, or the filesystem daemon's
+//! as the desktop session reaches it ([`crate::offload::RoomMedia`]).
 //!
 //! [`home_relay`] reads the configuration — the first of the person's
 //! registered home peers that retains a session room's relay workspace,
@@ -14,31 +15,132 @@
 //! good when it cannot be, the route answers [`Offloaded::RunHere`] with
 //! why, so a relay that is slow, unreachable or refuses this device never
 //! holds up the session or changes an answer.
+//!
+//! Whom the route trusts is the person's device revocations as this device
+//! knows them ([`DeviceRevocations`]), read again whenever it matters: a
+//! revoked relay gets no route, a live route whose relay (or this device)
+//! is revoked is torn down within [`REVOCATION_CHECK`] — runs in flight
+//! then answer "run here" — and a worker placement names, or that ran a
+//! job, is not trusted once it is revoked. Revocations that cannot be read
+//! trust nobody.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
-use fs::document_media::DocumentMedia;
-use fs::store::ContentStore;
 use iroh_base::EndpointAddr;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
+use tilo_lock::RwLockRecover as _;
 use tilo_relay_protocol::HomePeerRegistration;
 use tilo_user_identity::{DeviceCert, RevocationList};
+use tokio::sync::watch;
 
 use crate::RelayClient;
 use crate::compute::{ComputePackageCatalogue, InstalledComputeCatalogue};
 use crate::compute_session::ComputeClient;
 use crate::mesh::DeviceKey;
 use crate::offload::{Offloader, OffloaderParts, WorkspaceContent};
-use crate::offload_placement::RelayPlacement;
+use crate::offload_media::RoomMedia;
+use crate::offload_placement::{ComputePlacement, PlacementAnswer, PlacementQuery, RelayPlacement};
 use crate::offload_route::OffloadRoute;
 use crate::transport::Envelope;
 
 /// How long the route has to connect to the relay and attach its rooms'
 /// workspaces before offloadable actions run here for this session.
 pub const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often a live route reads the device revocations again: the longest a
+/// relay revoked meanwhile keeps the route.
+pub const REVOCATION_CHECK: Duration = Duration::from_secs(2);
+
+/// The person's device revocations as this device currently knows them: the
+/// same set the rest of its device trust reads, so a device revoked there is
+/// revoked for offload too.
+pub trait DeviceRevocations: Send + Sync {
+    /// The revocations now.
+    ///
+    /// # Errors
+    ///
+    /// Why they cannot be read. The route then trusts no device.
+    fn current(&self) -> Result<RevocationList, String>;
+}
+
+/// A fixed set, for a device whose revocations never change while it runs.
+impl DeviceRevocations for RevocationList {
+    fn current(&self) -> Result<RevocationList, String> {
+        Ok(self.clone())
+    }
+}
+
+/// Whom a route trusts: its relay and this device, while neither is revoked.
+#[derive(Clone)]
+pub struct RouteTrust {
+    /// The relay's device key.
+    pub relay: DeviceKey,
+    /// This device's key.
+    pub device: DeviceKey,
+    /// The revocations both are checked against.
+    pub revocations: Arc<dyn DeviceRevocations>,
+}
+
+impl RouteTrust {
+    /// The current revocations, when they revoke neither the relay nor this
+    /// device.
+    ///
+    /// # Errors
+    ///
+    /// Why the route may not be used: the relay or this device revoked, or
+    /// the revocations unreadable.
+    pub fn check(&self) -> Result<RevocationList, String> {
+        let revocations = self
+            .revocations
+            .current()
+            .map_err(|error| format!("this device's revocations are unreadable: {error}"))?;
+        if revocations.is_revoked(&self.relay) {
+            return Err(format!(
+                "the relay {} has been revoked",
+                hex::encode(self.relay)
+            ));
+        }
+        if revocations.is_revoked(&self.device) {
+            return Err("this device has been revoked".into());
+        }
+        Ok(revocations)
+    }
+}
+
+/// `device`, named by placement or as having run a job, when it is not
+/// revoked.
+fn trusted_device(revocations: &dyn DeviceRevocations, device: &DeviceKey) -> Result<(), String> {
+    let revocations = revocations
+        .current()
+        .map_err(|error| format!("this device's revocations are unreadable: {error}"))?;
+    if revocations.is_revoked(device) {
+        return Err(format!("device {} has been revoked", hex::encode(device)));
+    }
+    Ok(())
+}
+
+/// Placement that never hands the offloader a revoked worker: the relay's
+/// own list may lag this device's.
+struct TrustedPlacement<P> {
+    inner: P,
+    revocations: Arc<dyn DeviceRevocations>,
+}
+
+impl<P: ComputePlacement> ComputePlacement for TrustedPlacement<P> {
+    fn place<'a>(&'a self, query: PlacementQuery<'a>) -> PlacementAnswer<'a> {
+        Box::pin(async move {
+            let placed = self.inner.place(query).await?;
+            if let Some(worker) = &placed.worker {
+                trusted_device(self.revocations.as_ref(), worker)
+                    .map_err(|error| format!("placement named a device not trusted: {error}"))?;
+            }
+            Ok(placed)
+        })
+    }
+}
 
 /// The relay that places a device's compute jobs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,8 +161,9 @@ pub struct OffloadIdentity {
     pub device_cert: DeviceCert,
     /// This device's key.
     pub device_signing_key: ed25519_dalek::SigningKey,
-    /// The revocations this device knows of.
-    pub revocations: RevocationList,
+    /// The person's device revocations as this device knows them, read
+    /// again whenever the route decides whom to trust.
+    pub revocations: Arc<dyn DeviceRevocations>,
 }
 
 /// Everything a device's offload route is started from.
@@ -73,6 +176,18 @@ pub struct DeviceOffloadConfig {
     /// Room (the broker's cluster id) → the relay workspace its compute
     /// jobs are placed in. Only rooms the relay retains.
     pub rooms: HashMap<String, u64>,
+}
+
+impl DeviceOffloadConfig {
+    /// Whom the route started from this configuration trusts.
+    #[must_use]
+    pub fn trust(&self) -> RouteTrust {
+        RouteTrust {
+            relay: self.relay.device,
+            device: self.identity.device_cert.device_public_key,
+            revocations: Arc::clone(&self.identity.revocations),
+        }
+    }
 }
 
 /// The relay among `registrations` that places compute for `rooms` on a
@@ -129,24 +244,27 @@ fn registered_relay(registration: &HomePeerRegistration, user: [u8; 32]) -> Opti
 
 /// Connect to `config.relay` as `config.identity` from `endpoint`, attach
 /// every room's workspace, and route offloadable invocations of those rooms
-/// through it over `store`, the content store the rooms' apps keep their
-/// media in. Packages resolve from `packages`.
+/// through it over `media`, where the rooms' apps keep their document
+/// media. Packages resolve from `packages`.
 ///
 /// # Errors
 ///
-/// What failed: no room placed, the relay unreachable or refusing this
-/// device, a workspace it does not let this device compute in, or no answer
-/// within [`START_TIMEOUT`].
+/// What failed: no room placed, the relay or this device revoked (or the
+/// revocations unreadable) — checked before anything is dialled — the relay
+/// unreachable or refusing this device, a workspace it does not let this
+/// device compute in, or no answer within [`START_TIMEOUT`].
 pub async fn start_route(
     config: DeviceOffloadConfig,
     endpoint: iroh::Endpoint,
-    store: Arc<ContentStore>,
+    media: Arc<dyn RoomMedia>,
     packages: Arc<dyn ComputePackageCatalogue>,
 ) -> Result<OffloadRoute, String> {
     if config.rooms.is_empty() {
         return Err(NO_ROOM.into());
     }
-    tokio::time::timeout(START_TIMEOUT, connect(config, endpoint, store, packages))
+    let revocations = config.trust().check()?;
+    let connecting = connect(config, revocations, endpoint, media, packages);
+    tokio::time::timeout(START_TIMEOUT, connecting)
         .await
         .map_err(|_| format!("the relay did not answer within {START_TIMEOUT:?}"))?
 }
@@ -154,10 +272,13 @@ pub async fn start_route(
 /// Why a device with no room on its relay has no route.
 const NO_ROOM: &str = "no room is placed on the relay";
 
+/// Connect as [`start_route`] does, both sessions checking the relay
+/// against `revocations`.
 async fn connect(
     config: DeviceOffloadConfig,
+    revocations: RevocationList,
     endpoint: iroh::Endpoint,
-    store: Arc<ContentStore>,
+    media: Arc<dyn RoomMedia>,
     packages: Arc<dyn ComputePackageCatalogue>,
 ) -> Result<OffloadRoute, String> {
     let DeviceOffloadConfig {
@@ -175,11 +296,16 @@ async fn connect(
         relay.device,
         identity.device_cert.clone(),
         identity.device_signing_key.clone(),
-        identity.revocations.clone(),
+        revocations.clone(),
     )
     .await
     .map_err(|error| format!("the relay session failed: {error}"))?;
     subscribe(&placement, &workspaces).await?;
+    // From here the room's own traffic is drained as it arrives.
+    let placement = TrustedPlacement {
+        inner: RelayPlacement::new(placement, relay.device),
+        revocations: Arc::clone(&identity.revocations),
+    };
     let compute = ComputeClient::connect(
         endpoint,
         relay.address,
@@ -187,24 +313,20 @@ async fn connect(
         Some(relay.device),
         identity.device_cert,
         identity.device_signing_key,
-        identity.revocations,
+        revocations,
     )
     .await
     .map_err(|error| format!("the compute session failed: {error}"))?;
     let offloader = Offloader::start(OffloaderParts {
         compute,
         workspaces,
-        content: WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current()),
-        placement: Arc::new(RelayPlacement::new(placement, relay.device)),
+        content: WorkspaceContent::of_media(media, tokio::runtime::Handle::current()),
+        placement: Arc::new(placement),
         packages,
     })
     .await
     .map_err(|error| format!("the relay refused compute: {error}"))?;
-    Ok(OffloadRoute::new(
-        Arc::new(offloader),
-        DocumentMedia::new(store),
-        rooms,
-    ))
+    Ok(OffloadRoute::new(Arc::new(offloader), rooms))
 }
 
 /// Subscribe `client` to every one of `workspaces` and wait for each to be
@@ -237,24 +359,39 @@ async fn subscribe(client: &RelayClient, workspaces: &[u64]) -> Result<(), Strin
 }
 
 /// A device's offload route as its session's broker holds it: started in
-/// the background, and until it is up — or for good when it cannot start —
-/// answering [`Offloaded::RunHere`] with why.
-#[derive(Default)]
+/// the background, and until it is up — for good when it cannot start, and
+/// from the moment its relay or this device is revoked — answering
+/// [`Offloaded::RunHere`] with why.
 pub struct DeviceOffload {
-    route: OnceLock<Result<OffloadRoute, String>>,
+    phase: RwLock<Phase>,
+    trust: RouteTrust,
+    /// Why the route was torn down, once it is: every run in flight ends on
+    /// it.
+    torn_down: watch::Sender<Option<String>>,
+}
+
+/// Where a [`DeviceOffload`] is.
+enum Phase {
+    Starting,
+    Up(Arc<OffloadRoute>),
+    /// It did not start, and why.
+    Failed(String),
+    /// It was up and is no longer trusted, and why.
+    TornDown(String),
 }
 
 impl DeviceOffload {
-    /// Start the route for `config` over `store` on `runtime` — from an
+    /// Start the route for `config` over `media` on `runtime` — from an
     /// endpoint of its own, resolving packages from this device's installed
     /// catalogue — and return it at once.
     #[must_use]
     pub fn start(
         config: DeviceOffloadConfig,
-        store: Arc<ContentStore>,
+        media: Arc<dyn RoomMedia>,
         runtime: &tokio::runtime::Handle,
     ) -> Arc<Self> {
         Self::spawn(
+            config.trust(),
             async move {
                 if config.rooms.is_empty() {
                     return Err(NO_ROOM.to_owned());
@@ -263,62 +400,177 @@ impl DeviceOffload {
                     .bind()
                     .await
                     .map_err(|error| format!("no endpoint to reach the relay from: {error}"))?;
-                start_route(config, endpoint, store, Arc::new(InstalledComputeCatalogue)).await
+                start_route(config, endpoint, media, Arc::new(InstalledComputeCatalogue)).await
             },
             runtime,
         )
     }
 
     /// The route `start` brings up on `runtime` ([`start_route`]), returned
-    /// at once. A failed start is logged once.
+    /// at once, and kept only while `trust` holds: checked as soon as it is
+    /// up and every [`REVOCATION_CHECK`] after. A failed start, and a
+    /// teardown, are logged once.
     #[must_use]
     pub fn spawn(
+        trust: RouteTrust,
         start: impl Future<Output = Result<OffloadRoute, String>> + Send + 'static,
         runtime: &tokio::runtime::Handle,
     ) -> Arc<Self> {
-        let offload = Arc::new(Self::default());
+        let offload = Arc::new(Self {
+            phase: RwLock::new(Phase::Starting),
+            trust,
+            torn_down: watch::Sender::new(None),
+        });
         let weak: Weak<Self> = Arc::downgrade(&offload);
         runtime.spawn(async move {
             let started = start.await;
-            match &started {
-                Ok(_) => tracing::info!("offloadable actions are routed through the home relay"),
-                Err(error) => tracing::warn!(
-                    %error,
-                    "offloadable actions run on this device: the offload route did not start"
-                ),
-            }
-            if let Some(offload) = weak.upgrade() {
-                let _ = offload.route.set(started);
-            }
+            let Some(offload) = weak.upgrade() else {
+                return;
+            };
+            *offload.phase.write_recover() = match started {
+                Ok(route) => {
+                    tracing::info!("offloadable actions are routed through the home relay");
+                    Phase::Up(Arc::new(route))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "offloadable actions run on this device: the offload route did not start"
+                    );
+                    Phase::Failed(error)
+                }
+            };
+            drop(offload);
+            keep_trusted(weak).await;
         });
         offload
     }
 
     /// Whether the route is up: `None` while it starts, then whether it
-    /// started, and why not.
+    /// is, and why not — it did not start, or it was torn down.
     #[must_use]
-    pub fn started(&self) -> Option<Result<(), &str>> {
-        self.route
-            .get()
-            .map(|route| route.as_ref().map(|_| ()).map_err(String::as_str))
+    pub fn started(&self) -> Option<Result<(), String>> {
+        let phase = self.phase.read_recover();
+        match &*phase {
+            Phase::Starting => None,
+            Phase::Up(_) => Some(Ok(())),
+            Phase::Failed(error) | Phase::TornDown(error) => Some(Err(error.clone())),
+        }
+    }
+
+    /// The route while it is up, or why every offloadable action runs here.
+    fn route(&self) -> Result<Arc<OffloadRoute>, String> {
+        let phase = self.phase.read_recover();
+        match &*phase {
+            Phase::Up(route) => Ok(Arc::clone(route)),
+            Phase::Starting => Err("the offload route is still starting".to_owned()),
+            Phase::Failed(error) => Err(format!("the offload route did not start: {error}")),
+            Phase::TornDown(error) => Err(format!("the offload route was torn down: {error}")),
+        }
+    }
+
+    /// Tear the route down for `reason`: every run in flight and every
+    /// later one runs here, and the relay sessions close as the last run
+    /// lets go of them.
+    fn tear_down(&self, reason: String) {
+        tracing::warn!(
+            %reason,
+            "offloadable actions run on this device: the offload route is torn down"
+        );
+        let route = std::mem::replace(
+            &mut *self.phase.write_recover(),
+            Phase::TornDown(reason.clone()),
+        );
+        self.torn_down.send_replace(Some(reason));
+        drop(route);
+    }
+
+    /// `ran`, unless the device that ran it — or the route itself — is no
+    /// longer trusted: its outputs are then not taken, and it runs here.
+    fn trusted(&self, ran: Offloaded) -> Offloaded {
+        let Offloaded::Ran { device, .. } = &ran else {
+            return ran;
+        };
+        let mut key = [0; 32];
+        let verdict = self
+            .trust
+            .check()
+            .and_then(|_| {
+                hex::decode_to_slice(device, &mut key)
+                    .map_err(|_| "the run names no device".to_owned())
+            })
+            .and_then(|()| trusted_device(self.trust.revocations.as_ref(), &key));
+        match verdict {
+            Ok(()) => ran,
+            Err(error) => Offloaded::RunHere {
+                reason: format!("the offloaded run is not trusted: {error}"),
+            },
+        }
+    }
+}
+
+/// While the route `weak` holds is up, check its trust at once and every
+/// [`REVOCATION_CHECK`] after, and tear it down the moment it fails.
+async fn keep_trusted(weak: Weak<DeviceOffload>) {
+    loop {
+        let Some(offload) = weak.upgrade() else {
+            return;
+        };
+        if offload.route().is_err() {
+            return;
+        }
+        if let Err(reason) = offload.trust.check() {
+            offload.tear_down(reason);
+            return;
+        }
+        drop(offload);
+        tokio::time::sleep(REVOCATION_CHECK).await;
+    }
+}
+
+/// Why `torn_down` ended the route, once it does.
+async fn torn_down_reason(torn_down: &mut watch::Receiver<Option<String>>) -> String {
+    let reason = torn_down
+        .wait_for(Option::is_some)
+        .await
+        .map(|reason| reason.clone().unwrap_or_default());
+    match reason {
+        Ok(reason) => reason,
+        // The sender lives as long as the route it guards.
+        Err(_) => std::future::pending().await,
     }
 }
 
 impl ActionOffload for DeviceOffload {
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_> {
-        let reason = match self.route.get() {
-            Some(Ok(route)) => return route.offload(request),
-            Some(Err(error)) => format!("the offload route did not start: {error}"),
-            None => "the offload route is still starting".to_owned(),
+        let route = match self.route() {
+            Ok(route) => route,
+            Err(reason) => return run_here(reason),
         };
-        Box::pin(async move { Offloaded::RunHere { reason } })
+        let mut torn_down = self.torn_down.subscribe();
+        Box::pin(async move {
+            let ran = tokio::select! {
+                ran = route.offload(request) => ran,
+                reason = torn_down_reason(&mut torn_down) => {
+                    return Offloaded::RunHere {
+                        reason: format!("the offload route was torn down: {reason}"),
+                    };
+                }
+            };
+            self.trusted(ran)
+        })
     }
 
     fn ran_here(&self, request: &OffloadRequest, elapsed: Duration) {
-        if let Some(Ok(route)) = self.route.get() {
+        if let Ok(route) = self.route() {
             route.ran_here(request, elapsed);
         }
     }
+}
+
+/// An answer of "run here", for `reason`.
+fn run_here(reason: String) -> OffloadFuture<'static> {
+    Box::pin(async move { Offloaded::RunHere { reason } })
 }
 
 #[cfg(test)]
@@ -403,9 +655,15 @@ mod tests {
         assert_eq!(rooms.len(), 2);
     }
 
-    #[tokio::test]
-    async fn the_route_runs_everything_here_until_it_starts_and_when_it_cannot() {
-        let config = DeviceOffloadConfig {
+    /// This device's key.
+    const LAPTOP: [u8; 32] = [3; 32];
+
+    /// A laptop's route configuration for `rooms`, trusting by `revocations`.
+    fn config(
+        rooms: HashMap<String, u64>,
+        revocations: Arc<dyn DeviceRevocations>,
+    ) -> DeviceOffloadConfig {
+        DeviceOffloadConfig {
             relay: OffloadRelay {
                 address: address(10),
                 device: RELAY,
@@ -414,33 +672,22 @@ mod tests {
                 user_public_key: USER,
                 device_cert: DeviceCert {
                     user_public_key: USER,
-                    device_public_key: [3; 32],
+                    device_public_key: LAPTOP,
                     device_label: "laptop".into(),
                     capabilities: tilo_user_identity::DeviceCapabilities::primary(),
                     issued_at_ns: 0,
                     expires_at_ns: None,
                     signature: [0; 64],
                 },
-                device_signing_key: ed25519_dalek::SigningKey::from_bytes(&[3; 32]),
-                revocations: RevocationList::new(),
+                device_signing_key: ed25519_dalek::SigningKey::from_bytes(&LAPTOP),
+                revocations,
             },
-            // Nothing placed: the start fails before dialling anything.
-            rooms: HashMap::new(),
-        };
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .bind()
-            .await
-            .unwrap();
-        let offload = DeviceOffload::spawn(
-            start_route(
-                config,
-                endpoint,
-                Arc::new(ContentStore::memory()),
-                Arc::new(InstalledComputeCatalogue),
-            ),
-            &tokio::runtime::Handle::current(),
-        );
-        let request = OffloadRequest {
+            rooms,
+        }
+    }
+
+    fn request() -> OffloadRequest {
+        OffloadRequest {
             room: ROOM.into(),
             app_id: "so.tilo.photos".into(),
             address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
@@ -453,22 +700,78 @@ mod tests {
                 output_bytes: 1,
             },
             inputs: Vec::new(),
-        };
+        }
+    }
+
+    /// The person's root-signed revocation of each of `devices`.
+    fn revoked(devices: &[DeviceKey]) -> RevocationList {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+        let mut revocations = RevocationList::new();
+        for device in devices {
+            let mut entry = tilo_user_identity::RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: *device,
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Stolen,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+            revocations.insert(entry).unwrap();
+        }
+        revocations
+    }
+
+    /// Revocations that cannot be read.
+    struct Unreadable;
+
+    impl DeviceRevocations for Unreadable {
+        fn current(&self) -> Result<RevocationList, String> {
+            Err("the fleet is corrupt".into())
+        }
+    }
+
+    async fn endpoint() -> iroh::Endpoint {
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    /// Wait until `offload` has started or failed to.
+    async fn settled(offload: &DeviceOffload) {
+        tilo_test_env::within("the route's start", async {
+            while offload.started().is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_route_runs_everything_here_until_it_starts_and_when_it_cannot() {
+        // Nothing placed: the start fails before dialling anything.
+        let config = config(HashMap::new(), Arc::new(RevocationList::new()));
+        let offload = DeviceOffload::spawn(
+            config.trust(),
+            start_route(
+                config,
+                endpoint().await,
+                fs::document_media::DocumentMedia::new(Arc::new(fs::store::ContentStore::memory())),
+                Arc::new(InstalledComputeCatalogue),
+            ),
+            &tokio::runtime::Handle::current(),
+        );
+        let request = request();
         if offload.started().is_none() {
             let Offloaded::RunHere { reason } = offload.offload(request.clone()).await else {
                 panic!("nothing runs elsewhere before the route is up");
             };
             assert!(reason.contains("still starting"), "{reason}");
         }
-        tilo_test_env::within("the failed start", async {
-            while offload.started().is_none() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
+        settled(&offload).await;
         assert_eq!(
             offload.started(),
-            Some(Err("no room is placed on the relay"))
+            Some(Err("no room is placed on the relay".to_owned()))
         );
         let Offloaded::RunHere { reason } = offload.offload(request.clone()).await else {
             panic!("a route that did not start runs everything here");
@@ -479,5 +782,110 @@ mod tests {
         );
         // A local run it never routed is not recorded anywhere.
         offload.ran_here(&request, Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn a_revoked_relay_or_device_or_unreadable_revocations_get_no_route() {
+        let rooms = HashMap::from([(
+            ROOM.to_owned(),
+            tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
+        )]);
+        let cases: [(Arc<dyn DeviceRevocations>, &str); 3] = [
+            (Arc::new(revoked(&[RELAY])), "the relay"),
+            (Arc::new(revoked(&[LAPTOP])), "this device has been revoked"),
+            (Arc::new(Unreadable), "unreadable: the fleet is corrupt"),
+        ];
+        for (revocations, why) in cases {
+            let config = config(rooms.clone(), revocations);
+            // Refused before anything is dialled: nothing answers at the
+            // relay's address, so a dial would fail differently, and later.
+            let refused = start_route(
+                config.clone(),
+                endpoint().await,
+                fs::document_media::DocumentMedia::new(Arc::new(fs::store::ContentStore::memory())),
+                Arc::new(InstalledComputeCatalogue),
+            )
+            .await;
+            let Err(error) = refused else {
+                panic!("{why}: no route");
+            };
+            assert!(error.contains(why), "{error}");
+            let offload = DeviceOffload::spawn(
+                config.trust(),
+                start_route(
+                    config,
+                    endpoint().await,
+                    fs::document_media::DocumentMedia::new(Arc::new(
+                        fs::store::ContentStore::memory(),
+                    )),
+                    Arc::new(InstalledComputeCatalogue),
+                ),
+                &tokio::runtime::Handle::current(),
+            );
+            settled(&offload).await;
+            let Offloaded::RunHere { reason } = offload.offload(request()).await else {
+                panic!("{why}: everything runs here");
+            };
+            assert!(reason.contains("did not start"), "{reason}");
+            assert!(reason.contains(why), "{reason}");
+        }
+        let error = config(rooms, Arc::new(revoked(&[RELAY])))
+            .trust()
+            .check()
+            .unwrap_err();
+        assert!(
+            error.contains(&hex::encode(RELAY)),
+            "names the relay: {error}"
+        );
+    }
+
+    /// Placement that always names `worker`.
+    struct Names(DeviceKey);
+
+    impl ComputePlacement for Names {
+        fn place<'a>(&'a self, _: PlacementQuery<'a>) -> PlacementAnswer<'a> {
+            let worker = self.0;
+            Box::pin(async move {
+                Ok(crate::offload_placement::Placed {
+                    worker: Some(worker),
+                    reason: "faster there".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn placement_never_hands_over_a_revoked_worker() {
+        const WORKER: DeviceKey = [12; 32];
+        let query = PlacementQuery {
+            workspace_id: 1,
+            app: "so.tilo.thumbnails",
+            gpu: false,
+            input_bytes: 1,
+            inputs: &[],
+            local_wall_ms: None,
+        };
+        let trusted = TrustedPlacement {
+            inner: Names(WORKER),
+            revocations: Arc::new(revoked(&[RELAY])),
+        };
+        assert_eq!(
+            trusted.place(query).await.unwrap().worker,
+            Some(WORKER),
+            "a worker nobody revoked"
+        );
+        let refused = TrustedPlacement {
+            inner: Names(WORKER),
+            revocations: Arc::new(revoked(&[WORKER])),
+        };
+        let error = refused.place(query).await.unwrap_err();
+        assert!(error.contains("not trusted"), "{error}");
+        assert!(error.contains(&hex::encode(WORKER)), "{error}");
+        let unreadable = TrustedPlacement {
+            inner: Names(WORKER),
+            revocations: Arc::new(Unreadable),
+        };
+        let error = unreadable.place(query).await.unwrap_err();
+        assert!(error.contains("unreadable"), "{error}");
     }
 }

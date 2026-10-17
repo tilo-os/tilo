@@ -393,6 +393,7 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
+  "dist/ci/tests/test_package_lane.py",
   "dist/session/tests/vm-e2e-exit-status.py",
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
@@ -578,6 +579,10 @@ suites = [
   "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
   "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
 ]
+
+[[unrequired]]
+suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
+reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
 
 [[group]]
 name = "browser-runtime-web"
@@ -892,8 +897,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
-  # Workspace certification tells a compute package from a window by its manifest.
-  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml",
+  # Workspace certification tells a windowless service from a window by its manifest.
+  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.
@@ -979,8 +984,24 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
+package = "settings"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+]
+readers = [
+  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings/tests/cloud_ux.rs",
+]
+
+[[cargo]]
 package = "tilo-fs"
 inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
@@ -989,6 +1010,8 @@ inputs = [
 readers = [
   "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
   "crates/system/fs/tests/exact_share_process_fuse.rs",
+  "crates/system/fs/tests/cloud_mount.rs",
+  "crates/system/fs/tests/cloud_mount/import.rs",
 ]
 
 [[cargo]]
@@ -1077,6 +1100,11 @@ inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
 readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
+package = "word-processor"
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/word-processor/build.rs"]
+
+[[cargo]]
 package = "pdf-viewer"
 inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["apps/pdf-viewer/build.rs"]
@@ -1139,9 +1167,13 @@ inputs = [
   # The search relevance table runs over every app's manifest and keywords.
   "apps/*/tilo-app.toml",
   "apps/*/search/*.ftl",
+  # The ask-agent chord's test finds the apps that share a selection in their
+  # sources and checks each manifest asks for the shell-ui service.
+  "apps/*.rs",
 ]
 readers = [
   "crates/session/shell/src/shell/search/relevance_tests.rs",
+  "crates/session/shell/src/shell/selection_agent.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
@@ -1452,10 +1484,6 @@ reason = "needs a FEX runtime container on ARM"
 [[unrequired]]
 suite = "os/tests/fex-wine-smoke.py"
 reason = "needs a FEX runtime container"
-
-[[unrequired]]
-suite = "os/tests/fluxcast-rtsp-receiver.py"
-reason = "driver for a running FluxCast server"
 
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"

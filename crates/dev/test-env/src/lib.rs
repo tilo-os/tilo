@@ -43,6 +43,8 @@ mod desktop;
 pub mod hang;
 pub mod idle;
 
+#[cfg(unix)]
+pub use capability::chown_to;
 pub use capability::{Capability, Probe, capability_unavailable};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};

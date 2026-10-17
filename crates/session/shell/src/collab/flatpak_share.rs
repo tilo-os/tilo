@@ -16,7 +16,7 @@
 use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Instant;
 
@@ -110,6 +110,8 @@ pub struct EncodedFrame {
     /// Owner-side capture timestamp (monotonic ns). Receivers subtract their
     /// translated local clock to compute motion-to-photon latency.
     pub capture_ts_ns: u64,
+    /// Place in the share's encoded sequence; see `NeighbourMsg::SurfaceFrame::seq`.
+    pub seq: u64,
 }
 
 impl EncodedFrame {
@@ -119,6 +121,7 @@ impl EncodedFrame {
             source_peer: self.source_peer,
             encoded_h264: self.nalus,
             ts: self.capture_ts_ns,
+            seq: self.seq,
         }
     }
 }
@@ -303,6 +306,8 @@ pub struct SharedFlatpakSession {
     /// queue with drop-oldest backpressure; a keyframe flag in the header
     /// lets late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
+    /// Sequence of a paint share's frames, which bypass the encoder.
+    paint_seq: AtomicU64,
     color_override: Arc<Mutex<ColorOverride>>,
     /// The workspace tab holding the window, announced with the stream so a
     /// viewer shows it in exactly that tab; `0` names none.
@@ -488,6 +493,7 @@ impl SharedFlatpakSession {
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
+            paint_seq: AtomicU64::new(0),
             color_override: Arc::new(Mutex::new(None)),
             tab: 0,
         }
@@ -716,6 +722,7 @@ impl SharedFlatpakSession {
             source_peer: self.host_user_id,
             encoded_h264: payload,
             ts: self.monotonic_ns_now(),
+            seq: self.paint_seq.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -836,19 +843,26 @@ impl SharedFlatpakSession {
                         (stats.bytes as u64).saturating_mul(u64::from(self.config.target_fps));
                     m.record_bitrate(bytes_per_sec);
                 }
-                if let Err(error) = self.stream_sender.publish(stats.keyframe, nalus.clone()) {
-                    tracing::warn!(
-                        surface = self.surface_id,
-                        error = ?error,
-                        "dropping encoded frame rejected by stream limits"
-                    );
-                    return None;
-                }
+                let seq = match self.stream_sender.publish(stats.keyframe, nalus.clone()) {
+                    Ok(seq) => seq,
+                    Err(error) => {
+                        tracing::warn!(
+                            surface = self.surface_id,
+                            error = ?error,
+                            "dropping encoded frame rejected by stream limits"
+                        );
+                        // The next unit would reference this one without a
+                        // gap in the sequence to tell viewers it is missing.
+                        self.encoder.lock_recover().force_keyframe();
+                        return None;
+                    }
+                };
                 Some(EncodedFrame {
                     surface: self.surface_id,
                     source_peer: self.host_user_id,
                     nalus,
                     capture_ts_ns: carried_ts,
+                    seq,
                 })
             }
             Err(err) => {
@@ -1307,8 +1321,10 @@ mod tests {
                     source_peer,
                     encoded_h264,
                     ts,
+                    seq,
                 } => {
                     assert_eq!(surface, 7);
+                    assert_eq!(seq, frame.seq);
                     assert_eq!(source_peer, 1);
                     assert_eq!(encoded_h264, frame.nalus);
                     assert_eq!(ts, frame.capture_ts_ns);

@@ -77,18 +77,23 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
-UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
-aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
-installs the flashable disk:
+UKI, which keeps the device tree across updates. t builds and publishes one for main's
+head when asked (`publish-os-board-<board>` in `t.toml`; it builds `os-image-aarch64`,
+`os-dev-image-aarch64` and `os-board-<board>` first, a few hours from cold):
+
+```sh
+t dispatch publish-os-board-lenovo-83ed --ref main
+```
 
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
-| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
-| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The moving tag moves once the aarch64 lane has sealed and pushed the image; the
-board job then installs the disk from it.
-On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+The moving tag moves only forward along main: a build of an older commit leaves it.
+`t test os-board-lenovo-83ed` builds the image from your tree without publishing it
+(`t outputs` gives the OCI archive). The flashable disk is not on t yet: the newest is
+the one Build / OS dev installed last, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
 Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):
@@ -635,7 +640,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
 | `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
 | `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
-| `xwayland-satellite` `Xwayland` (binaries) | `xwayland-satellite` `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge; they fail, not skip, without it |
+| `xwayland-satellite` `Xwayland` (binaries) | `tools/ci/install-xwayland-satellite.sh` (needs `xcb-util-cursor-devel` `open-sans-fonts`), `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge with Tilo's clipboard handoff patch; they fail, not skip, without it |
 
 The sandbox, language-server, and rollback mechanism tests require the binary
 tools listed above. Install them where Cargo runs, including inside a build
@@ -1650,10 +1655,13 @@ code 38), which is a refusal, not an unimplemented backend.
 ### Nested desktop with Tilo's own apps
 
 A bare `shell --backend winit` has an empty launcher: it lists only installed,
-signed `.tapp` packages. One command builds the shell and the apps through
-`$CARGO` (a remote cargo drop-in that mirrors artifacts back with `--fetch`), packages and signs the apps with a development key, installs them
-with their runtime bundle into a private store, and starts the nested shell
-beside the model gateway:
+signed `.tapp` packages. One command builds the shell and the apps on a t
+server (t.toml's `nested-session` check, downloaded with `t outputs`: the thin
+apps need the exact `libruntime_dylib.so` of their build, which `t cargo build`
+does not copy back), packages and signs the apps with a development key,
+installs them with their runtime bundle into a private store, and starts the
+nested shell beside the model gateway. The machine running it needs `t` and no
+Rust toolchain:
 
 ```bash
 dist/dev/nested-session.sh                                  # core apps + agent

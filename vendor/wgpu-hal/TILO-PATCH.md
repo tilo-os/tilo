@@ -99,3 +99,21 @@ full render of the same scene by one channel step at a few edge pixels, so
 partially redrawn frames drifted from fresh ones. With safe math the two agree
 pixel for pixel. Passthrough MSL keeps the options its author compiles with.
 The change is in `src/metal/device.rs`.
+
+## Vulkan loader device lookups ordered against its list changes
+
+The Vulkan loader (1.4.341 as Fedora 44 ships it) resolves a `VkDevice` to
+its driver for `vkSetDebugUtilsObjectNameEXT`, `vkCreateSwapchainKHR` and
+`vkGetDeviceProcAddr` by walking every instance's drivers and their devices
+under one mutex, while `vkDestroyDevice` frees device nodes under another
+and `vkCreateInstance` and `vkEnumeratePhysicalDevices` free the driver
+nodes of an already listed instance whose driver fails or has no physical
+device. A process that names objects on one device (every resource, once
+`InstanceFlags::DEBUG` is on, as in debug builds) while another thread does
+any of these reads a freed node and crashes. The shell's parallel GPU tests
+did, in `loader_get_icd_and_device`. `vulkan::LOADER_DEVICE_LISTS`, a
+process-wide re-entrant mutex, is held around those lookups, instance and
+device creation (through loading the device's functions) and destruction,
+and physical device enumeration. Drop this once the loaders Tilo runs on
+order their own lists. The change is in
+`src/vulkan/{mod,adapter,device,drm,instance,swapchain/native}.rs`.

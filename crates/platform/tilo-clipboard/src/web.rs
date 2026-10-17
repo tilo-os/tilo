@@ -43,6 +43,12 @@ impl ClipboardBackend for BrowserClipboard {
         write_clipboard_text(text, forward.as_ref().unchecked_ref())
     }
 
+    /// A page can only write `text/plain`: the browser offers no way to
+    /// mark a copy as a secret, so it goes out unmarked.
+    fn set_secret_text(&self, text: &str) -> bool {
+        self.set_text(ClipboardTarget::Clipboard, text)
+    }
+
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
         events::read_rich()
     }

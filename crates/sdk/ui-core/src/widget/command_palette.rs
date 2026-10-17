@@ -465,6 +465,9 @@ pub struct CommandPalette {
     /// Chip rows the host's band is reserving — the palette doesn't know
     /// how many controls the host has, so this is negotiated, not fixed.
     host_filter_strip_rows: usize,
+    /// Show the query field alone while nothing is typed: no filter band,
+    /// no list, no footer ([`Self::set_field_only_while_empty`]).
+    field_only_while_empty: bool,
     /// Rebuilt whenever the entry set, query or filter changes. Every
     /// geometry accessor reads this so hit-testing, scrolling and painting
     /// cannot disagree.
@@ -524,6 +527,7 @@ impl CommandPalette {
             hide_filter_strip: false,
             host_filter_strip: false,
             host_filter_strip_rows: 1,
+            field_only_while_empty: false,
             rows: Vec::new(),
             last_cursor: Point::ZERO,
             platform: PlatformConventions::default(),
@@ -552,6 +556,19 @@ impl CommandPalette {
 
     pub fn set_modal(&mut self, modal: bool) {
         self.modal = modal;
+    }
+
+    /// Show the query field alone until something is typed, for a host
+    /// that opens search over content the person came to look at (the
+    /// desktop's Super surface): an empty query lists nothing, so the card
+    /// shrinks to its field and the first keystroke grows it into results.
+    pub fn set_field_only_while_empty(&mut self, on: bool) {
+        self.field_only_while_empty = on;
+    }
+
+    /// Whether the card is showing its query field alone right now.
+    pub fn shows_field_only(&self) -> bool {
+        self.field_only_while_empty && self.query.is_empty() && self.arg_state.is_none()
     }
 
     pub fn clear(&mut self) {
@@ -681,6 +698,12 @@ impl CommandPalette {
 
     /// Matches the size `build_layout` requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
+        if self.shows_field_only() {
+            return (
+                self.card_width(),
+                PADDING * 2.0 + INPUT_HEIGHT * self.layout_scale(),
+            );
+        }
         // Sized off the row plan, not a row count, since headers and entries
         // have different heights; clamped so a big hit count doesn't grow
         // the card taller than the screen.
@@ -1111,6 +1134,9 @@ impl CommandPalette {
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
+        if self.shows_field_only() {
+            return None;
+        }
         (0..self.visible.len()).find(|&i| self.row_rect(i).is_some_and(|r| r.contains(p)))
     }
 
@@ -2186,6 +2212,10 @@ impl Widget for CommandPalette {
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
         self.draw_query_text(scene, transform, text_renderer, theme, &layout);
+        if self.shows_field_only() {
+            text_renderer.set_text_scale(renderer_scale);
+            return;
+        }
 
         // Skipped when the host paints its own controls into the reserved band.
         if self.mode == PaletteMode::Search && !self.hide_filter_strip && !self.host_filter_strip {
@@ -3948,5 +3978,28 @@ mod state_submit_tests {
         assert!(dispatch(&mut palette, &key(NamedKey::Escape, false)));
         assert!(palette.arg_state.is_none(), "Escape cancels the argument");
         assert!(palette.take_outcome().is_none());
+    }
+
+    #[test]
+    fn a_field_only_palette_lists_nothing_until_something_is_typed() {
+        let mut palette = CommandPalette::new();
+        palette.push(CommandEntry::new("music", "Music"));
+        palette.push(CommandEntry::new("notes", "Notes"));
+        palette.set_rect(Rect::new(0.0, 0.0, 600.0, 400.0));
+        let full = palette.desired_size().1;
+        palette.set_field_only_while_empty(true);
+        assert!(palette.shows_field_only());
+        let field = palette.desired_size().1;
+        assert!(field < full, "the empty card is its field alone");
+        assert!(
+            palette.row_at(Point::new(300.0, field + 30.0)).is_none(),
+            "no hidden row takes a click"
+        );
+        palette.set_query("mu");
+        assert!(!palette.shows_field_only());
+        assert!(
+            palette.desired_size().1 > field,
+            "typing grows the card into results"
+        );
     }
 }

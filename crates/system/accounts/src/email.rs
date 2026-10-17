@@ -93,6 +93,25 @@ impl Default for AccountConfig {
 }
 
 impl AccountConfig {
+    /// Decode non-secret connection metadata using the shared account schema.
+    ///
+    /// Keeping this concrete entry point beside the schema lets thin apps use
+    /// the shared runtime's decoder rather than each instantiating one.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed connection metadata.
+    pub fn from_value(value: serde_json::Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+
+    /// Encode connection metadata. The in-memory password is never included.
+    ///
+    /// # Errors
+    /// Returns an error if the connection metadata cannot be serialized.
+    pub fn to_value(&self) -> serde_json::Result<serde_json::Value> {
+        serde_json::to_value(self)
+    }
+
     /// What the account is called: its display name, falling back to the
     /// email, falling back to a generic placeholder.
     pub fn label(&self) -> &str {
@@ -180,6 +199,31 @@ impl AccountConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_metadata_roundtrip_excludes_passwords() {
+        let config = AccountConfig {
+            email: "person@example.test".into(),
+            auth: AuthMethod::OAuth,
+            import_pending: true,
+            password: "in-memory-only".into(),
+            ..Default::default()
+        };
+        let mut value = config.to_value().expect("encode connection metadata");
+        assert!(value.get("password").is_none());
+        assert!(!value.to_string().contains("in-memory-only"));
+        // Even an untrusted metadata document cannot supply a credential.
+        value["password"] = serde_json::json!("untrusted-password");
+        let decoded = AccountConfig::from_value(value).expect("decode connection metadata");
+        assert_eq!(
+            decoded,
+            AccountConfig {
+                password: String::new(),
+                ..config
+            }
+        );
+        assert!(AccountConfig::from_value(serde_json::json!({"email": 42})).is_err());
+    }
 
     #[test]
     fn setup_model_autofills_and_validates() {

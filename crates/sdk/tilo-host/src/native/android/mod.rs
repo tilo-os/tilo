@@ -244,6 +244,10 @@ impl ClipboardBackend for AndroidClipboard {
         }
     }
 
+    fn set_secret_text(&self, text: &str) -> bool {
+        Self::set_system(text, true)
+    }
+
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         match target {
             ClipboardTarget::Clipboard => Self::system_text(),

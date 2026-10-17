@@ -458,6 +458,7 @@ fn stream(
     // Each submitted frame's number and capture time, by its timestamp: the
     // encoder may hand a frame back with a later call.
     let mut pending = std::collections::VecDeque::new();
+    let mut seq = 0_u64;
     let (mut tick, mut frames, mut last_index) = (0u32, 0u32, 0u16);
     while start.elapsed() < total {
         let due = interval * tick;
@@ -496,7 +497,9 @@ fn stream(
                 source_peer,
                 encoded_h264: unit.data.clone(),
                 ts: capture_us.saturating_mul(1000),
+                seq,
             })?;
+            seq = seq.saturating_add(1);
             writeln!(
                 log,
                 "{}",

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Headless QEMU boot + systemd-analyze capture.
+# Headless QEMU boot timing from the serial console.
 #
-# Boots the given qcow2, waits for `multi-user.target`, dumps
-# `systemd-analyze critical-chain` + top-15 `systemd-analyze blame` +
-# `systemd-analyze time`, and shuts the VM down cleanly.
+# Boots the given qcow2, waits for multi-user.target or graphical.target,
+# measures the kernel-log timestamp at that point, and shuts the VM down.
 #
 # Usage:  scripts/perf/qemu-boot-measure.sh <qcow2> <label>
 #
@@ -34,6 +33,8 @@ mkdir -p "$OUT_DIR"
 SNAP="$OUT_DIR/$LABEL.snapshot.qcow2"
 CONSOLE="$OUT_DIR/$LABEL.console.log"
 RESULT="$OUT_DIR/$LABEL.json"
+# A failed repeat must not leave a previous successful measurement behind.
+rm -f "$RESULT"
 
 # --- Prep a snapshot so the base image never gets touched -------------------
 # The qcow2 base stays read-only; this snapshot holds everything the VM
@@ -72,45 +73,52 @@ trap 'kill "$QEMU_PID" 2>/dev/null || true; rm -f "$SNAP" "$MONITOR" "$OUT_DIR/$
 # target on a desktop image). Bail after 180 s so a stuck boot doesn't
 # hang the script forever.
 DEADLINE=$(( SECONDS + 180 ))
-STATE="unknown"
+STATE="timeout"
 while [ $SECONDS -lt $DEADLINE ]; do
     # Two accepted patterns:
     #   1. Bare log line: `systemd[1]: Reached target multi-user.target - ...`
     #   2. ANSI-coloured `[OK] Reached target ...multi-user.target...` — sed the
     #      colour codes off before matching so we don't miss it.
+    if grep -qE "Kernel panic|Failed to load kernel" "$CONSOLE" 2>/dev/null; then
+        STATE="panic"
+        break
+    fi
+    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        STATE="exited"
+        break
+    fi
     if sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
         grep -qE "Reached target [^-]*(multi-user\.target|graphical\.target)"; then
         STATE="reached-target"
         break
     fi
-    if grep -qE "Kernel panic|Failed to load kernel" "$CONSOLE" 2>/dev/null; then
-        STATE="panic"
-        break
-    fi
     sleep 2
 done
 
-# Extra 5 s for late-service journal flush before we ask systemd-analyze.
+# Allow late-service output to reach the serial console before parsing it.
 sleep 5
 
-# --- Ask the guest to summarise its own boot -------------------------------
-# The bootc image ships bash + systemd-analyze so we can just run them
-# via `qemu-monitor` sendkey — but that's fragile. Simpler: the boot
-# already emitted `systemd-analyze` output because we appended it to a
-# oneshot; instead just parse the serial for the summary line systemd
-# prints at startup. This is deliberately conservative — production
-# perf runs mount the guest disk offline for more detail.
-BOOT_TIME_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
-    awk '
-        # Prefer the kernel timestamp on the last line before the
-        # multi-user.target reach — it is the wall clock since boot in
-        # seconds and is present on every kernel-log line as [    N.NN].
-        match($0, /\[[[:space:]]*([0-9]+\.[0-9]+)\]/, m) { last_ts=m[1] }
-        /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
-            printf "%d", last_ts * 1000
-            exit
-        }
-    ' || echo 0)"
+# --- Read an observed boot timestamp; never substitute zero -----------------
+BOOT_TIME_MS=""
+if [ "$STATE" = "reached-target" ]; then
+    if ! BOOT_TIME_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" | \
+        awk '
+            match($0, /\[[[:space:]]*[0-9]+\.[0-9]+\]/) {
+                last_ts = substr($0, RSTART + 1, RLENGTH - 2)
+                observed = 1
+            }
+            /Reached target [^-]*(multi-user\.target|graphical\.target)/ {
+                if (observed) {
+                    printf "%d", last_ts * 1000
+                    found = 1
+                }
+                exit
+            }
+            END { if (!found) exit 1 }
+        ')"; then
+        STATE="missing-timing"
+    fi
+fi
 
 # --- Shutdown --------------------------------------------------------------
 # `system_powerdown` sends an ACPI shutdown request through QEMU's monitor
@@ -127,12 +135,18 @@ for _ in $(seq 1 20); do
 done
 kill -9 "$QEMU_PID" 2>/dev/null || true
 
+# Report measurement failures only after best-effort guest shutdown.
+if [ "$STATE" != "reached-target" ] || [[ ! "$BOOT_TIME_MS" =~ ^[0-9]+$ ]]; then
+    echo "boot measurement failed: $STATE; see $CONSOLE" >&2
+    exit 1
+fi
+
 # --- Emit result -----------------------------------------------------------
 cat > "$RESULT" <<EOF
 {
   "label": "$LABEL",
   "state": "$STATE",
-  "boot_ms": ${BOOT_TIME_MS:-0},
+  "boot_ms": $BOOT_TIME_MS,
   "console_log": "$CONSOLE"
 }
 EOF

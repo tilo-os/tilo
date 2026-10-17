@@ -18,6 +18,8 @@
 //! collaboration history.
 
 mod channels;
+#[cfg(target_os = "macos")]
+mod confirm;
 mod execution;
 mod files;
 mod joined;
@@ -121,25 +123,21 @@ impl Standalone {
             dev,
             channel_keys.keys.clone(),
         )?;
-        let rooms = Arc::new(Rooms {
-            profile: Arc::clone(&workspace),
-            joined: Arc::clone(&joined),
-        });
+        let rooms = Arc::new(Rooms::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
+            &apps,
+            dev,
         )?;
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
         let (policy_origin, policy_time) = execution_policy_clock()?;
-        let owners = Arc::new(Owners {
-            own: owner,
-            joined: Arc::clone(&joined),
-        });
+        let owners = Arc::new(Owners::new(owner, &joined));
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
             Some(rooms as Arc<dyn WorkspaceAuthority>),
@@ -157,7 +155,7 @@ impl Standalone {
                 app_action_access: Some(apps.access_resolver()),
                 app_action_grants: Some(Arc::new(ProfileGrants {
                     workspace: Arc::clone(&workspace),
-                    apps,
+                    apps: Arc::clone(&apps),
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
@@ -172,6 +170,11 @@ impl Standalone {
             channels,
             fanout,
         )?;
+        // An action an agent makes for the person, which asks for
+        // confirmation, is put to them in the runtime's native prompt.
+        // Elsewhere nobody here answers, and such an action is refused.
+        #[cfg(target_os = "macos")]
+        confirm::ask_the_person(&broker, &actor, &apps);
         let author = files::Author {
             person: identity.user_public_key,
             device,
@@ -508,6 +511,26 @@ impl ActionHost for RuntimeActionHost {
             .action_next_change_after_now(&on_this_device(caller), id)
     }
 
+    /// The person this run's agent acts for confirms `request` on this
+    /// device, as the broker asks them; the agent never confirms by its own
+    /// word. A person acting themselves confirms on their own screen, so
+    /// nothing answers for them here.
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        let Some(session) = &self.session else {
+            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+        };
+        if let Err(error) = session.check(caller, &self.joined) {
+            return Pending::ready(Err(error));
+        }
+        self.broker
+            .state()
+            .request_witness(&session.acting(caller), None, request)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
@@ -756,18 +779,52 @@ fn joined_rooms(
 
 /// The identity service apps sign with: over `rooms`, handing out route
 /// keys from `keys`, and in the person's own room only for the records of
-/// theirs an app's surface declares.
+/// theirs an app's surface declares (see [`AttachedSurfaces`] for `apps`
+/// and `dev`).
 fn identity_service(
     socket: PathBuf,
     rooms: Arc<dyn WorkspaceMembership>,
     keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
+    apps: &Arc<apps::Apps>,
+    dev: bool,
 ) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
-    tilo_identity_host::broker::spawn(
-        socket,
-        rooms,
-        keys,
-        Arc::new(tilo_action_broker::SurfacePersonRecords),
-    )
+    let person = AttachedSurfaces {
+        apps: Arc::clone(apps),
+        dev,
+    };
+    tilo_identity_host::broker::spawn(socket, rooms, keys, Arc::new(person))
+}
+
+/// The person-record kinds of the surfaces this runtime holds. Started with
+/// `--dev`, an app that is not installed is a build under development (as
+/// [`RecordCreation`] treats it): the surface it attaches naming, which
+/// `tilo-app dev` sets, is taken as its own, so its person records reach
+/// the person's room. An installed app runs only with its package's signed
+/// surface, and no attach replaces a surface the runtime already holds.
+struct AttachedSurfaces {
+    apps: Arc<apps::Apps>,
+    dev: bool,
+}
+
+impl tilo_identity_host::broker::PersonRecordKinds for AttachedSurfaces {
+    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+        ui::app_surface::person_record_kinds(app_id)
+    }
+
+    fn attached(&self, app_id: &str, surface: &[u8]) {
+        if self.dev
+            && self.apps.declared_resource_kinds(app_id).is_none()
+            && ui::app_surface::bytes_of(app_id).is_none()
+        {
+            // Changes are decided against the surface their op names, read
+            // from the content store as a package's is.
+            if let Err(error) = tilo_content::ContentStore::for_app().put(surface) {
+                tracing::warn!(%error, app_id, "the development surface could not be stored");
+                return;
+            }
+            tilo_action_broker::register_package_surface(app_id, surface);
+        }
+    }
 }
 
 #[cfg(test)]

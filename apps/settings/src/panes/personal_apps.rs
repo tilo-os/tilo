@@ -254,6 +254,7 @@ fn sample_candidates() -> Vec<AppCandidate> {
         package_id: package.into(),
         display_name: name.into(),
         resources: kinds.into_iter().collect(),
+        secondary: false,
     };
     let ext = |ext: &str| ResourceKind::extension(ext).ok();
     let scheme = |scheme: &str| ResourceKind::scheme(scheme).ok();
@@ -481,6 +482,7 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
             package_id,
             resources,
+            secondary: manifest.opens_secondary,
         });
     }
     out.sort_by(|a, b| {
@@ -517,6 +519,7 @@ mod tests {
             package_id: id.into(),
             display_name: id.into(),
             resources: [ResourceKind::extension(ext).unwrap()].into(),
+            secondary: false,
         }
     }
 

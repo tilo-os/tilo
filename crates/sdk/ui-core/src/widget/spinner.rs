@@ -38,6 +38,9 @@ const ORBIT_RADIUS_FRAC: f64 = 0.35;
 
 pub struct Spinner {
     size: f32,
+    /// When set, the size follows one line of this role on every layout, so
+    /// a spinner beside a status line matches the text at any text scale.
+    text_role: Option<crate::tokens::TextRole>,
     start: Instant,
     rect: Rect,
     /// Captured from the last draw. `Widget::needs_animation_frame` has no
@@ -55,9 +58,20 @@ impl Spinner {
     pub fn with_size(size: f32) -> Self {
         Self {
             size,
+            text_role: None,
             start: crate::time::now(),
             rect: Rect::ZERO,
             reduce_motion: false,
+        }
+    }
+
+    /// Sized to one line of `role` text, for a spinner that sits inline with
+    /// a status line rather than standing alone.
+    #[must_use]
+    pub fn for_text(role: crate::tokens::TextRole) -> Self {
+        Self {
+            text_role: Some(role),
+            ..Self::new()
         }
     }
 
@@ -90,9 +104,12 @@ impl Widget for Spinner {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if let Some(role) = self.text_role {
+            self.size = theme.tokens.typography.style(role).line_height_px();
+        }
         let style = Style {
             size: Size::from_lengths(self.size, self.size),
             // Fixed target: never the item that gives in an overflowing row.
@@ -201,6 +218,33 @@ mod tests {
 
             assert_eq!(s.get_rect().width(), 24.0);
             assert_eq!(s.get_rect().height(), 24.0);
+        }
+
+        // Case `spinner_for_text_matches_the_line_it_sits_beside`.
+        // An inline spinner is one line of its role tall, and grows with the
+        // text scale instead of staying at the standalone default.
+        for text_scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(text_scale);
+            let line = theme
+                .tokens
+                .typography
+                .style(crate::tokens::TextRole::Caption)
+                .line_height_px();
+            let mut s = Spinner::for_text(crate::tokens::TextRole::Caption);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            s.apply_layout(&taffy, node, Point::ZERO);
+            // Layout snaps to whole pixels.
+            assert!((s.get_rect().height() - f64::from(line)).abs() <= 0.5);
+            assert!(
+                text_scale > 1.0 || line < DEFAULT_SIZE_PX,
+                "a caption line ({line}px) must be smaller than the standalone spinner"
+            );
         }
 
         // Case `accessibility_reports_spinner_role_and_busy`.

@@ -26,7 +26,8 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all Tilo | Super+Space, Super tapped alone | Search |
+| Search all Tilo | Super+Space | Search |
+| The Super surface: search, widgets, time, status, people | Super tapped alone (stays), Super held alone (peek) | — |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
@@ -94,7 +95,11 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
 Super tapped alone means Super pressed and released with no other key,
-click or scroll in between; any chord disarms it. Super+N is already the
+click or scroll in between, before the 300 ms hold; any chord disarms it.
+The tap opens the Super surface and it stays until Escape or a click
+outside. Held alone that long, Super opens the same surface as a peek,
+which closes when Super comes up unless something was typed or clicked
+in it; a chord pressed during the hold closes the peek and runs. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
 Center key). Shift carries the focused group in the direction the bare
 arrow moves focus; carrying past the first or last strip does nothing, and

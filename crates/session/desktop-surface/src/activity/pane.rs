@@ -2,7 +2,9 @@ use super::morning::{
     MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
 mod morning_sources;
+mod task_confirmation_view;
 mod task_review_view;
+pub use task_confirmation_view::ConfirmationNotice;
 
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
@@ -213,6 +215,10 @@ enum ActivityFocus {
     TaskCancelCompose,
     TaskAction(TaskAction),
     DirectionField,
+    /// An editable field of the paused action's draft, by its place.
+    ConfirmField(usize),
+    /// The reason given for declining the paused action.
+    DeclineReason,
     Lens(LensSelection),
     MoreLenses,
     Detail(DetailAction),
@@ -236,6 +242,14 @@ struct WorkSessionBoundary {
     direction: BoundaryDirection,
 }
 
+/// Where the reviewed task sits in its scrolling viewport.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ReviewScroll {
+    offset: f64,
+    content: f64,
+    viewport: Option<Rect>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
     ApproveRun,
@@ -247,12 +261,21 @@ enum TaskAction {
     CloseDirection,
     NextTasks,
     PreviousTasks,
+    ConfirmDraft,
+    EditDraft,
+    DiscardEdits,
+    DeclineDraft,
+    SendDecline,
+    KeepDraft,
+    AlwaysAllow,
     OpenResource,
     StartAgent,
     Launch,
     Start,
     Complete,
     Cancel,
+    /// Show or hide the reviewed task's run counters.
+    Details,
 }
 
 impl TaskAction {
@@ -267,12 +290,20 @@ impl TaskAction {
             Self::CloseDirection => "activity-task-direction-close",
             Self::NextTasks => "activity-task-next",
             Self::PreviousTasks => "activity-task-previous",
+            Self::ConfirmDraft => "activity-confirm-confirm",
+            Self::EditDraft => "activity-confirm-edit",
+            Self::DiscardEdits => "activity-confirm-discard",
+            Self::DeclineDraft => "activity-confirm-decline",
+            Self::SendDecline => "activity-confirm-send-decline",
+            Self::KeepDraft => "activity-confirm-back",
+            Self::AlwaysAllow => "activity-confirm-always",
             Self::OpenResource => "activity-task-open-resource",
             Self::StartAgent => "activity-task-start-agent",
             Self::Launch => "activity-task-launch-agent",
             Self::Start => "activity-task-mark-started",
             Self::Complete => "activity-task-mark-done",
             Self::Cancel => "activity-task-cancel",
+            Self::Details => "activity-task-details",
         })
     }
 }
@@ -830,6 +861,17 @@ pub struct RoomActivityPane {
     tasks: Vec<WorkspaceTask>,
     task_source: Option<TaskListSource>,
     selected_task: Option<String>,
+    /// Whether the reviewed task shows its run counters and owner sample.
+    review_details: bool,
+    /// The reviewed task's scroll: how far its content has moved up inside
+    /// the viewport it was last painted in, and how tall that content was.
+    review_scroll: ReviewScroll,
+    /// Display names of the active workspace's collaborators, agents
+    /// included, by id: tasks and their cards name agents by id.
+    collaborator_names: HashMap<String, String>,
+    /// Whether the person here may change the workspace's agent access,
+    /// which an "Always allow" answer does.
+    may_grant: bool,
     task_rects: Vec<(String, Rect)>,
     new_task_rect: Option<Rect>,
     task_action_rects: Vec<(TaskAction, Rect)>,
@@ -846,6 +888,9 @@ pub struct RoomActivityPane {
     task_review: Option<Result<std::sync::Arc<super::TaskReviewSnapshot>, String>>,
     review_approval: Option<task_review_view::ApprovalFrontier>,
     direction: Option<task_review_view::DirectionDraft>,
+    confirmation: Option<task_confirmation_view::ConfirmationReview>,
+    confirmation_notices: Vec<ConfirmationNotice>,
+    noticed_confirmations: HashSet<String>,
     review_pending: Option<uuid::Uuid>,
     review_notice: Option<String>,
     review_task_offset: usize,
@@ -1065,6 +1110,10 @@ impl RoomActivityPane {
             tasks: Vec::new(),
             task_source: None,
             selected_task: None,
+            review_details: false,
+            review_scroll: ReviewScroll::default(),
+            collaborator_names: HashMap::new(),
+            may_grant: false,
             task_rects: Vec::new(),
             new_task_rect: None,
             task_action_rects: Vec::new(),
@@ -1081,6 +1130,9 @@ impl RoomActivityPane {
             task_review: None,
             review_approval: None,
             direction: None,
+            confirmation: None,
+            confirmation_notices: Vec::new(),
+            noticed_confirmations: HashSet::new(),
             review_pending: None,
             review_notice: None,
             review_task_offset: 0,
@@ -2317,12 +2369,32 @@ impl RoomActivityPane {
             self.morning_source_offset = 0;
         }
         self.task_room = room;
+        self.collaborator_names = tree
+            .active_workspace()
+            .map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .filter(|row| !row.name.trim().is_empty() && row.name != row.id)
+                    .map(|row| (row.id.clone(), row.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let local = self.local_user();
+        self.may_grant = tree.active_workspace().is_some_and(|workspace| {
+            workspace.may_govern_at(&local, tilo_action_policy::roles::governance::GRANT, now)
+        });
         self.morning_workspace = tree.active.raw();
         let origin = self.refresh_task_review();
         let tree_tasks = tree
             .active_workspace()
             .map_or(&[][..], |workspace| workspace.tasks.as_slice());
         self.rebuild_tasks_if_changed(origin, tree_tasks);
+        self.observe_confirmations();
         self.refresh_agent_startup();
         if self
             .selected_task
@@ -2517,9 +2589,15 @@ impl RoomActivityPane {
             },
             TaskListOrigin::Withheld => Vec::new(),
         };
+        let needs_person: HashSet<String> = self
+            .tasks
+            .iter()
+            .filter(|task| self.task_needs_person(task))
+            .map(|task| task.id.clone())
+            .collect();
         self.tasks.sort_by(|left, right| {
-            (left.status != WorkspaceTaskStatus::Waiting)
-                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
+            (!needs_person.contains(&left.id))
+                .cmp(&!needs_person.contains(&right.id))
                 .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.id.cmp(&right.id))
@@ -3259,9 +3337,15 @@ impl RoomActivityPane {
             self.scope_rects.clear();
             self.view_rects.clear();
         } else {
-            // Scope pills first: the title is elided to the room left of them,
-            // so at 200 % the two never paint over each other.
-            self.draw_scope_chips(scene, transform, tr, theme);
+            if self.view == ActivityView::Tasks {
+                // Tasks always belong to the active workspace, so a
+                // workspace-scope toggle there would change nothing.
+                self.scope_rects.clear();
+            } else {
+                // Scope pills first: the title is elided to the room left of
+                // them, so at 200 % the two never paint over each other.
+                self.draw_scope_chips(scene, transform, tr, theme);
+            }
             self.draw_view_tabs(scene, transform, tr, theme);
         }
         // Title elision must use this frame's scope geometry, not rectangles
@@ -4141,7 +4225,7 @@ impl RoomActivityPane {
         let waiting = self
             .tasks
             .iter()
-            .filter(|task| task.status == WorkspaceTaskStatus::Waiting)
+            .filter(|task| self.task_needs_person(task))
             .count();
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
@@ -4175,11 +4259,7 @@ impl RoomActivityPane {
         draw_task_button(scene, transform, tr, theme, rect, &label, true);
         self.view_rects.push((ActivityView::Tasks, rect));
         let mut next = rect.y1 + 8.0;
-        if let Some(task) = self
-            .tasks
-            .iter()
-            .find(|task| task.status == WorkspaceTaskStatus::Waiting)
-        {
+        if let Some(task) = self.tasks.iter().find(|task| self.task_needs_person(task)) {
             let detail = t_args(
                 "activity-catch-up-waiting-detail",
                 &[
@@ -4677,6 +4757,12 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Where the focused control was painted last frame, before this
+        // frame forgets its rectangles: the reviewed task scrolls it into view.
+        let focused = self
+            .keyboard_focus
+            .as_ref()
+            .and_then(|focus| self.rect_for_focus(focus));
         self.task_rects.clear();
         self.task_action_rects.clear();
         self.task_route_rects.clear();
@@ -4703,15 +4789,21 @@ impl RoomActivityPane {
                 true,
             );
         }
-        tr.draw_style(
-            scene,
-            &t("activity-task-queue"),
-            theme.tokens.colors.text_dim,
-            at(transform, x0 + 4.0, y + 8.0),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        y += 40.0;
+        let reviewed =
+            matches!(&self.task_review, Some(Ok(snapshot)) if snapshot.room == self.task_room);
+        // A reviewed task stands alone under its pager; the queue heading
+        // belongs to the list of cards.
+        if !reviewed || self.direction.is_some() {
+            tr.draw_style(
+                scene,
+                &t("activity-task-queue"),
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y + 8.0),
+                None,
+                &theme.text(TextRole::Label),
+            );
+            y += 40.0;
+        }
 
         if self.direction.is_some() {
             self.draw_direction(
@@ -4721,13 +4813,15 @@ impl RoomActivityPane {
             return;
         }
 
-        if matches!(&self.task_review,Some(Ok(snapshot)) if snapshot.room==self.task_room) {
-            self.draw_review_tasks(
+        if reviewed {
+            self.draw_scrolling_review(
                 &mut PaintCtx::new(scene, transform, tr, theme),
-                Rect::new(x0, y, x1, self.sheet.y1),
+                Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
+                focused,
             );
             return;
         }
+        self.review_scroll.viewport = None;
 
         if self.task_compose_open {
             let composer = Rect::new(x0, y, x1, y + 164.0);
@@ -5026,11 +5120,7 @@ impl RoomActivityPane {
                     .iter()
                     .filter(|task| !task.status.is_finished())
                     .count(),
-                self.tasks
-                    .iter()
-                    .filter_map(|task| task.assigned_agent.as_ref())
-                    .collect::<HashSet<_>>()
-                    .len(),
+                0,
             ),
             ActivityView::Explore | ActivityView::Replay => {
                 (self.total_entries, self.contributors.len())
@@ -5047,7 +5137,6 @@ impl RoomActivityPane {
                 &[
                     ("workspace", workspace.as_str().into()),
                     ("active", change_count.into()),
-                    ("agents", contributor_count.into()),
                 ],
             );
             // Both lines are elided to one line each: the header band holds
@@ -5480,6 +5569,14 @@ impl RoomActivityPane {
         point: Point,
         tree: &mut impl ActivityTree,
     ) -> Option<RoomActivityOutcome> {
+        // A reviewed task scrolled under the header is not clickable there.
+        if self
+            .review_scroll
+            .viewport
+            .is_some_and(|viewport| !viewport.contains(point))
+        {
+            return None;
+        }
         if self.new_task_rect.is_some_and(|rect| rect.contains(point)) {
             self.keyboard_focus = Some(ActivityFocus::NewTask);
             self.open_task_composer(tree);
@@ -5550,22 +5647,37 @@ impl RoomActivityPane {
     }
 
     fn task_creator_label(&self, task: &WorkspaceTask) -> String {
-        let handle = automerge::ActorId::from(task.created_by.as_bytes()).to_hex_string();
+        self.person_label(&task.created_by)
+    }
+
+    /// An agent (or anyone acting on a task) by the name the workspace
+    /// knows it by, falling back to how a participant id is read.
+    pub(super) fn agent_label(&self, id: &str) -> String {
+        self.collaborator_names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| self.person_label(id))
+    }
+
+    /// A participant id as people read it: their name, "You", or a short
+    /// handle, never the raw key.
+    pub(super) fn person_label(&self, id: &str) -> String {
+        let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         let authors = self.source.authors();
         if authors.is_registered(&handle) {
             return authors.resolve(&handle).name;
         }
-        if task.created_by == self.local_user() {
+        if id == self.local_user() {
             return t("workspace-settings-you");
         }
-        if task.created_by.len() == 64 && task.created_by.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return format!(
                 "{} · {}",
                 t("activity-unknown-collaborator"),
-                ui::history_source::short_id(&task.created_by),
+                ui::history_source::short_id(id),
             );
         }
-        participant_display_label(&task.created_by)
+        participant_display_label(id)
     }
 
     fn local_user(&self) -> String {
@@ -5714,6 +5826,23 @@ impl RoomActivityPane {
             self.apply_review_action(action);
             return handled_outcome();
         }
+        if matches!(
+            action,
+            TaskAction::ConfirmDraft
+                | TaskAction::EditDraft
+                | TaskAction::DiscardEdits
+                | TaskAction::DeclineDraft
+                | TaskAction::SendDecline
+                | TaskAction::KeepDraft
+                | TaskAction::AlwaysAllow
+        ) {
+            self.apply_confirmation_action(action);
+            return handled_outcome();
+        }
+        if action == TaskAction::Details {
+            self.review_details = !self.review_details;
+            return handled_outcome();
+        }
         if action != TaskAction::OpenResource
             && (!self.host.mutations_available() || tree.document().pending_ops() > 0)
         {
@@ -5816,7 +5945,9 @@ impl RoomActivityPane {
         let mut description =
             task_accessibility_description(task, self.now(), &self.task_creator_label(task));
         if let Some((_, control)) = self.reviewed_control(&task.id) {
-            for line in task_review_view::task_run_evidence(control, self.now()) {
+            for line in task_review_view::task_run_evidence(control, self.now(), |id| {
+                (id != self.local_user()).then(|| self.person_label(id))
+            }) {
                 description.push('\n');
                 description.push_str(&line);
             }
@@ -5920,6 +6051,8 @@ impl RoomActivityPane {
             })
         {
             t("activity-task-retry-agent")
+        } else if action == TaskAction::Details && self.review_details {
+            t("activity-task-hide-details")
         } else {
             action.label()
         }
@@ -6275,6 +6408,9 @@ impl RoomActivityPane {
         if self.direction_event(event, scale_factor, *modifiers, tree) {
             return handled_outcome();
         }
+        if self.confirmation_event(event, (scale_factor, *modifiers, cursor), tree) {
+            return handled_outcome();
+        }
 
         // The inline group-name editor owns every unchorded key until it
         // commits or cancels; Tab included, so a half-typed name cannot be
@@ -6291,6 +6427,12 @@ impl RoomActivityPane {
             && let Some(outcome) = self.handle_pointer_click(point, tree, records)
         {
             return outcome;
+        }
+
+        if let (Some(point), WindowEvent::MouseWheel { delta, .. }) = (cursor, event)
+            && self.scroll_review(point, delta)
+        {
+            return handled_outcome();
         }
 
         if !self.timeline_is_visible() {
@@ -6431,6 +6573,7 @@ impl RoomActivityPane {
                 if self.direction.is_some() {
                     order.push(ActivityFocus::DirectionField);
                 }
+                order.extend(self.confirmation_focus_order());
                 order.extend(
                     self.task_rects
                         .iter()
@@ -6572,7 +6715,9 @@ impl RoomActivityPane {
                     (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
             }
             ActivityFocus::TaskRoute(route) => self.task_route = route,
-            ActivityFocus::DirectionField => {}
+            ActivityFocus::DirectionField
+            | ActivityFocus::ConfirmField(_)
+            | ActivityFocus::DeclineReason => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -6727,6 +6872,9 @@ impl RoomActivityPane {
                 .map(|task| task.title.clone()),
             ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
             ActivityFocus::DirectionField => Some(t("activity-task-direction-label")),
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => {
+                self.confirmation_field_label(focus)
+            }
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
             ActivityFocus::TaskAction(action) => Some(action.label()),
@@ -6943,10 +7091,16 @@ impl RoomActivityPane {
                 None,
                 t("activity-task-direction-label"),
             ),
-            ActivityFocus::TaskAction(_) => control(
-                Role::Button,
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => control(
+                Role::TextInput,
                 false,
                 None,
+                t("activity-confirm-field-description"),
+            ),
+            ActivityFocus::TaskAction(action) => control(
+                Role::Button,
+                false,
+                (*action == TaskAction::Details).then_some(self.review_details),
                 t("a11y-shell-activity-task-action"),
             ),
             ActivityFocus::Lens(value) => control(
@@ -7010,6 +7164,12 @@ impl RoomActivityPane {
 
         if *focus == ActivityFocus::DirectionField {
             return self.direction.as_ref()?.input.accessibility();
+        }
+        if matches!(
+            focus,
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason
+        ) {
+            return self.confirmation_field_accessibility(focus);
         }
         if *focus == ActivityFocus::Timeline {
             return self.timeline.accessibility();
@@ -7263,6 +7423,9 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(route, rect)| (route == value).then_some(*rect)),
             ActivityFocus::DirectionField => self.direction.as_ref().map(|draft| draft.rect),
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => {
+                self.confirmation_field_rect(focus)
+            }
             ActivityFocus::TaskCreate => self.task_create_rect,
             ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
             ActivityFocus::TaskAction(value) => self

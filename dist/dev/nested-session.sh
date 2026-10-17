@@ -15,10 +15,11 @@
 #   dist/dev/nested-session.sh [options] [-- extra shell arguments]
 #
 # Options:
-#   --apps "NAME ..."  apps to build and install (directory names under apps/;
-#                      "files" means file-explorer). Default: the core set below.
+#   --apps "NAME ..."  apps to install (directory names under apps/; "files"
+#                      means file-explorer): the set nested-session-build.sh
+#                      builds (the default) or a subset of it.
 #   --state DIR        state directory (default: $XDG_STATE_HOME/tilo-nested)
-#   --no-build         use binaries already in target/ instead of building
+#   --no-build         use the last build in target/nested-session
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
@@ -30,14 +31,17 @@
 # 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
 # asks for a snapshot.
 #
-# Re-running rebuilds through $CARGO (incremental on the builder) and repackages
-# only apps whose binary, manifest or surface changed. A changed shared runtime
-# repackages every app, since apps link its exact build.
+# Everything is built on a t server by t.toml's `nested-session` check
+# (dist/dev/nested-session-build.sh) and downloaded with `t outputs`, so the
+# machine running the session needs no Rust toolchain. An unchanged tree
+# returns the stored build at once. Re-running repackages only apps whose
+# binary, manifest or surface changed. A changed shared runtime repackages
+# every app, since apps link its exact build.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-default_apps="agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"
-apps=$default_apps
+built_apps=$("$repo_root/dist/dev/nested-session-build.sh" --apps)
+apps=$built_apps
 state=${XDG_STATE_HOME:-$HOME/.local/state}/tilo-nested
 build=1
 prepare_only=0
@@ -65,10 +69,7 @@ while (($#)); do
 done
 
 if ((build)); then
-    # Builds go through a remote cargo drop-in that mirrors the named artifacts
-    # back with --fetch PATH; name it in $CARGO.
-    remote_cargo=${CARGO:?set CARGO to a remote cargo drop-in that accepts --fetch PATH, or pass --no-build}
-    command -v "$remote_cargo" >/dev/null || die "$remote_cargo (from CARGO) is required on PATH"
+    command -v t >/dev/null || die "t is required on PATH to build (docs/t.md), or pass --no-build"
 fi
 for tool in jq bwrap dbus-run-session readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
@@ -90,6 +91,8 @@ for app in $apps; do
     if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
         die "no app named $app under apps/"
     fi
+    [[ " $built_apps " == *" $app "* ]] \
+        || die "$app is not built for the nested session; add it to dist/dev/nested-session-build.sh"
     selected+=("$app")
 done
 ((${#selected[@]})) || die "no apps selected"
@@ -107,74 +110,37 @@ if [[ -f $pidfile ]] && kill -0 "$(<"$pidfile")" 2>/dev/null; then
     die "a nested session for $state is already running (pid $(<"$pidfile"))"
 fi
 
-target=$repo_root/target
-# Host tools build in their own profile: release optimisation without the
-# shipped profile's fat LTO and single codegen unit, whose link alone takes
-# tens of minutes on every shell change.
-profile=nested
-bin=$target/$profile
-profile_config=(--config "profile.$profile.inherits=\"release\"" --config "profile.$profile.lto=false"
-                --config "profile.$profile.codegen-units=16" --config "profile.$profile.incremental=true")
-thin=$target/thin-app
-host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-control)
-
-# --- 1. Host binaries -------------------------------------------------------
-# Optimised builds, so the nested desktop is not sluggish. `dev-overrides` lets the shell mint a throwaway
-# identity and serve the control socket, and lets the launcher and installer
-# take the runtime and trust inputs from this state directory. Never ship it.
+# --- 1. Build -------------------------------------------------------------------
+# One check builds the host programs, the thin apps and the runtime library
+# they link, on a t node; its outputs land in target/nested-session.
+build_out=$repo_root/target/nested-session
+bin=$build_out/bin
+thin=$build_out/thin-app
 if ((build)); then
-    say "building host binaries ($remote_cargo, profile $profile, dev-overrides)"
-    fetch=()
-    for name in "${host_bins[@]}"; do fetch+=(--fetch "$profile/$name"); done
-    fetch+=(--fetch "$profile/examples/packaged_native_governor")
-    (cd "$repo_root" && "$remote_cargo" "${fetch[@]}" build --locked --profile "$profile" "${profile_config[@]}" \
-        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
-        -p launcher --bin tilo-launcher --features launcher/dev-overrides \
-        -p install --bin tilo-install \
-        -p tilo-app-package-cli --bin tilo-app-package \
-        -p runtime-bundle --bin tilo-runtime-bundle \
-        -p tilo-model-gateway --bin tilo-model-gateway \
-        -p tilo-control --bin tilo-control)
+    say "building the nested session on t (t outputs nested-session)"
+    (cd "$repo_root" && t outputs nested-session --human >/dev/null) \
+        || die "the nested-session build failed (t log nested-session shows why)"
 fi
-for name in "${host_bins[@]}" examples/packaged_native_governor; do
-    [[ -x $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
+for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
+            tilo-model-gateway tilo-control examples/packaged_native_governor; do
+    [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
+    chmod +x "$bin/$name"
 done
-
-# --- 2. Thin apps and the shared runtime library ----------------------------
-plan=$state/plan.json
-python3 "$repo_root/tools/apps/app_release.py" --apps "${selected[*]}" > "$plan"
-mapfile -t packages < <(jq -r '.packages[]' "$plan")
-runtime_plan=$state/runtime-plan.json
-python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
-mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
-mapfile -t engines < <(for manifest in "$repo_root"/crates/runtime/engines/*/Cargo.toml; do
-    sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1; done)
-if ((build)); then
-    say "building ${#packages[@]} thin app(s) against the default collection's runtime ($remote_cargo)"
-    # build-thin-apps.sh owns the Cargo graph; route its one Cargo call through
-    # $CARGO and mirror back only what packaging reads, not the whole target.
-    wrapper=$state/cargo-via-remote
-    {
-        printf '#!/usr/bin/env bash\nexec %q' "$remote_cargo"
-        printf ' --fetch %q' thin-app/libruntime_dylib.so
-        jq -r '.catalog[].binary' "$plan" | while read -r name; do printf ' --fetch %q' "thin-app/$name"; done
-        for engine in "${engines[@]}"; do
-            printf ' --fetch %q --fetch %q' "thin-app/lib${engine//-/_}.so" "thin-app/$engine-check"
-        done
-        printf ' "$@"\n'
-    } > "$wrapper"
-    chmod +x "$wrapper"
-    # The build checks each thin binary links by running it once; keep it
-    # away from the host display so no app window opens there.
-    env -u WAYLAND_DISPLAY -u DISPLAY -u CARGO_ENCODED_RUSTFLAGS -u RUSTFLAGS \
-        CARGO="$wrapper" INCLUDE_PACKAGES="${runtime_packages[*]}" \
-        BUILD_PACKAGES="${packages[*]}" \
-        APP_FEATURES="$(jq -r '.features | join(",")' "$runtime_plan")" \
-        "$repo_root/os/scripts/build-thin-apps.sh"
-fi
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
+
+# The product fonts: the shell sets text in them from a `fonts/` directory
+# beside its executable, and the runtime bundle carries the same catalog. They
+# are pinned artifacts the catalog tool materializes, not build outputs.
+fonts=$state/fonts
+rm -rf "$fonts"
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+ln -sfn "$fonts" "$bin/fonts"
+
+# --- 2. Plans -------------------------------------------------------------------
+plan=$state/plan.json
+python3 "$repo_root/tools/apps/app_release.py" --apps "${selected[*]}" > "$plan"
 
 # --- 3. Keys -----------------------------------------------------------------
 keys=$state/keys
@@ -190,11 +156,9 @@ printf '%s\n' "$pubkey" > "$trust"
 # --- 4. Runtime bundle --------------------------------------------------------
 runtimes=$state/runtimes
 mkdir -p "$runtimes"
-rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
-[[ -f $rust_libstd ]] || die "no Rust libstd dylib in the local toolchain"
 needed_std=$(readelf -dW "$thin/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
-[[ $needed_std == "$(basename "$rust_libstd")" ]] \
-    || die "the runtime links $needed_std but the local toolchain has $(basename "$rust_libstd"); install the toolchain from rust-toolchain.toml"
+rust_libstd=$thin/$needed_std
+[[ -n $needed_std && -f $rust_libstd ]] || die "the build carries no $needed_std beside the runtime"
 # Read the whole cache listing: an early exit would fail the pipeline on SIGPIPE.
 keyboard_library=$(ldconfig -p | awk '/libxkbcommon\.so\.0 .*(x86-64|AArch64)/ && !found {print $NF; found=1}')
 [[ -f $keyboard_library ]] || die "libxkbcommon.so.0 is not installed"
@@ -209,11 +173,8 @@ if [[ -f $runtimes/.key && $(<"$runtimes/.key") == "$runtime_key" && -f $runtime
 fi
 if [[ -z $runtime_version ]]; then
     say "baking the runtime bundle"
-    fonts=$state/work/fonts
-    rm -rf "$fonts" "$state/work/runtime"
+    rm -rf "$state/work/runtime"
     mkdir -p "$state/work"
-    python3 "$repo_root/tools/font-catalog.py" prepare \
-        "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
     OUT_DIR="$state/work/runtime" RUNTIME_RELEASE="$release" FROM=/ \
         VERSION_OUT="$state/work/runtime-version" ARCH="$(uname -m)" \
         IDENTITY_JSON="$identity" BUNDLE_BIN="$bin/tilo-runtime-bundle" \
@@ -222,7 +183,7 @@ if [[ -z $runtime_version ]]; then
     runtime_version=$(<"$state/work/runtime-version")
     find "$runtimes" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
     mv "$state/work/runtime/tilo-runtime/$runtime_version" "$runtimes/$runtime_version"
-    rm -rf "$state/work/runtime" "$fonts"
+    rm -rf "$state/work/runtime"
     printf '%s\n' "$runtime_version" > "$runtimes/.version"
     printf '%s\n' "$runtime_key" > "$runtimes/.key"
 fi

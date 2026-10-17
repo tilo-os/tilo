@@ -82,6 +82,21 @@ class SignalRuntimeFixture(unittest.TestCase):
         self.run_probe()
         self.assertGreater(self.refused, 0)
 
+    def test_rpc_error_or_wrong_protocol_cannot_prove_an_empty_profile(self):
+        for response in (
+                {'jsonrpc': '2.0', 'id': 'fixture-empty', 'result': [],
+                 'error': {'code': -32603, 'message': 'account store unreadable'}},
+                {'jsonrpc': '1.0', 'id': 'fixture-empty', 'result': []}):
+            with self.subTest(response=response):
+                self.script.write_text(DAEMON.replace(
+                    "{'jsonrpc': '2.0', 'id': request['id'], 'result': json.loads(result)}",
+                    repr(response)))
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'fixture must contain no authenticated accounts'):
+                        self.run_probe()
+                finally:
+                    (self.work / 'empty-fixture-profile').rmdir()
+
     def test_nonempty_account_response_remains_refused(self):
         with self.assertRaisesRegex(RuntimeError, 'fixture must contain no authenticated accounts'):
             self.run_probe(result=({'number': '+12025550123'},))

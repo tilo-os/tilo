@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -42,6 +44,65 @@ class HttpArtifactContractTests(unittest.TestCase):
             binary.write_bytes(original + b'changed')
             changed, _ = artifact.file_record(binary)
             self.assertNotEqual(changed['sha256'], record['sha256'])
+
+
+class RegistryIOTests(unittest.TestCase):
+    def test_special_inputs_are_rejected_without_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fifo = Path(temporary) / 'input'
+            os.mkfifo(fifo)
+            for function in ('read_bounded', 'file_hash'):
+                with self.subTest(function=function):
+                    script = (
+                        'import importlib.util, pathlib\n'
+                        f's = importlib.util.spec_from_file_location("tools", {str(DEV / "registry_artifact.py")!r})\n'
+                        'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n'
+                        'try:\n'
+                        f' m.{function}(pathlib.Path({str(fifo)!r}), 1024)\n'
+                        'except ValueError:\n pass\n'
+                        'else:\n raise AssertionError("FIFO accepted")\n'
+                    )
+                    result = subprocess.run([sys.executable, '-c', script],
+                                            capture_output=True, text=True, timeout=2)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_regular_input_and_successful_mount_still_work(self):
+        tools = artifact.tools
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'input'
+            path.write_bytes(b'payload')
+            self.assertEqual(tools.read_bounded(path, 7), b'payload')
+            self.assertEqual(tools.file_hash(path, 7), tools.sha(b'payload'))
+            with patch.object(tools, 'command', side_effect=[os.fsencode(temporary), b'']) as command:
+                with tools.mounted('sha256:fixture') as root:
+                    self.assertEqual(root, Path(temporary))
+            self.assertEqual(command.call_count, 2)
+            with patch.object(tools, 'command', side_effect=[os.fsencode(temporary), ValueError('unmount failed')]):
+                with self.assertRaisesRegex(ValueError, 'unmount failed'):
+                    with tools.mounted('sha256:fixture'):
+                        pass
+
+    def test_bad_mount_output_still_releases_the_image(self):
+        tools = artifact.tools
+        with patch.object(tools, 'command', side_effect=[b'\xff', b'']) as command:
+            with self.assertRaises(UnicodeDecodeError):
+                with tools.mounted('sha256:fixture'):
+                    self.fail('invalid mount was yielded')
+        self.assertEqual(command.call_args_list[-1].args,
+                         ('podman', '--remote=false', 'image', 'unmount', 'sha256:fixture'))
+        self.assertEqual(command.call_count, 2)
+
+    def test_cleanup_failure_is_visible_without_replacing_the_body_error(self):
+        tools = artifact.tools
+        failure = RuntimeError('payload inspection failed')
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(tools, 'command', side_effect=[os.fsencode(temporary), ValueError('unmount failed')]), \
+                    patch.object(tools.subprocess, 'run'):
+                with self.assertRaises(RuntimeError) as raised:
+                    with tools.mounted('sha256:fixture'):
+                        raise failure
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(any('unmount' in note for note in getattr(failure, '__notes__', [])))
 
 
 @unittest.skipUnless(os.getuid() == 0, 'mounted image ownership checks require root')

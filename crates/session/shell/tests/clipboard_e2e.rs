@@ -1938,6 +1938,56 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
     }
 }
 
+/// A secret an app copies (a password, a one-time code) pastes into any other
+/// app as plain text, and reaches the compositor with the markers that keep
+/// it out of clipboard history and device sync. This is the app-side backend
+/// apps run on, not in-process chrome.
+#[test]
+fn an_app_secret_copy_pastes_as_plain_text_and_keeps_its_secret_markers() {
+    const SECRET: &str = "correct horse battery staple";
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-secret");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    app.map_window(&compositor);
+
+    assert!(clipboard.set_secret_text(SECRET));
+    app.wait_until(
+        |s| {
+            s.clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == ui::clipboard::SECRET_MIME)
+        },
+        "the app clipboard worker never published its secret selection",
+    );
+
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.secret-sink");
+    sink.assert_is_tilo_compositor();
+    sink.map_window(&compositor);
+    assert_eq!(sink.read_clipboard(None), SECRET);
+    // The compositor took the selection over from the app; its own offer
+    // still says what kind of copy it is, which is what keeps it out of
+    // history and device sync and tells other clipboard managers to skip it.
+    for marker in [
+        ui::clipboard::SECRET_MIME,
+        ui::clipboard::PASSWORD_MANAGER_HINT_MIME,
+    ] {
+        assert!(
+            sink.state
+                .clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == marker),
+            "the pasted offer lost {marker}: {:?}",
+            sink.state.clipboard_offer_mimes
+        );
+    }
+    assert!(
+        !compositor.full_log().contains(SECRET),
+        "the copied secret reached the compositor log"
+    );
+}
+
 #[test]
 fn native_borrowed_display_pastes_the_compositors_current_selection() {
     let compositor = Compositor::start();

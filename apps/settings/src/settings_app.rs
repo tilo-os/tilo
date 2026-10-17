@@ -574,7 +574,9 @@ impl SettingsApp {
         &self.audio
     }
 
-    pub(crate) fn accounts(&self) -> &panes::accounts::AccountsArea {
+    /// Hosted acceptance fixtures can replace account services with isolated providers.
+    #[doc(hidden)]
+    pub fn accounts(&self) -> &panes::accounts::AccountsArea {
         &self.accounts
     }
 

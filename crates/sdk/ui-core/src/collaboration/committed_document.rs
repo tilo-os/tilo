@@ -585,6 +585,7 @@ mod tests {
     #[test]
     fn only_a_person_route_opens_its_committed_document() {
         assert!(!opens_committed_document("agent"));
+        assert!(!opens_committed_document(super::super::SERVICE_PARTICIPANT));
         assert!(opens_committed_document("person"));
     }
     #[tokio::test]
@@ -1338,7 +1339,7 @@ impl NativeReadJoin {
                     &key,
                     &self.presentation,
                     &self.participant_handle,
-                    &self.participant_kind,
+                    super::broker_participant_kind(&self.participant_kind),
                     &self.record_kind,
                 )
                 .await
@@ -1449,8 +1450,11 @@ async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
 /// the launcher holds custody of for that app, which an agent never is, so it
 /// refuses an agent's open. An agent works through actions and task runs, not
 /// its own document; asking would fail its whole connection in a native room.
+/// A headless service (`CollaborationManager::for_service`) holds no document
+/// either: it publishes actions and answers them, and its room never holds a
+/// record of it to read.
 fn opens_committed_document(participant_kind: &str) -> bool {
-    participant_kind != "agent"
+    !matches!(participant_kind, "agent" | super::SERVICE_PARTICIPANT)
 }
 
 #[allow(

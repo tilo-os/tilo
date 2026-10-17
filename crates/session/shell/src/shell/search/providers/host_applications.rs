@@ -944,6 +944,7 @@ mod tests {
                     opens_extensions: Vec::new(),
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
+                    opens_secondary: false,
                     offers: Vec::new(),
                 }],
                 crate::shell::chrome_state::OpenTarget::Beside,
@@ -998,6 +999,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
             offers: Vec::new(),
         }
     }

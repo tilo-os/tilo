@@ -246,7 +246,7 @@ def main() -> int:
         finished = (
             r"tilo: reloaded \d+ open window|build failed|reload rejected"
             if args.no_timings
-            else r"\[tilo-app\] reload (\d+ ms|without)|build failed"
+            else r"\[tilo-app\] reload (\d+ ms|without)|build failed|reload rejected"
         )
         saves = []
         for run in range(args.runs + 1):
@@ -254,7 +254,7 @@ def main() -> int:
             edit(source, args.edit_pattern, run + 1)
             saved = time.time()
             done = err.wait_for(re.compile(finished), cursor, args.reload_timeout)
-            if not done or "failed" in done[2] or "without" in done[2]:
+            if not done or any(word in done[2] for word in ("failed", "without", "rejected")):
                 raise SystemExit(f"run {run}: no reload ({done[2] if done else 'timeout'})")
             saves.append((saved, done[1]))
             print(f"run {run}: {done[2]}", file=sys.stderr)

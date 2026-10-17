@@ -51,7 +51,11 @@ impl super::Instance {
             unsafe { stat.assume_init() }
         };
 
-        let raw_devices = match unsafe { self.shared.raw.enumerate_physical_devices() } {
+        // Tilo: see `LOADER_DEVICE_LISTS`.
+        let raw_devices = match {
+            let _lists = super::LOADER_DEVICE_LISTS.lock();
+            unsafe { self.shared.raw.enumerate_physical_devices() }
+        } {
             Ok(devices) => devices,
             Err(err) => {
                 log::error!("enumerate_adapters: {err}");

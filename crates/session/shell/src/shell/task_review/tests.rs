@@ -680,3 +680,215 @@ fn capture_queued_approval(
         destination.0.join(format!("{}-approve.png", destination.1)),
     );
 }
+
+/// Governance on this device, signed by the test's governor key: what the
+/// session's selected identity does in production.
+struct GovernedHere {
+    owner: NativeWorkspaceOwner,
+    key: ed25519_dalek::SigningKey,
+}
+
+impl tilo_action_broker::services::WorkspaceMemberships for GovernedHere {
+    fn requires_room(&self, _room: &str) -> bool {
+        true
+    }
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        let room = crate::shell::state::RoomId::parse(room).ok_or("invalid room")?;
+        self.owner.workspace_task_snapshot(room)
+    }
+    fn execute(&self, request: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        let result = crate::shell::state::RoomId::parse(&request.room)
+            .ok_or_else(|| "invalid room".to_owned())
+            .and_then(|room| {
+                let governor = self
+                    .owner
+                    .with_current(room, |view| Ok(view.device().clone()))?;
+                self.owner.commit_workspace_membership_command(
+                    request,
+                    &governor,
+                    &self.key,
+                    SystemTime::now(),
+                )
+            });
+        Box::pin(async move { result })
+    }
+}
+
+/// A Mail message the run paused at, as its host records it.
+fn paused_send() -> tilo_desktop_model::WorkspaceTaskConfirmation {
+    let descriptor = tilo_actions::ActionDescriptor {
+        semantic_identity: None,
+        address: tilo_actions::ActionAddress::new("inbox", "send_message"),
+        resource_kind: "mail.mailbox".into(),
+        resource_label: "Inbox".into(),
+        action_label: "Send message".into(),
+        description: None,
+        locus: tilo_actions::ExecutionLocus::ClientLocal,
+        kind: tilo_actions::OperationKind::Document,
+        contract: tilo_actions::ActionContract::default(),
+        input: tilo_actions::InputSpec::None,
+        params: vec![tilo_actions::ActionParam::required(
+            "message",
+            tilo_actions::ParamType::Object,
+            "The message",
+        )],
+        view: None,
+    };
+    let arguments = serde_json::json!({"message": {"to": "bob@example.org", "body": "Hi"}});
+    let arguments = arguments.as_object().unwrap();
+    let digest = tilo_actions::draft::arguments_digest(arguments);
+    tilo_desktop_model::WorkspaceTaskConfirmation {
+        id: tilo_desktop_model::WorkspaceTaskConfirmation::id_for("inbox", "send_message", &digest),
+        asking: uuid::Uuid::new_v4(),
+        run_epoch: 1,
+        agent_id: "scribe".into(),
+        app: "so.tilo.mail".into(),
+        resource_kind: "mail.mailbox".into(),
+        resource: "inbox".into(),
+        action: "send_message".into(),
+        kind: tilo_action_policy::ActionKind::Outside,
+        risk: tilo_actions::RiskLevel::Destructive,
+        draft: tilo_actions::Draft::render(&descriptor, arguments),
+        arguments_digest: digest,
+        requested_at: 1,
+        state: tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting,
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one governed workspace, a paused run and both review answers read as one story"
+)]
+fn always_allow_grants_the_one_action_and_confirms_the_draft() {
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+    // This device governs the workspace: governance is signed here.
+    let directory = tempfile::tempdir().unwrap();
+    let mut native = crate::shell::state::WorkspaceTree::bootstrap_default();
+    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    assert!(native.set_room(native.active, room));
+    native.persist_path = Some(directory.path().join("native.json"));
+    let tree = native.shared();
+    let owner = native_workspace_owner::open(tree.clone()).unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
+    let caller = tilo_joined_room::testing::certificate(
+        &ed25519_dalek::SigningKey::from_bytes(&[91; 32]),
+        &key,
+        "Governor",
+    );
+    let _governor =
+        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &caller).unwrap();
+    let governed = GovernedHere {
+        owner: owner.clone(),
+        key: key.clone(),
+    };
+    let admit = OwnerCommitRequest {
+        room: room.to_string(),
+        operation: CommitOperation::WorkspaceMembershipCommand {
+            invocation: uuid::Uuid::new_v4(),
+            caller: caller.clone(),
+            command: WorkspaceMembershipCommand::AddAgent {
+                agent: "scribe".into(),
+                preset: tilo_action_policy::roles::AgentPreset::Operator,
+            },
+        },
+    };
+    owner
+        .commit_workspace_membership_command(admit, &caller, &key, SystemTime::now())
+        .unwrap();
+    let task_id = task(&owner, room, &caller);
+    let paused = paused_send();
+    owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: room.to_string(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    authority: WorkspaceTaskAuthority::Host {
+                        attestor: caller.clone(),
+                    },
+                    command: WorkspaceTaskCommand::RequestConfirmation {
+                        task_id: task_id.clone(),
+                        run_epoch: 1,
+                        confirmation: Box::new(paused.clone()),
+                    },
+                },
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
+    let service = NativeTaskReview::start(
+        worker::Worker::new(
+            owner.clone(),
+            Arc::new(crate::shell::broker_services::NativeOwnerCommitService::new(tree, None)),
+        )
+        .with_certificate(caller)
+        .with_memberships(Arc::new(governed)),
+    )
+    .unwrap();
+    let actor = owner.workspace_task_snapshot(room).unwrap().tasks[0]
+        .created_by
+        .clone();
+    // A confirmation id the owner never recorded grants nothing.
+    let forged = TaskReviewRequest {
+        room: room.to_string(),
+        observed_actor: actor,
+        invocation: uuid::Uuid::new_v4(),
+        command: TaskReviewCommand::AlwaysAllow {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            confirmation_id: "0".repeat(32),
+            edits: Vec::new(),
+        },
+    };
+    service.submit(forged.clone()).unwrap();
+    assert!(wait(&service, forged.invocation).is_err());
+    let request = TaskReviewRequest {
+        invocation: uuid::Uuid::new_v4(),
+        command: TaskReviewCommand::AlwaysAllow {
+            task_id: task_id.clone(),
+            run_epoch: 1,
+            confirmation_id: paused.id,
+            edits: Vec::new(),
+        },
+        ..forged
+    };
+    service.submit(request.clone()).unwrap();
+    wait(&service, request.invocation).unwrap();
+    let snapshot = owner.workspace_task_snapshot(room).unwrap();
+    assert!(matches!(
+        snapshot.controls[&task_id]
+            .confirmation
+            .as_ref()
+            .unwrap()
+            .state,
+        tilo_desktop_model::WorkspaceTaskConfirmationState::Confirmed { .. }
+    ));
+    let scope = tilo_action_policy::agent_answers::AnswerScope::action(
+        "so.tilo.mail",
+        "mail.mailbox",
+        "send_message",
+    );
+    let id = tilo_action_policy::agent_answers::grant_id(
+        "scribe",
+        &scope,
+        tilo_action_policy::ActionKind::Outside,
+    );
+    let granted = owner
+        .with_current(room, |view| {
+            let doc = view.peer().admitted_room().ok_or("no room")?;
+            Ok(
+                tilo_desktop_model::projection::room_policy_of(doc, &room.to_string())
+                    .grants
+                    .into_iter()
+                    .find(|grant| grant.id == id),
+            )
+        })
+        .unwrap()
+        .expect("the one action is allowed");
+    assert_eq!(granted.answer, tilo_action_policy::Answer::Allow);
+    assert_eq!(granted.node, scope.node(&room.to_string()));
+}

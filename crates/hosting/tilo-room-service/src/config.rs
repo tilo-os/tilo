@@ -53,7 +53,8 @@ pub struct PersistentConfig {
     /// shows `name` with a capital first letter.
     pub shown_name: Option<String>,
     /// The channels its Chat opens with while it has none
-    /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, none.
+    /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, `general`, since a chat without a
+    /// channel has nowhere for a visitor's first message to go.
     pub chat_channels: Vec<String>,
     /// The strips, by name, the room's shared desktop has
     /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
@@ -64,6 +65,10 @@ pub struct PersistentConfig {
     pub owners: Vec<String>,
     /// User public keys (hex) made Moderators of the room at start.
     pub moderators: Vec<String>,
+    /// A file of more owners and moderators (`TILO_ROOMS_ROLES_FILE`,
+    /// `{"owners": [hex], "moderators": [hex]}`), read again whenever it
+    /// changes: the operator grants or takes back a role while the room runs.
+    pub roles_file: Option<std::path::PathBuf>,
     /// Bot directory entries, with their inputs, installed at first start.
     pub bots: Vec<String>,
     /// Apps authored into the room at first start.
@@ -434,6 +439,9 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
             .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")?,
         owners: keys("TILO_ROOMS_OWNERS")?,
         moderators: keys("TILO_ROOMS_MODERATORS")?,
+        roles_file: var("TILO_ROOMS_ROLES_FILE")
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from),
         bots: list("TILO_ROOMS_BOTS", ';'),
         // Unset: chat, a welcome note and a canvas, so a visitor has
         // something to do at once.
@@ -532,10 +540,12 @@ fn shown_name(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
 
 /// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each
 /// lowercase letters, digits and `-` (the relay derives each channel's id
-/// from its name, so two names may not share one).
+/// from its name, so two names may not share one). Unset or empty, the
+/// chat opens with `general`.
 fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
     let channels: Vec<String> = var("TILO_ROOMS_CHAT_CHANNELS")
-        .unwrap_or_default()
+        .filter(|names| names.split(',').any(|name| !name.trim().is_empty()))
+        .unwrap_or_else(|| "general".to_owned())
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
@@ -742,7 +752,7 @@ mod tests {
             named.persistent.unwrap().shown_name.as_deref(),
             Some("Town Square")
         );
-        assert!(defaults.chat_channels.is_empty());
+        assert_eq!(defaults.chat_channels, ["general"]);
         let channels = config(&[
             base[0],
             base[1],

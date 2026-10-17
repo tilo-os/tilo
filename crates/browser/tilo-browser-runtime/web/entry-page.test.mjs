@@ -118,7 +118,7 @@ test('creating a workspace stays in the current room when pending work cannot be
   assert.equal(chosenWorkspace(), null);
   const failure = document.body.children.at(-1);
   assert.match(failure.children[0].textContent, /not saved yet/);
-  failure.children.find(child => child.tag === 'button').listeners.get('click')();
+  failure.children.flatMap(child => [child, ...(child.children ?? [])]).find(child => child.tag === 'button').listeners.get('click')();
   await tick();
 });
 

@@ -1213,6 +1213,13 @@ pub struct Providers {
     /// deliberately reserved and rejected by validation.
     #[serde(default)]
     pub schemes: Vec<String>,
+    /// The app is a tool someone picks for these resources (an editor that
+    /// imports video) rather than where they open by default: it is offered
+    /// under Open with, and another app claiming the same resource without
+    /// this flag is the default. When nothing else claims a resource it is
+    /// still the default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secondary: bool,
 }
 
 impl Providers {

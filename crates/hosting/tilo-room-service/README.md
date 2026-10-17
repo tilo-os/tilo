@@ -197,7 +197,7 @@ accepts them, and they may frame the service's pages.
 |---|---|---|
 | `TILO_ROOMS_PERSISTENT` | unset | the room's name; turns persistent mode on |
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
-| `TILO_ROOMS_CHAT_CHANNELS` | unset: none | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_CHAT_CHANNELS` | unset: `general` | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
 | `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
@@ -212,6 +212,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
+| `TILO_ROOMS_ROLES_FILE` | none | more owners and moderators, `{"owners": [hex], "moderators": [hex]}`, taken in within seconds of each change, no restart |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
 | `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
@@ -259,17 +260,15 @@ assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
 `room-service` pointer; deployments pin the digest. Build and test it from your tree with
 `t test image-room-service`.
 
-Production pins this image and the web entry together, from one main
-commit, in the infra repository. `tools/release/cloud_promotion.py` plans
-that change: `plan` picks the newest main commit with both images (or
-`--revision`, or two `--receipt` files), checks each digest's revision label
-and platform in the registry and prints the exact manifest diff and pull
-request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
-the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
-reports which revision each service runs and how far main is ahead. The
-`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
-every Monday and the promotion on a manual run. Promotions are batched: each
-web entry deploy makes open tabs offer a reload.
+Deployments pin this image and the web entry together, from one stable
+commit, in a GitOps repository. t's `cloud-deploy` check does that whenever
+stable moves (`tools/release/cloud_deploy.py`): the deploy target in that
+repository lists the services, their manifests and the URL each reports its
+build at (this service's `/mode`), and `rollout`, which keeps it a dry run
+until it is true. It commits the new digests, waits until each moved service
+reports its build and stays healthy, and otherwise commits the previous
+digests back. `python3 tools/release/cloud_deploy.py plan --infra <checkout>
+--config <target>` prints the change for a checkout (`--apply` makes it).
 
 Locally, `dev/run.py` runs the persistent room as production does: this
 service in persistent mode with its child relay, and the web entry laid out

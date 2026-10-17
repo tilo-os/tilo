@@ -529,6 +529,9 @@ pub fn relay(
     // Where the next Super+. opens. The picker takes the keyboard while it
     // is open, so it keeps the caret it opened against.
     host.set_text_caret(state.focused_text_caret());
+    // Typing into the focused window sends desk widgets away and holds
+    // back banners not addressed to the person.
+    host.note_client_typing(state.last_client_typing_at, now);
     delivered
 }
 

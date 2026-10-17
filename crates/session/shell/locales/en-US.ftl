@@ -410,6 +410,7 @@ portal-chooser-file-not-granted = This app has not been given { $path }.
 portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
 portal-chooser-other-workspace = The app's workspace is not the one on screen.
+portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
 portal-launcher-icon-compass = Tilo web compass
 portal-background-title = Allow background activity?
 portal-background-resource = The app may keep working after its window is closed.
@@ -907,6 +908,7 @@ osd-keyboard-backlight-off = Keyboard backlight off
 osd-keyboard-backlight = Keyboard backlight { $percent }%
 osd-no-backlight = No adjustable display
 osd-no-agent = No agent is available here
+osd-starting-agent = Starting the agent…
 osd-airplane-mode-on = Airplane mode on
 osd-airplane-mode-off = Airplane mode off
 osd-touchpad-on = Touchpad on
@@ -1082,6 +1084,10 @@ bluetooth-prompt-a11y-code = Code { $code }
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
 portal-file-choose-folder = Choose folder
+portal-file-grant-write-folder = Allow this app to read and write the selected folder and its contents
+portal-file-existing-write-folder = Choose a writable folder already accessible to this app
+portal-file-allow-write-folder = Allow read and write
+portal-file-use-write-folder = Use writable folder
 portal-file-open = Open
 portal-notification-open = Open
 portal-inhibit-unnamed-app = An app
@@ -1470,6 +1476,7 @@ search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
 search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
 search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
+search-action-enrollment-copy-failed = Could not copy the setup code to the clipboard
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
@@ -1830,6 +1837,7 @@ peer-sync-name-required = Say who this invite is for
 peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
 peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
 peer-sync-copied = Copied
+peer-sync-copy-failed = Could not copy to the clipboard
 peer-sync-joining = Joining…
 peer-sync-pasted = Pasted
 peer-sync-clipboard-empty = Nothing on the clipboard to paste
@@ -2818,3 +2826,10 @@ storage-low-title = Storage is almost full
 storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
+
+## Desk widgets
+
+desk-team-title = In this workspace
+# Where a person is: their strip, then the window they are on.
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } more

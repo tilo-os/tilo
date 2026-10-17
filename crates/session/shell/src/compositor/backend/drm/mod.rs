@@ -13,6 +13,7 @@
 pub mod access_keys;
 mod client_scanout;
 pub mod cpu_present;
+mod cursor_plane;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
@@ -28,6 +29,7 @@ pub mod scanout;
 pub mod seat_diag;
 pub mod session;
 mod tablet;
+mod topology;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -170,7 +172,8 @@ impl DrmBackend {
 /// The scanouts are the *only* part of the DRM runtime the frame path touches; input-path state
 /// (libseat/udev/libinput, the runtime's inner calloop) stays on the loop thread, and the
 /// hardware cursor (`CursorPlanes`) owns its own dup of the card
-/// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
+/// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint, from a mover
+/// thread per output that a blocking commit cannot turn into a loop stall. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
 #[allow(
     clippy::struct_excessive_bools,

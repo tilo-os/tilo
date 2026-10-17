@@ -795,9 +795,19 @@ interface CertifiedPeer {
   `acknowledgement` (`pending|covered`, backed by host-ordered `Committed`),
   and `local` (the page store's save state, via `setLocalState`).
 - `failures[]` with codes (`transport-unavailable`, `transport-ended`,
-  `certificate-expired`, `certificate-rejected`, `permission-required`,
+  `certificate-expired`, `certificate-rejected`, `not-admitted`,
+  `host-changed`, `device-revoked`, `permission-required`,
   `protocol-rejected`, `signature-rejected`, `storage-transaction-failed`)
-  and applicable `recovery` requests.
+  and applicable `recovery` requests. The identity codes come from the
+  host's typed handshake refusal (`SessionRefusal`), never from a count:
+  `not-admitted` (the host no longer has the person: it forgot them, was
+  reset, or a room took them out) leaves the page to join again through
+  the room's door, where the room lets it, as does `host-changed` (another
+  device answers at the origin than the pinned host); `device-revoked` is
+  final. Only an iroh host, which closes a refused handshake without a
+  reason, is taken as `not-admitted` after three refusals in a row; an
+  answer that does not decode (a proxy's error page) is reachability and
+  never counts.
 
 Compared with the qOS contract: `enrollmentBaseUrl`, invitation text and
 `cloud.enrollment` are replaced by the host `origin` + `userPublicKey`

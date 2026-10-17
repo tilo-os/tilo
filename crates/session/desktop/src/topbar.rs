@@ -19,7 +19,7 @@ use winit::event::WindowEvent;
 
 use crate::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent, ClockActivity,
-    ClockSnapshot, TelemetrySnapshot, TopBarWidget, TopBarWidgets,
+    ClockSnapshot, TelemetrySnapshot, TopBarPresence, TopBarWidget, TopBarWidgets,
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
@@ -62,16 +62,46 @@ mod responsive;
 use responsive::ResponsiveBar;
 mod strips;
 
-/// A compact strip: every bar control is the toolkit's bar control height
-/// (`metrics.bar_control_height`, 28) with `s1` of air above and below, so
-/// the bar is 36 logical pixels (72 at scale 2). It was 48, then 40 with
-/// 32 px controls; both read as a heavy slab over the work area. Edge
-/// targets that need the full pointer floor (the Quick Settings corner)
-/// keep it through their own hit rects rather than a taller bar. Unscaled
-/// `BASE` values because layout sizes its node from this constant before
-/// any theme is in hand.
-pub const TOPBAR_HEIGHT_PX: f32 =
-    ui::tokens::Metrics::BASE.bar_control_height + 2.0 * ui::tokens::Spacing::BASE.s1;
+/// Where a layout stood the bar: in the column above the windows, or over
+/// it, hidden by the person and shown while reached for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarStanding {
+    InColumn,
+    OverColumn,
+}
+
+impl BarStanding {
+    fn of(overlays: bool) -> Self {
+        if overlays {
+            Self::OverColumn
+        } else {
+            Self::InColumn
+        }
+    }
+}
+
+/// A thin strip: every bar control is [`BAR_CONTROL_PX`] (20) with half an
+/// `s1` of air above and below, so the bar is 24 logical pixels (48 at scale
+/// 2). It was 48, then 40, then 36; what it carries (the workspace, the
+/// time, the status glyphs) is a line of text, and every taller step read
+/// as a slab over the work area. The bar's controls run to the screen's top
+/// edge, where a pointer cannot overshoot them, so their targets keep the
+/// pointer floor through their own hit rects rather than a taller bar.
+/// Unscaled `BASE` values because layout sizes its node from this constant
+/// before any theme is in hand.
+pub const TOPBAR_HEIGHT_PX: f32 = BAR_CONTROL_LOGICAL + ui::tokens::Spacing::BASE.s1;
+
+/// The bar's height under `theme`: [`TOPBAR_HEIGHT_PX`], grown with a large
+/// text size so the time's line still fits with air above and below. At the
+/// default size the line is a little over 20 px and the bar stays 24.
+#[must_use]
+pub fn topbar_height(theme: &Theme) -> f32 {
+    let line = ui::tokens::Typography::default()
+        .style(TextRole::Body)
+        .line_height_px()
+        * theme.text_scale;
+    TOPBAR_HEIGHT_PX.max((line + ui::tokens::Spacing::BASE.s1 / 2.0).ceil())
+}
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 
@@ -80,24 +110,32 @@ const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 const SPARKLINE_FILL_ALPHA: f32 = 0.30;
 
 /// Height of every control in the bar — the nav cluster, the workspace
-/// pill, the centre selector, the tray pill and the media indicator — so
-/// they share one top and bottom edge. The toolkit's bar control height
-/// (`metrics.bar_control_height`), read from the density tokens.
-const BAR_CONTROL_PX: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// pill, the centre widget, the tray pill and the media indicator — so they
+/// share one top and bottom edge: the toolkit's bar control height less two
+/// `s1` steps, a caption line with `s1` of air.
+const BAR_CONTROL_LOGICAL: f32 =
+    ui::tokens::Metrics::BASE.bar_control_height - 2.0 * ui::tokens::Spacing::BASE.s1;
+const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 /// Centre-to-centre distance of the bar's avatar chips: 20 px chips whose
 /// rings cut only each other's edge.
 const AVATAR_STEP: f64 = 20.0;
 
-/// Width reserved for the centre selector's dot column on its left, and
-/// mirrored on its right so the widget content is centred in the band.
-const CENTER_DOT_LANE_PX: f64 = 24.0;
+/// Inset of a lane-filling centre widget (the system monitor, the
+/// calendar, a live activity) from its pill's ends, the same each side so
+/// the content is centred in the band.
+const CENTER_INSET_PX: f64 = 12.0;
 
 /// Diameter of the small Lucide glyph beside the workspace name (the
 /// settings gear) and inside the up/down switches (the chevrons).
-const SMALL_GLYPH_PX: f64 = 14.0;
+const SMALL_GLYPH_PX: f64 = 12.0;
 
-/// Scroll-wheel over the center band cycles between these; a three-dot
-/// indicator shows the current position.
+/// Diameter of the bar's larger glyphs: the overview grid and the status
+/// icons.
+const BAR_GLYPH_PX: f64 = 14.0;
+
+/// Scroll-wheel over the center band cycles between these. Nothing marks
+/// the position: the time is plain text, and the right-click editor lists
+/// the widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CenterWidget {
     #[default]
@@ -263,6 +301,7 @@ struct CacheFingerprint {
     /// rects from `self.rect`'s corners, so a hit must imply those are
     /// still valid.
     rect_px: (i64, i64, u64, u64),
+    presence: TopBarPresence,
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
@@ -304,16 +343,6 @@ struct AppTraySlot {
     id: String,
     item_is_menu: bool,
     rect: Rect,
-}
-
-/// One dot in the centre band's carousel indicator. Paint and hit testing
-/// intentionally share this geometry so the visible control and its target
-/// cannot drift apart.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CenterDot {
-    pub center: Point,
-    pub radius: f64,
-    pub slot: Rect,
 }
 
 /// No calendar source is wired to the shell, so this paints what's
@@ -559,6 +588,8 @@ pub struct TopBarChrome {
     responsive: ResponsiveBar,
     explicit_local_user: Option<String>,
     rect: Rect,
+    /// Where the last layout stood the bar.
+    laid_out: BarStanding,
     /// The compact bar a display other than the primary carries: workspace
     /// navigation and the centre widget only. Session controls, the tray
     /// and collaborators live on the primary display's full bar.
@@ -660,7 +691,6 @@ pub struct TopBarChrome {
     /// [`Self::center_band_width`]). Its neighbours lay out against the
     /// lane, so they hold still while the selector changes widget.
     center_lane: Rect,
-    center_dot_rects: [Rect; 3],
     widget_config: TopBarWidgets,
     widget_editing: bool,
     widget_editor_rect: Rect,
@@ -952,6 +982,7 @@ impl TopBarChrome {
             responsive: ResponsiveBar::new(),
             explicit_local_user,
             rect: Rect::ZERO,
+            laid_out: BarStanding::InColumn,
             variant: BarVariant::Full,
             placement: None,
             workspace_name: String::new(),
@@ -1007,7 +1038,6 @@ impl TopBarChrome {
             activity_started: None,
             center_rect: Rect::ZERO,
             center_lane: Rect::ZERO,
-            center_dot_rects: [Rect::ZERO; 3],
             widget_config: TopBarWidgets::default(),
             widget_editing: false,
             widget_editor_rect: Rect::ZERO,
@@ -1043,6 +1073,7 @@ impl TopBarChrome {
             .unwrap_or_default();
         CacheFingerprint {
             rect_px: (x0, y0, w, h),
+            presence: self.presence(),
             workspace_name: self.workspace_name.clone(),
             workspace_index: self.workspace_index,
             workspace_total: self.workspace_total,
@@ -1219,7 +1250,6 @@ impl TopBarChrome {
                 scene,
                 transform,
                 theme,
-                text_renderer,
                 (center_y, stack_right_x),
                 slot_count,
             );
@@ -1415,82 +1445,6 @@ impl TopBarChrome {
         self.center_widget = w;
     }
 
-    pub const DOT_BASE_SIZE: f64 = 2.0;
-    /// 1.6× the base so the saturated indigo fill reads as focused.
-    pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
-    pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
-
-    /// Edge-to-edge space between neighbouring dots: a tight stack, as the
-    /// indicator first shipped, not one stretched over the band's height.
-    const DOT_GAP: f64 = 3.0; // Optical dot geometry, not layout spacing.
-    const DOT_SLOT_HALF_W: f64 = CENTER_DOT_LANE_PX / 2.0; // Optical dot geometry, not layout spacing.
-
-    /// Restore the accepted vertical carousel indicator from `7d58e7146`.
-    /// The unequal active/inactive diameters are included in the layout so
-    /// both visual gaps remain equal and the column stays centred.
-    fn center_dot_layout(
-        band: Rect,
-        bar: Rect,
-        active: usize,
-        visible_count: usize,
-    ) -> [CenterDot; 3] {
-        let visible_count = visible_count.clamp(1, 3);
-        let radius_of = |i: usize| {
-            if i == active {
-                Self::DOT_ACTIVE_RADIUS
-            } else {
-                Self::DOT_INACTIVE_RADIUS
-            }
-        };
-        let ink: f64 = (0..visible_count).map(|i| radius_of(i) * 2.0).sum();
-        let gaps = visible_count.saturating_sub(1);
-        let gap = Self::DOT_GAP;
-        let column_h = ink + gap * small_count_to_f64(gaps);
-        let mut edge = band.center().y - column_h / 2.0;
-        let mut geometry = Vec::with_capacity(visible_count);
-        for i in 0..visible_count {
-            let radius = radius_of(i);
-            geometry.push((edge + radius, radius));
-            edge += radius * 2.0 + gap;
-        }
-        let boundary = |a: (f64, f64), b: (f64, f64)| (a.0 + a.1 + b.0 - b.1) / 2.0;
-        let x = Self::dot_column_x(band);
-        let mut dots = [CenterDot {
-            center: Point::ZERO,
-            radius: 0.0,
-            slot: Rect::ZERO,
-        }; 3];
-        for (index, (dot, &(center, radius))) in dots.iter_mut().zip(geometry.iter()).enumerate() {
-            let y0 = index
-                .checked_sub(1)
-                .and_then(|previous| geometry.get(previous))
-                .map_or(bar.y0, |&previous| boundary(previous, (center, radius)));
-            let y1 = geometry
-                .get(index.saturating_add(1))
-                .map_or(bar.y1, |&next| boundary((center, radius), next));
-            *dot = CenterDot {
-                center: Point::new(x, center),
-                radius,
-                slot: Rect::new(x - Self::DOT_SLOT_HALF_W, y0, x + Self::DOT_SLOT_HALF_W, y1),
-            };
-        }
-        dots
-    }
-
-    fn dot_column_x(band: Rect) -> f64 {
-        band.x0 + CENTER_DOT_LANE_PX / 2.0
-    }
-
-    /// Strictly larger than inactive; the affordance is scale-up +
-    /// saturated indigo.
-    pub fn active_dot_radius(&self) -> f64 {
-        Self::DOT_ACTIVE_RADIUS
-    }
-
-    pub fn inactive_dot_radius(&self) -> f64 {
-        Self::DOT_INACTIVE_RADIUS
-    }
-
     /// Pinned so a future revert to the old four-rect quad fails loudly
     /// instead of silently regressing.
     pub fn overview_glyph_icon() -> ui::icons::Icon {
@@ -1551,23 +1505,6 @@ impl TopBarChrome {
             Self::CONTROL_ADD_CALENDAR => Some((TopBarWidget::Calendar, false)),
             _ => None,
         }
-    }
-
-    fn configured_center_widget(&self, index: usize) -> Option<CenterWidget> {
-        self.widget_config
-            .widgets
-            .get(index)
-            .copied()
-            .map(Into::into)
-    }
-
-    fn center_dot_rect(&self, widget: TopBarWidget) -> Rect {
-        self.widget_config
-            .widgets
-            .iter()
-            .position(|candidate| *candidate == widget)
-            .and_then(|index| self.center_dot_rects.get(index).copied())
-            .unwrap_or(Rect::ZERO)
     }
 
     fn cycle_center_widget(&mut self, forward: bool) {
@@ -1886,17 +1823,13 @@ impl TopBarChrome {
             Self::CONTROL_WORKSPACE_UP => self.up_btn_rect,
             Self::CONTROL_WORKSPACE_DOWN => self.down_btn_rect,
             Self::CONTROL_WORKSPACE_SETTINGS => self.ws_pill_rect,
+            // The editor, and the keyboard and assistive choices of the
+            // centre widget, all stand on the widget itself, which has no
+            // position dots to point at.
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
-            | Self::CONTROL_CENTER_CALENDAR => {
-                let widget = match target {
-                    Self::CONTROL_CENTER_CLOCK => TopBarWidget::Clock,
-                    Self::CONTROL_CENTER_MONITOR => TopBarWidget::SystemMonitor,
-                    _ => TopBarWidget::Calendar,
-                };
-                self.center_dot_rect(widget)
-            }
-            Self::CONTROL_EDIT_WIDGETS => self.center_rect,
+            | Self::CONTROL_CENTER_CALENDAR
+            | Self::CONTROL_EDIT_WIDGETS => self.center_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_COLLABORATORS => {
                 if self.avatar_stack_rect.is_zero_area() {
@@ -2112,6 +2045,54 @@ impl TopBarChrome {
         self.overview_btn_rect
     }
 
+    /// Whether the last layout stood the bar in or over the column other
+    /// than it stands now.
+    fn overlay_layout_stale(&self) -> bool {
+        let fullscreen = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.snapshot().fullscreen);
+        self.laid_out != BarStanding::of(!fullscreen && self.presence().overlays())
+    }
+
+    /// Whether the bar, hidden by the person, must stay shown for its own
+    /// sake: its widget editor is open, or the keyboard is in it.
+    pub fn holds_itself_shown(&self) -> bool {
+        self.widget_editing || (self.focused && self.focus_origin == FocusOrigin::Keyboard)
+    }
+
+    /// Docked, hidden or shown over the windows, as the host says. A
+    /// compact bar on another display always stays docked.
+    pub fn presence(&self) -> TopBarPresence {
+        if self.is_compact() {
+            return TopBarPresence::Docked;
+        }
+        self.chrome
+            .as_ref()
+            .map_or(TopBarPresence::Docked, |chrome| chrome.snapshot().top_bar)
+    }
+
+    /// The bar shown over the windows stands on a surface of its own, the
+    /// width of the display with the bar's hairline under it, so its
+    /// controls read over whatever the windows show there.
+    fn draw_overlay_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        let rule = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &rule,
+        );
+    }
+
     pub fn tray_pill_rect(&self) -> Rect {
         self.tray_pill_rect
     }
@@ -2221,7 +2202,7 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let pad_x = f64::from(tokens.spacing.s3);
-        let icon_size = 18.0_f64;
+        let icon_size = BAR_GLYPH_PX;
         let control = BAR_CONTROL_PX;
 
         let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
@@ -2289,7 +2270,12 @@ impl TopBarChrome {
 
         // Vertical divider: a separator on the Bar is the Bar's hairline
         // (HIG §9.5), so it reads on every preset the way the bottom edge does.
-        let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
+        let divider = Rect::new(
+            x,
+            center_y - SMALL_GLYPH_PX / 2.0,
+            x + 1.0,
+            center_y + SMALL_GLYPH_PX / 2.0,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2557,7 +2543,7 @@ impl TopBarChrome {
         // A bar control's height, grown with its label at a large text
         // scale (as `ControlSize` grows), never taller than the bar.
         let pill_h = BAR_CONTROL_PX
-            .max((f64::from(ws_h) + 2.0 * f64::from(tokens.spacing.s1)).ceil())
+            .max((f64::from(ws_h) + f64::from(tokens.spacing.s1) / 2.0).ceil())
             .min(self.rect.height().max(BAR_CONTROL_PX));
         let ws_pill_outer = Rect::new(
             x - pad,
@@ -2637,9 +2623,11 @@ impl TopBarChrome {
         );
     }
 
-    /// Carousel band background + the 3 position dots. Returns
-    /// `(content_x0, content_x1, content_cx)` — the bounds the active
-    /// center widget draws into, to the right of the dots.
+    /// The centre band. The clock is plain text on the bar, with no pill
+    /// and no position dots (a pill around five characters read as a
+    /// second bar inside the bar); the lane-filling widgets keep a quiet
+    /// selector pill. Returns `(content_x0, content_x1, content_cx)`, the
+    /// bounds the active centre widget draws into.
     fn draw_center_band(
         &mut self,
         scene: &mut Scene,
@@ -2648,7 +2636,6 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         center_y: f64,
     ) -> (f64, f64, f64) {
-        let colors = &theme.tokens.colors;
         let lane_w = self.center_band_width(theme);
         let band_w = self.center_pill_width(theme, text_renderer, lane_w);
         // The same height as every other bar control, so the band's top
@@ -2668,24 +2655,7 @@ impl TopBarChrome {
             band_cx + lane_w / 2.0,
             band.y1,
         );
-        // A Selector: you scroll between its three widgets.
-        let band_rr = RoundedRect::from_rect(
-            band,
-            ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
-        );
-        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
-        if let Some(edge) = body.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &band_rr,
-            );
-        }
-
-        let widgets = self.widget_config.widgets.clone();
+        let widgets = &self.widget_config.widgets;
         if !widgets.contains(&TopBarWidget::from(self.center_widget)) {
             self.center_widget = widgets
                 .first()
@@ -2693,36 +2663,31 @@ impl TopBarChrome {
                 .unwrap_or(TopBarWidget::Clock)
                 .into();
         }
-        let active_dot = widgets
-            .iter()
-            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
-            .unwrap_or(0);
-        let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
-        self.center_dot_rects = [Rect::ZERO; 3];
-        for (i, (slot, dot)) in self
-            .center_dot_rects
-            .iter_mut()
-            .zip(dots.iter())
-            .take(widgets.len())
-            .enumerate()
-        {
-            let active = active_dot == i;
-            // An inactive page dot is dim ink from the semantic tier, never
-            // a ramp slot (HIG §9.2).
-            let color = if active {
-                colors.intent.inverted
-            } else {
-                colors.text_dim
-            };
-            *slot = dot.slot;
-            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
-            scene.fill(Fill::NonZero, transform, color, None, &c);
+        if !self.center_is_plain_text() {
+            let band_rr = RoundedRect::from_rect(
+                band,
+                ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
+            );
+            let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+            scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
+            if let Some(edge) = body.border {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    edge,
+                    None,
+                    &band_rr,
+                );
+            }
         }
-
-        // Widget content fills the band to the right of the dots.
         let (content_x0, content_x1) = Self::center_content_lane(band);
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
+    }
+
+    /// The clock with nothing live over it: drawn as bare text.
+    fn center_is_plain_text(&self) -> bool {
+        self.center_widget == CenterWidget::Clock && !self.activity_is_visible()
     }
 
     fn editor_controls(&self) -> Vec<&'static str> {
@@ -3198,14 +3163,13 @@ impl TopBarChrome {
         }
     }
 
-    /// The lane the active centre widget draws into: clear of the dot column
-    /// on the left and the same width in from the right edge. One function so
+    /// The lane the active centre widget draws into: the same inset in from
+    /// either end of the band. One function so
     /// [`Self::draw_center_band`] and [`Self::activity_content_width`]
     /// cannot disagree about how much room the activity headline has.
     fn center_content_lane(band: Rect) -> (f64, f64) {
-        // Symmetric, so the content's centre is the band's centre: the left
-        // holds the dot column, the right mirrors it.
-        (band.x0 + CENTER_DOT_LANE_PX, band.x1 - CENTER_DOT_LANE_PX)
+        // Symmetric, so the content's centre is the band's centre.
+        (band.x0 + CENTER_INSET_PX, band.x1 - CENTER_INSET_PX)
     }
 
     /// What the clock widget reads: the time, or the running Clocks
@@ -3228,12 +3192,11 @@ impl TopBarChrome {
             )
     }
 
-    /// The painted width of the centre selector inside its `lane_w` lane.
-    /// The calendar and the system monitor fill the lane; the clock is a
-    /// five-character reading, so its pill hugs it: the time, `s2` of air
-    /// either side and the dot column with its mirror, which keeps the
-    /// time on the pill's centre. The time is measured with every digit set
-    /// as the widest one, so the pill does not change width minute to
+    /// The width of the centre widget inside its `lane_w` lane. The
+    /// calendar and the system monitor fill the lane; the clock is a
+    /// five-character reading, so its target hugs it: the time and the
+    /// content inset either side. The time is measured with every digit set
+    /// as the widest one, so the target does not change width minute to
     /// minute.
     fn center_pill_width(&self, theme: &Theme, text: &mut TextRenderer, lane_w: f64) -> f64 {
         if self.activity_is_visible() || self.center_widget != CenterWidget::Clock {
@@ -3261,8 +3224,7 @@ impl TopBarChrome {
             .map(|c| if c.is_ascii_digit() { widest_digit } else { c })
             .collect();
         let (width, _) = text.measure_style(&reading, None, &style);
-        let air = f64::from(theme.tokens.spacing.s2);
-        (f64::from(width) + 2.0 * (air + CENTER_DOT_LANE_PX)).min(lane_w)
+        (f64::from(width) + 2.0 * CENTER_INSET_PX).min(lane_w)
     }
 
     fn draw_clock_widget(
@@ -3590,10 +3552,12 @@ impl TopBarChrome {
         // Sizes itself to what's actually knowable; an unarrived
         // reading contributes nothing rather than a plausible default.
         let tray_h = BAR_CONTROL_PX;
-        let tray_slot = f64::from(tokens.spacing.s6);
+        // Square glyph slots the control's height, set close: the cluster is
+        // one target, so its glyphs need no air of their own.
+        let tray_slot = BAR_CONTROL_PX;
         let tray_pad = f64::from(tokens.spacing.s2);
-        let tray_gap = f64::from(tokens.spacing.s1);
-        let icon_px = 17.0_f64;
+        let tray_gap = 0.0;
+        let icon_px = BAR_GLYPH_PX;
         let pct_style = tokens.typography.style(TextRole::Caption);
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
@@ -4017,7 +3981,7 @@ impl TopBarChrome {
             .iter()
             .any(|u| u.kind == crate::chrome::MediaKind::Camera);
         let media_color = colors.semantic.success;
-        let indicator_h = 22.0;
+        let indicator_h = BAR_CONTROL_PX;
         if self.media_expanded {
             let suffix = if labels.len() > 1 {
                 format!(" +{}", labels.len().saturating_sub(1))
@@ -4228,11 +4192,15 @@ impl TopBarChrome {
             &style.clone().with_weight(TextWeight::Semibold),
         );
         let width = f64::from(label_w) + 31.0;
-        self.sharing_indicator_rect =
-            Rect::new(right_x - width, center_y - 11.0, right_x, center_y + 11.0);
+        self.sharing_indicator_rect = Rect::new(
+            right_x - width,
+            center_y - BAR_CONTROL_PX / 2.0,
+            right_x,
+            center_y + BAR_CONTROL_PX / 2.0,
+        );
         let pill = RoundedRect::from_rect(
             self.sharing_indicator_rect,
-            ui::chrome::ChromeRole::Selector.radius(theme, 22.0),
+            ui::chrome::ChromeRole::Selector.radius(theme, BAR_CONTROL_PX),
         );
         scene.fill(
             Fill::NonZero,
@@ -4299,9 +4267,9 @@ impl TopBarChrome {
         // Plain dim text, no chip: spectators are a count, not people.
         let pill = Rect::new(
             right_x - f64::from(label_w) - pad * 2.0,
-            center_y - 12.0,
+            center_y - BAR_CONTROL_PX / 2.0,
             right_x,
-            center_y + 12.0,
+            center_y + BAR_CONTROL_PX / 2.0,
         );
         text_renderer.draw_style(
             scene,
@@ -4330,7 +4298,6 @@ impl TopBarChrome {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        text_renderer: &mut TextRenderer,
         pos: (f64, f64),
         slot_count: usize,
     ) {
@@ -4342,46 +4309,26 @@ impl TopBarChrome {
             let y_mid = center_y;
             self.avatar_stack_rect = Rect::new(
                 leftmost_cx - 20.0,
-                y_mid - 16.0,
+                y_mid - BAR_CONTROL_PX / 2.0,
                 stack_right_x,
-                y_mid + 16.0,
+                y_mid + BAR_CONTROL_PX / 2.0,
             );
             return;
         }
-        // Restored from e1cdcea5a: the first invite is exactly when there is
-        // no avatar to click. An outlined empty seat names the action without
-        // pretending a participant is already present.
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let label = t("topbar-invite");
-        let label = label.as_str();
-        let label_style = tokens.typography.style(TextRole::Caption);
-        let (label_w, label_h) = text_renderer.measure_style(
-            label,
-            None,
-            &label_style.clone().with_weight(TextWeight::Medium),
+        // The first invite is exactly when there is no avatar to click. A
+        // person-plus glyph in an outlined empty seat names the action
+        // without pretending a participant is already present; the word
+        // "Invite" is its accessible name, not a text button half the width
+        // of the status cluster.
+        let colors = &theme.tokens.colors;
+        let seat = BAR_CONTROL_PX;
+        let pill = Rect::new(
+            stack_right_x + 2.0 - seat,
+            center_y - seat / 2.0,
+            stack_right_x + 2.0,
+            center_y + seat / 2.0,
         );
-        let chip_r = 7.5_f64;
-        let pill_x1 = stack_right_x + 2.0;
-        let chip_cx = pill_x1 - 6.0 - chip_r;
-        let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
-        let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(pill, f64::from(tokens.radii.detail)),
-        );
-        text_renderer.draw_style(
-            scene,
-            label,
-            colors.text_dim,
-            at(transform, (label_x, center_y - f64::from(label_h) / 2.0)),
-            None,
-            &label_style.with_weight(TextWeight::Medium),
-        );
-        let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+        let chip = vello::kurbo::Circle::new(pill.center(), seat / 2.0 - 0.5);
         scene.stroke(
             &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
             transform,
@@ -4389,11 +4336,12 @@ impl TopBarChrome {
             None,
             &chip,
         );
+        let glyph = SMALL_GLYPH_PX;
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0),
-            ui::icons::Icon::Plus,
+            Rect::from_center_size(pill.center(), (glyph, glyph)),
+            ui::icons::Icon::UserPlus,
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -4414,18 +4362,6 @@ impl TopBarChrome {
             self.activity_started = None;
             *handled = true;
             return;
-        }
-        // Dot clicks jump directly — local widget state, no chrome needed.
-        if let Some(p) = self.last_cursor {
-            let clicked = self
-                .center_dot_rects
-                .iter()
-                .position(|rect| rect.contains(p));
-            if let Some(widget) = clicked.and_then(|i| self.configured_center_widget(i)) {
-                self.center_widget = widget;
-                *handled = true;
-                return;
-            }
         }
         if let Some(p) = self.last_cursor {
             let target = if self.continuity_dismiss_rect.contains(p) {
@@ -4633,7 +4569,7 @@ impl TopBarChrome {
     }
 
     /// Width of the centre lane the activity headline may occupy — the
-    /// band minus the dot targets and the trailing inset, exactly as
+    /// band minus its insets, exactly as
     /// [`Self::draw_center_band`] lays it out.
     fn activity_content_width(&self, theme: &Theme) -> f32 {
         let (x0, x1) = Self::center_content_lane(self.center_rect);
@@ -5769,18 +5705,37 @@ impl Widget for TopBarChrome {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().fullscreen);
+        // A bar the person hides stands over the column rather than in it:
+        // the windows take its strip, and showing it later moves nothing.
+        let overlays = !fullscreen && self.presence().overlays();
+        self.laid_out = BarStanding::of(overlays);
         let style = Style {
             display: if fullscreen {
                 Display::None
             } else {
                 Display::Flex
             },
+            position: if overlays {
+                taffy::style::Position::Absolute
+            } else {
+                taffy::style::Position::Relative
+            },
+            inset: if overlays {
+                taffy::Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                }
+            } else {
+                taffy::Rect::auto()
+            },
             size: Size {
                 width: Dimension::percent(1.0),
                 height: if fullscreen {
                     Dimension::length(0.0)
                 } else {
-                    Dimension::length(TOPBAR_HEIGHT_PX)
+                    Dimension::length(topbar_height(theme))
                 },
             },
             flex_shrink: 0.0,
@@ -5847,6 +5802,11 @@ impl Widget for TopBarChrome {
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
         }
+        // A hidden bar paints nothing until it is reached for.
+        if self.presence() == TopBarPresence::Hidden {
+            self.cache_fp.presence = TopBarPresence::Hidden;
+            return;
+        }
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.refresh_status_and_media_state();
@@ -5879,6 +5839,9 @@ impl Widget for TopBarChrome {
         let scene = &mut local;
         let transform = Affine::IDENTITY;
         let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+        if self.presence() == TopBarPresence::Shown {
+            self.draw_overlay_surface(scene, transform, theme);
+        }
 
         if self.use_responsive(theme) {
             self.draw_responsive(scene, text_renderer, theme, presence);
@@ -5948,6 +5911,11 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // A hidden bar is not there: whatever is under its strip gets the
+        // input. The host shows it first when it is reached for.
+        if self.presence() == TopBarPresence::Hidden {
+            return;
+        }
         match event {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
@@ -6410,6 +6378,9 @@ impl Widget for TopBarChrome {
         if self.responsive.active && self.responsive.dirty {
             return true;
         }
+        if self.presence() != self.cache_fp.presence {
+            return true;
+        }
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
@@ -6454,7 +6425,18 @@ impl Widget for TopBarChrome {
     /// Fixed intrinsic size, so the taffy node never needs recomputing
     /// after the first pass.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.overlay_layout_stale()
+    }
+
+    /// Docking or hiding the bar moves the windows, so the tree it was laid
+    /// out in is rebuilt; showing a hidden bar over them does not.
+    fn take_structure_dirty(&mut self) -> bool {
+        let stale = self.overlay_layout_stale();
+        let mut children = false;
+        for child in self.children_mut() {
+            children |= child.take_structure_dirty();
+        }
+        stale || children
     }
 }
 
@@ -6769,6 +6751,124 @@ mod tests {
         lay_out_and_draw_with_theme(bar, width, &Theme::default());
     }
 
+    /// Lay `bar` out at the top of a 1280x800 column whose other child
+    /// stands for the windows, as the desktop surface stacks them; returns
+    /// where the windows start.
+    fn lay_out_over_windows(bar: &mut TopBarChrome) -> f32 {
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let windows = taffy
+            .new_leaf(Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .expect("windows");
+        let column = taffy
+            .new_with_children(
+                Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size::from_lengths(1280.0, 800.0),
+                    ..Default::default()
+                },
+                &[node, windows],
+            )
+            .expect("column");
+        taffy
+            .compute_layout_with_measure(
+                column,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("layout");
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        taffy.layout(windows).expect("windows laid out").location.y
+    }
+
+    fn painted(bar: &mut TopBarChrome) -> bool {
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::default(),
+        );
+        !scene.encoding().is_empty()
+    }
+
+    fn click(bar: &mut TopBarChrome, at: Point) -> bool {
+        dispatch_topbar_event(bar, &ui::synthetic_input::cursor_moved(at.x, at.y));
+        let pressed = dispatch_topbar_event(bar, &ui::synthetic_input::mouse_press());
+        let released = dispatch_topbar_event(bar, &ui::synthetic_input::mouse_release());
+        pressed || released
+    }
+
+    /// The person's "hide the top bar": the windows take its strip at once;
+    /// hidden, it paints nothing and every press under it goes to what is
+    /// below; shown, it stands over the windows in its docked place,
+    /// painted and pressable, and nothing under it moves either way.
+    #[test]
+    fn a_hidden_bar_gives_its_strip_to_the_windows_and_shows_over_them_in_place() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+
+        assert_eq!(lay_out_over_windows(&mut bar), TOPBAR_HEIGHT_PX, "docked");
+        assert!(painted(&mut bar));
+        let docked = bar.rect;
+        let overview = bar.overview_btn_rect.center();
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+        assert!(bar.is_layout_dirty(), "hiding re-lays the column out");
+        assert!(
+            bar.take_structure_dirty(),
+            "and rebuilds the tree the bar stands in"
+        );
+        assert_eq!(
+            lay_out_over_windows(&mut bar),
+            0.0,
+            "the windows take the strip"
+        );
+        assert!(!bar.is_layout_dirty());
+        assert_eq!(bar.rect, docked, "it keeps its place for when it shows");
+        assert!(!painted(&mut bar), "hidden paints nothing");
+        assert!(!click(&mut bar, overview), "hidden takes no press");
+        assert!(chrome.borrow().intents.is_empty());
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Shown;
+        assert!(bar.needs_redraw(), "showing repaints the bar");
+        assert!(
+            !bar.is_layout_dirty() && !bar.take_structure_dirty(),
+            "showing over the windows changes no layout: nothing moves"
+        );
+        assert_eq!(lay_out_over_windows(&mut bar), 0.0);
+        assert!(painted(&mut bar));
+        assert_eq!(
+            bar.overview_btn_rect.center(),
+            overview,
+            "same place as docked"
+        );
+        assert!(click(&mut bar, overview), "shown, its controls work");
+        assert_eq!(
+            chrome.borrow().intents.as_slice(),
+            &[ChromeIntent::ToggleOverview]
+        );
+
+        chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
+        assert!(bar.needs_redraw(), "hiding again clears it from the screen");
+        assert!(!painted(&mut bar));
+    }
+
     #[test]
     fn persistent_topbar_controls_have_coherent_targets() {
         let mut bar = sample_chrome();
@@ -6786,8 +6886,7 @@ mod tests {
 
     /// HIG §9.6: every pressable thing in the bar shares one height, so
     /// the pills and buttons sit on one top edge and one bottom edge,
-    /// centred on the bar; and each dot of the centre selector owns a
-    /// 32×32 target that never overlaps its neighbour.
+    /// centred on the bar.
     #[test]
     fn bar_controls_share_one_height_and_centre_line() {
         let mut bar = sample_chrome();
@@ -6818,28 +6917,22 @@ mod tests {
             "controls centre at {} in a bar centred on {bar_centre}",
             reference.center().y
         );
-        // The dots are a vertical column: its targets tile the bar's height
-        // (together a full-height strip) and never overlap.
-        let dots: Vec<Rect> = bar
-            .center_dot_rects
-            .iter()
-            .copied()
-            .filter(|r| r.area() > 0.0)
-            .collect();
-        assert!(!dots.is_empty());
-        for (i, dot) in dots.iter().enumerate() {
-            assert!(
-                dot.x0 >= bar.center_rect.x0 - 0.01 && dot.x1 <= bar.center_rect.x1 + 0.01,
-                "dot {i} target {dot:?} leaves the band {:?}",
-                bar.center_rect
-            );
-            if let Some(next) = dots.get(i.saturating_add(1)) {
-                assert!(
-                    next.y0 >= dot.y1 - 0.01,
-                    "dot targets {dot:?} and {next:?} overlap"
-                );
-            }
+        // The clock is the time on the bar: no pill and no position dots,
+        // and its keyboard and assistive choices stand on the time itself.
+        assert!(bar.center_is_plain_text());
+        for target in [
+            TopBarChrome::CONTROL_CENTER_CLOCK,
+            TopBarChrome::CONTROL_CENTER_MONITOR,
+            TopBarChrome::CONTROL_CENTER_CALENDAR,
+        ] {
+            assert_eq!(bar.control_rect(target), bar.center_rect, "{target}");
         }
+        bar.center_widget = CenterWidget::SystemMonitor;
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(
+            !bar.center_is_plain_text(),
+            "a lane-filling widget keeps its selector pill"
+        );
     }
 
     /// The workspace capsule pads its label on the left exactly as much
@@ -6934,16 +7027,37 @@ mod tests {
     fn bar_density_sits_on_the_spacing_scale() {
         let tokens = Theme::default().tokens;
         let spacing = tokens.spacing;
-        assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.bar_control_height));
-        assert_eq!(CENTER_DOT_LANE_PX, f64::from(spacing.s6));
-        // The bar is the toolkit's control height plus `s1` of air each side:
-        // a compact 36 px strip (72 physical px at scale 2), not the 40 or 48
-        // it grew to.
         assert_eq!(
-            TOPBAR_HEIGHT_PX,
-            tokens.metrics.bar_control_height + 2.0 * spacing.s1
+            BAR_CONTROL_PX,
+            f64::from(tokens.metrics.bar_control_height - 2.0 * spacing.s1)
         );
+        assert_eq!(CENTER_INSET_PX, f64::from(spacing.s3));
+        // The bar is its 20 px controls plus half an `s1` of air each side:
+        // a 24 px line (48 physical px at scale 2), not the 36, 40 or 48 it
+        // grew to.
+        assert_eq!(TOPBAR_HEIGHT_PX, 24.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, BAR_CONTROL_LOGICAL + spacing.s1);
         assert!(TOPBAR_HEIGHT_PX < tokens.metrics.bar_height);
+    }
+
+    /// At the default text size the bar is 24 px; a large text size grows
+    /// it so the time's line never spills out of it.
+    #[test]
+    fn the_bar_grows_with_large_text_and_not_before() {
+        assert_eq!(topbar_height(&Theme::default()), TOPBAR_HEIGHT_PX);
+        for scale in [1.25_f32, 1.5, 2.0] {
+            let theme = Theme::default().with_text_scale(scale);
+            let line = theme
+                .tokens
+                .typography
+                .style(TextRole::Body)
+                .line_height_px();
+            let height = topbar_height(&theme);
+            assert!(
+                line < height,
+                "at {scale}x the time's {line} px line fits the {height} px bar"
+            );
+        }
     }
 
     #[test]
@@ -6970,7 +7084,7 @@ mod tests {
             "activity headline width {width} exceeds reserved center lane {max_width}"
         );
         assert!(
-            height <= TOPBAR_HEIGHT_PX - 4.0,
+            height <= topbar_height(&theme) - 4.0,
             "activity headline height {height} must fit in the compact topbar"
         );
     }
@@ -7476,44 +7590,14 @@ mod tests {
         assert!(bar.avatar_stack_rect.x1 + 8.0 <= bar.tray_pill_rect.x0);
     }
 
+    /// The widget's content is centred in its band: equal insets either
+    /// side, so the time does not sit off the band's middle.
     #[test]
-    fn active_center_dot_radius_is_strictly_larger_than_inactive() {
-        let chrome = sample_chrome();
-        assert!(
-            chrome.active_dot_radius() > chrome.inactive_dot_radius(),
-            "active dot radius {} must be strictly larger than inactive {}",
-            chrome.active_dot_radius(),
-            chrome.inactive_dot_radius(),
-        );
-        // Guards the specific 1.6× ratio against a silent regression.
-        assert!(
-            (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
-            "active dot radius should be 1.6× the base size",
-        );
-    }
-
-    /// The widget's content is centred in the pill: the dot column on the
-    /// left is mirrored by an equal inset on the right, so the time does not
-    /// sit right of the pill's middle. The dots are a small tight stack, a
-    /// fraction of the band, not one stretched over its height.
-    #[test]
-    fn center_content_is_centred_and_dots_are_small() {
-        let band = Rect::new(620.0, 3.0, 980.0, 33.0);
+    fn center_content_is_centred_in_its_band() {
+        let band = Rect::new(620.0, 2.0, 980.0, 22.0);
         let (x0, x1) = TopBarChrome::center_content_lane(band);
         assert!((f64::midpoint(x0, x1) - band.center().x).abs() < 1e-9);
-        let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
-        let dots = TopBarChrome::center_dot_layout(band, bar, 0, 3);
-        let top = dots[0].center.y - dots[0].radius;
-        let bottom = dots[2].center.y + dots[2].radius;
-        assert!(
-            bottom - top <= band.height() * 0.75,
-            "the dot stack ({}) must sit well inside the {} px band",
-            bottom - top,
-            band.height()
-        );
-        assert!(dots[0].radius <= 3.5);
-        assert!((f64::midpoint(top, bottom) - band.center().y).abs() < 1e-9);
-        assert!(dots[0].center.x < x0, "the dots stay left of the content");
+        assert!(x0 > band.x0 && x1 < band.x1);
     }
 
     /// The clock's pill hugs the time instead of spanning the 360 px lane,
@@ -7568,30 +7652,7 @@ mod tests {
     }
 
     #[test]
-    fn center_dots_restore_vertical_non_overlapping_layout() {
-        let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
-        let band = Rect::new(620.0, 3.0, 980.0, 37.0);
-        for active in 0..3 {
-            let dots = TopBarChrome::center_dot_layout(band, bar, active, 3);
-            assert_eq!(dots[0].center.x, dots[1].center.x);
-            assert_eq!(dots[1].center.x, dots[2].center.x);
-            for pair in dots.windows(2) {
-                assert!(
-                    pair[0].center.y + pair[0].radius < pair[1].center.y - pair[1].radius,
-                    "vertical dot ink must not overlap"
-                );
-                assert!(pair[0].slot.y1 <= pair[1].slot.y0);
-            }
-            for dot in dots {
-                assert!(dot.slot.contains(dot.center));
-                assert!(dot.center.y - dot.radius >= band.y0);
-                assert!(dot.center.y + dot.radius <= band.y1);
-            }
-        }
-    }
-
-    #[test]
-    fn configured_carousel_order_drives_wheel_dots_and_semantics() {
+    fn configured_carousel_order_drives_the_wheel_and_semantics() {
         let mut bar = sample_chrome();
         bar.widget_config = TopBarWidgets {
             widgets: vec![TopBarWidget::Calendar, TopBarWidget::Clock],
@@ -7606,12 +7667,6 @@ mod tests {
         bar.cycle_center_widget(false);
         assert_eq!(bar.center_widget, CenterWidget::Clock);
 
-        bar.last_cursor = Some(bar.center_dot_rects[0].center());
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled);
-        assert_eq!(bar.center_widget, CenterWidget::Calendar);
-
         let targets = bar.control_targets();
         let calendar = targets
             .iter()
@@ -7623,13 +7678,11 @@ mod tests {
             .expect("configured clock target");
         assert!(calendar < clock, "semantic order follows configured order");
         assert!(!targets.contains(&TopBarChrome::CONTROL_CENTER_MONITOR));
+        assert!(bar.activate_control(TopBarChrome::CONTROL_CENTER_CALENDAR));
         assert_eq!(
-            bar.control_rect(TopBarChrome::CONTROL_CENTER_CALENDAR),
-            bar.center_dot_rects[0]
-        );
-        assert_eq!(
-            bar.control_rect(TopBarChrome::CONTROL_CENTER_CLOCK),
-            bar.center_dot_rects[1]
+            bar.center_widget,
+            CenterWidget::Calendar,
+            "a semantic choice switches the widget"
         );
     }
 
@@ -8224,15 +8277,15 @@ mod tests {
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
-        assert_eq!(TOPBAR_HEIGHT_PX, 36.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, 24.0);
         for (label, rect) in [
             ("overview", bar.overview_btn_rect),
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
         ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 4.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 4.0, "{label} bottom inset");
+            assert_eq!(rect.y0 - bar.rect.y0, 2.0, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, 2.0, "{label} bottom inset");
         }
         assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
         assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
@@ -9019,6 +9072,7 @@ mod fixture {
         pub active_exposures: Vec<ActiveExposure>,
         pub watching: u32,
         pub intents: Vec<ChromeIntent>,
+        pub top_bar: TopBarPresence,
     }
     impl State {
         pub fn tree(&self) -> &DesktopTree {
@@ -9055,6 +9109,7 @@ mod fixture {
                 active_exposures: Vec::new(),
                 watching: 0,
                 intents: Vec::new(),
+                top_bar: TopBarPresence::Docked,
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -9080,6 +9135,7 @@ mod fixture {
                 clock_activity: state.clock_activity.clone(),
                 active_exposures: state.active_exposures.clone(),
                 watching: state.watching,
+                top_bar: state.top_bar,
                 ..Default::default()
             }
         }

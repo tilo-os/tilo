@@ -26,3 +26,14 @@ test('other modified keys are not desktop chords',()=>{
   assert.equal(keyboardRoute(key('ArrowLeft',{altKey:true}),false,false),'browser');
   assert.equal(keyboardRoute(key('ArrowLeft'),false,false),'forward');
 });
+
+test('modified text-editing keys are the app\'s, so every text field edits by word and line',()=>{
+  for(const code of ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End']){
+    assert.equal(keyboardRoute(key(code,{ctrlKey:true}),false,false),'forward',`Ctrl+${code}`);
+    assert.equal(keyboardRoute(key(code,{ctrlKey:true,shiftKey:true}),false,false),'forward',`Ctrl+Shift+${code}`);
+    assert.equal(keyboardRoute(key(code,{altKey:true}),false,true),'forward',`Option+${code} on a Mac`);
+    assert.equal(keyboardRoute(key(code,{metaKey:true,shiftKey:true}),false,true),'forward',`Cmd+Shift+${code} on a Mac`);
+  }
+  assert.equal(keyboardRoute(key('ArrowLeft',{altKey:true}),false,false),'browser','Alt+Left stays history back');
+  assert.equal(keyboardRoute(key('KeyL',{ctrlKey:true}),false,false),'browser','Ctrl+L stays the address bar');
+});

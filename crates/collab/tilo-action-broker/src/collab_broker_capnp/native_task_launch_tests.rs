@@ -552,6 +552,8 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
                         resource: resource.clone(),
                         action: "open".into(),
                         need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+                        consequential: false,
+                        confirmed: false,
                     },
                 )
                 .expect("canonical starter/task authority alone would permit this activation");
@@ -710,4 +712,109 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
             "a retained terminal receipt must not bypass the actual connection's current ceiling");
         assert!(launches.try_recv().is_err(), "receipt observation must not replay the host side effect");
     })).await;
+}
+
+fn ask_first_for_writer(f: &Fixture) {
+    put_grant(
+        f,
+        tilo_action_policy::Grant::new(
+            "cold-writer-ask",
+            tilo_action_policy::Subject::agent("scribe"),
+            tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Ask,
+            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+}
+
+fn held_confirmation(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
+    f.native
+        .owner
+        .workspace_task_snapshot(room())
+        .unwrap()
+        .controls
+        .get(&f.task)
+        .and_then(|control| control.confirmation.clone())
+}
+
+/// A retained action whose grants ask first pauses at a reviewable draft
+/// before anything is launched, as a running application's action does; once
+/// the person confirms, the application is launched for exactly what they
+/// confirmed, opening it included.
+#[tokio::test(flavor = "current_thread")]
+async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() {
+    use tilo_desktop_model::{WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState};
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let (f, mut launches) = fixture();
+            ask_first_for_writer(&f);
+            let provider = retain_writer(&f);
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let id = uuid::Uuid::new_v4();
+            let arguments = serde_json::json!({"text":"Drafted while Writer was closed"});
+            let waiting = invoke_provider_id(
+                &agent,
+                &run,
+                &provider,
+                Document::KIND,
+                "append-paragraph",
+                arguments.clone(),
+                id,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                waiting
+                    .to_string()
+                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+                "{waiting}"
+            );
+            assert!(launches.try_recv().is_err(), "nothing launched for a draft");
+            let asked = held_confirmation(&f).expect("the run is paused at a draft the person can review");
+            assert!(asked.is_waiting());
+            assert_eq!(asked.app, WRITER);
+            f.person_command(WorkspaceTaskCommand::AnswerConfirmation {
+                task_id: f.task.clone(),
+                run_epoch: 1,
+                confirmation_id: asked.id.clone(),
+                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
+            })
+            .unwrap();
+            assert!(matches!(
+                held_confirmation(&f).unwrap().state,
+                WorkspaceTaskConfirmationState::Confirmed { .. }
+            ));
+            let pending = invoke_provider_id(
+                &agent,
+                &run,
+                &provider,
+                Document::KIND,
+                "append-paragraph",
+                arguments,
+                id,
+            );
+            tokio::pin!(pending);
+            tokio::select! {
+                app = launches.recv() => assert_eq!(app.unwrap(), WRITER),
+                result = &mut pending => panic!("confirmed request answered before host launch: {result:?}"),
+            }
+            let mut writer = Box::pin(Writer::mount(&f, false)).await;
+            let result = tokio::time::timeout(Duration::from_secs(2), pending)
+                .await
+                .unwrap();
+            writer.settle(result.unwrap().0).await;
+            assert!(
+                writer
+                    .app
+                    .harness()
+                    .inspection_json()
+                    .unwrap()
+                    .contains("Drafted while Writer was closed"),
+                "the confirmed draft reached the launched Writer"
+            );
+        }))
+        .await;
 }

@@ -165,12 +165,16 @@ class SignalProviderRelease(unittest.TestCase):
                                else 'id = "so.tilo.signal-provider"\nkind = "' + declared_kind + '"\nruntime')
                 return ('--- manifest.toml ---\n[package]\n' + declaration
                         + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
+                        + '[package.isa]\n' + declared_isa + '\n'
+                        + '[sandbox]\nseccomp = "' + declared_seccomp + '"\nlandlock = "' + declared_landlock + '"\n'
                         + '[sandbox.net]\nmode = "off"\n'
                         + '[entrypoint]\n' + (runtime_entrypoint if runtime else entrypoint)
                         + '--- payload (0 files) ---\n')
 
             declared_runtime = runtime_build
             declared_kind = 'service'
+            declared_isa = 'x86_64 = "v3"'
+            declared_seccomp, declared_landlock = 'tilo-default', 'strict'
             for entrypoint in (canonical,
                                canonical.replace('bin/tilo-signal-provider', 'bin/other'),
                                canonical.replace('type = "cli"', 'type = "both"'),
@@ -223,6 +227,24 @@ class SignalProviderRelease(unittest.TestCase):
                     patch.object(release.subprocess, 'check_output', side_effect=inspected):
                 with self.assertRaisesRegex(ValueError, 'package declaration differs'):
                     release.verify(root, source, '1', trusted_key)
+
+            declared_kind = 'service'
+            for declared_isa in ('x86_64 = "v4"', 'aarch64 = "armv8-a"',
+                                 'x86_64 = "v3"\naarch64 = "armv8-a"', ''):
+                with self.subTest(isa=declared_isa), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    with self.assertRaisesRegex(ValueError, 'architecture/ISA differs'):
+                        release.verify(root, source, '1', trusted_key)
+            declared_isa = 'x86_64 = "v3"'
+            for declared_seccomp, declared_landlock in (('none', 'strict'), ('tilo-default', 'none')):
+                with self.subTest(seccomp=declared_seccomp, landlock=declared_landlock), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    with self.assertRaisesRegex(ValueError, 'sandbox declaration differs'):
+                        release.verify(root, source, '1', trusted_key)
 
             proof['runtime_build'] = release.RUNTIME
             (root / 'release.json').write_text(json.dumps(proof))

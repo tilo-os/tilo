@@ -840,9 +840,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).unwrap();
-        settings_store::install_source(Some(std::sync::Arc::new(records)));
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
         test(&paths);
-        settings_store::install_source(None);
     }
 
     #[test]

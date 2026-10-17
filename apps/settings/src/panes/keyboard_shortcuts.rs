@@ -36,6 +36,10 @@ use crate::widgets::{Item, SettingsSection, card, note, rows, setting_row};
 pub struct DesktopControls {
     #[serde(default)]
     pub vim_mode: bool,
+    /// Hide the top bar until the pointer reaches for it; shown in the
+    /// Appearance pane.
+    #[serde(default)]
+    pub hide_top_bar: bool,
 }
 
 impl ui::storage::SettingsSchema for DesktopControls {

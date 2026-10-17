@@ -152,6 +152,8 @@ policies! {
         "tilo.agent_providers.hosted",
     ],
     DeviceLocal => [
+        // A small panel and a large display want different answers.
+        "tilo.desktop_controls.hide_top_bar",
         "tilo.audio.output_device",
         "tilo.audio.input_device",
         "tilo.display.auto_brightness",
@@ -508,7 +510,7 @@ mod tests {
                 },
                 "shortcuts": {"bindings": {}},
                 "input": {"touchpad_enabled": false},
-                "desktop_controls": {"vim_mode": false},
+                "desktop_controls": {"vim_mode": false, "hide_top_bar": true},
                 "quick_settings": {"controls": ["wifi"]},
                 "text_assistance": {"check_spelling": true, "auto_correct": true},
                 "continuity": {

@@ -42,7 +42,7 @@ impl SupervisedSession for fuser::BackgroundSession {
     }
 
     fn unmount(self) -> io::Result<()> {
-        self.umount_and_join()
+        fs::fuse_session::unmount_and_join(self)
     }
 }
 
@@ -76,6 +76,7 @@ fn supervise_watching_on<S: SupervisedSession>(
             let result = thread
                 .join()
                 .unwrap_or_else(|_| Err(io::Error::other("filesystem background thread panicked")));
+            let result = fs::fuse_session::ended(result);
             let _ = ended.send(SessionEvent::Ended(result));
         })?;
     // The watcher holds a sender until it reports, so `recv` fails only
@@ -198,6 +199,23 @@ mod tests {
             finished.load(Ordering::SeqCst),
             "returned before the session's thread ended"
         );
+    }
+
+    /// The unmount aborts the kernel connection, and the session's read of
+    /// the device can lose the race with that abort and fail with
+    /// `ECONNABORTED` rather than `ENODEV`. That is how the session ended,
+    /// not a failure of it.
+    #[test]
+    fn a_read_aborted_by_the_unmount_ends_the_session_cleanly() {
+        let (session, _end, finished) =
+            StandIn::serving(|| Err(io::Error::from_raw_os_error(libc::ECONNABORTED)));
+        let (result, events) = supervised(session, "fs-test-aborted");
+        events.send(SessionEvent::Unmount).unwrap();
+        result
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("an unmount request was not served")
+            .expect("an aborted connection is the end of the session");
+        assert!(finished.load(Ordering::SeqCst));
     }
 
     /// Neither the supervisor nor the watcher is scheduled while the

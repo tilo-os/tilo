@@ -47,6 +47,30 @@ class CompilerInputsTests(unittest.TestCase):
                 receipt = module.collect([{"reason": "build-script-executed", "package_id": "id", "out_dir": str(root / "missing/out")}], metadata, root, {})
                 self.assertEqual(receipt["build_scripts"][0]["unknown"], ["build-script output unavailable"])
 
+    def test_optional_observer_cannot_replace_cargo_status_with_bad_structured_data(self):
+        metadata = {"workspace_members": ["id"], "packages": [
+            {"id": "id", "name": "example", "manifest_path": "Cargo.toml"}]}
+        for status in (0, 101):
+            for document, messages in (
+                (metadata, [[], {"reason": "build-finished", "success": status == 0}]),
+                (metadata, [{"reason": "compiler-artifact", "package_id": "id", "target": None}]),
+                (metadata, [{"reason": "compiler-message", "message": None}]),
+                (metadata, [{"reason": "compiler-message", "message": {"rendered": []}}]),
+                ([], [{"reason": "build-finished", "success": status == 0}]),
+            ):
+                with self.subTest(status=status, document=document, messages=messages), tempfile.TemporaryDirectory() as folder:
+                    def command(*args):
+                        if args[:2] == ("cargo", "metadata"):
+                            return json.dumps(document)
+                        return "" if args[:2] == ("git", "status") else "head"
+                    process = Mock(stdout=iter(json.dumps(message) + "\n" for message in messages))
+                    process.wait.return_value = status
+                    with patch.object(module.sys, "argv", ["collector", "--output", str(Path(folder) / "receipt.json"), "--", "check", "--locked"]), \
+                         patch.object(module, "command", side_effect=command), \
+                         patch.object(module.subprocess, "Popen", return_value=process):
+                        self.assertEqual(module.main(), status)
+                    process.wait.assert_called_once()
+
     def test_check_and_clippy_bind_inputs_and_preserve_every_failure(self):
         with self.subTest(phase='workflow retains check scope and uploads before clippy'):
             workflow = (Path(__file__).parents[2] / ".forgejo/workflows/check.yml").read_text()

@@ -12,6 +12,9 @@
 #                                  compiler process must read what the cold one wrote
 #   ci-builder-canary.sh browser   the native Chromium the browser tests use, and the browser
 #                                  regressions that once broke on a builder
+#   ci-builder-canary.sh x11-bridge the shell's X11 clipboard tests against the candidate's
+#                                  patched xwayland-satellite, the in-flight paste handoff
+#                                  regressions included
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -56,6 +59,9 @@ case $mode in
     export CARGO_TARGET_DIR=$scratch/builder-canary-browser-target
     export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
     mkdir -p "$CARGO_TARGET_DIR"
+    # nextest keeps its store (JUnit reports) under the workspace's target/ unless told otherwise.
+    store_config=$scratch/builder-canary-nextest.toml
+    printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
     test "${CHROME:-}" = /usr/lib64/chromium-browser/chromium-browser \
       || die "CHROME is ${CHROME:-unset}, not the builder's Chromium"
     "$CHROME" --version
@@ -71,11 +77,25 @@ try {
 }
 JS
     bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" -p tilo-browser-peer --test end_to_end --test passkey_root --test node_workspace --test voice_browsers \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-browser-peer --test end_to_end --test passkey_root --test node_workspace --test voice_browsers \
       -E 'binary(end_to_end) or binary(passkey_root) or binary(node_workspace) or binary(voice_browsers)'
     bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" -p tilo-agent-participant --test host_agents \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-agent-participant --test host_agents \
       -E 'test(=the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart) or test(=a_browser_sees_every_task_of_an_agent_live_and_after_a_reload) or test(=the_creator_and_a_joined_page_both_see_every_task_live)'
     ;;
-  *) die 'usage: ci-builder-canary.sh cold|warm DIR, or browser' ;;
+  x11-bridge)
+    export CARGO_TARGET_DIR=$scratch/builder-canary-x11-target
+    export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
+    mkdir -p "$CARGO_TARGET_DIR"
+    store_config=$scratch/builder-canary-nextest.toml
+    printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
+    # The installed bridge must be the build tools/ci/install-xwayland-satellite.sh records.
+    diff <(bash tools/ci/install-xwayland-satellite.sh --stamp os/external-assets/github-assets.tsv \
+        os/external-assets/xwayland-satellite) /usr/share/licenses/tilo-xwayland-satellite/SOURCE \
+      || die "the builder's xwayland-satellite is not the pinned, patched build"
+    bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p shell --test it \
+      -E 'binary(it) and test(/^clipboard_e2e::x11_/)'
+    ;;
+  *) die 'usage: ci-builder-canary.sh cold|warm DIR, browser or x11-bridge' ;;
 esac

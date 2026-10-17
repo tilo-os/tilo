@@ -160,13 +160,16 @@ fn pump_frames_until(
             let msg = frame.clone().into_neighbour_msg();
             match msg {
                 NeighbourMsg::SurfaceFrame {
-                    encoded_h264, ts, ..
+                    encoded_h264,
+                    ts,
+                    seq,
+                    ..
                 } => {
                     // Sender+receiver share `origin`, so subtraction against the wire ts is a
                     // direct motion-to-photon delta.
                     let now_ns = u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
                     let latency_ns = now_ns.saturating_sub(ts);
-                    let outcome = push_and_settle(view, &encoded_h264, Some(latency_ns));
+                    let outcome = push_and_settle(view, seq, &encoded_h264, Some(latency_ns));
                     assert!(
                         matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                         "decode failed on frame {sent}",
@@ -278,7 +281,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
             "input event {i} was rejected — share registry regression"
         );
         input_dispatched += 1;
-        push_and_settle(&mut view, &frame.nalus, None);
+        push_and_settle(&mut view, frame.seq, &frame.nalus, None);
     }
     assert!(session.route_input(
         VIEWER_PEER,

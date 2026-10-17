@@ -53,6 +53,9 @@ pub struct LiveMember {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct HostLine {
     pub device: String,
+    /// The person's user root (hex), as the host authenticated them.
+    #[serde(default)]
+    pub user: String,
     #[serde(default)]
     pub label: String,
     #[serde(default)]
@@ -214,6 +217,36 @@ impl HereState {
             .filter(|label| !label.is_empty())
     }
 
+    /// The name and colour presence shows for the person `user` (their user
+    /// root, hex): their page's, found through the host's lines, which
+    /// pair each device with its person. `None` for someone not here now.
+    pub fn person(&self, user: &str) -> Option<(String, (u8, u8, u8))> {
+        let line = self
+            .lines
+            .iter()
+            .find(|line| !line.user.is_empty() && line.user == user)?;
+        let member = self
+            .members
+            .iter()
+            .flatten()
+            .chain(self.own.as_ref())
+            .find(|member| member.publisher == line.device);
+        let label = member
+            .map(|member| member.label.trim())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| line.label.trim());
+        let label = if label.is_empty() {
+            guest_label()
+        } else {
+            label.to_owned()
+        };
+        let rgb = member
+            .and_then(|member| member.color.as_deref())
+            .and_then(parse_rgb)
+            .unwrap_or_else(|| ui::presence::user_color(&line.device));
+        Some((label, rgb))
+    }
+
     /// This page's own colour, as its presence publishes it.
     pub fn own_rgb(&self) -> Option<(u8, u8, u8)> {
         self.own.as_ref()?.color.as_deref().and_then(parse_rgb)
@@ -353,7 +386,8 @@ impl HereState {
     }
 }
 
-fn guest_label() -> String {
+/// What a person who gave no name is called.
+pub fn guest_label() -> String {
     "Guest".to_owned()
 }
 
@@ -458,6 +492,42 @@ mod tests {
         }
     }
 
+    /// A person is named as their page's presence names them, found through
+    /// the host's line pairing their device with their user root.
+    #[test]
+    fn a_person_is_named_by_their_pages_presence() {
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![member("ada-device", "person", "Ada")]));
+        let line = |device: &str, user: &str, label: &str| HostLine {
+            device: device.into(),
+            user: user.into(),
+            label: label.into(),
+            ..HostLine::default()
+        };
+        here.set_lines(
+            vec![
+                line("ada-device", "ada-root", "Ada (host)"),
+                line("ben-device", "ben-root", "Ben"),
+                line("cy-device", "cy-root", ""),
+            ],
+            1,
+        );
+        assert_eq!(
+            here.person("ada-root"),
+            Some(("Ada".to_owned(), (0x11, 0x22, 0x33)))
+        );
+        // Without presence, the host's label and the device's colour.
+        assert_eq!(
+            here.person("ben-root"),
+            Some(("Ben".to_owned(), ui::presence::user_color("ben-device")))
+        );
+        assert_eq!(
+            here.person("cy-root").map(|(name, _)| name),
+            Some(guest_label())
+        );
+        assert_eq!(here.person("someone-who-left"), None);
+    }
+
     /// The strips other people are on come from their presence: this page
     /// and agents are left out, and a person without a strip counts nowhere.
     #[test]
@@ -489,6 +559,7 @@ mod tests {
     fn host(device: &str, status: &str, generated: bool) -> HostLine {
         HostLine {
             device: device.into(),
+            user: String::new(),
             label: "From host".into(),
             status: status.into(),
             recent: "Edited the text of Welcome note.".into(),

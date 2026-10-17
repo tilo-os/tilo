@@ -145,7 +145,7 @@ fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
         s.mount(Mount {
             dst: "/o".into(),
             kind: MountKind::Overlay {
-                lower: lower.clone(),
+                lowers: vec![lower.clone()],
                 upper: upper.clone(),
                 work: work.clone(),
             },
@@ -161,6 +161,52 @@ fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
     assert_eq!(owner(&upper.join("theirs")), (OWNER, OWNER));
     assert_eq!(
         std::fs::read_to_string(lower.join("theirs")).unwrap(),
+        "theirs\n"
+    );
+}
+
+#[test]
+fn stacked_layers_with_a_block_are_the_jobs_own_and_stay_the_owners() {
+    needs_root!();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bottom = owned_dir(dir.path(), "bottom");
+    let top = owned_dir(dir.path(), "top");
+    std::fs::write(top.join("top"), "top\n").unwrap();
+    std::os::unix::fs::chown(top.join("top"), Some(OWNER), Some(OWNER)).unwrap();
+    let layer = owned_dir(dir.path(), "layer");
+    let (upper, work) = (layer.join("upper"), layer.join("work"));
+    for d in [&upper, &work] {
+        std::fs::create_dir(d).unwrap();
+        std::os::unix::fs::chown(d, Some(OWNER), Some(OWNER)).unwrap();
+    }
+    let (status, out) = run(|s| {
+        with_block(s);
+        s.mount(Mount::overlay(
+            vec![top.clone(), bottom.clone()],
+            &upper,
+            &work,
+            "/o",
+        ));
+        s.mount(Mount {
+            dst: "/r".into(),
+            kind: MountKind::Layers {
+                lowers: vec![top.clone(), bottom.clone()],
+            },
+        });
+        shell(
+            s,
+            "stat -c %u /o/top /r/theirs; mkdir -p /o/d/e && echo mine > /o/d/e/mine && \
+             ln /o/top /o/linked && echo more >> /o/theirs && cat /r/top",
+        );
+    });
+    assert!(status.success(), "{out}");
+    assert_eq!(out, "0\n0\ntop\n");
+    for p in ["d", "d/e", "d/e/mine", "linked", "theirs"] {
+        assert_eq!(owner(&upper.join(p)), (OWNER, OWNER), "{p}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(top.join("theirs")).unwrap(),
         "theirs\n"
     );
 }
@@ -252,4 +298,113 @@ fn a_writable_path_that_cannot_be_idmapped_is_bound_and_named() {
     let (unmapped, status, out) = result.expect("the job starts");
     assert_eq!(unmapped, std::slice::from_ref(&dir));
     assert!(status.success() && out == "theirs\n", "{out}");
+}
+
+#[test]
+fn a_job_with_a_block_names_other_users_on_its_directories() {
+    needs_root!();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let work = owned_dir(dir.path(), "work");
+    // What a file of another of the job's users looks like: made on the host as that id.
+    std::fs::write(work.join("nobodys"), "").unwrap();
+    std::os::unix::fs::chown(work.join("nobodys"), Some(65534), Some(65534)).unwrap();
+    let (status, out) = run(|s| {
+        with_block(s);
+        s.mount(Mount::read_write(&work, "/work"));
+        shell(
+            s,
+            "stat -c %u:%g /work/nobodys; touch /work/f; \
+             if command -v setfacl >/dev/null; then setfacl -m u:65534:r /work/f && getfacl -n /work/f | grep user:65534; else echo user:65534:r--; fi",
+        );
+    });
+    assert!(status.success(), "{out}");
+    assert!(out.starts_with("65534:65534\n"), "{out}");
+    assert!(out.contains("user:65534:r--"), "{out}");
+    assert_eq!(owner(&work.join("f")), (OWNER, OWNER));
+    assert_eq!(owner(&work.join("nobodys")), (65534, 65534));
+}
+
+/// A nested job's system files as a root worker shows them: an image and
+/// the host's `/usr` whose files are root's on disk, as the worker's own
+/// files are. They stay root's in the job, not the job's own, so a program
+/// that trusts only root's files (ush's loader check) trusts them; and the
+/// job, unknown to the image, finds an entry for itself.
+#[test]
+fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
+    needs_root!();
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("image");
+    for d in ["usr", "etc", "proc", "dev", "tmp", "sys", "run"] {
+        std::fs::create_dir_all(image.join(d)).unwrap();
+    }
+    for l in ["bin", "lib", "lib64", "sbin"] {
+        std::os::unix::fs::symlink(format!("usr/{l}"), image.join(l)).unwrap();
+    }
+    std::fs::write(image.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\n").unwrap();
+    std::fs::write(image.join("etc/group"), "root:x:0:\n").unwrap();
+    std::fs::write(image.join("marker"), "").unwrap();
+    std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (status, out) = run(|s| {
+        s.root = Root::Image(image.clone());
+        s.allow_nested_sandboxes();
+        // A root worker: its files and the system's are both root's.
+        s.ids.outside_uid = 0;
+        s.ids.outside_gid = 0;
+        s.ids.block = Some(BLOCK);
+        s.mount(Mount::read_only("/usr", "/usr"));
+        shell(
+            s,
+            "id -u; stat -c %u:%g /marker; id -un; id -gn; \
+             awk -F: '$3 == 1000 { print $6 \":\" $7 }' /etc/passwd; stat -c %u:%a /etc/passwd; \
+             awk '$5 == \"/\" || $5 == \"/etc/passwd\" { print $5, $6 }' /proc/self/mountinfo",
+        );
+    });
+    assert!(status.success(), "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.first(), Some(&"1000"), "{out}");
+    assert_eq!(
+        lines.get(1),
+        Some(&"0:0"),
+        "the image's files became the job's: {out}"
+    );
+    assert_eq!(lines.get(2), Some(&"job"), "{out}");
+    assert_eq!(lines.get(3), Some(&"job"), "{out}");
+    assert_eq!(lines.get(4), Some(&"/tmp:/bin/sh"), "{out}");
+    assert_eq!(lines.get(5), Some(&"0:644"), "{out}");
+    for mount in lines.iter().skip(6) {
+        assert!(
+            mount
+                .split(' ')
+                .nth(1)
+                .is_some_and(|o| o.split(',').any(|f| f == "ro")),
+            "{out}"
+        );
+    }
+    assert_eq!(lines.len(), 8, "{out}");
+}
+
+/// The same for a job in the host's own root, whose `/usr` is root's: it
+/// never shows as the job's own.
+#[test]
+fn a_nested_job_in_the_host_root_sees_its_usr_as_roots() {
+    needs_root!();
+    let (status, out) = run(|s| {
+        s.allow_nested_sandboxes();
+        s.ids.outside_uid = 0;
+        s.ids.outside_gid = 0;
+        s.ids.block = Some(BLOCK);
+        shell(
+            s,
+            "id -u; stat -c %u /usr/bin; getent passwd 1000 >/dev/null && echo known",
+        );
+    });
+    assert!(status.success(), "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.first(), Some(&"1000"), "{out}");
+    // Root's where the host's /usr takes an idmapped mount; `nobody` where
+    // it can't (a micro-VM's root) and is bound as it is. Never the job's.
+    assert!(matches!(lines.get(1), Some(&("0" | "65534"))), "{out}");
+    assert_eq!(lines.get(2), Some(&"known"), "{out}");
 }

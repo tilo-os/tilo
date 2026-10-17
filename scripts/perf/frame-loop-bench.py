@@ -43,6 +43,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -399,7 +400,9 @@ def drive_pointer(ctl: Control, hz: float, seconds: float, width: int, height: i
     while time.monotonic() < end:
         x = width * 0.25 + (n % 80) * width * 0.005
         y = height * 0.25 + (n % 50) * height * 0.008
-        ctl.send({"op": "pointer_move", "x": float(x), "y": float(y)})
+        reply = ctl.send({"op": "pointer_move", "x": float(x), "y": float(y)})
+        if not response_ok(reply):
+            raise RuntimeError(f"pointer input refused: {reply}")
         n += 1
         # `send` is a synchronous round trip and already consumes part of the
         # period. Sleep only the remainder, otherwise the requested 20 Hz
@@ -597,12 +600,27 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             f"no shell binary at {shell_bin}\n"
             f"build it first: .claude/tilo-tools/qbuild-wt build -p shell --bin shell --release"
         )
+    required_load_client(shell_bin, args.load)
+    session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
+    try:
+        return run_session(args, out_dir, session_root)
+    finally:
+        if args.keep_session_root:
+            print(f"[bench] retained session root: {session_root}")
+        else:
+            shutil.rmtree(session_root, ignore_errors=True)
+
+
+def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> dict:
+    shell_bin = Path(args.shell_bin) if args.shell_bin else REPO / "target/release/shell"
     load_client = required_load_client(shell_bin, args.load)
     label = args.label or f"{args.backend}-{args.load}"
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
     log = out_dir / f"{label}.log"
-    session_root = Path(tempfile.mkdtemp(prefix="tilo-frame-bench-"))
+    # A failed launch must never reuse evidence from an earlier run with this label.
+    for artifact in (trace, summary, out_dir / f"{label}.stats.json"):
+        artifact.unlink(missing_ok=True)
     (session_root / "run").mkdir(mode=0o700)
     # Keep the control socket inside the same private runtime directory passed
     # to the compositor.  Choosing it from the caller's XDG_RUNTIME_DIR first
@@ -641,7 +659,6 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
         timeout=args.startup_timeout,
     )
     if provision.returncode != 0:
-        shutil.rmtree(session_root, ignore_errors=True)
         sys.exit(f"[bench] could not provision disposable identity:\n{provision.stdout}")
     process_started = time.monotonic()
     if args.refresh_hz:
@@ -753,6 +770,8 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                         )
                         # Give it a moment to map before input starts.
                         time.sleep(0.5)
+                        if load_proc.poll() is not None:
+                            raise RuntimeError("requested load client exited before measurement")
 
             launch_result: dict[str, object] = {
                 "painted": None,
@@ -834,10 +853,11 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                 app_launch_seconds = launch_result["seconds"]
                 app_failure = launch_result["failure"]
 
-            proc.wait(timeout=process_seconds + args.startup_timeout + 15)
-        except subprocess.TimeoutExpired:
-            print("[bench] compositor overran its deadline; terminating")
-            stop_process_group(proc)
+            status = proc.wait(timeout=process_seconds + args.startup_timeout + 15)
+            if status != 0:
+                raise RuntimeError(f"compositor exited with status {status}; see {log}")
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(f"compositor overran its deadline; see {log}") from error
         finally:
             stop_process_group(proc)
             if load_proc is not None:
@@ -849,11 +869,12 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                 for line in (cout or "").splitlines():
                     if line.startswith("LOADCLIENT"):
                         print(f"[bench] {line}")
+                if sys.exc_info()[0] is None:
+                    if load_proc.returncode != 0:
+                        raise RuntimeError(f"requested load client failed: {load_proc.returncode}")
+                    if not re.search(r"^LOADCLIENT frames=[1-9][0-9]*(?:\s|$)", cout or "", re.MULTILINE):
+                        raise RuntimeError("requested load client produced no frames")
             ctl_path.unlink(missing_ok=True)
-            if args.keep_session_root:
-                print(f"[bench] retained session root: {session_root}")
-            else:
-                shutil.rmtree(session_root, ignore_errors=True)
 
     if not trace.exists():
         sys.exit(f"[bench] no trace written; see {log}")

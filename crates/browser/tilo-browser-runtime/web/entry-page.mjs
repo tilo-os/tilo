@@ -20,7 +20,7 @@ import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './ar
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, REJOIN_CHANGED_HOST, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -59,14 +59,19 @@ function card(text, choices) {
     form.className = 'tilo-entry-card';
     const message = document.createElement('p');
     message.textContent = text;
-    form.append(message);
-    for (const [label, value] of choices) {
+    // One or two answers sit side by side, the first the one to take; a
+    // longer list (accounts, machines) is a list of equal options.
+    const actions = document.createElement('div');
+    actions.className = choices.length <= 2 ? 'tilo-entry-actions' : 'tilo-entry-options';
+    choices.forEach(([label, value], index) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = label;
+      if (choices.length <= 2 && index === 0) button.className = 'tilo-entry-primary';
       button.addEventListener('click', () => { form.remove(); resolve(value); });
-      form.append(button);
-    }
+      actions.append(button);
+    });
+    form.append(message, actions);
     document.body.append(form);
   });
 }
@@ -337,6 +342,9 @@ async function rootOfThisPage(peer) {
   return identity;
 }
 
+/** The desktop command that opens the window in front in a browser tab of its own. */
+const OPEN_IN_TAB = 'open-in-tab';
+
 /** One desktop's host actions from several owners (`names`, in order):
  * each sets its own, and the desktop lists them all. */
 function hostActionParts(mount, names) {
@@ -456,9 +464,12 @@ export async function startEntryPage({mode}) {
   let unnamed = null;
   /** Opening another of the person's workspaces, by host action id, once the page is open. */
   let switchWorkspace = null;
+  /** Opening the window in front in a browser tab of its own, once the page is open. */
+  let openInTab = null;
   const diagnostics = {
     onHostAction: id => {
       if (id === SET_UP.id) void setUp?.();
+      else if (id === OPEN_IN_TAB) openInTab?.();
       else if (id.startsWith(OPEN_WORKSPACE)) void switchWorkspace?.(id);
       else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
       else void identityActions?.perform(id);
@@ -528,11 +539,7 @@ export async function startEntryPage({mode}) {
         const kept = keptMembership(workspace);
         const identity = kept?.paired ? undefined : await browserPerson();
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? randomDisplayName();
-        // A host set up again since this browser joined it: the person may
-        // join it again from the bare entry. A link naming a room of the
-        // previous host stays refused, as that room is gone with it.
-        const confirmRejoin = room ? undefined : () => card(REJOIN_CHANGED_HOST, [['Join again', true], ['Not now', false]]);
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode, confirmRejoin});
+        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
         entered = 'joined';
         return peer;
       } catch (error) {
@@ -620,7 +627,7 @@ export async function startEntryPage({mode}) {
     if (entered) showVisitState({entered, retryAfter, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
-      ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace']) : null;
+      ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
     const here = page.router.route.target.scope;
     if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
       // A room entered as a member: offered again from the person's other workspaces.
@@ -710,6 +717,16 @@ export async function startEntryPage({mode}) {
       other.hidden = !refresh();
       for (const type of ['pointerdown', 'focus', 'click']) other.addEventListener(type, refresh);
       page.navigation?.subscribe(() => { other.hidden = !refresh(); });
+    }
+    if (hostActions) {
+      // The desktop's way to the window in front as a page of its own: a
+      // command beside "Close window", there while an app is in front.
+      const tab = hostActions('tab');
+      const offerTab = () => tab.setHostActions(page.router.route.target.app
+        ? [{id: OPEN_IN_TAB, title: 'Open in new tab', subtitle: 'This window, in a browser tab of its own'}] : []);
+      openInTab = () => globalThis.open(page.router.url('app'), '_blank', 'noopener');
+      offerTab();
+      page.navigation?.subscribe(offerTab);
     }
   } catch (error) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');

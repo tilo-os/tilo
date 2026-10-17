@@ -992,9 +992,33 @@ fn export(state: &State, call: &Call<'_>, id: &str) -> Reply {
             Some("mimeType"),
         );
     }
-    Reply::status(200)
-        .header("Content-Type", mime)
-        .body(format!("{} exported as {mime}", node.name))
+    let body = match mime {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+            mod fixture {
+                include!("../tests/fixtures/docx.rs");
+            }
+            fixture::BYTES
+        }
+        .to_vec(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            mod fixture {
+                include!("../tests/fixtures/xlsx.rs");
+            }
+            fixture::BYTES
+        }
+        .to_vec(),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+            mod fixture {
+                include!("../tests/fixtures/pptx.rs");
+            }
+            fixture::BYTES
+        }
+        .to_vec(),
+        "image/svg+xml" => include_bytes!("../tests/fixtures/empty.svg").to_vec(),
+        // Other formats remain protocol-only placeholders in this fake.
+        _ => format!("{} exported as {mime}", node.name).into_bytes(),
+    };
+    Reply::status(200).header("Content-Type", mime).body(body)
 }
 
 fn revision_json(rev: &Rev, mime: &str) -> Value {

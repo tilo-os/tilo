@@ -115,6 +115,35 @@ class ChangedRustComparisonTests(unittest.TestCase):
         self.assertIn("disappearing.rs", result.stderr)
         self.assertNotIn("allow reasons OK", result.stdout)
 
+    def test_inner_allows_require_reasons_in_commit_and_staged_checks(self):
+        for staged in (False, True):
+            source = self.origin / ("inner_staged.rs" if staged else "inner.rs")
+            for attribute in ("#![allow(dead_code)]", "mod nested {\n    #![allow(\n        dead_code,\n    )]\n}"):
+                with self.subTest(staged=staged, attribute=attribute):
+                    source.write_text(attribute + "\n")
+                    self.git(self.origin, "add", source.name)
+                    if staged:
+                        result = subprocess.run(
+                            [sys.executable, str(CI / "check_changed_rust_allows.py"),
+                             "--root", str(self.origin), "--staged"],
+                            text=True, capture_output=True,
+                        )
+                    else:
+                        self.commit("add inner lint attribute")
+                        result = self.check("allows", self.origin, self.base)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(source.name + ":", result.stderr)
+                    self.assertIn("allow with no reason", result.stderr)
+
+    def test_explained_inner_allows_remain_admitted(self):
+        (self.origin / "inner.rs").write_text(
+            '#![allow(dead_code, reason = "generated entrypoints")]\n'
+            'mod nested {\n    #![allow(unused_imports, reason = "platform imports")]\n}\n'
+        )
+        self.commit("explain inner lint attributes")
+        result = self.check("allows", self.origin, self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_changed_rust_files_come_from_the_exact_observed_comparison_trees(self):
         with self.subTest(phase='advanced main does not attribute its changes to docs pr'):
             self.doCleanups()

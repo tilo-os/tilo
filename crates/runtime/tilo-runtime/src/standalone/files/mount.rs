@@ -70,7 +70,7 @@ impl Drop for Mount {
     /// Unmounts first, so no write lands after the last save.
     fn drop(&mut self) {
         if let Some(session) = self.session.take()
-            && let Err(error) = session.umount_and_join()
+            && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session)
         {
             tracing::warn!(%error, "the workspace did not unmount cleanly");
         }

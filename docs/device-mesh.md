@@ -230,9 +230,10 @@ other, then asks the device's route (`HostServices::action_offload`,
 `tilo_actions::offload::ActionOffload`) where it runs:
 
 - `tilo_relay::offload::OffloadRoute` runs it through `Offloader::offload`
-  when every input is document media the invoking room reaches on this device
-  (`DocumentMedia::contains`), bound by its blob hash
-  (`WorkspaceContent::bind_blob`), and keeps the outputs as that room's media,
+  when every input is document media the invoking room reaches on this device,
+  bound by its blob hash and read only through the invoking app's scope in its
+  room (`WorkspaceContent::bind_blob` over `tilo_relay::offload::RoomMedia`),
+  and keeps the outputs as that room's media (`WorkspaceContent::keep_blob`),
   so the door answers with exactly the `tilo.content` addresses the app's
   handler returns.
 - Otherwise — a room this device places no compute for, an input not here, no
@@ -257,8 +258,20 @@ the background — a relay session subscribed to the room's workspace for
 placement and a compute session pinned to the relay's device key, over the
 store the apps' blob socket serves — answering `RunHere` with why until it is
 up and for good if the relay refuses this device or does not answer within
-`START_TIMEOUT`. The desktop compositor's apps keep their media in the
-filesystem daemon's store, which this route does not reach yet.
+`START_TIMEOUT`.
+
+The desktop compositor's apps keep their media in the filesystem daemon, a
+process of its own, so its broker gets the route
+`tilo_runtime::offload::session_action_offload` builds for the session's rooms
+(`compositor::session_bootstrap::session_action_offload`), configured the same
+way. Its media is `tilo_relay::offload::SessionMedia`: the daemon's
+document-media socket (`launcher::services::blob_socket`), connected as the
+desktop session — the principal the shell already opens app content with,
+which hands out nothing but one app's scope in one room — so inputs are read
+and outputs kept through the invoking app's own scope, with no new protocol
+and no authority beyond the session's. A daemon that does not answer is a
+`RunHere` with why. Rooms the session creates after it started run their
+offloadable actions here until the next session.
 
 ## Integration seams
 

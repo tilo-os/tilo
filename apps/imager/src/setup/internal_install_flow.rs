@@ -1,6 +1,6 @@
 //! Full Tilo installed alongside the current system, without a USB drive.
 //!
-//! Contract: `docs/superpowers/specs/2026-09-22-usb-free-install-design.md`
+//! Contract: `docs/architecture/usb-free-install.md`
 //! §5 (capability gate) and §8 (Imager UI). This module holds the reviewed
 //! plan, host readiness and elevated helper runs. Nothing here writes to a
 //! disk or firmware: only the elevated staging helper does, after it re-probes

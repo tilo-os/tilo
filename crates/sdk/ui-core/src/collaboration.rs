@@ -1797,6 +1797,12 @@ impl CollaborationManager {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
     }
 
+    /// Whether publication stopped because the workspace refused a change,
+    /// not because the connection was lost.
+    pub(crate) fn document_change_refused(&self) -> bool {
+        matches!(&self.backend, Backend::Transport(transport) if transport.document_change_refused())
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_publication_for_test(&self) {
         if let Backend::Transport(transport) = &self.backend {

@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import os
 import socket
 import sys
@@ -38,6 +39,7 @@ import time
 from urllib.parse import urlsplit
 
 _SEQ = itertools.count(1)
+MAX_REPLY_BYTES = 1024 * 1024
 
 
 class Unreachable(Exception):
@@ -53,6 +55,10 @@ class Refused(Exception):
 def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
     seq = f"cycle-{os.getpid()}-{next(_SEQ)}"
     payload = dict(payload, seq=seq)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise Unreachable("request timeout must be positive and finite")
+    deadline = time.monotonic() + timeout
+    sock = None
     try:
         if path.startswith("tcp://"):
             endpoint = urlsplit(path)
@@ -63,25 +69,32 @@ def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect(path)
-        with sock:
-            sock.sendall(json.dumps(payload).encode() + b"\n")
-            buffer = b""
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, _, buffer = buffer.partition(b"\n")
-                    try:
-                        reply = json.loads(line)
-                    except ValueError:
-                        continue
-                    if reply.get("seq") == seq:
-                        return reply
+        sock.settimeout(max(0.001, deadline - time.monotonic()))
+        sock.sendall(json.dumps(payload).encode() + b"\n")
+        buffer = b""
+        while time.monotonic() < deadline:
+            sock.settimeout(max(0.001, deadline - time.monotonic()))
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, _, buffer = buffer.partition(b"\n")
+                if len(line) > MAX_REPLY_BYTES:
+                    raise Unreachable("console response is too large")
+                try:
+                    reply = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(reply, dict) and reply.get("seq") == seq:
+                    return reply
+            if len(buffer) > MAX_REPLY_BYTES:
+                raise Unreachable("console response is too large")
     except (OSError, ValueError) as error:
         raise Unreachable(str(error)) from error
+    finally:
+        if sock is not None:
+            sock.close()
     raise Unreachable("no answer to this request")
 
 
@@ -89,11 +102,16 @@ def unwrap(reply: dict, key: str) -> object:
     if key in reply:
         return reply[key]
     err = reply.get("err") or {}
+    if not isinstance(err, dict):
+        raise Unreachable("invalid console error response")
     raise Refused(err.get("code", "unknown"), err.get("message", ""))
 
 
-def state(path: str) -> dict:
-    return unwrap(request(path, {"op": "state_dump"}), "state")
+def state(path: str, timeout: float = 15.0) -> dict:
+    current = unwrap(request(path, {"op": "state_dump"}, timeout), "state")
+    if not isinstance(current, dict):
+        raise Unreachable("invalid console state response")
+    return current
 
 
 def save(value: object, target: str | None) -> None:
@@ -104,17 +122,22 @@ def save(value: object, target: str | None) -> None:
 
 
 def poll(path: str, accept, timeout: float, interval: float = 5.0) -> dict:
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise TimeoutError("poll timeout must be positive and finite")
     deadline = time.monotonic() + timeout
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
         try:
-            current = state(path)
+            current = state(path, min(15.0, remaining))
             if accept(current):
                 return current
         except (Unreachable, Refused):
             pass
         if time.monotonic() >= deadline:
             raise TimeoutError
-        time.sleep(interval)
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
 
 
 def pointer(document: object, path: str) -> object:
@@ -176,7 +199,7 @@ def main(argv: list[str]) -> int:
             save(current, options.save)
             print(json.dumps(current))
         elif options.command == "check":
-            current = unwrap(request(path, {"op": "state_dump"}, options.timeout), "state")
+            current = state(path, options.timeout)
             if current.get("app") != options.app or (
                 options.pointer is not None and pointer(current, options.pointer) is not True
             ):

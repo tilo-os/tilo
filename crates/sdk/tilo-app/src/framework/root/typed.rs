@@ -119,6 +119,9 @@ pub(crate) trait TypedRoot {
     /// [`tilo_resource::publish_head`] of `state` at `id`, labelled `label`.
     fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::Resource;
 
+    /// Whether this exact child belongs to the declared document projection.
+    fn document_child(&self, state: &dyn Any, id: &str) -> bool;
+
     /// [`Resource::children_parts`] of `state`.
     fn children_parts(&self, state: &dyn Any) -> ChildrenParts;
 
@@ -329,6 +332,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
             Some(state) => tilo_resource::publish_head::<R>(id, label, state),
             None => tilo_actions::Resource::new(id, R::KIND, label),
         }
+    }
+
+    fn document_child(&self, state: &dyn Any, id: &str) -> bool {
+        state_of::<R>(state).is_some_and(|state| R::document_child(state, id))
     }
 
     fn children_parts(&self, state: &dyn Any) -> ChildrenParts {

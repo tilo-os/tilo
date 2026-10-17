@@ -341,6 +341,30 @@ completeness does not exempt a screen from these requirements.
 - **Interactive things look interactive** and give feedback: hover, press, focus,
   and disabled are all distinct; a control that does nothing yet is a defect
   (§ functionality), and a control that *looks* dead is a craft defect.
+- **An aimed-at control never moves; passing over one is not hovering it.**
+  A pointer that settles on a control (its speed falling toward zero with
+  the path ending inside it) is aiming at it: nothing reveals, expands or
+  collapses that would move that control while it is there. A pointer still
+  moving on past a control is in transit: the control shows no hover state
+  and holds nothing back, so a pointer that crosses a tab's × on its way to
+  the chips still opens the tab. What expands on hover to show more opens
+  after a short rest on it and stays open by menu aim (the pointer's path
+  heading for what it revealed), not by a long timer (`widget::hover_intent`).
+- **A maximized window is all app; its bar comes when reached for.** The
+  client fills the window (no lane above it, no margin below it). The
+  window's bar — title, Full screen, Restore, close — hides at rest and fades
+  in *over* the window's top edge when the person reaches for it: a rest in
+  the thin band at the very top, or a fast climb that brakes there (Fitts);
+  never a rest or a click on the app's own top row, and never a pointer
+  merely passing through. Shown, it stays while the pointer settles on it or
+  heads for one of its controls (menu aim) and hides at once otherwise; the
+  keyboard and a touch swipe down from the edge reach it too
+  (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
+  **one bar**: the window's controls stand at the row's trailing end in room
+  the row keeps for them (`WindowHeader::set_window_bar`), never stacked
+  above or painted over the app's controls. An app may put its header *in*
+  the bar (`NavShell::with_header_in_window_bar`): maximized, the header
+  then hides with the bar and comes back over the content with it.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping

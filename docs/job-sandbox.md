@@ -140,7 +140,8 @@ other running job has): the job's namespace maps `0..65536` onto it, so the job
 is a host user of its own. Its files stay the worker's: every host path bound in
 is an idmapped mount (`mount_setattr` with `MOUNT_ATTR_IDMAP`, Linux 5.12) on
 which the worker's files show as the job's and what the job creates belongs to
-the worker on the host, so the next job, with another block, finds a warm build
+the worker on the host; every other id below 65536 keeps its number there, so
+ACL entries naming any of the job's users work on its directories too, so the next job, with another block, finds a warm build
 directory as its own. The worker makes these mounts before the job starts
 (idmapping takes `CAP_SYS_ADMIN` over the filesystem) and the job's init
 attaches them (`move_mount`); overlays get idmapped layers (Linux 5.19). The
@@ -149,7 +150,14 @@ groups. A path whose filesystem can't be idmapped (a device on devtmpfs, a
 container's `/tmp`) is bound as it is, and a writable one is reported to the
 caller (`Job::unmapped`) rather than failing the job. A socket (a VM step's
 passt) is never idmapped: the worker makes it for the job, so it becomes the
-job's user's. t hands the blocks out
+job's user's. The job's system files (its image root, or the host's `/usr`,
+`/etc` and `/lib*`) are idmapped too, but with every id keeping its number: root's
+files stay root's, read-only, in every tier, so a program that trusts only
+root's files (a dynamic loader, a setuid helper) still trusts them for a job that
+runs as uid 1000. A job whose uid has no entry in the root's `/etc/passwd` (a
+nested job in an image that knows only root) gets one, `job` at home in `/tmp`
+with root's shell, and a group entry likewise: the root's files with the line
+added, bound read-only over them. t hands the blocks out
 from `0x70000000` up and falls back to the shared uid, loudly, where a trial job
 shows it can't.
 

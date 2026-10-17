@@ -50,8 +50,8 @@ pub const MAX_BLANK_MINUTES: u32 = 30;
 /// The largest idle-lock timeout exposed by Settings.
 pub const MAX_LOCK_MINUTES: u32 = 30;
 
-/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/settings.json`,
-/// falling back to `~/.config/tilo/settings.json`) — the same file the
+/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/session/settings.json`,
+/// falling back to `~/.config/tilo/session/settings.json`) — the same file the
 /// Settings app and the rest of the compositor read.
 pub fn settings_path() -> Option<PathBuf> {
     settings_store::settings_path()

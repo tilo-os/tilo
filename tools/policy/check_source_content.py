@@ -31,8 +31,18 @@ def committed_tree(root):
     """
     try:
         return git(root, "rev-parse", "--verify", "--quiet", "HEAD^{tree}").decode().strip()
-    except subprocess.CalledProcessError:
-        return git(root, "write-tree").decode().strip()
+    except subprocess.CalledProcessError as tree_error:
+        if tree_error.returncode != 1:
+            raise
+        # Only an absent HEAD admits the index fallback. A missing tree in an
+        # existing commit must not turn a committed-source audit into an index audit.
+        try:
+            git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+        except subprocess.CalledProcessError as head_error:
+            if head_error.returncode != 1:
+                raise
+            return git(root, "write-tree").decode().strip()
+        raise tree_error
 
 
 def content_issues(data):

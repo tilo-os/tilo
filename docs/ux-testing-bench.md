@@ -2,11 +2,11 @@
 
 Start with a user goal, describe the visible route, set an interaction budget, and assert the resulting product state. Input dispatch alone never means success.
 
-Latest measured closure: [48-run repaired matrix](superpowers/audits/2026-09-15-fixed-ux-bench-results.md).
+The latest measured closure is a 48-run repaired matrix.
 
 ## Goal-only agent trials and usability properties
 
-Measured results: [12 live trials and deterministic usability audit](superpowers/audits/2026-09-16-ux-evidence-results.md). All tasks completed, but only 7/12 met efficiency gates; the stronger tests expose failures despite the original 48-case matrix passing.
+Measured results from 12 live trials and a deterministic usability audit: all tasks completed, but only 7/12 met efficiency gates; the stronger tests expose failures despite the original 48-case matrix passing.
 
 The [evidence method](ux-evidence-method.md) explains what each test can establish and what remains unproven. The new runner adds keyboard entry, feedback, cancellation, recovery, state preservation, exact document outcomes, and semantic target geometry. It can also ask an OpenAI vision model to complete goals using screenshots alone, with private independent success checks.
 

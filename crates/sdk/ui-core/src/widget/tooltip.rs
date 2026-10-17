@@ -179,6 +179,25 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
+    draw_chip_marked(scene, transform, text_renderer, theme, rect, (label, None));
+}
+
+/// The room a person's colour dot takes before a chip's label: its
+/// diameter, and the gap after it.
+fn mark_room(theme: &Theme) -> (f64, f64) {
+    let rhythm = theme.tokens.spacing.rhythm;
+    (f64::from(rhythm.related), f64::from(rhythm.tight))
+}
+
+/// [`draw_chip`] with a coloured dot before the label when `mark` is set.
+fn draw_chip_marked(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    (label, mark): (&str, Option<vello::peniko::Color>),
+) {
     let radius = f64::from(theme.tokens.radii.control);
 
     // The elevation token's own blur, following the chip's radius — the same
@@ -210,8 +229,20 @@ pub fn draw_chip(
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
     let m = ChipMetrics::of(theme);
+    let (mark_px, mark_gap) = mark_room(theme);
+    let lead = mark.map_or(0.0, |color| {
+        let centre = vello::kurbo::Point::new(rect.x0 + m.pad_x + mark_px / 2.0, rect.center().y);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &vello::kurbo::Circle::new(centre, mark_px / 2.0),
+        );
+        mark_px + mark_gap
+    });
     let content = Rect::new(
-        rect.x0 + m.pad_x,
+        rect.x0 + m.pad_x + lead,
         rect.y0 + m.pad_y,
         rect.x1 - m.pad_x,
         rect.y1 - m.pad_y,
@@ -233,7 +264,7 @@ pub fn draw_chip(
         scene,
         label,
         on_panel.tokens.colors.text_primary,
-        transform.pre_translate((rect.x0 + m.pad_x, text_y).into()),
+        transform.pre_translate((content.x0, text_y).into()),
         Some(content_width),
         &text_style,
     );
@@ -274,6 +305,32 @@ pub fn draw_hover_tooltip_on(
 ) {
     let rect = hover_chip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
+}
+
+/// A tooltip naming a person: their presence `color` as a dot before
+/// `label`, the way presence marks them everywhere else, on the side of
+/// `anchor` the control prefers.
+pub fn draw_person_tooltip_on(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    (label, color): (&str, vello::peniko::Color),
+    viewport: Rect,
+) {
+    let (width, height) = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    let (mark_px, mark_gap) = mark_room(theme);
+    let size = (width + mark_px + mark_gap, height);
+    let rect = chip_rect_on(theme, anchor.1, anchor.0, size, viewport);
+    draw_chip_marked(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        rect,
+        (label, Some(color)),
+    );
 }
 
 /// Where [`draw_hover_tooltip_on`] places the chip for `label`.

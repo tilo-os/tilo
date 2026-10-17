@@ -134,6 +134,15 @@ mod dropped_content_startup_tests {
     }
 }
 
+/// Whether a banner may surface while the person types into a window:
+/// only what is addressed to them (a message or mention from a verified
+/// person, a call, a reminder they set, an ask waiting on them), and the
+/// desktop's own must-know notices that already pierce Do Not Disturb.
+/// Everything else waits for them to pause.
+pub(crate) fn may_interrupt_typing(n: &Notification) -> bool {
+    n.addressed().is_some() || n.bypass_dnd
+}
+
 fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
@@ -763,6 +772,15 @@ pub struct ChromeState {
     /// Short, bounded edge flash requested by the visual-alert accessibility
     /// setting. Local session state only; it is never synced or written back.
     visual_alert_until: Option<std::time::Instant>,
+    /// While the person types into a window, until this instant (their
+    /// last key plus the desk's pause): only banners addressed to them
+    /// surface; the rest wait in [`Self::waiting_banners`]. Set by the
+    /// overlay host from the same typing signal that sends desk widgets
+    /// away.
+    typing_until: Option<std::time::Instant>,
+    /// Banners that arrived while the person typed and were not addressed
+    /// to them, oldest first; shown once they pause.
+    waiting_banners: Vec<Notification>,
     /// Mirrored from the compositor's `SessionManager` each frame.
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
@@ -801,6 +819,10 @@ pub struct ChromeState {
     /// wiped on the next tick. Once the retained row exists, both can feed
     /// [`Self::is_fullscreen`] through `fullscreen_presentation`.
     maximized_group: Option<u64>,
+    /// Whether the full top bar is docked, or hidden by the person and
+    /// shown over the windows while reached for. The overlay host decides;
+    /// the bar and the input policy read it.
+    top_bar: tilo_desktop::chrome::TopBarPresence,
     /// Whether the retained widget tree currently owns the requested
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
@@ -891,6 +913,9 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// Banners pointing at a task whose run waits for the person's answer,
+    /// by banner, to the task they open.
+    task_confirmation_toasts: BTreeMap<u64, String>,
 }
 
 #[derive(Debug)]
@@ -1007,6 +1032,8 @@ impl ChromeState {
             notification_policy_checked: None,
             presenting: false,
             visual_alert_until: None,
+            typing_until: None,
+            waiting_banners: Vec::new(),
             session_locked: false,
             active_exposures: Vec::new(),
             session_lock_requested: false,
@@ -1017,6 +1044,7 @@ impl ChromeState {
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
+            top_bar: tilo_desktop::chrome::TopBarPresence::Docked,
             fullscreen_presentation: false,
             fullscreen_display: None,
             single_strip: false,
@@ -1048,6 +1076,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            task_confirmation_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -1349,6 +1378,21 @@ impl ChromeState {
     #[must_use]
     pub fn single_strip(&self) -> bool {
         self.single_strip
+    }
+
+    /// Docked, hidden, or shown over the windows.
+    #[must_use]
+    pub fn top_bar_presence(&self) -> tilo_desktop::chrome::TopBarPresence {
+        self.top_bar
+    }
+
+    /// Set by the overlay host's top-edge reveal; a change repaints the bar
+    /// (and, between docked and not, re-lays the column out).
+    pub fn set_top_bar_presence(&mut self, presence: tilo_desktop::chrome::TopBarPresence) {
+        if self.top_bar != presence {
+            self.top_bar = presence;
+            self.bump();
+        }
     }
 
     pub fn set_single_strip(&mut self, single: bool) {
@@ -2082,6 +2126,24 @@ impl ChromeState {
         true
     }
 
+    /// Tell the person a task's run paused at an action that asks them
+    /// first, without interrupting them: a banner whose Review opens Task
+    /// Center on that task, where they answer it.
+    pub fn push_task_confirmation(
+        &mut self,
+        notice: &tilo_desktop::activity::ConfirmationNotice,
+    ) -> u64 {
+        let (title, body) = (notice.title(), notice.body());
+        let mut toast = Notification::new(title, body)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Permission);
+        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+        toast.actions = vec![("default".into(), notice.review_label())];
+        self.task_confirmation_toasts
+            .insert(toast.id, notice.task_id.clone());
+        self.push_notification_full(toast)
+    }
+
     /// The deletion toast's Undo: put the workspace back where it was, on
     /// screen. The person's other devices get it back with the next list.
     pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
@@ -2612,6 +2674,44 @@ impl ChromeState {
     /// D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
+        if self.typing_at(std::time::Instant::now()) && !may_interrupt_typing(&n) {
+            self.waiting_banners.push(n);
+            return id;
+        }
+        self.show_notification(n)
+    }
+
+    /// The person typing into a window until `until` (`None`: not typing).
+    /// Banners held while they typed surface once it lapses, through
+    /// [`Self::release_waiting_banners`].
+    pub fn set_typing_until(&mut self, until: Option<std::time::Instant>) {
+        self.typing_until = until;
+    }
+
+    /// Whether the person is typing at `now`.
+    pub fn typing_at(&self, now: std::time::Instant) -> bool {
+        self.typing_until.is_some_and(|until| now < until)
+    }
+
+    /// The banners waiting for the person to pause.
+    pub fn waiting_banner_count(&self) -> usize {
+        self.waiting_banners.len()
+    }
+
+    /// Show the banners that waited while the person typed, once they have
+    /// paused at `now`. Returns whether any surfaced.
+    pub fn release_waiting_banners(&mut self, now: std::time::Instant) -> bool {
+        if self.typing_at(now) || self.waiting_banners.is_empty() {
+            return false;
+        }
+        for n in std::mem::take(&mut self.waiting_banners) {
+            self.show_notification(n);
+        }
+        true
+    }
+
+    fn show_notification(&mut self, n: Notification) -> u64 {
+        let id = n.id;
         if self.notifications_quiet() && !n.bypass_dnd {
             self.record_history(n);
             self.bump();
@@ -2648,6 +2748,7 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
+        self.task_confirmation_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -2724,6 +2825,14 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
+            self.record_history(removed);
+            self.open_room_activity(Some(ActivityFocus {
+                task_id: Some(task_id),
+                ..ActivityFocus::default()
+            }));
             return true;
         }
         if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {

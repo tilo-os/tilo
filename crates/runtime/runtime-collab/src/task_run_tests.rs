@@ -1,4 +1,6 @@
-use super::{TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate};
+use super::{
+    INSTRUCTION_CONTEXT, INSTRUCTION_CONVERSATION, TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate,
+};
 
 #[test]
 fn task_run_wire_is_typed_and_rejects_unknown_fields() {
@@ -93,4 +95,31 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
             .is_none(),
         "a run about no selection is the run an older agent reads"
     );
+}
+
+#[test]
+fn the_request_is_the_persons_own_words_without_context_or_conversation() {
+    let envelope = |instruction: &str| TaskRunEnvelope {
+        version: 1,
+        task_id: "task:3".into(),
+        title: "Summarise".into(),
+        instruction: Some(instruction.into()),
+        subject: None,
+        run_id: 9,
+        lease: "broker-lease".into(),
+        planning: TaskRunPlanning::Model,
+        execution_budget: None,
+        action_context: serde_json::json!({}),
+    };
+    let plain = envelope("make a summary note of this");
+    assert_eq!(plain.request(), "make a summary note of this");
+    let continued = envelope(&format!(
+        "make a summary note of this{INSTRUCTION_CONTEXT}\n<<<\nWhich files?\n>>>\
+         {INSTRUCTION_CONVERSATION}\nYou: apps and files share one history?"
+    ));
+    assert_eq!(continued.request(), "make a summary note of this");
+    let recalled = envelope(&format!(
+        "and in Writer?{INSTRUCTION_CONVERSATION}\nPerson: hi"
+    ));
+    assert_eq!(recalled.request(), "and in Writer?");
 }

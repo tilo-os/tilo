@@ -3923,14 +3923,16 @@ impl FrameBuilder {
     /// choice, or the one their identity derives) again, and dress the
     /// chrome in them.
     fn apply_configured_theme(&mut self) {
+        let snapshot = self
+            .live_settings
+            .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+            .snapshot();
         // The wallpaper is part of the look: a choice in Settings lands with
         // the same settings change that would retheme the desktop.
-        super::desktop_backdrop::follow_wallpaper_choice(
-            &self
-                .live_settings
-                .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
-                .snapshot()
-                .document,
+        super::desktop_backdrop::follow_wallpaper_choice(&snapshot.document);
+        // So do the desk widgets' choices (when each shows, which edge).
+        self.host.set_desk_widget_prefs(
+            settings_store::desk_widgets::DeskWidgetPrefs::from_document(&snapshot.document),
         );
         self.configured_theme = Theme::configured();
         self.windows

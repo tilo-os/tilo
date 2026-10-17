@@ -84,4 +84,32 @@ elif (( nextest )) && [[ -n ${T_NEXTEST_FILTER:-} ]]; then
         esac
     done
 fi
+# A package whose sources declare no test at all (a load generator, a bin-only
+# tool) passes with none run: run alone, nextest would answer "no tests to run",
+# while batched with other packages it passes. Only such packages: a package
+# with a test anywhere keeps nextest's verdict, and a build or listing failure
+# fails either way.
+declares_no_test() {
+    [[ $tested != " " ]] || return 1
+    python3 - "$root" $tested <<'PY'
+import pathlib, re, sys, tomllib
+root, names = pathlib.Path(sys.argv[1]), set(sys.argv[2:])
+dirs = {}
+for manifest in root.glob("**/Cargo.toml"):
+    if "target" in manifest.parts or "vendor" in manifest.parts:
+        continue
+    try:
+        name = tomllib.loads(manifest.read_text()).get("package", {}).get("name")
+    except (OSError, tomllib.TOMLDecodeError):
+        continue
+    if name in names:
+        dirs[name] = manifest.parent
+test = re.compile(r"#\[([A-Za-z_]+::)*test\b")
+sys.exit(0 if len(dirs) == len(names) and not any(
+    test.search(path.read_text(errors="replace")) for d in dirs.values() for path in d.rglob("*.rs")) else 1)
+PY
+}
+if (( nextest )) && [[ ${3:-} == run ]] && declares_no_test; then
+    arguments+=(--no-tests=pass)
+fi
 exec bash "$root/tools/test-env.sh" "${arguments[@]}"
