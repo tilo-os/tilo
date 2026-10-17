@@ -124,6 +124,17 @@ impl<D: ReadDoc> At<'_, D> {
     }
 }
 
+// Through `serde_json::Value`, the input `DesktopTree::from_json` reads: one
+// copy of the workspace and window deserializers serves both. Not generic, so
+// every reader of the record shares these instead of instantiating its own.
+fn workspace_from(json: &str) -> Option<Workspace> {
+    serde_json::from_value(serde_json::from_str(json).ok()?).ok()
+}
+
+fn tab_from(json: &str) -> Option<Tab> {
+    serde_json::from_value(serde_json::from_str(json).ok()?).ok()
+}
+
 fn parse_id(text: Option<String>) -> Option<u64> {
     text?.parse().ok()
 }
@@ -154,7 +165,7 @@ impl Parts {
         for (id, entry) in at.entries(WORKSPACES) {
             let Some(mut workspace) = at
                 .text(&entry, WORKSPACE)
-                .and_then(|json| serde_json::from_str::<Workspace>(&json).ok())
+                .and_then(|json| workspace_from(&json))
             else {
                 continue;
             };
@@ -186,10 +197,7 @@ impl Parts {
                 .push((at.number(&entry, ORDER).unwrap_or(0.0), id, id));
         }
         for (id, entry) in at.entries(WINDOWS) {
-            let Some(mut tab) = at
-                .text(&entry, TAB)
-                .and_then(|json| serde_json::from_str::<Tab>(&json).ok())
-            else {
+            let Some(mut tab) = at.text(&entry, TAB).and_then(|json| tab_from(&json)) else {
                 continue;
             };
             tab.id = id;
