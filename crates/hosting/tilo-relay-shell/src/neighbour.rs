@@ -3,13 +3,13 @@
 //! Every classification here is the one the host applied before the seam
 //! existed, so retained data written by any earlier host is judged exactly
 //! as it was: retention and channel come from the one host-retention
-//! classifier (`tilo_peer_state::transport`), and the host identity channel
+//! classifier (`neighbour_wire::retention`), and the host identity channel
 //! keeps its persisted derivation.
 
 use std::collections::BTreeSet;
 
-use tilo_peer_state::NeighbourMsg;
-use tilo_peer_state::transport::{Retention, audience, retention, standalone};
+use neighbour_wire::NeighbourMsg;
+use neighbour_wire::{Retention, audience, retention, standalone};
 
 use crate::{Checkpoint, CheckpointKind, Route, ShellPayloads};
 
@@ -107,5 +107,9 @@ impl ShellPayloads for NeighbourPayloads {
 
     fn decoded_overhead(&self) -> usize {
         std::mem::size_of::<NeighbourMsg>()
+    }
+
+    fn replay(&self) -> Option<&dyn tilo_relay_store::shell::ShellReplay> {
+        Some(&crate::NeighbourReplay)
     }
 }

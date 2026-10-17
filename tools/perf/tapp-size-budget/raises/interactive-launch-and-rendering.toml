@@ -1,5 +1,0 @@
-reason = "The shared toolkit now supports room-record writers, launch progress, sparse damage and durable collaboration backpressure; affected-package run 108131 measured Terminal at 1,509,888 bytes on x86_64, 2,560 bytes over its prior budget."
-run = 108131
-
-[apps."so.tilo.terminal"]
-x86_64 = 65536

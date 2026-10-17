@@ -105,8 +105,8 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
     assert!(retained.iter().any(|body| {
         body.author == writer_device.cert.device_public_key &&
-        matches!(postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body.body),
-            Ok(tilo_peer_state::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
+        matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
+            Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
             if app_id == route.app_id && record_id == route.record &&
                 envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected_channel))
     }), "the real remote writer's retained primary must be encrypted on its exact channel");

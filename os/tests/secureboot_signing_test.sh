@@ -16,6 +16,9 @@ sign_path="$repo/os/usr/lib/systemd/system/tilo-secureboot-sign.path"
 grep -Fq 'find "$ESP/EFI/Linux/bootc" -maxdepth 1' "$secureboot"
 grep -Fxq 'PathChanged=/boot/EFI/Linux/bootc' "$sign_path"
 grep -Fxq 'PathModified=/boot/EFI/Linux/bootc' "$sign_path"
+# An installed system's ESP is at /boot/efi, beside its separate /boot.
+grep -Fxq 'PathChanged=/boot/efi/EFI/Linux/bootc' "$sign_path"
+grep -Fxq 'PathModified=/boot/efi/EFI/Linux/bootc' "$sign_path"
 if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
   printf 'Secure Boot signing still performs a system-wide sync\n' >&2
   exit 1

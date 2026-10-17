@@ -669,20 +669,12 @@ jobs:
       - name: Ensure the Android NDK and Rust targets
         run: bash tools/ci/install-android-ndk.sh
 
-      # Clippy's missing_const_for_thread_local fires on the Android targets
-      # for thread-locals that already use `const { … }`, a false positive.
       - name: Clippy Android apps
         env:
           PACKAGES: ${{ needs.select.outputs.android_packages }}
         run: |
-          set -euo pipefail
-          for target in aarch64-linux-android x86_64-linux-android; do
-            # shellcheck disable=SC2086
-            bash tools/ci/measure.sh "clippy $target" -- \
-              bash scripts/ci-run.sh "Clippy (Android apps, $target)" -- \
-              cargo clippy --locked $PACKAGES --examples --features android --target "$target" \
-              -- -D warnings -A clippy::missing_const_for_thread_local
-          done
+          # shellcheck disable=SC2086
+          bash tools/ci/clippy-android.sh $PACKAGES
 
   # Browser crates (anything built on wasm-bindgen) and their cfg(wasm32)
   # code paths, which no native job compiles, type-checked; and the selected
@@ -723,22 +715,14 @@ jobs:
       - name: Ensure the wasm32 Rust target
         run: rustup target add wasm32-unknown-unknown
 
-      - name: Check browser crates for wasm32
-        if: needs.select.outputs.wasm_packages != ''
+      # The selected browser crates with their default features, then the
+      # browser's own builds as it builds them.
+      - name: Clippy browser crates and builds for wasm32
         env:
           PACKAGES: ${{ needs.select.outputs.wasm_packages }}
         run: |
-          set -euo pipefail
           # shellcheck disable=SC2086
-          bash tools/ci/measure.sh "check wasm32" -- \
-            bash scripts/ci-run.sh "Check (browser crates, wasm32)" -- \
-            cargo check --locked $PACKAGES --target wasm32-unknown-unknown
-
-      # The step above checks each crate with its default features. The
-      # browser builds the web core with `dylink` and its app collection, and
-      # the Cloud frontend with `cloud,static-apps`; check those as built.
-      - name: Check the browser's wasm32 builds
-        run: bash tools/ci/check-wasm.sh
+          bash tools/ci/check-wasm.sh $PACKAGES
 
       # `tilo-app build --platform web` for every selected web-capable
       # example, against one web core.

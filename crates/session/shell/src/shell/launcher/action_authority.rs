@@ -273,7 +273,11 @@ fn write_binding(
             .get(binding)
             .is_none_or(|state| !state.projection.same_policy(&projection))
     {
-        tilo_files::native::atomic::write_private(&path, &bytes)?;
+        // In the runtime tmpfs and unsynced: `PUBLISHED` is held here, and
+        // the compositor's loop takes it every iteration, so a sync under I/O
+        // pressure would freeze the desktop. The sandbox reads the file
+        // through the page cache, and a crash discards it with the session.
+        super::write_runtime_private(&path, &bytes)?;
         match published.bindings.get_mut(binding) {
             Some(state) => state.projection = projection,
             None => {
@@ -769,6 +773,14 @@ mod tests {
             rooms: Export::of(&tree).0,
             ..Published::default()
         };
+        // Written under `PUBLISHED`, which the compositor's loop takes every
+        // iteration: it must never wait for the disk.
+        #[cfg(target_os = "linux")]
+        let path = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            write_binding(&mut published, &binding, true)
+        })
+        .unwrap();
+        #[cfg(not(target_os = "linux"))]
         let path = write_binding(&mut published, &binding, true).unwrap();
         let first: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

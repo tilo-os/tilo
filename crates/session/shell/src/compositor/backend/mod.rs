@@ -1032,7 +1032,6 @@ pub fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Opt
     }
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "monitor scale factor; f32 precision is ample for a UI scale value"
     )]
     let scale = scale_factor as f32;

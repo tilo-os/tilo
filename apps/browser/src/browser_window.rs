@@ -311,15 +311,13 @@ impl Widget for BrowserWindow {
             self.dirty = true;
         }
         self.page.sync(state, path);
-        #[cfg(target_os = "linux")]
         if let Some(anchor) = self.page.take_service_redirect()
             && let Some(cx) = &self.service_cx
             && let Some((id, _)) = crate::service_destinations::parse_anchor(&anchor)
             && let Some(person) = cx.me().and_then(crate::service_sessions::identity)
+            && let Err(error) = self.page.begin_service_session(&id, person, cx.waker())
         {
-            if let Err(error) = self.page.begin_service_session(&id, person, cx.waker()) {
-                tracing::warn!(%error, "Approved account could not be opened");
-            }
+            tracing::warn!(%error, "Approved account could not be opened");
         }
         if self.page.take_native_closed() {
             // The page closed itself (`window.close()`): so does its tab.

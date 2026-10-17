@@ -70,6 +70,25 @@ impl MembershipWatch {
         }
     }
 
+    /// A change to `file` of `workspace_id`: the room reads its files again
+    /// and its sessions re-audit, unless the file holds exactly what this
+    /// process last wrote there itself ([`wrote_own`]), which the room
+    /// already holds. The relay rewrites a governed room's access file
+    /// whenever it admits someone, after it has applied the change to the
+    /// room and announced whatever it narrowed; announcing each rewrite
+    /// again woke every session in a public room to re-audit, and to read
+    /// the file back, for every newcomer.
+    async fn changed(&self, workspace_id: u64, file: &str) {
+        let path = self.workspaces.join(workspace_id.to_string()).join(file);
+        let own = match tokio::fs::read(&path).await {
+            Ok(bytes) => is_own(&path, &bytes),
+            Err(_) => false,
+        };
+        if !own {
+            self.bump(workspace_id);
+        }
+    }
+
     fn bump_all(&self) {
         let rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
         for room in rooms.values() {
@@ -238,8 +257,8 @@ async fn run(watch: &Arc<MembershipWatch>) {
             || match origin {
                 Origin::Rooms => room_changed(watch, &mut watches, &change).await.is_err(),
                 Origin::Room(workspace_id) => {
-                    if names_membership(&change.path) {
-                        watch.bump(workspace_id);
+                    if let Some(file) = membership_file(&change.path) {
+                        watch.changed(workspace_id, file).await;
                     }
                     false
                 }
@@ -371,12 +390,49 @@ fn room_directory(path: &VPath) -> Option<u64> {
 
 /// Whether a change among a room directory's entries is one of its
 /// membership files. Other files in the room are not membership.
+#[cfg(test)]
 fn names_membership(path: &VPath) -> bool {
+    membership_file(path).is_some()
+}
+
+/// The membership file a change among a room directory's entries names, if
+/// it names one.
+fn membership_file(path: &VPath) -> Option<&'static str> {
     let mut components = path.components();
-    matches!(
-        (components.next(), components.next()),
-        (Some(MEMBERSHIP_FILE | GOVERNED_ACCESS_FILE), None)
-    )
+    match (components.next(), components.next()) {
+        (Some(MEMBERSHIP_FILE), None) => Some(MEMBERSHIP_FILE),
+        (Some(GOVERNED_ACCESS_FILE), None) => Some(GOVERNED_ACCESS_FILE),
+        _ => None,
+    }
+}
+
+/// What this process last wrote to each membership file through a path
+/// that applies the same change to the room's runtime, by digest.
+fn own_writes() -> &'static Mutex<HashMap<PathBuf, [u8; 32]>> {
+    static OWN: OnceLock<Mutex<HashMap<PathBuf, [u8; 32]>>> = OnceLock::new();
+    OWN.get_or_init(Mutex::default)
+}
+
+/// Record that this process wrote `bytes` to the membership file at
+/// `path`, and applied them to the room's runtime with every narrowing in
+/// them announced: the watch then does not announce the file holding them.
+/// Only the latest write of each file is remembered, so the file holding
+/// anything else (an earlier write, another process's) is announced.
+pub(crate) fn wrote_own(path: &Path, bytes: &[u8]) {
+    own_writes()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.to_path_buf(), *blake3::hash(bytes).as_bytes());
+}
+
+/// Whether `bytes`, read from `path`, are what this process last wrote
+/// there ([`wrote_own`]).
+fn is_own(path: &Path, bytes: &[u8]) -> bool {
+    own_writes()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(path)
+        .is_some_and(|own| own == blake3::hash(bytes).as_bytes())
 }
 
 #[cfg(test)]
@@ -436,6 +492,35 @@ mod tests {
             std::fs::write(room.join(file), b"[]").unwrap();
             moves_from(&generation, before, "the room to bump").await;
         }
+        task.abort();
+    }
+
+    /// The relay's own rewrite of a room's access file, already applied to
+    /// the room, is not announced again; anything else in the file is.
+    #[tokio::test]
+    async fn the_relays_own_access_write_is_not_announced_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = tmp.path().join("workspaces/7");
+        std::fs::create_dir_all(&room).unwrap();
+        let (task, generation) = live_room(tmp.path(), 7).await;
+        // Let the establishing events settle before comparing.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let file = room.join(GOVERNED_ACCESS_FILE);
+        let own = br#"{"version":1,"member_devices":[],"member_user_roots":[]}"#;
+        wrote_own(&file, own);
+        let before = generation.current();
+        // Written as the store writes it: staged, then renamed into place.
+        tilo_files::native::atomic::write(&file, own).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            generation.current(),
+            before,
+            "the relay's own write must not move the room's generation"
+        );
+        // What the relay did not write itself is announced, so the watch was
+        // looking all along.
+        tilo_files::native::atomic::write(&file, br#"{"version":1,"member_devices":[]}"#).unwrap();
+        moves_from(&generation, before, "a foreign write to bump the room").await;
         task.abort();
     }
 

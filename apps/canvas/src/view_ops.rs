@@ -1328,7 +1328,7 @@ pub fn diff(
         .media
         .keys()
         .chain(after.media.keys())
-        .filter(|id| before.media.get(*id) != after.media.get(*id))
+        .filter(|id| before.media.get(id) != after.media.get(id))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();

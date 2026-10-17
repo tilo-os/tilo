@@ -14,13 +14,14 @@ use std::time::{Duration, Instant, SystemTime};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
 use tilo_moq::client::{
     CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
 };
 use tilo_moq::relay::Direction;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::daemon::Relay;
@@ -319,9 +320,9 @@ pub async fn create_voice_channel(
             SystemTime::now(),
         )
         .unwrap();
-    let (channel, kind) = tilo_peer_state::transport::retention(&message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(&message, false).unwrap();
     let body = postcard::to_stdvec(&message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)

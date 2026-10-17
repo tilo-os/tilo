@@ -66,10 +66,24 @@ impl SandboxSecrets for ServiceSecrets {
             )
             .await
             .map_err(|error| error.to_string())?;
-            let bytes: Vec<u8> = service
-                .call("SandboxSecret", &(app, legacy.unwrap_or_default()))
-                .await
-                .map_err(|error| error.to_string())?;
+            let request = (app, legacy.unwrap_or_default());
+            let ask = || service.call::<_, _, Vec<u8>>("SandboxSecret", &request);
+            // The compositor holds the device key and so is non-dumpable:
+            // the store cannot read its executable and refuses it until this
+            // connection proves the device identity (once per connection,
+            // and again after the store restarts).
+            let bytes = match ask().await {
+                Err(zbus::Error::MethodError(name, _, _))
+                    if name.as_str() == "org.freedesktop.Secret.Error.AccessDenied"
+                        && tilo_secrets::prove_device_caller(&self.connection)
+                            .await
+                            .unwrap_or(false) =>
+                {
+                    ask().await
+                }
+                answer => answer,
+            }
+            .map_err(|error| error.to_string())?;
             let bytes = Zeroizing::new(bytes);
             let mut secret = Zeroizing::new([0_u8; SECRET_BYTES]);
             if bytes.len() != secret.len() {

@@ -1105,12 +1105,6 @@ impl std::ops::Deref for Edits<'_> {
     }
 }
 
-/// Where `doc` stands, to tell whether a settle pass changed it.
-pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
-    use automerge::transaction::Transactable as _;
-    (doc.base_heads(), doc.pending_ops())
-}
-
 thread_local! {
     static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -1127,7 +1121,6 @@ pub fn note_resource_presentation_changed() {
 }
 
 /// How many times [`note_resource_presentation_changed`] ran on this thread.
-#[cfg(feature = "native")]
 pub(crate) fn resource_presentation_epoch() -> u64 {
     RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
@@ -1767,6 +1760,18 @@ pub trait Widget {
     /// parent. State must be **derived, not stored** so it can't drift from
     /// `draw`; names must already be [`i18n!`](macro@crate::i18n)-resolved.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        None
+    }
+
+    /// [`Self::accessibility`] with its synthetic children shared, for a
+    /// widget that keeps them between frames: each child it did not change
+    /// is handed over as the very `Arc` of the last frame, which the
+    /// semantic tree takes as unchanged without copying or comparing it.
+    ///
+    /// `None` (the default) means "read [`Self::accessibility`]". A widget
+    /// that answers `Some` must answer `accessibility()` with the same node,
+    /// its children owned ([`SharedAccessNode::into_owned`](crate::a11y::SharedAccessNode::into_owned)).
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         None
     }
 

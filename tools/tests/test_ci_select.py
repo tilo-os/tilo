@@ -1481,6 +1481,151 @@ vendored-sys = { path = "vendor/vendored-sys" }
 """
 
 
+class DependencyKindTests(unittest.TestCase):
+    """Normal and build edges propagate a change; a dev edge stops after one hop.
+
+    A dev-dependency enters only the dependant's own test, example and bench
+    targets. The library the dependant's own dependants link is unchanged, so
+    linting them cannot find anything the change caused.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
+        # The contract packages every plan adds, kept apart from the graph.
+        self.contracts = sorted(ci_select.ALWAYS_PACKAGES)
+
+    def metadata(self, graph: dict[str, list[tuple[str, str | None]]],
+                 wasm: frozenset[str] = frozenset()) -> dict:
+        """`graph`: package -> [(dependency, kind)] with Cargo's kinds (None, "build", "dev")."""
+        names = set(graph) | set(self.contracts)
+        packages = []
+        for name in sorted(names):
+            dependencies = [{"name": dep, "kind": kind, "path": str(self.root / dep)}
+                            for dep, kind in graph.get(name, [])]
+            if name in wasm:
+                dependencies.append({"name": "wasm-bindgen", "kind": None})
+            packages.append({"name": name, "manifest_path": str(self.root / name / "Cargo.toml"),
+                             "targets": [{"name": name}], "dependencies": dependencies})
+        return {"packages": packages}
+
+    def selected(self, metadata: dict, changed: str) -> set[str]:
+        plan = ci_select.make_plan(metadata, self.root, [f"{changed}/src/lib.rs"], 2)
+        selected = set(plan["selected"])
+        self.assertLessEqual(set(self.contracts), selected)
+        # What Clippy actually receives is the selection, nothing more.
+        linted = {name for row in plan["clippy_matrix"]["include"]
+                  for name in row["packages"].split()[1::2]}
+        self.assertEqual(linted, selected)
+        return selected - set(self.contracts)
+
+    def test_a_normal_chain_is_followed_to_its_end(self):
+        metadata = self.metadata({"a": [], "b": [("a", None)], "c": [("b", None)], "d": [("c", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c", "d"})
+        self.assertEqual(self.selected(metadata, "c"), {"c", "d"})
+
+    def test_a_dev_edge_selects_the_dev_dependant_and_stops(self):
+        # b's tests use a; c's tests use b's library, which a does not reach.
+        metadata = self.metadata({"a": [], "b": [("a", "dev")], "c": [("b", "dev")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b"})
+        plan = ci_select.make_plan(metadata, self.root, ["a/src/lib.rs"], 2)
+        self.assertIn("b", plan["tested"], "a dev dependant's own tests changed and still run")
+
+    def test_a_dev_edge_then_a_normal_edge_stops_at_the_dev_dependant(self):
+        metadata = self.metadata({"a": [], "b": [("a", "dev")], "c": [("b", None)],
+                                  "d": [("c", "build")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b"})
+        # The library b's dependants link is what a change to b itself reaches.
+        self.assertEqual(self.selected(metadata, "b"), {"b", "c", "d"})
+
+    def test_a_normal_edge_then_a_dev_edge_adds_one_dev_hop_from_anywhere_in_the_closure(self):
+        metadata = self.metadata({"a": [], "b": [("a", None)], "c": [("b", "dev")],
+                                  "d": [("c", None)], "e": [("c", "dev")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_a_build_dependency_propagates_like_a_normal_one(self):
+        # A build script can generate the library's code, so b's library changes.
+        metadata = self.metadata({"a": [], "b": [("a", "build")], "c": [("b", None)],
+                                  "d": [("c", "dev")], "e": [("d", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c", "d"})
+
+    def test_a_dependency_declared_both_normal_and_dev_propagates(self):
+        # Cargo lists a crate twice when it is, e.g., a target-specific normal
+        # dependency and an unconditional dev-dependency.
+        metadata = self.metadata({"a": [], "b": [("a", "dev"), ("a", None)], "c": [("b", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_an_unknown_dependency_kind_propagates(self):
+        metadata = self.metadata({"a": [], "b": [("a", "artifact")], "c": [("b", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_a_test_support_cycle_selects_both_ends_without_the_dev_side_dependants(self):
+        # The common test-helper shape: support links core; core's tests use support.
+        metadata = self.metadata({"core": [], "support": [("core", None)],
+                                  "core-user": [("core", None)], "support-user": [("support", None)],
+                                  "core-dev-user": [("core", "dev")]})
+        self.assertEqual(self.selected(metadata, "core"),
+                         {"core", "support", "core-user", "support-user", "core-dev-user"})
+        cyclic = self.metadata({"core": [("support", "dev")], "support": [("core", None)],
+                                "core-user": [("core", None)], "support-user": [("support", None)]})
+        self.assertEqual(self.selected(cyclic, "support"), {"support", "core", "support-user"})
+        self.assertEqual(self.selected(cyclic, "core"), {"core", "support", "core-user", "support-user"})
+
+    def test_the_selection_never_drops_a_direct_dependant_and_never_grows(self):
+        graph = {"a": [], "b": [("a", "dev")], "c": [("a", None)], "d": [("b", None)],
+                 "e": [("c", "dev")], "f": [("e", None), ("d", "build")], "g": [("f", "dev")]}
+        metadata = self.metadata(graph)
+        packages, _ = ci_select.package_maps(metadata, self.root)
+        reverse = ci_select.reverse_dependencies(packages, self.root)
+        edges = ci_select.dependency_edges(packages)
+        self.assertEqual({name: edges.linked[name] | edges.dev[name] for name in packages}, reverse)
+        for name in graph:
+            selected = self.selected(metadata, name)
+            self.assertLessEqual({name} | reverse[name], selected, name)
+            self.assertLessEqual(selected, ci_select.closure({name}, reverse), name)
+
+    def test_the_owner_commit_vocabulary_no_longer_lints_relay_or_the_wasm_crates(self):
+        # The workspace shape around tilo-owner-commit when it moved out of
+        # tilo-peer-state. Every edge kind is the one Cargo metadata reported.
+        graph = {
+            "tilo-owner-commit": [],
+            "tilo-action-broker": [("tilo-owner-commit", None)],
+            "tilo-joined-room": [("tilo-owner-commit", None)],
+            "shell": [("tilo-owner-commit", None)],
+            "tilo-runtime": [("tilo-owner-commit", None)],
+            "agent": [("shell", "dev")],
+            "tilo-browser-peer": [("tilo-joined-room", "dev")],
+            "tilo-relay": [("tilo-browser-peer", None)],
+            "tilo-agent-participant": [("tilo-browser-peer", None), ("agent", None)],
+            "tilo-room-load": [("tilo-browser-peer", None)],
+            "tilo-browser-runtime": [("tilo-browser-peer", None)],
+            "tilo-web-desktop": [("tilo-browser-runtime", None)],
+            "tilo-relay-shell": [("tilo-relay", "dev")],
+            "discord-worker": [("tilo-relay", "dev")],
+        }
+        metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-desktop"}))
+        packages, _ = ci_select.package_maps(metadata, self.root)
+        every_edge = ci_select.closure({"tilo-owner-commit"}, ci_select.reverse_dependencies(packages, self.root))
+        self.assertEqual(len(every_edge | set(self.contracts)), 18, "the selection before dev edges stopped")
+        plan = ci_select.make_plan(metadata, self.root, ["tilo-owner-commit/src/lib.rs"], 2)
+        self.assertEqual(plan["selected_count"], 11)
+        self.assertEqual(set(plan["selected"]) - set(self.contracts), {
+            "tilo-owner-commit", "tilo-action-broker", "tilo-joined-room", "shell",
+            "tilo-runtime", "agent", "tilo-browser-peer"})
+        self.assertEqual(plan["wasm"], [])
+        self.assertFalse(plan["wasm_required"])
+        # Every direct dependant, the dev one included, is still tested.
+        self.assertLessEqual({"tilo-action-broker", "tilo-joined-room", "shell", "tilo-runtime"},
+                             set(plan["tested"]))
+        # A change to browser-peer itself still reaches relay and the wasm crates.
+        plan = ci_select.make_plan(metadata, self.root, ["tilo-browser-peer/src/lib.rs"], 2)
+        self.assertLessEqual({"tilo-relay", "tilo-relay-shell", "discord-worker", "tilo-web-desktop"},
+                             set(plan["selected"]))
+        self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])
+
+
 class ManifestAttributionTests(unittest.TestCase):
     """Root Cargo.toml and Cargo.lock changes select only what they reach."""
 
@@ -1722,6 +1867,236 @@ class ManifestAttributionTests(unittest.TestCase):
             resolved = ci_select.resolve_manifest_inputs(self.root, base, "HEAD", self.metadata, changes)
             self.assertNotIn("Cargo.lock", resolved)
             self.assertTrue(self.plan(changes, resolved)["full"])
+
+
+GIT = "git+https://example.invalid/fork.git?rev=main"
+
+
+class LockfileDependencyKindTests(unittest.TestCase):
+    """A lock-only change follows each member's dependency kinds, as path edges do.
+
+    The lockfile records no kinds, but Cargo locks only the members'
+    dev-dependencies, so a third-party edge is always normal or build and a
+    member's edge takes its kind from the member's manifest entries.
+
+    Workspace: `core` uses itoa (normal), cc (build) and proptest (dev); `app`
+    links core by path and uses rustls and the patched member `native-certs`
+    (no path entry, like a `[patch.crates-io]` crate); `plugin` links app;
+    `tool` dev-depends on core and uses clap; `native-certs` uses
+    rustls-pki-types. Every member uses the hakari package, which names all
+    the shared third-party crates.
+    """
+
+    MEMBERS = {
+        "core": [("itoa", None), ("cc", "build"), ("proptest", "dev")],
+        "app": [("core", "path"), ("rustls", None), ("native-certs", None), ("tempfile", "dev")],
+        "plugin": [("app", "path")],
+        "tool": [("core", "dev-path"), ("clap", None)],
+        "native-certs": [("rustls-pki-types", None)],
+        ci_select.HAKARI_PACKAGE: [("itoa", None), ("rustls", None), ("clap", None),
+                                   ("rustls-pki-types", None), ("cc", "build")],
+    }
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
+        self.metadata = self.describe(self.MEMBERS)
+        self.external = {
+            ("itoa", "1.0.0", REGISTRY): [],
+            ("cc", "1.2.0", REGISTRY): [],
+            ("proptest", "1.5.0", REGISTRY): ["tempfile"],
+            ("tempfile", "3.10.0", REGISTRY): [],
+            ("rustls", "0.23.0", REGISTRY): ["rustls-pki-types"],
+            ("rustls-pki-types", "1.0.0", REGISTRY): [],
+            ("clap", "4.5.0", REGISTRY): [],
+            ("hyper-rustls", "0.27.0", REGISTRY): ["native-certs", "rustls"],
+        }
+        hack = ci_select.HAKARI_PACKAGE
+        self.local = {
+            "core": ["itoa", "cc", "proptest", hack],
+            "app": ["core", "rustls", "native-certs", "tempfile", hack],
+            "plugin": ["app", hack],
+            "tool": ["core", "clap", hack],
+            "native-certs": ["rustls-pki-types", hack],
+            hack: ["itoa", "rustls", "clap", "rustls-pki-types", "cc"],
+            **{name: [hack] for name in ci_select.ALWAYS_PACKAGES},
+        }
+
+    def describe(self, members: dict[str, list[tuple[str, str | None]]]) -> dict:
+        """`cargo metadata --no-deps` for `members` plus the contract packages."""
+        packages = []
+        for name in sorted(set(members) | ci_select.ALWAYS_PACKAGES):
+            dependencies = []
+            for dep, kind in members.get(name, []):
+                entry = {"name": dep, "rename": None,
+                         "kind": {"path": None, "dev-path": "dev"}.get(kind, kind)}
+                if kind in ("path", "dev-path"):
+                    entry["path"] = str(self.root / dep)
+                else:
+                    entry["source"] = REGISTRY
+                dependencies.append(entry)
+            if name != ci_select.HAKARI_PACKAGE:
+                dependencies.append({"name": ci_select.HAKARI_PACKAGE, "kind": None, "source": REGISTRY})
+            packages.append({"name": name, "manifest_path": str(self.root / name / "Cargo.toml"),
+                             "targets": [{"name": name}], "dependencies": dependencies})
+        return {"packages": packages}
+
+    def lock(self, external=None, local=None, extra: str = "") -> bytes:
+        blocks = ["version = 4\n"]
+        for (name, version, source), deps in sorted((self.external if external is None else external).items()):
+            source_line = f'source = "{source}"\n' if source else ""
+            blocks.append(f'[[package]]\nname = "{name}"\nversion = "{version}"\n{source_line}'
+                          f'dependencies = {json.dumps(deps)}\n')
+        for name, deps in sorted((self.local if local is None else local).items()):
+            blocks.append(f'[[package]]\nname = "{name}"\nversion = "0.1.0"\ndependencies = {json.dumps(deps)}\n')
+        return ("\n".join(blocks) + extra).encode()
+
+    def bump(self, name: str, version: str, deps: list[str] | None = None, source: str = REGISTRY) -> dict:
+        external = {key: value for key, value in self.external.items() if key[0] != name}
+        old = next(value for key, value in self.external.items() if key[0] == name)
+        external[(name, version, source)] = old if deps is None else deps
+        return external
+
+    def kind_blind(self, before: bytes, after: bytes) -> tuple[frozenset[str], frozenset[str]]:
+        packages = {package["name"] for package in self.metadata["packages"]}
+        change = ci_select.lockfile_change(before, after, packages)
+        return change.seeds, frozenset(change.reached & packages)
+
+    def plan(self, after: bytes) -> tuple[ci_select.ResolvedInput, dict]:
+        resolved = ci_select.resolve_lockfile(self.lock(), after, self.metadata)
+        self.assertIsNotNone(resolved)
+        plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2,
+                                   resolved_inputs={"Cargo.lock": resolved})
+        self.assertFalse(plan["full"])
+        linted = {name for row in plan["clippy_matrix"]["include"] for name in row["packages"].split()[1::2]}
+        self.assertEqual(linted, set(plan["selected"]))
+        return resolved, plan
+
+    def assert_kind_blind(self, after: bytes) -> None:
+        """Unprovable by kind: exactly the kind-blind lockfile attribution, never less."""
+        self.assertIsNone(ci_select.lockfile_change_by_kind(self.lock(), after, self.metadata))
+        resolved = ci_select.resolve_lockfile(self.lock(), after, self.metadata)
+        self.assertEqual((resolved.seeds, resolved.checked), self.kind_blind(self.lock(), after))
+        self.assertEqual(resolved.dev_only, frozenset())
+
+    def test_a_normal_third_party_dependency_reaches_its_users_and_their_dependants(self):
+        resolved, plan = self.plan(self.lock(external=self.bump("itoa", "1.0.1")))
+        self.assertEqual(resolved.seeds, {"core", ci_select.HAKARI_PACKAGE})
+        self.assertEqual(resolved.dev_only, frozenset())
+        # app and plugin link core's library; tool's tests use it.
+        self.assertEqual(set(plan["selected"]) - ci_select.ALWAYS_PACKAGES,
+                         {"core", "app", "plugin", "tool", ci_select.HAKARI_PACKAGE})
+        self.assertNotIn("native-certs", plan["selected"])
+        self.assertLessEqual({"core", "app", "tool"}, set(plan["tested"]))
+
+    def test_a_dev_only_third_party_dependency_selects_its_dev_dependants_and_stops(self):
+        after = self.lock(external=self.bump("proptest", "1.5.1"))
+        resolved, plan = self.plan(after)
+        self.assertEqual(resolved.seeds, frozenset())
+        self.assertEqual(resolved.dev_only, {"core"})
+        self.assertEqual(set(plan["selected"]), {"core"} | ci_select.ALWAYS_PACKAGES)
+        self.assertIn("core", plan["tested"], "core's own tests use the changed crate")
+        # The kind-blind graph seeds core and so expands core's library closure.
+        seeds, _ = self.kind_blind(self.lock(), after)
+        self.assertIn("core", seeds)
+
+    def test_a_third_party_change_reached_through_a_dev_dependency_is_dev_only(self):
+        # tempfile is app's dev-dependency and proptest's (core's dev) dependency.
+        resolved, plan = self.plan(self.lock(external=self.bump("tempfile", "3.10.1")))
+        self.assertEqual(resolved.seeds, frozenset())
+        self.assertEqual(resolved.dev_only, {"core", "app"})
+        self.assertEqual(set(plan["selected"]), {"core", "app"} | ci_select.ALWAYS_PACKAGES)
+
+    def test_a_build_dependency_propagates_like_a_normal_one(self):
+        resolved, plan = self.plan(self.lock(external=self.bump("cc", "1.2.1")))
+        self.assertEqual(resolved.seeds, {"core", ci_select.HAKARI_PACKAGE})
+        self.assertEqual(set(plan["selected"]) - ci_select.ALWAYS_PACKAGES,
+                         {"core", "app", "plugin", "tool", ci_select.HAKARI_PACKAGE})
+
+    def test_the_hakari_package_does_not_carry_a_change_to_every_member(self):
+        after = self.lock(external=self.bump("clap", "4.5.1"))
+        resolved, plan = self.plan(after)
+        self.assertEqual(resolved.seeds, {"tool", ci_select.HAKARI_PACKAGE})
+        self.assertEqual(set(plan["selected"]) - ci_select.ALWAYS_PACKAGES,
+                         {"tool", ci_select.HAKARI_PACKAGE})
+        # Through the hakari package's lock edges the kind-blind graph reaches every member.
+        _, reached = self.kind_blind(self.lock(), after)
+        self.assertEqual(reached, {package["name"] for package in self.metadata["packages"]})
+
+    def test_a_patched_member_without_a_path_entry_carries_the_change(self):
+        resolved, plan = self.plan(self.lock(external=self.bump("rustls-pki-types", "1.0.1")))
+        # rustls and native-certs use it; app uses both; plugin links app.
+        self.assertEqual(resolved.seeds, {"app", "native-certs", ci_select.HAKARI_PACKAGE})
+        self.assertEqual(set(plan["selected"]) - ci_select.ALWAYS_PACKAGES,
+                         {"app", "plugin", "native-certs", ci_select.HAKARI_PACKAGE})
+
+    def test_a_transitive_third_party_change_reaches_the_member_through_its_consumer(self):
+        external = self.bump("rustls-pki-types", "1.0.1")
+        self.local["native-certs"] = [ci_select.HAKARI_PACKAGE]
+        self.metadata = self.describe({**self.MEMBERS, "native-certs": []})
+        resolved, _ = self.plan(self.lock(external=external))
+        # Only rustls (app's) and the hakari package name it now.
+        self.assertEqual(resolved.seeds, {"app", ci_select.HAKARI_PACKAGE})
+
+    def test_a_feature_unification_change_keeps_the_kind_blind_attribution(self):
+        # clap's new release depends on itoa, which other members also build: it
+        # may enable itoa features for them, which no lockfile records.
+        self.assert_kind_blind(self.lock(external=self.bump("clap", "4.6.0", ["itoa"])))
+        # A brand-new crate depending on an existing one is the same case.
+        external = {**self.bump("clap", "4.6.0", ["clap_lex"]), ("clap_lex", "0.7.0", REGISTRY): ["itoa"]}
+        self.assert_kind_blind(self.lock(external=external))
+        # Dropping an edge may disable features the other members relied on.
+        self.assert_kind_blind(self.lock(external=self.bump("rustls", "0.23.1", [])))
+        # So may a major move, which starts a new semver-compatible line.
+        self.assert_kind_blind(self.lock(external=self.bump("rustls", "1.0.0")))
+        # Moving to a dependency that is new as a whole is provable.
+        external = {**self.bump("clap", "4.6.0", ["clap_lex"]), ("clap_lex", "0.7.0", REGISTRY): []}
+        self.assertIsNotNone(ci_select.lockfile_change_by_kind(self.lock(), self.lock(external=external),
+                                                               self.metadata))
+
+    def test_git_and_patched_sources_keep_the_kind_blind_attribution(self):
+        with self.subTest("a git revision moves"):
+            self.external[("accesskit", "0.17.0", f"{GIT}#aaaa")] = []
+            self.local["app"] = [*self.local["app"], "accesskit"]
+            self.assert_kind_blind(self.lock(external=self.bump("accesskit", "0.17.0", source=f"{GIT}#bbbb")))
+        with self.subTest("a registry crate moves to a git fork"):
+            self.assert_kind_blind(self.lock(external=self.bump("clap", "4.5.0", source=f"{GIT}#cccc")))
+        with self.subTest("a registry crate is patched to a local path"):
+            self.assert_kind_blind(self.lock(external=self.bump("clap", "4.5.0", source="")))
+        with self.subTest("an unused patch is recorded"):
+            after = self.lock(extra='\n[[patch.unused]]\nname = "clap"\nversion = "4.5.9"\n')
+            self.assertIsNone(ci_select.resolve_lockfile(self.lock(), after, self.metadata))
+        with self.subTest("a git record that only follows a registry bump is attributed"):
+            self.setUp()
+            self.external[("accesskit", "0.17.0", f"{GIT}#aaaa")] = ["itoa"]
+            self.local["app"] = [*self.local["app"], "accesskit"]
+            self.metadata = self.describe({**self.MEMBERS, "app": [*self.MEMBERS["app"], ("accesskit", None)]})
+            resolved, _ = self.plan(self.lock(external=self.bump("itoa", "1.0.1")))
+            self.assertEqual(resolved.seeds, {"core", "app", ci_select.HAKARI_PACKAGE})
+
+    def test_a_member_record_the_registry_changes_do_not_explain_is_seeded(self):
+        # tool's manifest gained itoa (already locked, unchanged): a manifest edit.
+        local = {**self.local, "tool": [*self.local["tool"], "itoa"]}
+        after = self.lock(external=self.bump("proptest", "1.5.1"), local=local)
+        resolved, plan = self.plan(after)
+        self.assertEqual(resolved.seeds, {"tool"})
+        self.assertEqual(resolved.dev_only, {"core"})
+        self.assertEqual(set(plan["selected"]) - ci_select.ALWAYS_PACKAGES, {"core", "tool"})
+
+    def test_a_member_edge_without_a_manifest_entry_counts_as_linked(self):
+        # core's lock record names clap but its manifest entries do not.
+        self.local["core"] = [*self.local["core"], "clap"]
+        resolved, plan = self.plan(self.lock(external=self.bump("clap", "4.5.1")))
+        self.assertIn("core", resolved.seeds)
+        self.assertLessEqual({"app", "plugin", "tool"}, set(plan["selected"]))
+
+
+class HakariPackageTests(unittest.TestCase):
+    def test_the_hakari_package_constant_names_the_configured_package(self):
+        config = tomllib.loads((REPO_ROOT / ".config/hakari.toml").read_text())
+        self.assertEqual(config["hakari-package"], ci_select.HAKARI_PACKAGE)
 
 
 if __name__ == "__main__":

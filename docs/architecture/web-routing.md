@@ -611,9 +611,14 @@ site that may frame the page as a live preview: the page sends
 `frame-ancestors 'self'` plus that origin, and an embed reports its state
 to it alone; unset, only the page itself frames it. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages, `entry.json` and `version.json`
-revalidate. An image serves one version, so a page opened before a deploy
-finds its version's app modules gone the first time it opens an app it had
-not loaded: the loader announces the missing module, the page reads
+revalidate. The image a deploy rolls out also serves the version of the
+image it replaces (`container/carry.sh`, built by `web-entry.yml` against
+what production serves), so a page opened before that deploy still opens
+apps it had not loaded. Only that one version is carried, never one it
+carried itself: an image holds at most two, and a page survives one deploy.
+A page older than that finds its version's app modules gone the first time
+it opens an app it had not loaded: the loader announces the missing module,
+the page reads
 `version.json`, and when another version is served it offers to reload
 (`web/bundle-update.mjs`). The reloaded page runs the new version only and
 reopens the same windows from this browser's storage, the one that failed

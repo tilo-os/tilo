@@ -270,9 +270,9 @@ pub(crate) fn start_without_document_writes(
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     // `get_heads` would commit the caller's open transaction.
-    let before = super::settle_mark(doc);
+    let before = crate::doc::settle_mark(doc);
     let started = widget.start_operation(op, doc, path);
-    if super::settle_mark(doc) != before {
+    if crate::doc::settle_mark(doc) != before {
         return Err("a read-only operation wrote the document; bytes were retained".into());
     }
     started

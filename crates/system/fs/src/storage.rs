@@ -33,6 +33,9 @@ pub struct StorageAuthority {
     workspace: String,
     #[cfg(target_os = "linux")]
     external_history: Option<Arc<crate::external_history::ExternalHistoryFactory>>,
+    /// The person's prefetch switch and cache budget; `None` answers the
+    /// policy requests with an error.
+    cache_policy: Option<Arc<crate::cache_policy::CachePolicies>>,
 }
 
 /// Serve the narrow storage protocol.  The caller owns socket placement and
@@ -105,6 +108,10 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                         Ok(report) => StorageResponse::Evicted(report),
                         Err(error) => StorageResponse::Error(error.to_string()),
                     },
+                    StorageRequest::CachePolicy => authority.cache_policy(None).await,
+                    StorageRequest::SetCachePolicy(policy) => {
+                        authority.cache_policy(Some(policy)).await
+                    }
                 };
                 if STORAGE_FRAMING
                     .write_value_async(&mut stream, &response)
@@ -166,6 +173,32 @@ impl StorageAuthority {
             workspace: workspace.into(),
             #[cfg(target_os = "linux")]
             external_history: None,
+            cache_policy: None,
+        }
+    }
+
+    /// Answer the cache-policy requests from `policies`.
+    #[must_use]
+    pub fn with_cache_policy(mut self, policies: Arc<crate::cache_policy::CachePolicies>) -> Self {
+        self.cache_policy = Some(policies);
+        self
+    }
+
+    /// The policy in force, after replacing it with `set` if given. Setting
+    /// a smaller budget evicts at once, so it runs off the async workers.
+    async fn cache_policy(&self, set: Option<runtime_fs::storage::CachePolicy>) -> StorageResponse {
+        let Some(policies) = self.cache_policy.clone() else {
+            return StorageResponse::Error("this mount keeps no cache policy".into());
+        };
+        let answer = tokio::task::spawn_blocking(move || match set {
+            Some(policy) => policies.set(policy),
+            None => Ok(policies.current()),
+        })
+        .await;
+        match answer {
+            Ok(Ok(policy)) => StorageResponse::CachePolicy(policy),
+            Ok(Err(error)) => StorageResponse::Error(format!("{error:#}")),
+            Err(error) => StorageResponse::Error(error.to_string()),
         }
     }
 
@@ -398,10 +431,6 @@ impl StorageAuthority {
         Ok(report)
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the availability lock intentionally spans plan revalidation and GC handoff so a pin, receipt, or version cannot race destructive authorization"
-    )]
     async fn enqueue_canonical_eviction(
         &self,
         record_id: fs_protocol::FileRecordId,
@@ -630,6 +659,67 @@ mod tests {
         let closed: Option<StorageRequest> =
             STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
         assert!(closed.is_none());
+    }
+
+    /// Settings' client sets and reads the cache policy through the socket,
+    /// and the daemon applies it to the predictive worker and the cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_cache_policy_is_set_and_read_through_the_socket() {
+        use runtime_fs::storage::{CachePolicy, MIN_CACHE_BUDGET_BYTES, StorageClient};
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::Minimal)
+            .await
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::store::ContentStore::memory()),
+        ));
+        let heuristics = Arc::new(crate::smart::Heuristics::new(Arc::clone(&hydrator)));
+        let (policies, loaded) = crate::cache_policy::CachePolicies::load(
+            Some(dir.path().join(crate::cache_policy::CACHE_POLICY_FILE)),
+            Arc::clone(&heuristics),
+            Arc::clone(hydrator.store.files()),
+        );
+        loaded.unwrap();
+        let authority = StorageAuthority::new(
+            Arc::new(Mutex::new(Namespace::new("storage").unwrap())),
+            Arc::clone(&hydrator),
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            None,
+            None,
+            "work",
+        )
+        .with_cache_policy(Arc::new(policies));
+        let socket = dir.path().join("storage.sock");
+        let server = tokio::spawn(serve(
+            tokio::net::UnixListener::bind(&socket).unwrap(),
+            authority,
+        ));
+
+        let wanted = CachePolicy {
+            prefetch: false,
+            budget_bytes: Some(MIN_CACHE_BUDGET_BYTES * 4),
+        };
+        let (applied, read, refused) = tokio::task::spawn_blocking(move || {
+            let mut client = StorageClient::connect(&socket).unwrap();
+            let applied = client.set_cache_policy(wanted).unwrap();
+            let read = client.cache_policy().unwrap();
+            let refused = client.set_cache_policy(CachePolicy {
+                prefetch: true,
+                budget_bytes: Some(1),
+            });
+            (applied, read, refused)
+        })
+        .await
+        .unwrap();
+        assert_eq!((applied, read), (wanted, wanted));
+        assert!(refused.is_err(), "a budget below the minimum is refused");
+        assert!(!heuristics.prefetch_enabled());
+        assert_eq!(hydrator.store.files().budget(), MIN_CACHE_BUDGET_BYTES * 4);
+
+        server.abort();
+        endpoint.close().await;
     }
 
     #[tokio::test]

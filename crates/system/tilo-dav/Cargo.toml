@@ -9,6 +9,9 @@ homepage.workspace = true
 description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies, and blocking and async clients on Tilo's TLS defaults."
 
 [dependencies]
+accounts = { path = "../accounts", optional = true }
+account-custody = { path = "../account-custody", optional = true }
+serde_json = { workspace = true, optional = true }
 quick-xml.workspace = true
 roxmltree.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
@@ -17,6 +20,10 @@ zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["client"]
+# Credential custody and origin-bound calendar access; refresh is blocking.
+oauth = ["client", "net", "dep:accounts", "dep:account-custody", "dep:serde_json"]
+# Explicit trusted loopback fixture, never an implicit production override.
+test-support = ["oauth"]
 # The blocking HTTP client. Without it the crate is the parser and request
 # bodies only, for builds that must stay free of the TLS/HTTP stack.
 client = ["dep:reqwest", "dep:tilo-net", "tilo-net/blocking", "dep:zeroize"]
@@ -24,6 +31,7 @@ client = ["dep:reqwest", "dep:tilo-net", "tilo-net/blocking", "dep:zeroize"]
 net = ["dep:tilo-net", "tilo-net/http", "dep:zeroize"]
 
 [dev-dependencies]
+tempfile.workspace = true
 test-http = { path = "../../dev/test-http" }
 tokio = { workspace = true, features = ["rt"] }
 

@@ -3324,13 +3324,6 @@ impl FilePicker {
     }
 }
 
-// Standard immediate-mode paint-helper signature for this vello renderer
-// (scene + transform + text_renderer + theme, plus this draw's own
-// content); every parameter is independently load-bearing.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "immediate-mode paint helper mirrors the canonical ButtonFace state"
-)]
 /// A footer button in the canonical immediate-mode button face, so the
 /// picker footer stays visually locked to the retained widget and every
 /// converted app. Callers add the hover, focus and disabled state.

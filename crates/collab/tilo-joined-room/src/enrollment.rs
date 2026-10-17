@@ -423,9 +423,9 @@ impl NativeWorkspaceOwner {
     /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         now: SystemTime,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
         self.commit_document_with_current(room, |_| Ok(request), now)
     }
@@ -442,11 +442,10 @@ impl NativeWorkspaceOwner {
         room: RoomId,
         prepare: impl FnOnce(
             &crate::NativeCommittedView,
-        )
-            -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        ) -> Result<tilo_owner_commit::OwnerCommitRequest, String>,
         now: SystemTime,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let request = prepare(&candidate)?;
@@ -513,10 +512,10 @@ impl NativeWorkspaceOwner {
     /// or the durable owner cannot publish the resulting room generation.
     pub fn commit_workspace_task_command(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         now: SystemTime,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid native task room")?;
         let CommitOperation::WorkspaceTaskCommand {

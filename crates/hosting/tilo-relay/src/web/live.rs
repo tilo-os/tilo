@@ -14,11 +14,17 @@
 //! relay's recheck interval of the change, and no recheck ever waits on the
 //! workspace locks.
 //!
+//! A device the room admits to its live plane publishes there
+//! ([`RoomOperation::Live`]). One that may only watch the room, a public
+//! room's spectator, is granted the plane to receive only
+//! ([`RoomOperation::Watch`]): it sees the members' cursors and previews and
+//! publishes none, so it shows no cursor of its own.
+//!
 //! Frames are checked with the host's canonical codec for sealed live frames
 //! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
 //! sequence and record are read, never their content.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,6 +62,9 @@ struct Grant {
     workspace_id: u64,
     room: String,
     publisher: String,
+    /// What the grant was admitted for: [`RoomOperation::Live`], which
+    /// publishes, or [`RoomOperation::Watch`], which only receives.
+    plane: RoomOperation,
     expires: Instant,
     permitted: AtomicBool,
 }
@@ -119,9 +128,15 @@ impl LiveGrants {
         workspace_id: u64,
         agent: Option<&str>,
     ) -> Option<LiveGrant> {
-        if !admitted(sessions, peer, workspace_id).await {
+        let plane = if admitted(sessions, peer, workspace_id).await {
+            RoomOperation::Live
+        } else if agent.is_none()
+            && admitted_to(sessions, peer, workspace_id, RoomOperation::Watch).await
+        {
+            RoomOperation::Watch
+        } else {
             return None;
-        }
+        };
         let device = peer.device_public_key;
         let grant_token: [u8; 32] = rand::random();
         let room = live_room(workspace_id);
@@ -135,6 +150,7 @@ impl LiveGrants {
             workspace_id,
             room,
             publisher,
+            plane,
             expires: Instant::now()
                 .checked_add(GRANT_TTL)
                 .unwrap_or_else(Instant::now),
@@ -184,7 +200,37 @@ impl LiveGrants {
             .map(|grant| grant.device)
     }
 
+    /// Per workspace, the browser sessions holding a grant to its live plane
+    /// that is current: unexpired and, when last observed, permitted. Each
+    /// session once, however many grants (its agents') it holds.
+    pub(crate) fn viewers(&self) -> HashMap<u64, Vec<[u8; 32]>> {
+        let now = Instant::now();
+        let mut viewers = HashMap::<u64, Vec<[u8; 32]>>::new();
+        let grants = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants.values() {
+            if grant.expires <= now || !grant.permitted.load(Ordering::Acquire) {
+                continue;
+            }
+            let sessions = viewers.entry(grant.workspace_id).or_default();
+            if !sessions.contains(&grant.session) {
+                sessions.push(grant.session);
+            }
+        }
+        drop(grants);
+        viewers
+    }
+
     /// Observe every grant once.
+    ///
+    /// The relay's room registry is read once, and each room is locked once
+    /// for all of its grants. A grant at a time, every observation took both
+    /// locks once per grant, and a public room's crowd is observed once per
+    /// guest's grant and per announced change: a room filling to 300 took
+    /// its lock some hundred thousand times for it, and the room's own
+    /// commits and replays queued behind each turn.
     pub(crate) async fn observe(&self, sessions: &Sessions) {
         let grants: Vec<Arc<Grant>> = self
             .grants
@@ -195,17 +241,49 @@ impl LiveGrants {
             .collect();
         let open: HashMap<[u8; 32], AuthenticatedPeer> =
             sessions.open_devices().into_iter().collect();
+        let mut rooms: BTreeMap<u64, Vec<(Arc<Grant>, &AuthenticatedPeer)>> = BTreeMap::new();
         for grant in grants {
-            let permitted = grant.expires > Instant::now()
-                && match open.get(&grant.session) {
-                    Some(peer) if peer.device_public_key == grant.device => {
-                        admitted(sessions, peer, grant.workspace_id).await
-                    }
-                    Some(_) | None => false,
-                };
-            // Update only grants this observation checked. A grant issued
-            // while admission awaits a workspace lock keeps its own decision.
-            grant.permitted.store(permitted, Ordering::Release);
+            match open.get(&grant.session) {
+                Some(peer)
+                    if peer.device_public_key == grant.device && grant.expires > Instant::now() =>
+                {
+                    rooms
+                        .entry(grant.workspace_id)
+                        .or_default()
+                        .push((grant, peer));
+                }
+                // Update only grants this observation checked. A grant issued
+                // while admission awaits a workspace lock keeps its own
+                // decision.
+                Some(_) | None => grant.permitted.store(false, Ordering::Release),
+            }
+        }
+        if rooms.is_empty() {
+            return;
+        }
+        let workspaces: Vec<_> = {
+            let registry = sessions.context().relay.workspaces.lock().await;
+            rooms
+                .into_iter()
+                .map(|(workspace_id, grants)| (registry.get(&workspace_id).cloned(), grants))
+                .collect()
+        };
+        let trust = sessions.context().relay.trust();
+        for (workspace, grants) in workspaces {
+            let Some(workspace) = workspace else {
+                for (grant, _) in grants {
+                    grant.permitted.store(false, Ordering::Release);
+                }
+                continue;
+            };
+            let workspace = workspace.lock().await;
+            for (grant, peer) in grants {
+                // Expiry is read again: the room's lock may have been a wait.
+                let permitted = grant.expires > Instant::now()
+                    && room_access::decide(&workspace, &trust, peer, grant.plane).admitted();
+                grant.permitted.store(permitted, Ordering::Release);
+            }
+            drop(workspace);
         }
     }
 }
@@ -213,14 +291,24 @@ impl LiveGrants {
 /// Whether `peer` may be in `workspace_id`'s live plane now: its
 /// certificate current relay-wide and admitted by the room, see
 /// [`room_access::decide`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
 pub(crate) async fn admitted(
     sessions: &Sessions,
     peer: &AuthenticatedPeer,
     workspace_id: u64,
+) -> bool {
+    admitted_to(sessions, peer, workspace_id, RoomOperation::Live).await
+}
+
+/// Whether `peer` may be on `plane` of `workspace_id`'s live plane now.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn admitted_to(
+    sessions: &Sessions,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    plane: RoomOperation,
 ) -> bool {
     let relay = &sessions.context().relay;
     let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned();
@@ -228,7 +316,7 @@ pub(crate) async fn admitted(
         return false;
     };
     let workspace = workspace.lock().await;
-    room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
+    room_access::decide(&workspace, &relay.trust(), peer, plane).admitted()
 }
 
 struct Admitted {
@@ -243,7 +331,7 @@ impl LiveSession for Admitted {
         &self.grant.publisher
     }
     fn publish(&self) -> bool {
-        true
+        self.grant.plane == RoomOperation::Live
     }
     fn subscribe(&self) -> bool {
         true
@@ -309,6 +397,7 @@ mod tests {
             workspace_id: 3,
             room: live_room(3),
             publisher: hex::encode([2; 32]),
+            plane: RoomOperation::Live,
             expires: Instant::now(),
             permitted: AtomicBool::new(true),
         });

@@ -405,7 +405,6 @@ fn matte_alpha(
 /// edge does not cross it.
 #[allow(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     clippy::indexing_slicing,
     reason = "pixel indices bounded by the picture's size; coordinates checked against it before the cast"

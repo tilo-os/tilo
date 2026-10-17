@@ -28,6 +28,29 @@
 //! Everything else produces no bind. **Absence of a capability is
 //! enforced by absence of the mount.**
 //!
+//! ## Tilo's private stores are never inside a grant
+//!
+//! A grant names a folder the person understands as *theirs* — "my home",
+//! "my documents". Tilo keeps its own key material and trust roots in the
+//! same home: the identity store's fallback secrets, the accounts vault key,
+//! the publisher trust and revocation lists, the workspace tree that records
+//! every grant (all under `$XDG_CONFIG_HOME/tilo`), and a file-backed secret
+//! store named by `TILO_SECRETS_DIR`. [`private_store_roots`] names them, and
+//! [`CapabilityPlan::for_app`] keeps every grant out of them:
+//!
+//! - a grant **at or inside** a private store is refused;
+//! - a grant **containing** one keeps its bind, and the store is hidden behind
+//!   an empty read-only tmpfs mounted after every grant
+//!   ([`CapabilityPlan::masked_dirs`]). Landlock cannot carve an exception
+//!   beneath an allowed directory, so the mount namespace does it;
+//! - inside a **writable** grant, every directory between the grant and the
+//!   store is bound onto itself ([`CapabilityPlan::pinned_dirs`]). A mount point
+//!   cannot be renamed or removed, so the app cannot move the real store aside
+//!   and plant a substitute at its path for Tilo to read next;
+//! - a writable grant holding a symlink the store's path resolves through is
+//!   bound read-only: a symlink cannot be pinned, and repointing it would plant
+//!   a substitute just the same.
+//!
 //! ## Per-host network access
 //!
 //! A [`Scope::NetHost`] capability naming a host used to be applied as
@@ -131,6 +154,14 @@ pub struct CapabilityPlan {
     /// whether the sandbox carries a signing identity at all — see
     /// [`Participation`].
     pub participation: Participation,
+    /// Private stores a granted path would otherwise expose, at the path the
+    /// grant shows them in the sandbox. Each is covered by an empty read-only
+    /// tmpfs mounted after every grant — see the module docs.
+    pub masked_dirs: Vec<PathBuf>,
+    /// Directories inside a writable grant on the way to a masked store,
+    /// outermost first. Each is bound read-write onto itself after the grants,
+    /// so it is a mount point the app cannot rename or remove.
+    pub pinned_dirs: Vec<PathBuf>,
 }
 
 impl CapabilityPlan {
@@ -144,6 +175,8 @@ impl CapabilityPlan {
             allow_network: false,
             net_hosts: Vec::new(),
             participation: Participation::Unscoped,
+            masked_dirs: Vec::new(),
+            pinned_dirs: Vec::new(),
         }
     }
 
@@ -164,11 +197,16 @@ impl CapabilityPlan {
     /// `Restrict` override or an expired grant removes a bind here exactly
     /// as it removes an allow there. An app holds no base authority: every
     /// bind below exists because some capability explicitly says so.
+    ///
+    /// Tilo's [`private_store_roots`] are then kept out of every grant
+    /// ([`Self::confine_private_stores`]).
     pub fn for_app(app_id: &str, caps: &[CapOverride], now: Option<u64>) -> Self {
         Self::for_app_with(app_id, caps, now, host_device_paths)
+            .confine_private_stores(&private_store_roots())
     }
 
-    /// [`Self::for_app`] with the device-node lookup injected.
+    /// [`Self::for_app`]'s policy evaluation with the device-node lookup
+    /// injected, before [`Self::confine_private_stores`].
     ///
     /// Which `/dev/video*` nodes exist is a property of the host, not the
     /// policy, so tests substitute a fixed resolver to assert on an exact
@@ -274,6 +312,340 @@ impl CapabilityPlan {
         }
         plan.devices = devices;
         plan
+    }
+}
+
+/// The variable naming a file-backed secret store, as `tilo_secrets` reads it
+/// (`tilo_secrets::SECRETS_DIR_ENV`).
+const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
+
+/// Symlinks followed while resolving one private store's path before the
+/// resolution gives up — the kernel's own limit.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// The directories holding Tilo's own key material and trust roots, as this
+/// process's environment names them.
+///
+/// - `$XDG_CONFIG_HOME/tilo`, and `$HOME/.config/tilo` where that differs:
+///   the identity store and its fallback secrets, the accounts vault and its
+///   key, `trusted-attestors.toml`, `revoked-keys.toml`, the workspace tree
+///   that records every grant, and the app registries;
+/// - `$TILO_SECRETS_DIR`, a file-backed secret store with its key beside it.
+///
+/// The launcher runs in the person's session, so these are the person's own.
+pub fn private_store_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(config) = tilo_paths::xdg::config_home() {
+        roots.push(config.join("tilo"));
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        roots.push(PathBuf::from(home).join(".config").join("tilo"));
+    }
+    if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        roots.push(PathBuf::from(dir));
+    }
+    roots
+}
+
+/// A path resolved one component at a time, recording where each symlink on
+/// the way lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Route {
+    /// The path with every symlink followed. Components from the first one
+    /// that does not exist onwards are kept as written.
+    real: PathBuf,
+    /// The resolved directory holding each symlink the resolution followed.
+    /// A writable grant containing one could repoint it.
+    link_dirs: Vec<PathBuf>,
+}
+
+impl Route {
+    /// `None` for a path that is not absolute or loops through symlinks.
+    fn resolve(path: &Path) -> Option<Self> {
+        if !path.is_absolute() {
+            return None;
+        }
+        let mut pending = std::collections::VecDeque::new();
+        queue_components(&mut pending, path, false);
+        let mut real = PathBuf::from("/");
+        let mut link_dirs: Vec<PathBuf> = Vec::new();
+        let mut hops = 0usize;
+        let mut missing = false;
+        while let Some(part) = pending.pop_front() {
+            if part == ".." {
+                real.pop();
+                continue;
+            }
+            let next = real.join(&part);
+            let meta = if missing {
+                None
+            } else {
+                std::fs::symlink_metadata(&next).ok()
+            };
+            match meta {
+                Some(meta) if meta.file_type().is_symlink() => {
+                    hops = hops.saturating_add(1);
+                    if hops > MAX_SYMLINK_HOPS {
+                        return None;
+                    }
+                    let target = std::fs::read_link(&next).ok()?;
+                    if !link_dirs.contains(&real) {
+                        link_dirs.push(real.clone());
+                    }
+                    if target.is_absolute() {
+                        real = PathBuf::from("/");
+                    }
+                    queue_components(&mut pending, &target, true);
+                }
+                Some(_) => real = next,
+                None => {
+                    missing = true;
+                    real = next;
+                }
+            }
+        }
+        Some(Self { real, link_dirs })
+    }
+}
+
+/// Queue `path`'s normal and parent components, at the front (a symlink's
+/// target, resolved before whatever followed the link) or at the back.
+fn queue_components(
+    pending: &mut std::collections::VecDeque<std::ffi::OsString>,
+    path: &Path,
+    front: bool,
+) {
+    use std::path::Component;
+
+    let parts: Vec<std::ffi::OsString> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_os_string()),
+            Component::ParentDir => Some("..".into()),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+        })
+        .collect();
+    if front {
+        for part in parts.into_iter().rev() {
+            pending.push_front(part);
+        }
+    } else {
+        pending.extend(parts);
+    }
+}
+
+/// One private store: the path Tilo names it by and its resolved route.
+#[derive(Debug, Clone)]
+struct PrivateRoot {
+    lexical: PathBuf,
+    route: Route,
+}
+
+impl PrivateRoot {
+    /// Is `path` at or inside this store, by either spelling?
+    fn contains(&self, path: &Path) -> bool {
+        path.starts_with(&self.lexical) || path.starts_with(&self.route.real)
+    }
+}
+
+/// The private stores worth guarding: absolute, resolvable, and not inside
+/// another one (the outer store's mask already hides it, and a nested mask
+/// could not be mounted inside the outer read-only one).
+fn outermost_roots(roots: &[PathBuf]) -> Vec<PrivateRoot> {
+    let mut resolved: Vec<PrivateRoot> = Vec::new();
+    for raw in roots {
+        if !raw.is_absolute()
+            || raw
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+        {
+            continue;
+        }
+        // `components` drops a stray `.` and doubled `/`.
+        let lexical: PathBuf = raw.components().collect();
+        let Some(route) = Route::resolve(&lexical) else {
+            tracing::warn!(path = %raw.display(), "private store path does not resolve");
+            continue;
+        };
+        if !resolved.iter().any(|other| other.route.real == route.real) {
+            resolved.push(PrivateRoot { lexical, route });
+        }
+    }
+    let all = resolved.clone();
+    resolved.retain(|root| {
+        !all.iter().any(|other| {
+            other.route.real != root.route.real && root.route.real.starts_with(&other.route.real)
+        })
+    });
+    resolved
+}
+
+/// Create `dir` and any missing parent owner-only, unless it exists.
+fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::other("exists and is not a directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir),
+        Err(error) => Err(error),
+    }
+}
+
+/// Does a grant resolving to `real` reach `route` — contain where it lands,
+/// or a symlink on the way there?
+fn reaches(route: &Route, real: &Path) -> bool {
+    route.real.starts_with(real) || route.link_dirs.iter().any(|dir| dir.starts_with(real))
+}
+
+impl CapabilityPlan {
+    /// Keep the private stores in `roots` out of this plan's filesystem
+    /// grants; the module docs say how. [`Self::for_app`] calls it with
+    /// [`private_store_roots`].
+    ///
+    /// A store a grant would reach is created first (mode 0700) when it does
+    /// not exist yet: the mask needs a directory to mount over, and a writable
+    /// grant must not be able to create the store for Tilo to find later. A
+    /// store that cannot be created takes the grants reaching it with it.
+    #[must_use]
+    pub fn confine_private_stores(mut self, roots: &[PathBuf]) -> Self {
+        if self.ro_paths.is_empty() && self.rw_paths.is_empty() {
+            return self;
+        }
+        for root in outermost_roots(roots) {
+            self.confine_one(&root);
+        }
+        self.pinned_dirs.sort_by(|a, b| {
+            a.components()
+                .count()
+                .cmp(&b.components().count())
+                .then(a.cmp(b))
+        });
+        self
+    }
+
+    fn confine_one(&mut self, root: &PrivateRoot) {
+        // At or inside the store, by its name or by where the grant resolves:
+        // no bind at all.
+        let inside = |granted: &PathBuf| {
+            root.contains(granted)
+                || std::fs::canonicalize(granted).is_ok_and(|real| root.contains(&real))
+        };
+        for granted in self.all_grants().filter(|granted| inside(granted)) {
+            tracing::warn!(
+                path = %granted.display(),
+                "ignoring filesystem capability: it names Tilo's private configuration"
+            );
+        }
+        self.ro_paths.retain(|granted| !inside(granted));
+        self.rw_paths.retain(|granted| !inside(granted));
+
+        let reaching = |route: &Route, granted: &PathBuf| {
+            std::fs::canonicalize(granted).is_ok_and(|real| reaches(route, &real))
+        };
+        if !self
+            .all_grants()
+            .any(|granted| reaching(&root.route, granted))
+        {
+            return;
+        }
+        let prepared = ensure_private_dir(&root.lexical).and_then(|()| {
+            Route::resolve(&root.lexical)
+                .ok_or_else(|| std::io::Error::other("symlink loop on the way"))
+        });
+        let route = match prepared {
+            Ok(route) => route,
+            Err(error) => {
+                tracing::warn!(
+                    store = %root.lexical.display(),
+                    %error,
+                    "private store cannot be prepared; refusing the grants that reach it"
+                );
+                self.ro_paths
+                    .retain(|granted| !reaching(&root.route, granted));
+                self.rw_paths
+                    .retain(|granted| !reaching(&root.route, granted));
+                return;
+            }
+        };
+
+        // A symlink on the store's route inside a writable grant could be
+        // repointed: the grant keeps its reach and loses its write.
+        let unpinnable: Vec<PathBuf> = self
+            .rw_paths
+            .iter()
+            .filter(|granted| {
+                std::fs::canonicalize(granted)
+                    .is_ok_and(|real| route.link_dirs.iter().any(|dir| dir.starts_with(&real)))
+            })
+            .cloned()
+            .collect();
+        for granted in unpinnable {
+            tracing::warn!(
+                path = %granted.display(),
+                "binding a writable grant read-only: a symlink inside it leads to Tilo's private \
+                 configuration"
+            );
+            self.rw_paths.retain(|g| g != &granted);
+            if !self.ro_paths.contains(&granted) {
+                self.ro_paths.push(granted);
+            }
+        }
+
+        let grants: Vec<PathBuf> = self.all_grants().cloned().collect();
+        for granted in &grants {
+            let Ok(real) = std::fs::canonicalize(granted) else {
+                continue;
+            };
+            let Ok(below) = route.real.strip_prefix(&real) else {
+                continue;
+            };
+            let mask = granted.join(below);
+            if !self.masked_dirs.contains(&mask) {
+                self.masked_dirs.push(mask);
+            }
+            // Pin each directory between the grant and the store whose
+            // visible mount is writable; a grant path is a mount already.
+            let mut dir = granted.clone();
+            let mut parts = below.components().peekable();
+            while let Some(part) = parts.next() {
+                if parts.peek().is_none() {
+                    break;
+                }
+                dir.push(part);
+                if !grants.contains(&dir)
+                    && self.innermost_grant_is_writable(&dir)
+                    && !self.pinned_dirs.contains(&dir)
+                {
+                    self.pinned_dirs.push(dir.clone());
+                }
+            }
+        }
+    }
+
+    fn all_grants(&self) -> impl Iterator<Item = &PathBuf> {
+        self.ro_paths.iter().chain(&self.rw_paths)
+    }
+
+    /// Is the innermost grant containing `path` — the mount the sandbox shows
+    /// there — writable?
+    fn innermost_grant_is_writable(&self, path: &Path) -> bool {
+        let depth = |granted: &PathBuf| granted.components().count();
+        let innermost = |paths: &[PathBuf]| {
+            paths
+                .iter()
+                .filter(|granted| path.starts_with(granted))
+                .map(depth)
+                .max()
+        };
+        match (innermost(&self.rw_paths), innermost(&self.ro_paths)) {
+            (Some(rw), Some(ro)) => rw > ro,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
     }
 }
 
@@ -624,6 +996,185 @@ mod tests {
             };
             std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
             assert_eq!(load_capability_file(&path), grants);
+        }
+    }
+
+    /// A person's home with Tilo's store in it, the way `private_store_roots`
+    /// names it, and plans confined against it.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        store: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            let store = home.join(".config/tilo");
+            std::fs::create_dir_all(store.join("identity/secrets")).unwrap();
+            std::fs::create_dir_all(home.join("Documents")).unwrap();
+            Self {
+                _dir: dir,
+                home,
+                store,
+            }
+        }
+
+        fn path(&self, rel: &str) -> String {
+            self.home.join(rel).display().to_string()
+        }
+
+        fn plan(&self, grants: &[(String, Access)]) -> CapabilityPlan {
+            let caps: Vec<CapOverride> = grants
+                .iter()
+                .map(|(path, verb)| fs_grant("so.tilo.files", path, *verb))
+                .collect();
+            CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                .confine_private_stores(std::slice::from_ref(&self.store))
+        }
+    }
+
+    #[test]
+    fn grants_covering_the_private_store_mask_it_and_pin_the_way_there() {
+        let home = Fixture::new();
+        let config = home.home.join(".config");
+        // Phase `a_writable_home_grant_masks_the_store_and_pins_its_parent`.
+        {
+            let plan = home.plan(&[(home.path(""), Access::Write)]);
+            assert_eq!(plan.rw_paths, vec![home.home.clone()]);
+            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+            assert_eq!(
+                plan.pinned_dirs,
+                vec![config.clone()],
+                "~/.config must be a mount point, or the app could move the store aside"
+            );
+        }
+        // Phase `a_read_only_grant_masks_without_pinning`.
+        {
+            let plan = home.plan(&[(home.path(""), Access::Read)]);
+            assert_eq!(plan.ro_paths, vec![home.home.clone()]);
+            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+            assert!(plan.pinned_dirs.is_empty(), "{plan:?}");
+        }
+        // Phase `a_nested_read_only_grant_is_not_widened_by_a_pin`.
+        // A Read grant under a Write grant is writable too; a Restrict caps it.
+        {
+            let caps = vec![
+                fs_grant("so.tilo.files", &home.path(""), Access::Write),
+                fs_grant("so.tilo.files", &home.path(".config"), Access::Read),
+                CapOverride::new(
+                    Subject::app("so.tilo.files"),
+                    Scope::FsPath(home.path(".config")),
+                    Effect::Restrict,
+                    Access::Read,
+                ),
+            ];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                    .confine_private_stores(std::slice::from_ref(&home.store));
+            assert_eq!(plan.ro_paths, vec![config]);
+            assert_eq!(plan.masked_dirs, vec![home.store.clone()]);
+            assert!(
+                plan.pinned_dirs.is_empty(),
+                "~/.config is a grant mount already; a writable pin would widen it: {plan:?}"
+            );
+        }
+        // Phase `a_documents_grant_is_untouched`.
+        {
+            let plan = home.plan(&[(home.path("Documents"), Access::Write)]);
+            assert_eq!(plan.rw_paths, vec![home.home.join("Documents")]);
+            assert!(plan.masked_dirs.is_empty() && plan.pinned_dirs.is_empty());
+        }
+        // Phase `grants_at_or_inside_the_store_are_refused`.
+        {
+            for inside in [
+                ".config/tilo",
+                ".config/tilo/identity",
+                ".config/tilo/x.toml",
+            ] {
+                let plan = home.plan(&[(home.path(inside), Access::Write)]);
+                assert!(
+                    plan.ro_paths.is_empty() && plan.rw_paths.is_empty(),
+                    "a grant on {inside} must bind nothing: {plan:?}"
+                );
+            }
+            std::os::unix::fs::symlink(home.store.join("identity"), home.home.join("keys"))
+                .unwrap();
+            let plan = home.plan(&[(home.path("keys"), Access::Read)]);
+            assert!(
+                plan.ro_paths.is_empty(),
+                "a grant reaching the store through a symlink is refused: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_symlinked_store_still_cannot_be_reached() {
+        // Phase `a_missing_store_is_created_private_before_it_is_masked`.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let store = home.join(".config/tilo");
+            let caps = vec![fs_grant(
+                "so.tilo.files",
+                &home.display().to_string(),
+                Access::Write,
+            )];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                    .confine_private_stores(std::slice::from_ref(&store));
+            assert!(
+                store.is_dir(),
+                "a writable grant must not be able to create the store itself"
+            );
+            assert_eq!(
+                std::fs::metadata(&store).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(plan.masked_dirs, vec![store]);
+        }
+        // Phase `no_grant_creates_nothing`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("home/.config/tilo");
+            let caps = vec![fs_grant(
+                "so.tilo.files",
+                "/var/workspace/books",
+                Access::Write,
+            )];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                    .confine_private_stores(std::slice::from_ref(&store));
+            assert!(!store.exists());
+            assert!(plan.masked_dirs.is_empty());
+        }
+        // Phase `a_symlink_inside_a_writable_grant_makes_it_read_only`.
+        // `~/.config/tilo` → `~/dotfiles/tilo`: the app could repoint the
+        // link, so the grant keeps its reach and loses its write; the store is
+        // masked where it really lives.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            let real = home.join("dotfiles/tilo");
+            std::fs::create_dir_all(&real).unwrap();
+            std::fs::create_dir_all(home.join(".config")).unwrap();
+            std::os::unix::fs::symlink(&real, home.join(".config/tilo")).unwrap();
+            let caps = vec![fs_grant(
+                "so.tilo.files",
+                &home.display().to_string(),
+                Access::Write,
+            )];
+            let plan =
+                CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+                    .confine_private_stores(&[home.join(".config/tilo")]);
+            assert!(plan.rw_paths.is_empty(), "{plan:?}");
+            assert_eq!(plan.ro_paths, vec![home]);
+            assert_eq!(plan.masked_dirs, vec![real]);
+            assert!(plan.pinned_dirs.is_empty());
         }
     }
 

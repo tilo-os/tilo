@@ -5,15 +5,6 @@
 //! resolver composes those three layers; callers must not reimplement the
 //! precedence rules in UI code.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod defaults;
 pub mod mimeapps;
 #[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]

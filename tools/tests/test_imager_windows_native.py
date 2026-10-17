@@ -13,10 +13,10 @@ SCRIPT = "tools/ci/run-imager-windows-native.ps1"
 
 # Exact module paths matter: checking only a function basename can hide zero tests.
 SOURCES = {
-    "setup::folders::tests": "apps/imager/src/setup/folders.rs",
-    "setup::nofollow::tests": "apps/imager/src/setup/nofollow.rs",
-    "setup::windows_inventory::tests": "apps/imager/src/setup/windows_inventory/tests.rs",
-    "setup::account_transfer::windows_source::tests": "apps/imager/src/setup/account_transfer/windows_source.rs",
+    "folders::tests": "crates/platform/imager-backend/src/folders.rs",
+    "nofollow::tests": "crates/platform/imager-backend/src/nofollow.rs",
+    "account_transfer::windows_source::tests": "crates/platform/imager-backend/src/account_transfer/windows_source.rs",
+    "windows_inventory::tests": "crates/platform/imager-backend/src/windows_inventory/tests.rs",
     "profile::windows_tests": "apps/imager/src/profile.rs",
     "model::tests": "apps/imager/src/model.rs",
     "model::prepared_setup_binding_tests": "apps/imager/src/model.rs",
@@ -98,11 +98,21 @@ class DeferredWindowsNative(unittest.TestCase):
                 module_name = module.rsplit("::", 1)[1]
                 self.assertIn(f"mod {module_name} {{", source)
                 self.assertIn(f"fn {function}(", source.split(f"mod {module_name} {{", 1)[1])
-        folders = (ROOT / SOURCES["setup::folders::tests"]).read_text()
+        backend = (ROOT / "crates/platform/imager-backend/src/lib.rs").read_text()
+        for module in ("folders", "nofollow", "windows_inventory", "account_transfer"):
+            self.assertIn(f"pub mod {module};", backend)
+        inventory = (ROOT / "crates/platform/imager-backend/src/windows_inventory.rs").read_text()
+        self.assertIn("#[cfg(test)]\nmod tests;", inventory)
+        accounts = (ROOT / "crates/platform/imager-backend/src/account_transfer/mod.rs").read_text()
+        self.assertIn("mod windows_source;", accounts)
+        folders = (ROOT / SOURCES["folders::tests"]).read_text()
         self.assertIn("#[cfg(windows)]\n    fn windows_offline_entries", folders)
         self.assertIn("FILE_ATTRIBUTE_OFFLINE", folders)
-        self.assertIn("UnsupportedReparsePoint", (ROOT / SOURCES["setup::nofollow::tests"]).read_text())
-        self.assertIn("'--locked', '-p', 'imager', '--lib', '--target', $Target", self.script)
+        self.assertIn("UnsupportedReparsePoint", (ROOT / SOURCES["nofollow::tests"]).read_text())
+        self.assertIn("'--locked', '-p', $Package, '--lib', '--target', $Target", self.script)
+        for module in ("folders", "nofollow", "windows_inventory", "account_transfer"):
+            self.assertIn(f"$Test.StartsWith('{module}::')", self.script)
+        self.assertIn("{ 'imager-backend' } else { 'imager' }", self.script)
         self.assertIn("@($Test, '--', '--exact', '--list')", self.script)
         self.assertIn('$_ -ceq "${Test}: test"', self.script)
         self.assertIn("if ($Selected.Count -ne 1)", self.script)
@@ -111,12 +121,16 @@ class DeferredWindowsNative(unittest.TestCase):
         self.assertIn("1 passed; 0 failed; 0 ignored;", self.script)
         self.assertNotIn("'--test', 'profile_transport'", self.script)
 
-    def test_registered_with_source_inputs(self):
+    def test_contract_runs_through_required_unittest_discovery(self):
+        policy = (ROOT / "tools/policy/run.sh").read_text()
+        self.assertIn("python3 -m unittest discover -s tools/tests -p 'test_*.py'", policy)
         groups = tomllib.loads((ROOT / "tools/ci/suites.toml").read_text())["group"]
-        group = next(g for g in groups if g["name"] == "imager-windows-native-contract")
-        self.assertEqual(group["suites"], ["tools/tests/test_imager_windows_native.py"])
+        self.assertFalse(any(
+            "tools/tests/test_imager_windows_native.py" in group["suites"]
+            for group in groups
+        ), "required unittest discovery already runs this contract on every change")
         for path in (WORKFLOW, SCRIPT, *SOURCES.values()):
-            self.assertIn(path, group["inputs"])
+            self.assertTrue((ROOT / path).is_file(), path)
 
 
 if __name__ == "__main__":

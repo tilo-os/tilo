@@ -29,9 +29,11 @@ import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
+import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 
 export {
@@ -43,16 +45,22 @@ export {
 export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** What this page's WebCodecs decodes, probed once. */
+let probed;
+const probedCodecs = () => (probed ??= decodableCodecs());
 
 /**
- * The stored `{cert, hostCert}` JSON with the person's name added, edited as
- * text: certificate timestamps are nanoseconds, beyond what a JavaScript
- * number holds exactly, and a parsed and re-serialized copy no longer matches
- * its signature.
+ * The stored `{cert, hostCert}` JSON with the peer's start fields (the
+ * person's name, whether it only watches) added, edited as text: certificate
+ * timestamps are nanoseconds, beyond what a JavaScript number holds exactly,
+ * and a parsed and re-serialized copy no longer matches its signature.
  */
-export function withDisplayName(certified, displayName) {
-  if (displayName === undefined) return certified;
-  return certified.replace(/\}\s*$/, `,"displayName":${JSON.stringify(displayName)}}`);
+export function withStartFields(certified, fields) {
+  const added = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `,${JSON.stringify(key)}:${JSON.stringify(value)}`)
+    .join('');
+  return added ? certified.replace(/\}\s*$/, `${added}}`) : certified;
 }
 /** A member's cursor colour, from its device key: the same on every page. */
 const COLORS = ['#e5484d', '#30a46c', '#0090ff', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ffc53d'];
@@ -221,9 +229,15 @@ export function liveEndpoints(origin, host = {}) {
  * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
  * with an agent participant. The grant is asked for once `ready` resolves:
  * the room refuses it until it admitted the device.
+ *
+ * With each grant the person's layer tells the host which video codecs the
+ * page decodes (`decodable`, `peer.legacyCodecs`), so the room's sessions
+ * stream legacy windows in one this page plays.
  */
 export function createLiveLayer(peer, runtime, room, {
   origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
+  watching = false,
+  decodable = probedCodecs,
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
@@ -258,8 +272,10 @@ export function createLiveLayer(peer, runtime, room, {
       if (frame && !stopped && session === current && memberEpochs.get(from) === epoch) handle(frame);
     }, () => {});
   };
+  // A page that only watches receives the members' presence and previews
+  // and publishes none: the host grants it the live plane to receive only.
   const publishSealed = (bytes, publish) => {
-    if (!session) return false;
+    if (!session || watching) return false;
     const current = session;
     void sealed(bytes).then(frame => { if (frame && session === current) publish(current, frame); });
     return true;
@@ -399,18 +415,21 @@ export function createLiveLayer(peer, runtime, room, {
         endpoint,
         authorization: unhex(grant.token),
         namespace: [LIVE_ROOT, grant.room, grant.publisher],
-        directions: {publish: true, subscribe: true},
+        directions: {publish: !watching, subscribe: true},
       });
       if (stopped) { opened.close(); return; }
       session = opened;
       publisherId = grant.publisher;
       retry = 0;
       setState('live');
+      advertiseCodecs();
       session.watchMembers({onMember: (from, active) => {
         if (!stopped && session === opened) onMember(from, active);
       }});
-      if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
-      publisher.start();
+      if (!watching) {
+        if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
+        publisher.start();
+      }
       const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);
       renewTimer = setTimer(() => rotate(), renewIn);
       Promise.resolve(session.closed).then(() => { if (session === opened) lost(); }, () => { if (session === opened) lost(); });
@@ -421,6 +440,14 @@ export function createLiveLayer(peer, runtime, room, {
       retry += 1;
       renewTimer = setTimer(() => connect(), delay);
     }
+  }
+  /** Tell the host what this page decodes; a host that predates codec
+   * adverts, or one that is unreachable now, counts the page as H.264 only. */
+  function advertiseCodecs() {
+    if (agent !== undefined || typeof peer.legacyCodecs !== 'function') return;
+    Promise.resolve().then(decodable)
+      .then(codecs => stopped ? false : peer.legacyCodecs(room, JSON.stringify(codecs)))
+      .catch(() => {});
   }
   function dropSession() {
     publisher.pause();
@@ -479,7 +506,7 @@ export function createLiveLayer(peer, runtime, room, {
         (current, frame) => current.publishOps(track, frame));
     },
     endPreview(record) {
-      if (!session) return;
+      if (!session || watching) return;
       const track = runtime.liveRecordTrack(JSON.stringify(record));
       const current = session;
       void sealed(runtime.encodeLivePreviewEnd(JSON.stringify(record))).then(frame => {
@@ -611,6 +638,12 @@ export function createLiveLayer(peer, runtime, room, {
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
+ * @param options.watching       `true`: the page only watches `room`, as a
+ *                               public room's spectator (`spectate`). It
+ *                               reads the room and what its members seal,
+ *                               with keys the room's steward hands it, and
+ *                               writes nothing: no channel access request,
+ *                               live join, presence, voice or `here`.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -653,7 +686,9 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
+  watching = false,
 }) {
+  if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
   // Only a peer in its profile's own namespace moves to a fresh one when the
   // host at its origin was set up again; a caller's store or namespace stays.
@@ -913,7 +948,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withDisplayName(certified, displayName),
+      withStartFields(certified, {displayName, watching}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
@@ -925,7 +960,7 @@ async function connect({
     if (room) {
       peer.joinRoom(room);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, participant: {
+        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
         }});
       }
@@ -945,7 +980,7 @@ async function connect({
     let layer = agentLayers.get(agent);
     if (!layer && live) {
       layer = createLiveLayer(peer, runtime, room, {
-        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent,
+        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
         participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
       });
       agentLayers.set(agent, layer);
@@ -1063,7 +1098,8 @@ async function connect({
      * `[{device, user, label, window, status, recent, sources, generated,
      * updated_ms}]`. */
     async here(window, actions = []) {
-      if (!room || !peer) return [];
+      // A watching page is not listed: it would only post for itself.
+      if (!room || !peer || watching) return [];
       return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
     },
     /** The device (hex) of the session the node runs beside the host (the
@@ -1355,6 +1391,42 @@ export async function joinWorkspace(options) {
   return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
 }
 
+/**
+ * The certificate (`{cert, hostCert}` JSON) this profile's device already
+ * holds from the host answering at `post`, as the person `identity`, or
+ * `null`. A room keeps the certificate of every device it admitted, also
+ * once its person left (removed, or pruned after an absence), and admits
+ * that device again only under the same certificate: a device that holds
+ * one asks under it rather than certify itself anew. Read from `store`, else
+ * from the namespace the profile keeps its peer in now.
+ */
+async function keptDeviceCertificate({runtime, profile, store, desktop, namespaces = globalThis.localStorage, custody, identity, host}) {
+  let opened;
+  try {
+    if (!store) {
+      const surface = desktop ?? await import('./host.mjs');
+      if (!profile || typeof surface.openProfileStorage !== 'function') return null;
+      const device = profileDevice(profile, namespaces);
+      opened = await surface.openProfileStorage(profile, device);
+      store = profileStore(runtime, profile, device);
+    }
+    const kept = await store.get(CERTIFICATE);
+    const cert = kept ? JSON.parse(kept)?.cert : undefined;
+    const keptHost = kept ? JSON.parse(kept)?.hostCert : undefined;
+    const ours = cert && hexKey(cert.device_public_key) === hexKey(custody.publicKey)
+      && hexKey(cert.user_public_key) === identity.userPublicKey;
+    // Only one this host certified and pinned: a host set up again is
+    // never handed what was kept for the one before it.
+    const here = keptHost && host?.hostCert && sameHost(keptHost, host.hostCert);
+    return ours && here && !expiresWithinADay(kept) ? kept : null;
+  } catch (error) {
+    console.warn('join: the device\'s certificate could not be read', error);
+    return null;
+  } finally {
+    await opened?.release?.();
+  }
+}
+
 async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
   admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
@@ -1385,9 +1457,15 @@ async function join({
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
   const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const asked = JSON.parse(certified
-    ? await runtime.askToJoinAs(post, bytes, certified, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
-    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token));
+  const hostText = await runtime.hostInfo(post);
+  const host = JSON.parse(hostText);
+  const kept = certified ? null : await keptDeviceCertificate({runtime, profile, store: connectOptions.store,
+    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
+  const held = certified ?? kept;
+  const askedText = held
+    ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
+    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token);
+  const asked = JSON.parse(askedText);
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
   while (reply.kind === 'waiting') {
@@ -1406,10 +1484,12 @@ async function join({
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
-  const host = JSON.parse(await runtime.hostInfo(post));
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
-    fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
+    // Certificates go on as the text they were kept or written as: their
+    // nanosecond timestamps exceed what a JavaScript number holds exactly
+    // (json-text.mjs).
+    fetch: fetcher, deviceCertificate: kept ?? objectText({cert: memberText(askedText, 'cert'), hostCert: memberText(hostText, 'hostCert')}),
   });
 }

@@ -22,6 +22,7 @@ pub mod identity;
 pub mod lock;
 pub mod nofollow;
 pub mod private;
+pub mod retained_home;
 
 /// Whether the native path itself names a regular file, without following a symlink.
 ///

@@ -214,7 +214,14 @@ pub struct ToastStack {
     laid_out: usize,
     /// The theme the stack was laid out in, for its controls' geometry.
     theme: Theme,
+    /// What the last draw painted: each card's text and kind, the dismiss
+    /// control under the pointer, and where. A change needs another draw;
+    /// `None` until drawn in the current theme.
+    painted: Option<PaintedToasts>,
 }
+
+/// [`ToastStack::painted`].
+type PaintedToasts = (Vec<(String, ToastKind)>, Option<usize>, Rect);
 
 impl std::fmt::Debug for ToastStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -253,6 +260,7 @@ impl ToastStack {
             advanced_at: None,
             laid_out: 0,
             theme: Theme::dark(),
+            painted: None,
         }
     }
 
@@ -1664,6 +1672,7 @@ impl Widget for ToastStack {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
+        self.painted = None;
         let (w, h) = self.stack_size();
         self.laid_out = self.toasts.len();
         let style = Style {
@@ -1796,6 +1805,33 @@ impl Widget for ToastStack {
         "ToastStack"
     }
 
+    /// A stack that shows what it painted (nothing, mostly) needs no frame:
+    /// a pointer moving over the window repaints nothing here.
+    fn needs_redraw(&self) -> bool {
+        self.painted
+            .as_ref()
+            .is_none_or(|(cards, close_hovered, rect)| {
+                *close_hovered != self.close_hovered
+                    || *rect != self.rect
+                    || cards.len() != self.toasts.len()
+                    || cards
+                        .iter()
+                        .zip(&self.toasts)
+                        .any(|((text, kind), toast)| *text != toast.text || *kind != toast.kind)
+            })
+    }
+
+    fn mark_drawn(&mut self) {
+        self.painted = Some((
+            self.toasts
+                .iter()
+                .map(|toast| (toast.text.clone(), toast.kind))
+                .collect(),
+            self.close_hovered,
+            self.rect,
+        ));
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
         // Assertive live region so a freshly-shown toast announces itself
@@ -1817,6 +1853,27 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use std::collections::HashMap;
+
+    /// A stack that shows what it painted asks for no frame, so a pointer
+    /// moving over a window with a notice up repaints nothing; a new or
+    /// dismissed notice asks for one.
+    #[test]
+    fn a_painted_stack_needs_a_frame_only_when_its_notices_change() {
+        let mut stack = ToastStack::new();
+        lay_out(&mut stack);
+        assert!(stack.needs_redraw(), "a stack never drawn needs a frame");
+        stack.mark_drawn();
+        assert!(
+            !stack.needs_redraw(),
+            "an empty stack it painted needs none"
+        );
+        stack.push("Saved", ToastKind::Success);
+        assert!(stack.needs_redraw(), "a new notice needs a frame");
+        stack.mark_drawn();
+        assert!(!stack.needs_redraw(), "the notice it painted needs none");
+        stack.dismiss(0);
+        assert!(stack.needs_redraw(), "a dismissed notice needs a frame");
+    }
 
     fn lay_out(stack: &mut ToastStack) {
         let mut tree = TaffyTree::<()>::new();

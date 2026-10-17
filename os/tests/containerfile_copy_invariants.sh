@@ -192,7 +192,39 @@ containerfile="$repo/os/Containerfile"
 # systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
 # the read-only ESP, is one intentional payload row with a COPY of its own: no
 # existing instruction copies into that drop-in directory.
-expected_contract=421fc895e0f13089d5527182a986e06c5b7dc1791ff1e4acf175895fa6a7b8ae
+# tilo-esp-generator, which mounts the boot loader's ESP at /boot/efi on an
+# installed system, is one intentional payload row with a COPY of its own, and
+# its helper tilo-esp-mount rides the existing recovery-files libexec COPY.
+# The firstboot file helper is now compiled: it arrives from the firstboot-files
+# component as /usr/libexec/tilo-firstboot-files, with the mode it had, instead
+# of from the context as tilo-firstboot-files.py.
+# The board-successor verifier is now compiled: the user-identity component
+# installs the tilo-board-successor build output as
+# /usr/libexec/tilo-board-successor, with the mode the script had, instead of
+# the manifest's tilo-board-successor.py.
+# The boot audit's image signature policy checker is now compiled: it arrives
+# from the image-policy-check component at the same path and mode instead of
+# from the context.
+# The dual-boot enlist helper is now compiled. The base image carries it from
+# the boot-order component (one new row): it used to reach only the installer
+# image, from the installer's overlay of os/usr, and the installer now
+# inherits it.
+# The staging reclaim helper is now compiled. The base image carries it from
+# the staging-reclaim component (one new row): it used to reach only the
+# installer image, from the installer's overlay of os/usr, and the installer
+# and the targets it installs now inherit it.
+# The installer backend's handoff copy, dev SSH and VM export cache helpers are
+# now compiled. The base image carries them from the install-helpers component
+# (three new rows): they used to reach only the installer image, from the
+# installer's overlay of os/usr, and the installer now inherits them.
+# The signed offline target's verifier and the USB-free installation guard
+# (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
+# from the base image instead of the installer's overlay of os/usr.
+# The VM install proof emitter is compiled too (one more install-helpers row).
+# Prepared setup and migration runtime artifacts remain alongside the native
+# helper components above. This digest is derived from the merged source's
+# expanded rootfs COPY mappings, including every manifest output.
+expected_contract=7f2ab24d6cf87483b5da67adad0ec77f1dc4a6ab97585acd0e845ce23cc7fa5b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -284,7 +316,6 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-image-policy-check \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '

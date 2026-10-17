@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "os/usr/libexec/tilo-firstboot-user"
+FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 SYNTHETIC_HASH = "$6$fixture$" + "A" * 86
 
 
@@ -40,7 +41,7 @@ class CredentialTransportTests(unittest.TestCase):
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
             'seed_helper=/etc/tilo/firstboot-home-seeds': f'seed_helper={seeds}',
-            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{FILES_BINARY}"',
         }
         (root / 'home').mkdir(exist_ok=True)
         (root / 'skel').mkdir()

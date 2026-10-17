@@ -5,13 +5,13 @@
 use super::*;
 use crate::network::actor::HostIdentity;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
+use neighbour_wire::NeighbourMsg;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::enroll::prepare_and_complete;
 use tilo_joined_room::testing::governor::TestGovernor;
 use tilo_joined_room::testing::ns as now_ns;
-use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join::{self, JoinTransportRequest};
 use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -198,7 +198,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_relay_protocol::retention::RetentionAuthority::new(
                         &room.to_string(),
                         governor.clone(),
                     )
@@ -354,16 +354,14 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
     .await;
     for (bytes, kind) in &publications {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
-            &message,
-            *kind == tilo_peer_state::transport::Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, _) =
+            neighbour_wire::retention(&message, *kind == neighbour_wire::Retention::Checkpoint)
+                .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            neighbour_wire::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, bytes.clone())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            neighbour_wire::Retention::Delta => {
                 publisher.publish_retained_delta(channel, bytes.clone())
             }
         }

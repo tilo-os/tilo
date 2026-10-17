@@ -5,7 +5,7 @@ use automerge::{ROOT, ReadDoc};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::SystemTime};
-use tilo_peer_state::owner_commit::{CommitBinding, CommitTarget};
+use tilo_owner_commit::{CommitBinding, CommitTarget};
 use tilo_user_identity::DeviceCert;
 
 const MAX_ROUTES: usize = 32;

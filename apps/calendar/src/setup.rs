@@ -44,63 +44,26 @@ pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, S
 /// Missing/revoked credentials, unsafe URLs or invalid discovery replies.
 #[cfg(feature = "live")]
 pub fn discover_calendars(
-    custodian: &account_custody::Custodian,
+    service: &tilo_dav::oauth::Service,
     account: &accounts::Account,
     config: &CalDavConfig,
     google: bool,
 ) -> Result<Vec<RemoteCalendar>, String> {
-    let credentials = credentials(custodian, &account.id, config, google)?;
-    let server = url::Url::parse(&config.server_url).map_err(|_| "invalid calendar server URL")?;
-    same_origin_url(&server, server.as_str())?;
-    let client = tilo_dav::DavClient::new(&tilo_dav::Options {
-        redirects: tilo_dav::Redirects::Refuse,
-        ..Default::default()
-    })
-    .map_err(|error| error.to_string())?
-    .with_credentials(credentials);
-    tilo_dav::discovery::calendars(&client, &server).map(|collections| {
-        collections
-            .into_iter()
-            .enumerate()
-            .map(|(index, collection)| RemoteCalendar {
-                id: collection.href,
-                name: collection.name,
-                color: (index % 8) as u8,
-                visible: true,
-                read_only: collection.read_only,
-            })
-            .collect()
-    })
-}
-
-#[cfg(feature = "live")]
-pub(crate) fn credentials(
-    custodian: &account_custody::Custodian,
-    id: &accounts::AccountId,
-    config: &CalDavConfig,
-    google: bool,
-) -> Result<tilo_dav::Credentials, String> {
-    Ok(if google {
-        let token = custodian
-            .oauth_access_token(
-                id,
-                account_custody::OAuthUse::calendar(account_custody::OAuthIssuer::Google),
-                false,
-            )
-            .map_err(|error| error.to_string())?;
-        tilo_dav::Credentials::bearer(token.to_string())
-    } else {
-        let vault = match custodian.config_root() {
-            Some(root) => accounts::SecretVault::open_in(root),
-            None => return Err("account config root is unavailable".into()),
-        };
-        let secret = vault.get(id).ok_or("calendar credential is missing")?;
-        let password = account_custody::password_credential(&secret);
-        if password.is_empty() {
-            return Err("calendar credential is unavailable".into());
-        }
-        tilo_dav::Credentials::new(config.username.clone(), password.to_string())
-    })
+    service
+        .discover(&account.id, &config.server_url, &config.username, google)
+        .map(|collections| {
+            collections
+                .into_iter()
+                .enumerate()
+                .map(|(index, collection)| RemoteCalendar {
+                    id: collection.href,
+                    name: collection.name,
+                    color: (index % 8) as u8,
+                    visible: true,
+                    read_only: collection.read_only,
+                })
+                .collect()
+        })
 }
 
 /// Enable only confirmed collections on the original account. The caller saves

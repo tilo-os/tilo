@@ -108,19 +108,21 @@ Invoke-Bounded 'ninja' 'ninja' @('--version') | Out-Null
 # Reparse coverage here is the conservative attribute policy, not a real cloud
 # provider's reparse object lifecycle; that still needs a dedicated fixture.
 $Tests = @(
-    'setup::folders::tests::windows_offline_entries_are_excluded_and_copy_never_reports_complete',
-    'setup::nofollow::tests::windows_attribute_policy_is_conservative_and_does_not_conflate_cloud_with_links',
-    'setup::windows_inventory::tests::review_preserves_unknown_mail_drafts_and_cloud_data_until_explicit_copy',
-    'setup::windows_inventory::tests::steam_external_library_is_only_a_suggestion_and_requires_its_own_grant',
-    'setup::windows_inventory::tests::bounded_native_metadata_and_steam_parser_preserve_redirected_paths',
-    'setup::account_transfer::windows_source::tests::registry_profiles_are_private_suggestions_only_for_exact_grants',
+    'folders::tests::windows_offline_entries_are_excluded_and_copy_never_reports_complete',
+    'nofollow::tests::windows_attribute_policy_is_conservative_and_does_not_conflate_cloud_with_links',
+    'windows_inventory::tests::review_preserves_unknown_mail_drafts_and_cloud_data_until_explicit_copy',
+    'windows_inventory::tests::steam_external_library_is_only_a_suggestion_and_requires_its_own_grant',
+    'windows_inventory::tests::bounded_native_metadata_and_steam_parser_preserve_redirected_paths',
+    'account_transfer::windows_source::tests::registry_profiles_are_private_suggestions_only_for_exact_grants',
     'profile::windows_tests::production_writer_and_reader_bind_exact_private_hints_and_recovery',
     'model::tests::media_profile_serializes_migrates_and_validates_the_installer_contract',
     'model::prepared_setup_binding_tests::media_profile_carries_only_valid_ciphertext_binding_and_public_device_name'
 )
-$CargoArgs = @('run', $Toolchain, 'cargo', 'test', '--locked', '-p', 'imager', '--lib', '--target', $Target)
 for ($Index = 0; $Index -lt $Tests.Count; $Index++) {
     $Test = $Tests[$Index]
+    # Inventory, account suggestions and attribute checks use their production backend modules.
+    $Package = if (($Test.StartsWith('folders::') -or $Test.StartsWith('nofollow::') -or $Test.StartsWith('windows_inventory::') -or $Test.StartsWith('account_transfer::'))) { 'imager-backend' } else { 'imager' }
+    $CargoArgs = @('run', $Toolchain, 'cargo', 'test', '--locked', '-p', $Package, '--lib', '--target', $Target)
     $ListLog = Invoke-Bounded "list-$Index" 'rustup' ($CargoArgs + @($Test, '--', '--exact', '--list'))
     $Selected = @(Get-Content -LiteralPath $ListLog | Where-Object { $_ -ceq "${Test}: test" })
     if ($Selected.Count -ne 1) { throw "Expected exactly one test for $Test, got $($Selected.Count)" }

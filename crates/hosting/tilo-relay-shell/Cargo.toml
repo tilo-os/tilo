@@ -3,36 +3,64 @@ name = "tilo-relay-shell"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The desktop's peer-sync vocabulary as a Tilo workspace host reads it: the payload seam the relay core asks about opaque co-edit bodies, its NeighbourMsg adapter, and the browser legacy-window bridge."
+description = "The desktop's peer-sync vocabulary as a Tilo workspace host reads it: the payload seam the relay core asks about opaque co-edit bodies, its NeighbourMsg adapter, native shell replay selection under a bound retention authority, and the browser legacy-window bridge."
 license = "MIT OR Apache-2.0"
 
-# The relay core (`tilo-relay`) never names `NeighbourMsg`: it asks
-# `ShellPayloads` about a co-edit body, and the adapter its embedder injects
-# answers. `NeighbourPayloads` is the desktop's adapter; `Relay::start` wires
-# it. Everything here that decodes or originates a desktop message keeps the
-# bytes and derivations the host used before it moved, so retained data is
-# judged exactly as it was.
+# The relay core (`tilo-relay`) never names `NeighbourMsg` or the desktop's
+# retention proofs: it asks `ShellPayloads` about a co-edit body, and steps
+# the shell replay selection a bound `tilo_relay_store::shell::ShellBinding`
+# hands it. `NeighbourPayloads` and `NeighbourReplay` are the desktop's
+# adapters; `Relay::start` wires them. Everything here that decodes or
+# originates a desktop message keeps the bytes and derivations the host used
+# before it moved, so retained data is judged exactly as it was.
 
 [features]
 # The legacy-window bridge re-publishes desktop windows on the browser live
 # plane, so it links the moq relay stack only for hosts that serve browsers.
-web = ["dep:tilo-moq", "dep:tilo-relay-protocol", "dep:tilo-relay-session", "dep:bytes", "dep:hex", "dep:tracing"]
+web = ["dep:tilo-moq", "dep:tilo-relay-session", "dep:bytes", "dep:tracing"]
+# The shell-selection fixture the relay's own tests replay, the selection
+# construction counter, and the store's test barriers inside selection.
+test-support = [
+    "tilo-relay-store/test-support",
+    "dep:ed25519-dalek",
+    "dep:web-time",
+    "dep:tempfile",
+]
 
 [dependencies]
 # Signed document envelopes the seam hands the core.
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-# The desktop's peer-sync messages and the one host-retention classifier.
+# Coverage routes, room governance and the state peers retention proofs
+# (`retained_proof`) judge.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The desktop's peer-sync messages and the host-retention classifier.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# Retained-store primitives and the seam the store drives selection through.
+tilo-relay-store = { path = "../tilo-relay-store" }
+# Retained frames: relay envelopes carrying co-edit payloads; the
+# room-to-workspace binding an authority is checked against.
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+tilo-relay-client = { path = "../tilo-relay-client" }
 postcard = { workspace = true, features = ["use-std"] }
 blake3.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tilo-moq = { path = "../tilo-moq", features = ["relay"], optional = true }
-tilo-relay-protocol = { path = "../tilo-relay-protocol", optional = true }
 # Presence bodies carry their author (`AttributedPresence`).
 tilo-relay-session = { path = "../tilo-relay-session", optional = true }
 bytes = { workspace = true, optional = true }
-hex = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+# Retention proofs read verified room and document state.
+automerge.workspace = true
+# Every Automerge decode of a retained, peer-supplied body runs in a worker
+# process, never in the relay.
+tilo-automerge-isolate.workspace = true
+ed25519-dalek = { workspace = true, optional = true }
+web-time = { version = "1", optional = true }
+tempfile = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
@@ -40,6 +68,15 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 moq-net.workspace = true
 # Bounded waits for the live relay in the bridge tests.
 tilo-test-env = { path = "../../dev/test-env" }
+# Selection runs against the relay's own workspace store: its retention,
+# replay and checkpoint staging decide what selection reads and publishes.
+tilo-relay = { path = "../tilo-relay", features = ["test-support"] }
+tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
+tilo-automerge.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+web-time = "1"
+tempfile.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

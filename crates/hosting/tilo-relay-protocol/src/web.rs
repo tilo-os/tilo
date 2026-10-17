@@ -22,10 +22,12 @@
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
 //! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
+//! | `/live/legacy-codecs` | [`CodecsRequest`](crate::legacy_window::CodecsRequest) | `204`, `403` when not admitted |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
+//! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
 //!
 //! A host started without a certificate serves only `/install` until it has
 //! one: the body is the root-signed `DeviceCert` for its device key as JSON
@@ -342,6 +344,37 @@ pub fn live_room(workspace_id: u64) -> String {
 
 /// The first request of a session.
 pub type SessionHello = Hello;
+
+/// Route a spectator of a public room takes a channel's content keys from,
+/// to open what the room's members sealed there. Only a device of the room's
+/// spectator person is answered, only in a public room and only while it is
+/// subscribed; a member is admitted to a channel by its steward instead.
+pub const CHANNEL_KEYS_PATH: &str = "/channel-keys";
+
+/// The record whose channel's content keys a spectator asks for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelKeysRequest {
+    /// The record's app.
+    pub app_id: String,
+    /// The room (the record's cluster).
+    pub room: String,
+    /// The record id.
+    pub record: String,
+}
+
+/// A channel's content keys, in their endpoint encoding
+/// (`channel_crypto::ChannelContentKeys::to_bytes`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelKeys {
+    /// The encoded keys.
+    pub keys: Vec<u8>,
+}
+
+impl core::fmt::Debug for ChannelKeys {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ChannelKeys").finish_non_exhaustive()
+    }
+}
 
 /// Route of "who is here and what are they doing" in a workspace: a member
 /// posts their own recent semantic actions and gets everyone's line back.

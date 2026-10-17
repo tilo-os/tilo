@@ -135,6 +135,7 @@ pub mod framework;
 pub mod group_form;
 pub mod interaction;
 pub mod key;
+pub mod offload;
 pub mod optimistic;
 pub mod outcome;
 pub mod params;
@@ -160,8 +161,9 @@ pub use context::{
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
     DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    LOCAL_DEVICE_ONLY, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, PROGRAMMATIC_TAG, ResultSpec,
-    RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
+    LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
+    MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, Offload,
+    PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use entry::{

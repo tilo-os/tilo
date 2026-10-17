@@ -5,9 +5,7 @@ use ui::webview::{
     ServiceSessionReply, ServiceSessionRequest, SharedEngine, WebViewCommand, WebViewEngine,
 };
 
-#[cfg(target_os = "linux")]
 mod forget;
-#[cfg(target_os = "linux")]
 pub(crate) use forget::PendingForget;
 
 const ANCHOR: &str = "service:";
@@ -78,7 +76,6 @@ pub(crate) fn selection(
 }
 
 /// Private admission stays pending until both the broker and native startup settle.
-#[cfg(target_os = "linux")]
 pub(crate) struct PendingView {
     pub opening: ui::LocalState<Option<String>>,
     id: String,
@@ -86,13 +83,9 @@ pub(crate) struct PendingView {
     person: [u8; 32],
     client: ui::collaboration::browser_service_sessions::Client,
     request: Option<ui::collaboration::browser_service_sessions::Pending>,
-    worker: Option<std::thread::JoinHandle<()>>,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<ServiceView, String>>>>,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    shutdown_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    native: native::Opening<ServiceView>,
     waker: Option<ui::WakeHandle>,
 }
-#[cfg(target_os = "linux")]
 impl PendingView {
     pub fn new(
         id: String,
@@ -106,10 +99,7 @@ impl PendingView {
             person,
             client,
             request: None,
-            worker: None,
-            result: Default::default(),
-            cancelled: Default::default(),
-            shutdown_failed: Default::default(),
+            native: native::Opening::default(),
             waker: None,
         }
     }
@@ -123,23 +113,18 @@ impl PendingView {
     pub fn attach_waker(&mut self, waker: ui::WakeHandle) {
         self.waker = Some(waker);
     }
-    pub fn notice(&self) -> crate::notice::Notice {
+    pub fn notice() -> crate::notice::Notice {
         crate::notice::Notice::neutral("Opening your account…")
     }
     pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"session_id": self.id, "status":"opening", "authenticated":false, "engine_shutdown_confirmed":false})
     }
     pub fn poll(&mut self, selections: &[Selection]) -> Option<Result<ServiceView, String>> {
-        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        if self.native.cancelled() {
             return None;
         }
-        if let Some(worker) = &self.worker {
-            if let Some(answer) = self.result.try_lock().ok()?.take() {
-                return Some(answer);
-            }
-            return worker
-                .is_finished()
-                .then(|| Err("This account could not be opened".into()));
+        if self.native.started() {
+            return self.native.poll();
         }
         if self.request.is_none() {
             let anchor = self.opening.with(Clone::clone)?;
@@ -148,11 +133,10 @@ impl PendingView {
             }
             // A stale public anchor still challenges private Resolve. The
             // non-authorizing binding cannot grant custody for an absent row.
-            let binding = selections
-                .iter()
-                .find(|v| v.id == self.id)
-                .map(|selected| selected.binding.clone())
-                .unwrap_or_else(|| "unavailable-selection".into());
+            let binding = selections.iter().find(|v| v.id == self.id).map_or_else(
+                || "unavailable-selection".into(),
+                |selected| selected.binding.clone(),
+            );
             self.opening.set(None);
             match self.client.request(ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::Resolve {
                 id: self.id.clone(), setup_binding: binding,
@@ -160,13 +144,11 @@ impl PendingView {
         }
         let reply = self.request.as_mut()?.poll()?;
         self.request = None;
-        let session = match reply {
-            Ok(
-                ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::Resolved {
-                    session,
-                },
-            ) => session,
-            _ => return Some(Err("This account needs to be connected again".into())),
+        let Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::Resolved {
+            session,
+        }) = reply
+        else {
+            return Some(Err("This account needs to be connected again".into()));
         };
         let Some(selected) = selections.iter().find(|v| v.id == self.id).cloned() else {
             return Some(Err("This account needs to be connected again".into()));
@@ -178,106 +160,44 @@ impl PendingView {
         {
             return Some(Err("This account could not be opened".into()));
         }
-        let result = self.result.clone();
         let person = self.person;
         let waker = self.waker.clone();
-        let cancelled = self.cancelled.clone();
-        let shutdown_failed = self.shutdown_failed.clone();
-        match std::thread::Builder::new()
-            .name("browser-service-open".into())
-            .spawn(move || {
-                let mut answer =
-                    ServiceView::from_session(selected, person, session).map(|mut view| {
-                        view.destination = destination;
-                        view
-                    });
-                if let Ok(mut slot) = result.lock() {
-                    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                        if let Ok(view) = &mut answer {
-                            if view.finish_close().is_err() {
-                                shutdown_failed.store(true, std::sync::atomic::Ordering::Release);
-                            }
-                        }
-                    } else {
-                        if let (Ok(view), Some(waker)) = (&mut answer, &waker) {
-                            view.attach_waker(waker.clone());
-                            let wake = waker.clone();
-                            view.engine().set_waker(Box::new(move || wake.wake()));
-                        }
-                        *slot = Some(answer);
+        let wake = native_wake(waker.clone());
+        if let Err(error) = self.native.start(
+            move || {
+                ServiceView::from_session(selected, person, session).map(|mut view| {
+                    view.destination = destination;
+                    if let Some(waker) = waker {
+                        view.attach_waker(waker.clone());
+                        view.engine().set_waker(Box::new(move || waker.wake()));
                     }
-                }
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
-            }) {
-            Ok(worker) => self.worker = Some(worker),
-            Err(_) => return Some(Err("This account could not be opened".into())),
+                    view
+                })
+            },
+            wake,
+        ) {
+            return Some(Err(error));
         }
         None
     }
     pub fn request_close(&mut self) -> bool {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
         self.request = None;
-        if let Ok(mut result) = self.result.try_lock() {
-            if let Some(Ok(view)) = result.as_mut() {
-                let _ = view.request_close();
-            }
-        }
-        self.close_complete()
+        self.native.request_close()
     }
     pub fn close_complete(&self) -> bool {
-        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
-            && !self
-                .shutdown_failed
-                .load(std::sync::atomic::Ordering::Acquire)
-            && self
-                .worker
-                .as_ref()
-                .is_none_or(std::thread::JoinHandle::is_finished)
-            && self
-                .result
-                .try_lock()
-                .is_ok_and(|result| match result.as_ref() {
-                    Some(Ok(view)) => view.close_complete(),
-                    _ => true,
-                })
+        self.native.close_complete()
     }
     pub fn finish_close(&mut self) -> Result<(), String> {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
         self.request = None;
-        if let Some(worker) = self.worker.take() {
-            worker
-                .join()
-                .map_err(|_| "This account could not be closed")?;
-        }
-        if self
-            .shutdown_failed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err("This account could not be closed".into());
-        }
-        if let Some(Ok(mut view)) = self
-            .result
-            .lock()
-            .map_err(|_| "This account could not be closed")?
-            .take()
-        {
-            view.finish_close()?;
-        }
-        Ok(())
+        self.native.finish_close()
     }
 }
-#[cfg(target_os = "linux")]
 impl Drop for PendingView {
     fn drop(&mut self) {
         let _ = self.finish_close();
     }
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) struct ServiceView {
     selection: Selection,
     destination: Option<crate::service_destinations::Destination>,
@@ -290,12 +210,11 @@ pub(crate) struct ServiceView {
     shutdown_done: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cleanup: Option<NativeCleanup>,
     waker: Option<ui::WakeHandle>,
-    engine: std::sync::Arc<ui::webview::chromium::ChromiumEngine>,
+    engine: EngineAdapter,
     pub opening: ui::LocalState<Option<String>>,
     status: &'static str,
     deadline: Option<ui::time::Instant>,
 }
-#[cfg(target_os = "linux")]
 impl ServiceView {
     pub fn from_session(
         selection: Selection,
@@ -305,8 +224,9 @@ impl ServiceView {
         session
             .validate()
             .map_err(|_| "This account needs to be connected again")?;
+        let selected_id = &selection.id;
         if session.service != selection.service
-            || session.session_id != selection.id
+            || &session.session_id != selected_id
             || session.identity_public_key != person
             || session.setup_binding != selection.binding
         {
@@ -352,7 +272,7 @@ impl ServiceView {
             shutdown_done: None,
             cleanup: None,
             waker: None,
-            engine,
+            engine: EngineAdapter(engine),
             opening: ui::LocalState::new(None),
             status: "waiting",
             deadline: None,
@@ -368,7 +288,7 @@ impl ServiceView {
         self.selection.anchor()
     }
     pub fn engine(&self) -> SharedEngine {
-        self.engine.clone()
+        self.engine.0.clone()
     }
     pub fn poll_open(&mut self) -> bool {
         let Some(anchor) = self.opening.with(Clone::clone) else {
@@ -393,7 +313,7 @@ impl ServiceView {
             ));
             return true;
         }
-        let Some(session) = self.session.as_ref().cloned() else {
+        let Some(session) = self.session.clone() else {
             return false;
         };
         // Retain selected credentials only through initial restart verification;
@@ -415,7 +335,7 @@ impl ServiceView {
         }
         true
     }
-    pub fn apply(&mut self, reply: ServiceSessionReply) -> bool {
+    pub fn apply(&mut self, reply: &ServiceSessionReply) -> bool {
         let request_id = match self.status {
             "importing" => 1,
             "verifying" => 2,
@@ -453,7 +373,7 @@ impl ServiceView {
                 self.engine.clone(),
                 profile,
                 session,
-                self.waker.clone(),
+                native_wake(self.waker.clone()),
             ));
             return true;
         }
@@ -479,30 +399,27 @@ impl ServiceView {
         }
         true
     }
-    /// Replace the WebView engine only after the off-frame restart has settled.
+    /// Replace the `WebView` engine only after the off-frame restart has settled.
     /// The verification reply belongs to that replacement engine's event queue.
     pub fn poll_engine(&mut self) -> Option<SharedEngine> {
         let restart = self.restart.as_mut()?;
-        match restart.poll()? {
-            Ok((engine, profile)) => {
-                self.engine = engine;
-                self.profile = Some(profile);
-                self.restart = None;
-                self.status = "verifying";
-                self.deadline = Some(ui::time::now() + ui::time::Duration::from_secs(45));
-                Some(self.engine())
-            }
-            Err(()) => {
-                self.status = "needs-reconnect";
-                self.begin_shutdown();
-                None
-            }
+        if let Ok((engine, profile)) = restart.poll()? {
+            self.engine = engine;
+            self.profile = Some(profile);
+            self.restart = None;
+            self.status = "verifying";
+            self.deadline = Some(ui::time::now() + ui::time::Duration::from_secs(45));
+            Some(self.engine())
+        } else {
+            self.status = "needs-reconnect";
+            self.begin_shutdown();
+            None
         }
     }
     pub fn poll_timeout(&mut self) -> bool {
-        if !self
+        if self
             .deadline
-            .is_some_and(|deadline| ui::time::now() >= deadline)
+            .is_none_or(|deadline| ui::time::now() < deadline)
         {
             return false;
         }
@@ -599,8 +516,7 @@ impl ServiceView {
     pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"service": self.selection.service, "session_id": self.selection.id, "status": if self.status == "forgetting" && self.close_complete() {
                 "local-forgotten"
-            } else if self.status == "forgetting" && self.cleanup.as_ref().is_some_and(|cleanup|
-                cleanup.handle.as_ref().is_none_or(std::thread::JoinHandle::is_finished)) {
+            } else if self.status == "forgetting" && self.cleanup.as_ref().is_some_and(NativeCleanup::settled) {
                 "local-forget-incomplete"
             } else { self.status }, "authenticated": false,
             "custody_revoked": self.status == "forgotten", "custody_backend_needed": self.status == "forgetting",
@@ -637,405 +553,98 @@ impl ServiceView {
         }
     }
 }
-#[cfg(target_os = "linux")]
+impl native::OpeningValue for ServiceView {
+    fn request_close(&mut self) {
+        let _ = ServiceView::request_close(self);
+    }
+    fn close_complete(&self) -> bool {
+        ServiceView::close_complete(self)
+    }
+    fn finish_close(&mut self) -> Result<(), String> {
+        ServiceView::finish_close(self)
+    }
+}
 impl Drop for ServiceView {
     fn drop(&mut self) {
         self.begin_shutdown();
     }
 }
 
-#[cfg(target_os = "linux")]
-type CleanupCustody = (
-    std::sync::Arc<ui::webview::chromium::ChromiumEngine>,
-    crate::service_profiles::Profile,
-);
-#[cfg(target_os = "linux")]
-type CleanupSlot = std::sync::Arc<std::sync::Mutex<Option<CleanupCustody>>>;
-
-/// Origin storage is qualified by a cold reopen, not by a write callback in
-/// the first process. This worker retains the same profile lease throughout.
-#[cfg(target_os = "linux")]
-struct NativeRestart {
-    slot: CleanupSlot,
-    handle: Option<std::thread::JoinHandle<()>>,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    cleanup: Option<NativeCleanup>,
-    waker: Option<ui::WakeHandle>,
-}
-#[cfg(target_os = "linux")]
-impl NativeRestart {
-    fn start(
-        engine: std::sync::Arc<ui::webview::chromium::ChromiumEngine>,
-        profile: crate::service_profiles::Profile,
-        session: SessionCookies,
-        waker: Option<ui::WakeHandle>,
-    ) -> Self {
-        let slot = std::sync::Arc::new(std::sync::Mutex::new(Some((engine, profile))));
-        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_slot = slot.clone();
-        let worker_cancelled = cancelled.clone();
-        let worker_ready = ready.clone();
-        let worker_failed = failed.clone();
-        let worker_done = done.clone();
-        let wake = waker.clone();
-        let spawned = std::thread::Builder::new()
-            .name("browser-service-verify".into())
-            .spawn(move || {
-                let result = restart_for_session_verification(
-                    worker_slot,
-                    session,
-                    &worker_cancelled,
-                    &worker_done,
-                    wake.clone(),
-                );
-                worker_failed.store(result.is_err(), std::sync::atomic::Ordering::Release);
-                worker_ready.store(true, std::sync::atomic::Ordering::Release);
-                if let Some(waker) = wake {
-                    waker.wake();
-                }
-            });
-        let handle = match spawned {
-            Ok(handle) => Some(handle),
-            Err(_) => {
-                failed.store(true, std::sync::atomic::Ordering::Release);
-                ready.store(true, std::sync::atomic::Ordering::Release);
-                None
-            }
-        };
-        Self {
-            slot,
-            handle,
-            cancelled,
-            ready,
-            failed,
-            done,
-            cleanup: None,
-            waker,
-        }
-    }
-
-    fn settled(&self) -> bool {
-        self.ready.load(std::sync::atomic::Ordering::Acquire)
-            && self
-                .handle
-                .as_ref()
-                .is_none_or(std::thread::JoinHandle::is_finished)
-    }
-
-    fn poll(&mut self) -> Option<Result<CleanupCustody, ()>> {
-        if !self.settled() || self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return None;
-        }
-        if self.failed.load(std::sync::atomic::Ordering::Acquire) {
-            return Some(Err(()));
-        }
-        self.slot.try_lock().ok()?.take().map(Ok)
-    }
-
-    fn request_close(&mut self) {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        if !self.settled() || self.cleanup.is_some() {
-            return;
-        }
-        let payload = self.slot.try_lock().ok().and_then(|mut slot| slot.take());
-        if let Some((engine, profile)) = payload {
-            self.cleanup = Some(cleanup_after_native_exit(
-                engine,
-                profile,
-                self.done.clone(),
-                self.waker.clone(),
-            ));
-        }
-    }
-
-    fn close_complete(&self) -> bool {
-        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
-            && self.done.load(std::sync::atomic::Ordering::Acquire)
-            && self
-                .handle
-                .as_ref()
-                .is_none_or(std::thread::JoinHandle::is_finished)
-    }
-
-    /// Only component teardown calls this blocking path.
-    fn finish(&mut self) -> Result<(), String> {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        if let Some(handle) = self.handle.take() {
-            if handle.join().is_err() {
-                retain_unconfirmed_cleanup(self.slot.clone());
-                return Err("Account engine shutdown could not be confirmed".into());
-            }
-        }
-        self.request_close();
-        if let Some(cleanup) = self.cleanup.as_mut() {
-            cleanup.finish()?;
-        }
-        if self.close_complete() {
-            Ok(())
-        } else {
-            Err("Account engine shutdown could not be confirmed".into())
-        }
+use browser_continuity::session_engine as native;
+type NativeRestart = native::NativeRestart<EngineAdapter, crate::service_profiles::Profile>;
+type NativeCleanup = native::NativeCleanup<EngineAdapter, crate::service_profiles::Profile>;
+#[derive(Clone)]
+struct EngineAdapter(std::sync::Arc<ui::webview::chromium::ChromiumEngine>);
+impl std::ops::Deref for EngineAdapter {
+    type Target = ui::webview::chromium::ChromiumEngine;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
-#[cfg(target_os = "linux")]
-impl Drop for NativeRestart {
-    fn drop(&mut self) {
-        self.request_close();
-        let empty_settled = self.settled() && self.slot.try_lock().is_ok_and(|slot| slot.is_none());
-        if !empty_settled && !self.done.load(std::sync::atomic::Ordering::Acquire) {
-            retain_unconfirmed_cleanup(self.slot.clone());
-        }
+impl native::Engine for EngineAdapter {
+    fn shutdown_service_session(&self) -> Result<(), String> {
+        self.0.shutdown_service_session()
     }
-}
-
-/// Unexpected worker failure must preserve authority as well as the engine.
-#[cfg(target_os = "linux")]
-struct RestartCustody {
-    slot: CleanupSlot,
-    payload: Option<CleanupCustody>,
-}
-#[cfg(target_os = "linux")]
-impl RestartCustody {
-    fn store(&mut self) {
-        if let Some(payload) = self.payload.take() {
-            *self
-                .slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(payload);
-        }
+    fn reopen(path: &std::path::Path, id: &str) -> Result<Self, String> {
+        ui::webview::chromium::ChromiumEngine::with_service_session(path, id).map(Self)
     }
-}
-#[cfg(target_os = "linux")]
-impl Drop for RestartCustody {
-    fn drop(&mut self) {
-        if self.payload.is_some() {
-            self.store();
-            retain_unconfirmed_cleanup(self.slot.clone());
-        }
+    fn attach_waker(&self, wake: native::Wake) {
+        self.0.set_waker(Box::new(move || wake()));
     }
-}
-
-#[cfg(target_os = "linux")]
-fn restart_for_session_verification(
-    slot: CleanupSlot,
-    session: SessionCookies,
-    cancelled: &std::sync::atomic::AtomicBool,
-    done: &std::sync::atomic::AtomicBool,
-    waker: Option<ui::WakeHandle>,
-) -> Result<(), ()> {
-    use ui::webview::WebViewEngine as _;
-    let payload = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
-    let mut custody = RestartCustody { slot, payload };
-    let Some((engine, profile)) = custody.payload.as_ref() else {
-        return Err(());
-    };
-    engine.shutdown_service_session().map_err(|_| ())?;
-    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
-    }
-    let replacement = ui::webview::chromium::ChromiumEngine::with_service_session(
-        profile.path().map_err(|_| ())?,
-        &session.session_id,
-    )
-    .map_err(|_| ())?;
-    if let Some((engine, _)) = custody.payload.as_mut() {
-        *engine = replacement.clone();
-    }
-    if let Some(waker) = waker {
-        replacement.set_waker(Box::new(move || waker.wake()));
-    }
-    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
-    }
-    replacement
-        .import_service_session(ServiceSessionRequest {
+    fn verify(&self, session: SessionCookies) -> Result<(), String> {
+        self.0.import_service_session(ServiceSessionRequest {
             request_id: 2,
             verify_only: true,
             session,
         })
-        .map_err(|_| ())?;
-    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return finish_cancelled_restart(&mut custody, done);
     }
-    custody.store();
-    Ok(())
 }
-
-#[cfg(target_os = "linux")]
-fn finish_cancelled_restart(
-    custody: &mut RestartCustody,
-    done: &std::sync::atomic::AtomicBool,
-) -> Result<(), ()> {
-    let Some((engine, profile)) = custody.payload.as_mut() else {
-        return Err(());
-    };
-    engine.shutdown_service_session().map_err(|_| ())?;
-    profile.cleanup_after_engine_exit().map_err(|_| ())?;
-    custody.payload = None;
-    done.store(true, std::sync::atomic::Ordering::Release);
-    Ok(())
+impl native::Profile for crate::service_profiles::Profile {
+    fn path(&self) -> std::io::Result<&std::path::Path> {
+        self.path()
+    }
+    fn cleanup_after_engine_exit(&mut self) -> std::io::Result<()> {
+        self.cleanup_after_engine_exit()
+    }
 }
-
-// A failed thread start or unconfirmed process wait must retain the lease and
-// private profile authority. It must never release them while a child may live.
-#[cfg(target_os = "linux")]
-fn retain_unconfirmed_cleanup(slot: CleanupSlot) {
-    static RETAINED: std::sync::OnceLock<std::sync::Mutex<Vec<CleanupSlot>>> =
-        std::sync::OnceLock::new();
-    RETAINED
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(slot);
+fn native_wake(waker: Option<ui::WakeHandle>) -> Option<native::Wake> {
+    waker.map(wake_callback)
 }
-
-#[cfg(target_os = "linux")]
+fn wake_callback(waker: ui::WakeHandle) -> native::Wake {
+    std::sync::Arc::new(move || waker.wake())
+}
 fn cleanup_after_native_exit(
-    engine: std::sync::Arc<ui::webview::chromium::ChromiumEngine>,
+    engine: EngineAdapter,
     profile: crate::service_profiles::Profile,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     waker: Option<ui::WakeHandle>,
 ) -> NativeCleanup {
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some((engine, profile))));
-    let worker_slot = slot.clone();
-    let worker_done = done.clone();
-    let spawned = std::thread::Builder::new()
-        .name("browser-service-close".into())
-        .spawn(move || {
-            let payload = worker_slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            let mut custody = RestartCustody {
-                slot: worker_slot,
-                payload,
-            };
-            if let Some((engine, profile)) = custody.payload.as_mut() {
-                if engine.shutdown_service_session().is_ok()
-                    && profile.cleanup_after_engine_exit().is_ok()
-                {
-                    custody.payload = None;
-                    worker_done.store(true, std::sync::atomic::Ordering::Release);
-                }
-            }
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        });
-    NativeCleanup {
-        slot,
-        handle: spawned.ok(),
-        done,
-    }
-}
-
-#[cfg(target_os = "linux")]
-struct NativeCleanup {
-    slot: CleanupSlot,
-    handle: Option<std::thread::JoinHandle<()>>,
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-#[cfg(target_os = "linux")]
-impl NativeCleanup {
-    fn finish(&mut self) -> Result<(), String> {
-        if let Some(handle) = self.handle.take() {
-            handle
-                .join()
-                .map_err(|_| "Account engine shutdown could not be confirmed")?;
-        } else if !self.done.load(std::sync::atomic::Ordering::Acquire) {
-            // Thread creation can fail. Teardown owns the tree already and may
-            // wait synchronously; render/sync never takes this fallback.
-            let payload = self
-                .slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            let mut custody = RestartCustody {
-                slot: self.slot.clone(),
-                payload,
-            };
-            if let Some((engine, profile)) = custody.payload.as_mut() {
-                if engine.shutdown_service_session().is_ok()
-                    && profile.cleanup_after_engine_exit().is_ok()
-                {
-                    custody.payload = None;
-                    self.done.store(true, std::sync::atomic::Ordering::Release);
-                }
-            }
-        }
-        if self.done.load(std::sync::atomic::Ordering::Acquire) {
-            Ok(())
-        } else {
-            Err("Account engine shutdown could not be confirmed".into())
-        }
-    }
-}
-#[cfg(target_os = "linux")]
-impl Drop for NativeCleanup {
-    fn drop(&mut self) {
-        if !self.done.load(std::sync::atomic::Ordering::Acquire) {
-            retain_unconfirmed_cleanup(self.slot.clone());
-        }
-    }
+    native::cleanup_after_native_exit(engine, profile, done, native_wake(waker))
 }
 
 /// Exercise the consumer's actual private-secret and public-action codecs.
 /// Native engine persistence is qualified separately against its signed host.
+/// # Errors
+/// Custody, public resource/action, or native SDK codec qualification failed.
 pub fn service_session_capability() -> Result<serde_json::Value, String> {
-    use browser_continuity::sessions::{Cookie, OriginStorage, SameSite};
     let failure = || "Selected account consumer contract failed".to_owned();
-    let session = SessionCookies {
-        schema: 1,
-        session_id: "consumer-probe".into(),
-        service: Service::Slack,
-        identity_public_key: [5; 32],
-        setup_binding: "consumer-probe".into(),
-        source_snapshot_digest: [6; 32],
-        origin_storage: Vec::new(),
-        cookies: vec![Cookie {
-            host: "app.slack.com".into(),
-            domain: "app.slack.com".into(),
-            host_only: true,
-            name: "__Host-session".into(),
-            value: "synthetic-consumer-cookie".into(),
-            path: "/".into(),
-            expires_unix_seconds: None,
-            secure: true,
-            http_only: true,
-            same_site: SameSite::Lax,
-        }],
-    };
-    probe_consumer_session(&session)?;
-    let mut discord = session;
-    discord.schema = 2;
-    discord.session_id = "consumer-origin-probe".into();
-    discord.service = Service::Discord;
-    discord.cookies.clear();
-    discord.origin_storage = vec![OriginStorage {
-        origin: "https://discord.com".into(),
-        key: "token".into(),
-        value: "\"synthetic-consumer-origin\"".into(),
-        source_snapshot_digest: [7; 32],
-    }];
-    probe_consumer_session(&discord)?;
-    let mut foreign = discord.clone();
-    foreign.origin_storage[0].origin = "https://discord.com.evil.example".into();
-    if account_custody::service_sessions::service_session_secret(&foreign).is_ok() {
-        return Err(failure());
+    for selection in tilo_browser_sessions::probe_service_session_codecs()? {
+        probe_consumer_session(&Selection {
+            id: selection.id,
+            service: selection.service,
+            binding: selection.binding,
+        })?;
     }
     let sdk = ui::webview::chromium::service_session_capability()?;
-    if sdk["service_session_protocol"] != 2 || sdk["codec_verified"] != true {
+    if sdk
+        .get("service_session_protocol")
+        .and_then(serde_json::Value::as_u64)
+        != Some(2)
+        || sdk
+            .get("codec_verified")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
         return Err(failure());
     }
     Ok(
@@ -1044,42 +653,8 @@ pub fn service_session_capability() -> Result<serde_json::Value, String> {
     )
 }
 
-fn probe_consumer_session(session: &SessionCookies) -> Result<(), String> {
+fn probe_consumer_session(selection: &Selection) -> Result<(), String> {
     let failure = || "Selected account consumer contract failed".to_owned();
-    let secret = account_custody::service_sessions::service_session_secret(session)
-        .map_err(|_| failure())?;
-    let id = accounts::AccountId::new(&session.session_id);
-    let restored = account_custody::service_sessions::service_session_from_secret(
-        &secret,
-        &id,
-        [5; 32],
-        "consumer-probe",
-    )
-    .map_err(|_| failure())?;
-    if restored != *session
-        || format!("{secret:?}").contains("synthetic-consumer-")
-        || account_custody::service_sessions::service_session_from_secret(
-            &secret,
-            &id,
-            [7; 32],
-            "consumer-probe",
-        )
-        .is_ok()
-        || account_custody::service_sessions::service_session_from_secret(
-            &secret,
-            &id,
-            [5; 32],
-            "foreign-setup",
-        )
-        .is_ok()
-    {
-        return Err(failure());
-    }
-    let selection = Selection {
-        id: session.session_id.clone(),
-        service: session.service,
-        binding: session.setup_binding.clone(),
-    };
     let resource = selection.resource();
     let action = resource.actions.first().ok_or_else(failure)?;
     let encoded = action
@@ -1088,11 +663,17 @@ fn probe_consumer_session(session: &SessionCookies) -> Result<(), String> {
     let payload: serde_json::Value =
         serde_json::from_slice(&encoded.payload).map_err(|_| failure())?;
     let decoded = crate::effects::BrowserEffect::decode(
-        payload["effect"].as_str().ok_or_else(failure)?,
-        payload["args"].as_object().ok_or_else(failure)?,
+        payload
+            .get("effect")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(failure)?,
+        payload
+            .get("args")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(failure)?,
     )
     .map_err(|_| failure())?;
-    if !matches!(decoded, crate::effects::BrowserEffect::OpenServiceSession { session_id } if session_id == session.session_id)
+    if !matches!(decoded, crate::effects::BrowserEffect::OpenServiceSession { session_id } if session_id == selection.id)
         || action.label != format!("Open {}", selection.label())
         || payload.to_string().contains("synthetic-consumer-")
     {
@@ -1213,29 +794,73 @@ mod lifecycle_tests {
         }
     }
 
+    // Fallible lifecycle tests report failed checks as errors, including the
+    // compared values, so fixture errors and invariant failures share one path.
+    macro_rules! require {
+        ($condition:expr $(, $message:literal)? $(,)?) => {
+            if !$condition {
+                return Err(format!(
+                    "assertion failed: {}{}",
+                    stringify!($condition),
+                    concat!($(": ", $message)?),
+                ).into());
+            }
+        };
+    }
+    macro_rules! require_eq {
+        ($left:expr, $right:expr $(, $message:literal)? $(,)?) => {
+            match (&$left, &$right) {
+                (left, right) if left != right => {
+                    return Err(format!(
+                        "assertion failed: {} == {}{}; left: {left:?}, right: {right:?}",
+                        stringify!($left), stringify!($right), concat!($(": ", $message)?),
+                    ).into());
+                }
+                _ => {}
+            }
+        };
+    }
+    macro_rules! require_ne {
+        ($left:expr, $right:expr $(, $message:literal)? $(,)?) => {
+            match (&$left, &$right) {
+                (left, right) if left == right => {
+                    return Err(format!(
+                        "assertion failed: {} != {}{}; both: {left:?}",
+                        stringify!($left), stringify!($right), concat!($(": ", $message)?),
+                    ).into());
+                }
+                _ => {}
+            }
+        };
+    }
     #[test]
-    fn origin_receipt_requires_reaped_restart_and_readonly_verification_before_completion() {
-        receipt_requires_restart_verification(Service::Discord, true);
+    fn origin_receipt_requires_reaped_restart_and_readonly_verification_before_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        receipt_requires_restart_verification(Service::Discord, true)
     }
 
     #[test]
-    fn cookie_receipt_requires_reaped_restart_and_readonly_verification_before_completion() {
-        receipt_requires_restart_verification(Service::Slack, true);
+    fn cookie_receipt_requires_reaped_restart_and_readonly_verification_before_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        receipt_requires_restart_verification(Service::Slack, true)
     }
 
     #[test]
-    fn cookie_verification_refusal_never_completes_or_navigates_and_retires_profile() {
-        receipt_requires_restart_verification(Service::Slack, false);
+    fn cookie_verification_refusal_never_completes_or_navigates_and_retires_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        receipt_requires_restart_verification(Service::Slack, false)
     }
 
     // Exercises the real Browser lifecycle and real owned subprocess/restart.
     // The wire peer is a fixture, not proof of native CEF/provider acceptance.
-    fn receipt_requires_restart_verification(service: Service, verify_imported: bool) {
+    fn receipt_requires_restart_verification(
+        service: Service,
+        verify_imported: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use browser_continuity::sessions::OriginStorage;
         let root = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+            .tempdir()?;
         let helper = root.path().join("restart-native-fixture");
         std::fs::write(
             &helper,
@@ -1278,9 +903,8 @@ while True:
             'cookie_count':len(command['cookies']) if not (verify and profile.parent.joinpath('test-verify-refusal').exists()) else 0,
             'origin_storage_count':len(command['origin_storage']) if not (verify and profile.parent.joinpath('test-verify-refusal').exists()) else 0})
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        )?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
         let is_discord = service == Service::Discord;
@@ -1323,19 +947,24 @@ while True:
                 vec![]
             },
         };
-        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        let receipt = path.parent().unwrap().join("completed.json");
+        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session)?;
+        let path = profile.path()?.to_owned();
+        let receipt = path
+            .parent()
+            .ok_or("profile has no parent")?
+            .join("completed.json");
         if !verify_imported {
             std::fs::write(
-                path.parent().unwrap().join("test-verify-refusal"),
+                path.parent()
+                    .ok_or("profile has no parent")?
+                    .join("test-verify-refusal"),
                 b"refuse",
-            )
-            .unwrap();
+            )?;
         }
-        let engine =
-            ui::webview::chromium::ChromiumEngine::with_service_session(&path, &session.session_id)
-                .unwrap();
+        let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
+            &path,
+            &session.session_id,
+        )?;
         let _reap = ReapFixture(engine.clone());
         let mut view = ViewFixture(ServiceView {
             selection: Selection {
@@ -1357,12 +986,12 @@ while True:
             shutdown_done: None,
             cleanup: None,
             waker: None,
-            engine,
+            engine: EngineAdapter(engine),
             opening: ui::LocalState::new(Some(format!("service:{id}"))),
             status: "waiting",
             deadline: None,
         });
-        assert!(view.0.poll_open());
+        require!(view.0.poll_open());
         let mut first = None;
         tilo_test_env::wait_until("first actual import receipt", || {
             first = view
@@ -1377,26 +1006,39 @@ while True:
             first.is_some()
         });
         let began = std::time::Instant::now();
-        assert!(view.0.apply(first.unwrap()));
-        assert!(began.elapsed() < std::time::Duration::from_millis(500));
-        assert_eq!(view.0.report()["status"], "restarting");
-        assert_eq!(view.0.report()["native_restart_readback_verified"], false);
-        assert!(
+        require!(view.0.apply(&first.ok_or("missing first receipt")?));
+        require!(began.elapsed() < std::time::Duration::from_millis(500));
+        require_eq!(
+            view.0.report().get("status").ok_or("missing status")?,
+            "restarting"
+        );
+        require_eq!(
+            view.0
+                .report()
+                .get("native_restart_readback_verified")
+                .ok_or("missing native_restart_readback_verified")?,
+            false
+        );
+        require!(
             !receipt.exists(),
             "first import receipt was treated as durable"
         );
-        assert!(
-            !view.0.report()["origin_storage_imported"]
+        require!(
+            !view
+                .0
+                .report()
+                .get("origin_storage_imported")
+                .ok_or("missing origin_storage_imported")?
                 .as_bool()
-                .unwrap()
+                .ok_or("expected boolean")?
         );
-        assert!(
+        require!(
             !path.join("observed-navigation").exists(),
             "service navigated before restarted storage verification"
         );
         tilo_test_env::wait_until("actual reaped restart", || view.0.poll_engine().is_some());
-        let _replacement_reap = ReapFixture(view.0.engine.clone());
-        assert!(!receipt.exists(), "restart alone completed the profile");
+        let _replacement_reap = ReapFixture(view.0.engine.0.clone());
+        require!(!receipt.exists(), "restart alone completed the profile");
         let mut verified = None;
         tilo_test_env::wait_until("actual readonly verification receipt", || {
             verified = view
@@ -1410,60 +1052,105 @@ while True:
                 });
             verified.is_some()
         });
-        assert_ne!(
-            std::fs::read(path.join("first-process")).unwrap(),
-            std::fs::read(path.join("verification-process")).unwrap()
+        require_ne!(
+            std::fs::read(path.join("first-process"))?,
+            std::fs::read(path.join("verification-process"))?
         );
-        assert_eq!(verified.as_ref().unwrap().request_id, 2);
-        assert!(view.0.apply(verified.unwrap()));
+        require_eq!(
+            verified
+                .as_ref()
+                .ok_or("missing verification receipt")?
+                .request_id,
+            2
+        );
+        require!(
+            view.0
+                .apply(&verified.ok_or("missing verification receipt")?)
+        );
         if !verify_imported {
-            assert_eq!(view.0.report()["status"], "needs-reconnect");
-            assert_eq!(view.0.report()["native_restart_readback_verified"], false);
-            assert!(!view.0.report()["authenticated"].as_bool().unwrap());
-            assert!(
+            require_eq!(
+                view.0.report().get("status").ok_or("missing status")?,
+                "needs-reconnect"
+            );
+            require_eq!(
+                view.0
+                    .report()
+                    .get("native_restart_readback_verified")
+                    .ok_or("missing native_restart_readback_verified")?,
+                false
+            );
+            require!(
+                !view
+                    .0
+                    .report()
+                    .get("authenticated")
+                    .ok_or("missing authenticated")?
+                    .as_bool()
+                    .ok_or("expected boolean")?
+            );
+            require!(
                 !receipt.exists(),
                 "failed verification completed the profile"
             );
-            assert!(!path.join("observed-navigation").exists());
-            view.0.finish_close().unwrap();
-            assert!(view.0.close_complete());
-            assert!(
+            require!(!path.join("observed-navigation").exists());
+            view.0.finish_close()?;
+            require!(view.0.close_complete());
+            require!(
                 !path.exists(),
                 "refused profile survived confirmed shutdown"
             );
-            return;
+            return Ok(());
         }
-        assert!(receipt.exists());
-        assert_eq!(view.0.report()["status"], "imported-unverified");
-        assert_eq!(view.0.report()["native_restart_readback_verified"], true);
-        assert_eq!(
-            view.0.report()["origin_storage_imported"]
+        require!(receipt.exists());
+        require_eq!(
+            view.0.report().get("status").ok_or("missing status")?,
+            "imported-unverified"
+        );
+        require_eq!(
+            view.0
+                .report()
+                .get("native_restart_readback_verified")
+                .ok_or("missing native_restart_readback_verified")?,
+            true
+        );
+        require_eq!(
+            view.0
+                .report()
+                .get("origin_storage_imported")
+                .ok_or("missing origin_storage_imported")?
                 .as_bool()
-                .unwrap(),
+                .ok_or("expected boolean")?,
             is_discord
         );
-        assert!(!view.0.report()["authenticated"].as_bool().unwrap());
+        require!(
+            !view
+                .0
+                .report()
+                .get("authenticated")
+                .ok_or("missing authenticated")?
+                .as_bool()
+                .ok_or("expected boolean")?
+        );
         tilo_test_env::wait_until("fixed service navigation after verification", || {
             path.join("observed-navigation").exists()
         });
-        assert_eq!(
-            std::fs::read_to_string(path.join("observed-navigation")).unwrap(),
+        require_eq!(
+            std::fs::read_to_string(path.join("observed-navigation"))?,
             if is_discord {
                 "https://discord.com/channels/123/456"
             } else {
                 "https://slack.com/app_redirect?team=T123&channel=C456"
             }
         );
-        view.0.finish_close().unwrap();
-        assert!(view.0.close_complete());
+        view.0.finish_close()?;
+        require!(view.0.close_complete());
         drop(view);
-        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session).unwrap();
-        assert!(!profile.needs_import());
+        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session)?;
+        require!(!profile.needs_import());
         let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
-            profile.path().unwrap(),
+            profile.path()?,
             &session.session_id,
-        )
-        .unwrap();
+        )?;
         let _cached_reap = ReapFixture(engine.clone());
         let mut cached = ViewFixture(ServiceView {
             selection: Selection {
@@ -1481,44 +1168,72 @@ while True:
             shutdown_done: None,
             cleanup: None,
             waker: None,
-            engine,
+            engine: EngineAdapter(engine),
             opening: ui::LocalState::new(Some(format!("service:{id}"))),
             status: "waiting",
             deadline: None,
         });
-        assert!(cached.0.poll_open());
-        assert_eq!(cached.0.report()["status"], "imported-unverified");
-        assert_eq!(
-            cached.0.report()["native_restart_readback_verified"],
+        require!(cached.0.poll_open());
+        require_eq!(
+            cached.0.report().get("status").ok_or("missing status")?,
+            "imported-unverified"
+        );
+        require_eq!(
+            cached
+                .0
+                .report()
+                .get("native_restart_readback_verified")
+                .ok_or("missing native_restart_readback_verified")?,
             false,
             "completed-profile reuse is not fresh native restart/readback evidence"
         );
-        assert!(cached.0.forget("a-different-account").is_err());
-        assert!(path.exists());
+        require!(cached.0.forget("a-different-account").is_err());
+        require!(path.exists());
         let started = std::time::Instant::now();
-        let reply = cached.0.forget(id).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_millis(500));
-        assert_eq!(reply["custody_revoked"], false);
-        assert_eq!(reply["custody_backend_needed"], true);
-        cached.0.finish_close().unwrap();
-        assert!(cached.0.close_complete());
-        assert_eq!(cached.0.report()["status"], "local-forgotten");
-        assert!(
+        let reply = cached.0.forget(id)?;
+        require!(started.elapsed() < std::time::Duration::from_millis(500));
+        require_eq!(
+            reply
+                .get("custody_revoked")
+                .ok_or("missing custody_revoked")?,
+            false
+        );
+        require_eq!(
+            reply
+                .get("custody_backend_needed")
+                .ok_or("missing custody_backend_needed")?,
+            true
+        );
+        cached.0.finish_close()?;
+        require!(cached.0.close_complete());
+        require_eq!(
+            cached.0.report().get("status").ok_or("missing status")?,
+            "local-forgotten"
+        );
+        require!(
             !path.exists(),
             "completed selected profile survived reaping"
         );
-        assert!(!receipt.exists());
-        assert!(path.parent().unwrap().join("forgetting").exists());
+        require!(!receipt.exists());
+        require!(
+            path.parent()
+                .ok_or("profile has no parent")?
+                .join("forgetting")
+                .exists()
+        );
+        Ok(())
     }
 
     #[test]
-    fn mismatched_cookie_receipt_defers_close_without_stalling_frames_and_teardown_reaps_child() {
+    fn mismatched_cookie_receipt_defers_close_without_stalling_frames_and_teardown_reaps_child()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+            .tempdir()?;
         let helper = root.path().join("bounded-native-fixture");
-        std::fs::write(&helper, r#"#!/usr/bin/python3
+        std::fs::write(
+            &helper,
+            r"#!/usr/bin/python3
 import json,struct,sys,pathlib,time
 profile=next(a[10:] for a in sys.argv[1:] if a.startswith('--profile='))
 def send(value):
@@ -1538,8 +1253,9 @@ while True:
     if command['op']=='service_session_import':
         send({'event':'service_session_result','tab':1,'request_id':command['request_id'],
             'session_id':command['session_id'],'service':command['service'],'imported':True,'cookie_count':2})
-"#).unwrap();
-        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+",
+        )?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
         let session = SessionCookies {
@@ -1563,11 +1279,12 @@ while True:
                 same_site: SameSite::Lax,
             }],
         };
-        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session).unwrap();
-        let path = profile.path().unwrap().to_owned();
-        let engine =
-            ui::webview::chromium::ChromiumEngine::with_service_session(&path, &session.session_id)
-                .unwrap();
+        let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session)?;
+        let path = profile.path()?.to_owned();
+        let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
+            &path,
+            &session.session_id,
+        )?;
         let _reap = ReapFixture(engine.clone());
         let mut view = ServiceView {
             selection: Selection {
@@ -1582,7 +1299,7 @@ while True:
             restart: None,
             session: Some(session),
             profile: Some(profile),
-            engine: engine.clone(),
+            engine: EngineAdapter(engine.clone()),
             opening: ui::LocalState::new(Some("service:lifecycle-selected-session".into())),
             status: "waiting",
             deadline: None,
@@ -1590,7 +1307,7 @@ while True:
             cleanup: None,
             waker: None,
         };
-        assert!(view.poll_open());
+        require!(view.poll_open());
         let mut reply = None;
         tilo_test_env::wait_until("actual native service reply", || {
             reply = engine
@@ -1603,61 +1320,77 @@ while True:
             reply.is_some()
         });
         let started = std::time::Instant::now();
-        assert!(view.apply(reply.unwrap()));
-        assert!(
+        require!(view.apply(&reply.ok_or("missing native reply")?));
+        require!(
             started.elapsed() < std::time::Duration::from_millis(500),
             "receiver blocked paint on native shutdown"
         );
-        assert_eq!(
-            view.report()["status"],
+        require_eq!(
+            view.report().get("status").ok_or("missing status")?,
             "needs-reconnect",
             "mismatched count fabricated successful import"
         );
-        assert!(!view.report()["authenticated"].as_bool().unwrap());
+        require!(
+            !view
+                .report()
+                .get("authenticated")
+                .ok_or("missing authenticated")?
+                .as_bool()
+                .ok_or("expected boolean")?
+        );
         let mut window = CloseFixture(crate::BrowserWindow::new(
             crate::BrowserWidget::with_engine(engine, true).with_service_view(view),
             false,
         ));
-        assert_eq!(
+        require_eq!(
             window.0.on_window_close_requested(),
             WindowCloseAdmission::Defer
         );
-        assert!(
+        require!(
             !window.0.take_window_close_intent(),
             "close admitted before native child exited"
         );
         let doc = ui::automerge::AutoCommit::new();
         let frame_started = std::time::Instant::now();
         window.0.sync(&doc, &ui::automerge::ROOT);
-        assert!(
+        require!(
             frame_started.elapsed() < std::time::Duration::from_millis(500),
             "sync waited for native child"
         );
         let reports = window.0.close_components();
-        assert!(
+        require!(
             reports.iter().all(|report| report.teardown_error.is_none()),
             "actual teardown did not confirm child exit"
         );
-        assert!(
+        require!(
             !path.exists(),
             "incomplete profile retained after confirmed shutdown"
         );
-        assert!(
-            !path.parent().unwrap().join("completed.json").exists(),
+        require!(
+            !path
+                .parent()
+                .ok_or("profile has no parent")?
+                .join("completed.json")
+                .exists(),
             "mismatched native receipt was persisted"
         );
-        assert_eq!(
-            std::fs::read(path.parent().unwrap().join("test-child-exited")).unwrap(),
+        require_eq!(
+            std::fs::read(
+                path.parent()
+                    .ok_or("profile has no parent")?
+                    .join("test-child-exited")
+            )?,
             b"native teardown finished"
         );
         window.0.sync(&doc, &ui::automerge::ROOT);
-        assert!(
+        require!(
             window.0.take_window_close_intent(),
             "confirmed shutdown never released deferred close"
         );
-        assert!(
+        require!(
             !window.0.take_window_close_intent(),
             "close intent repeated"
         );
+        Ok(())
     }
 }

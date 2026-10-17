@@ -10,7 +10,6 @@ use super::LocalFabricCapabilities;
 
 pub(super) struct Changes {
     pub resample: bool,
-    pub policy: bool,
 }
 
 pub(super) struct DisplayRefresh {
@@ -63,13 +62,17 @@ impl DisplayRefresh {
         }
     }
 
+    /// The settings this follows, refreshed by their watch off the loop.
+    pub const fn settings(&self) -> &LiveSettings {
+        &self.settings
+    }
+
     pub fn take_changes(&mut self, local: LocalFabricCapabilities) -> Changes {
         let sections = self.sections.changed_sections(&self.settings);
         let local_changed = self.last_local.replace(local) != Some(local);
         let hardware_changed = self.hardware_changed.swap(false, Ordering::AcqRel);
         Changes {
             resample: local_changed || hardware_changed || !sections.is_empty(),
-            policy: sections.contains("continuity"),
         }
     }
 }

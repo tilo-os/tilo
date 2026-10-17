@@ -2,75 +2,14 @@
 //! because the person advances a setup page.
 use std::path::PathBuf;
 
-#[cfg(target_os = "linux")]
-fn read_flatpak_inventory(
-    path: &std::path::Path,
-) -> Result<super::super::flatpak_transfer::HandoffInventory, String> {
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-    use std::io::Read;
-    let parent = super::super::migration::PinnedDirectory::open_absolute(
-        path.parent()
-            .ok_or("Flatpak inventory requires a private parent")?,
-    )
-    .map_err(|error| error.to_string())?;
-    parent
-        .validate_destination()
-        .map_err(|error| error.to_string())?;
-    super::super::destination_security::check_private_file(&parent.file)
-        .map_err(|error| error.to_string())?;
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let file = cap_primitives::fs::open(
-        &parent.file,
-        std::path::Path::new(
-            path.file_name()
-                .ok_or("Flatpak inventory requires a file name")?,
-        ),
-        &options,
-    )
-    .map_err(|error| error.to_string())?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
-        return Err("Flatpak inventory must be a bounded private regular file".into());
-    }
-    super::super::destination_security::check_private_file(&file)
-        .map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(8 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    parent.validate().map_err(|error| error.to_string())?;
-    super::super::flatpak_transfer::HandoffInventory::parse(&bytes)
-}
-
-#[cfg(target_os = "linux")]
-fn path_projection(path: &std::path::Path) -> serde_json::Value {
-    serde_json::json!({
-        "display": path.to_string_lossy(),
-        "native": super::super::migration_store::NativePath::encode(path),
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn issue_projection(issues: &[(PathBuf, String)]) -> Vec<serde_json::Value> {
-    issues
-        .iter()
-        .map(|(path, message)| serde_json::json!({"path":path_projection(path),"message":message}))
-        .collect()
-}
+use imager_backend::journey_transfer;
 
 #[derive(Default)]
 pub(super) struct Transfer {
-    #[cfg(target_os = "linux")]
-    review: Option<super::super::user_transfer::TransferReview>,
-    #[cfg(target_os = "linux")]
-    reviewing: Option<
-        std::sync::mpsc::Receiver<Result<super::super::user_transfer::TransferReview, String>>,
-    >,
+    review: Option<journey_transfer::TransferReview>,
+    reviewing: Option<std::sync::mpsc::Receiver<Result<journey_transfer::TransferReview, String>>>,
     preparing_plan: Option<std::sync::mpsc::Receiver<Result<serde_json::Value, String>>>,
-    #[cfg(target_os = "linux")]
-    worker: Option<super::super::user_transfer::TransferWorker>,
+    worker: Option<journey_transfer::TransferWorker>,
     prepared_accounts: Option<std::sync::Arc<super::accounts::PreparedAccounts>>,
     merging_accounts: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
     accounts_invalidated: bool,
@@ -89,50 +28,33 @@ impl Transfer {
         refs: Vec<super::super::flatpak_transfer::InstalledRef>,
         prepared_accounts: Option<super::accounts::PreparedAccounts>,
     ) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
-        {
-            if self.busy() {
-                return Err("installer-preview-transfer-busy");
-            }
-            if categories[2] && prepared_accounts.is_none() {
-                return Err("installer-preview-accounts-not-prepared");
-            }
-            self.categories = categories;
-            self.accounts_invalidated = false;
-            self.prepared_accounts = prepared_accounts.map(std::sync::Arc::new);
-            let request = super::super::user_transfer::TransferRequest {
-                source_home: source,
-                target_home: destination,
-                private_journals: journals,
-                copy_home: categories[0],
-                copy_flatpak: categories[1],
-                system_refs: if categories[1] { refs } else { Vec::new() },
-            };
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.review = None;
-            self.reviewing = Some(rx);
-            self.state = "reviewing";
-            self.result = serde_json::Value::Null;
-            std::thread::spawn(move || {
-                let _ = tx.send(super::super::user_transfer::review(
-                    &super::super::flatpak_transfer::NativeRunner,
-                    request,
-                ));
-            });
-            Ok(())
+        journey_transfer::ensure_supported()?;
+        if self.busy() {
+            return Err("installer-preview-transfer-busy");
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (
-                source,
-                destination,
-                journals,
-                categories,
-                refs,
-                prepared_accounts,
-            );
-            Err("installer-preview-import-unavailable")
+        if categories[2] && prepared_accounts.is_none() {
+            return Err("installer-preview-accounts-not-prepared");
         }
+        self.categories = categories;
+        self.accounts_invalidated = false;
+        self.prepared_accounts = prepared_accounts.map(std::sync::Arc::new);
+        let request = journey_transfer::TransferRequest {
+            source_home: source,
+            target_home: destination,
+            private_journals: journals,
+            copy_home: categories[0],
+            copy_flatpak: categories[1],
+            system_refs: if categories[1] { refs } else { Vec::new() },
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.review = None;
+        self.reviewing = Some(rx);
+        self.state = "reviewing";
+        self.result = serde_json::Value::Null;
+        std::thread::spawn(move || {
+            let _ = tx.send(journey_transfer::review(request));
+        });
+        Ok(())
     }
 
     pub fn prepare_migration(
@@ -143,38 +65,22 @@ impl Transfer {
         categories: [bool; 3],
         refs: Vec<super::super::flatpak_transfer::InstalledRef>,
     ) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
-        {
-            if self.busy() {
-                return Err("installer-preview-transfer-busy");
-            }
-            let (tx, receiver) = std::sync::mpsc::channel();
-            self.preparing_plan = Some(receiver);
-            self.review = None;
-            self.state = "preparing-migration";
-            self.result = serde_json::Value::Null;
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let intent = super::super::migration_intent::MigrationIntent::capture(
-                        &source, &directory, categories, refs,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    let mut plan = intent.source_plan();
-                    plan.operation_id.clone_from(&operation);
-                    plan.write_private(&directory).map_err(|e| e.to_string())?;
-                    Ok(
-                        serde_json::json!({"operation":operation,"digest":plan.digest().map_err(|e| e.to_string())?}),
-                    )
-                })();
-                let _ = tx.send(result);
-            });
-            Ok(())
+        journey_transfer::ensure_supported()?;
+        if self.busy() {
+            return Err("installer-preview-transfer-busy");
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (source, directory, operation, categories, refs);
-            Err("installer-preview-import-unavailable")
-        }
+        let (tx, receiver) = std::sync::mpsc::channel();
+        self.preparing_plan = Some(receiver);
+        self.review = None;
+        self.state = "preparing-migration";
+        self.result = serde_json::Value::Null;
+        std::thread::spawn(move || {
+            let result = journey_transfer::prepare_migration(
+                &source, &directory, &operation, categories, refs,
+            );
+            let _ = tx.send(result);
+        });
+        Ok(())
     }
 
     pub fn review_installed(
@@ -187,110 +93,54 @@ impl Transfer {
         accounts: Option<super::accounts::PreparedAccounts>,
         flatpak_inventory: Option<PathBuf>,
     ) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
-        {
-            if self.busy() {
-                return Err("installer-preview-transfer-busy");
-            }
-            if categories[2] && accounts.is_none() {
-                return Err("installer-preview-accounts-not-prepared");
-            }
-            self.categories = categories;
-            self.accounts_invalidated = false;
-            self.prepared_accounts = accounts.map(std::sync::Arc::new);
-            self.review = None;
-            self.state = "reviewing";
-            self.result = serde_json::Value::Null;
-            let (tx, receiver) = std::sync::mpsc::channel();
-            self.reviewing = Some(receiver);
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let plan =
-                        super::super::migration_handoff::Plan::read_private(&directory, &operation)
-                            .map_err(|e| e.to_string())?;
-                    let requested = [
-                        plan.categories.home,
-                        plan.categories.flatpak,
-                        plan.categories.accounts,
-                    ];
-                    if requested != categories {
-                        return Err(
-                            "Migration choices changed; review the original plan again.".into()
-                        );
-                    }
-                    let inventory = match flatpak_inventory {
-                        Some(path) if plan.categories.flatpak => {
-                            Some(read_flatpak_inventory(&path)?)
-                        }
-                        Some(_) => {
-                            return Err(
-                                "Flatpak inventory was supplied without selecting applications."
-                                    .into(),
-                            );
-                        }
-                        None if plan.categories.flatpak => {
-                            let raw = plan.flatpak_inventory.as_ref().ok_or("The original reviewed Flatpak inventory is required before restoring applications.")?;
-                            let bytes = serde_json::to_vec(raw).map_err(|e| e.to_string())?;
-                            Some(super::super::flatpak_transfer::HandoffInventory::parse(
-                                &bytes,
-                            )?)
-                        }
-                        None => None,
-                    };
-                    let source = super::super::migration_handoff::mount_read_only(&plan)
-                        .map_err(|e| e.to_string())?;
-                    match inventory {
-                        Some(inventory) => {
-                            source.review_transfer_with_handoff(&destination, &journals, &inventory)
-                        }
-                        None => source.review_transfer(&destination, &journals),
-                    }
-                })();
-                let _ = tx.send(result);
-            });
-            Ok(())
+        journey_transfer::ensure_supported()?;
+        if self.busy() {
+            return Err("installer-preview-transfer-busy");
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (
-                directory,
-                operation,
-                destination,
-                journals,
+        if categories[2] && accounts.is_none() {
+            return Err("installer-preview-accounts-not-prepared");
+        }
+        self.categories = categories;
+        self.accounts_invalidated = false;
+        self.prepared_accounts = accounts.map(std::sync::Arc::new);
+        self.review = None;
+        self.state = "reviewing";
+        self.result = serde_json::Value::Null;
+        let (tx, receiver) = std::sync::mpsc::channel();
+        self.reviewing = Some(receiver);
+        std::thread::spawn(move || {
+            let result = journey_transfer::review_installed(
+                &directory,
+                &operation,
+                &destination,
+                &journals,
                 categories,
-                accounts,
                 flatpak_inventory,
             );
-            Err("installer-preview-import-unavailable")
-        }
+            let _ = tx.send(result);
+        });
+        Ok(())
     }
 
     pub fn start(&mut self, retry: bool, categories: [bool; 3]) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
-        {
-            if self.busy() {
-                return Err("installer-preview-transfer-busy");
-            }
-            if self.categories != categories || self.accounts_invalidated {
-                return Err("installer-preview-transfer-needs-review");
-            }
-            let review = self
-                .review
-                .as_ref()
-                .ok_or("installer-preview-transfer-needs-review")?;
-            self.worker = Some(
-                review
-                    .start(retry || self.state == "reviewed" && review.recovered())
-                    .map_err(|_| "installer-preview-transfer-start-failed")?,
-            );
-            self.state = "copying";
-            Ok(())
+        journey_transfer::ensure_supported()?;
+        if self.busy() {
+            return Err("installer-preview-transfer-busy");
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (retry, categories);
-            Err("installer-preview-import-unavailable")
+        if self.categories != categories || self.accounts_invalidated {
+            return Err("installer-preview-transfer-needs-review");
         }
+        let review = self
+            .review
+            .as_ref()
+            .ok_or("installer-preview-transfer-needs-review")?;
+        self.worker = Some(
+            review
+                .start(retry || self.state == "reviewed" && review.recovered())
+                .map_err(|_| "installer-preview-transfer-start-failed")?,
+        );
+        self.state = "copying";
+        Ok(())
     }
 
     pub fn invalidate_accounts(&mut self) {
@@ -298,7 +148,6 @@ impl Transfer {
     }
 
     pub fn cancel(&mut self) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
         if self.worker.as_ref().is_some_and(|worker| worker.cancel()) {
             self.state = "cancelling";
             return Ok(());
@@ -327,68 +176,55 @@ impl Transfer {
                 changed = true;
             }
         }
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(receiver) = &self.reviewing {
-                match receiver.try_recv() {
-                    Ok(Ok(review)) => {
-                        self.result = serde_json::json!({"target":path_projection(review.target_home()),"copies":review.copy_count(),"summary":review.summary().ok(),"recovered":review.recovered()});
-                        self.review = Some(review);
-                        self.reviewing = None;
-                        self.state = "reviewed";
-                        changed = true;
-                    }
-                    Ok(Err(error)) => {
-                        self.result = serde_json::json!({"error":error});
-                        self.reviewing = None;
-                        self.state = "failed";
-                        changed = true;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.reviewing = None;
-                        self.state = "failed";
-                        changed = true;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        if let Some(receiver) = &self.reviewing {
+            match receiver.try_recv() {
+                Ok(Ok(review)) => {
+                    self.result = review.projection();
+                    self.review = Some(review);
+                    self.reviewing = None;
+                    self.state = "reviewed";
+                    changed = true;
                 }
+                Ok(Err(error)) => {
+                    self.result = serde_json::json!({"error":error});
+                    self.reviewing = None;
+                    self.state = "failed";
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.reviewing = None;
+                    self.state = "failed";
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
-            while let Some(event) = self.worker.as_mut().and_then(|worker| worker.try_next()) {
-                use super::super::user_transfer::TransferEvent;
-                changed = true;
-                match event {
-                    TransferEvent::CopyProgress(progress) => {
-                        self.result = serde_json::json!({"verified_files":progress.verified_files,"verified_bytes":progress.verified_bytes,"current_relative_path":path_projection(&progress.current_relative_path)});
-                    }
-                    TransferEvent::RestoringApplications => self.state = "restoring-applications",
-                    TransferEvent::Finished(result) => {
-                        self.state = match &result {
-                            Ok(report) if report.cancelled => "cancelled",
-                            Ok(report) if report.complete() => "complete",
-                            Ok(_) => "incomplete",
-                            Err(_) => "failed",
-                        };
-                        self.result = match result {
-                            Ok(report) => {
-                                serde_json::json!({"copies": report.copies.iter().map(|copy| serde_json::json!({"verified_files":copy.verified_files.len(),"verified_bytes":copy.verified_bytes,"skipped":issue_projection(&copy.skipped),"failed":issue_projection(&copy.failed),"metadata_limitations":copy.metadata_limitations})).collect::<Vec<_>>(),"flatpak_restored":report.flatpak.restored,"flatpak_failed":report.flatpak.failed,"cancelled":report.cancelled})
-                            }
-                            Err(error) => serde_json::json!({"error":error}),
-                        };
-                        self.worker = None;
-                        if self.state == "complete" && self.categories[2] {
-                            if let (Some(accounts), Some(review)) =
-                                (&self.prepared_accounts, &self.review)
-                            {
-                                let accounts = std::sync::Arc::clone(accounts);
-                                let target = review.target_home().to_path_buf();
-                                let (tx, receiver) = std::sync::mpsc::channel();
-                                self.merging_accounts = Some(receiver);
-                                self.state = "connecting-accounts";
-                                std::thread::spawn(move || {
-                                    let result = accounts.merge_into(&target).map(|()| accounts.count())
-                                        .map_err(|_| "Prepared accounts could not be delivered to the destination.".to_string());
-                                    let _ = tx.send(result);
-                                });
-                            }
+        }
+        while let Some(event) = self.worker.as_mut().and_then(|worker| worker.try_next()) {
+            use journey_transfer::TransferEvent;
+            changed = true;
+            match event {
+                TransferEvent::CopyProgress(progress) => {
+                    self.result = progress;
+                }
+                TransferEvent::RestoringApplications => self.state = "restoring-applications",
+                TransferEvent::Finished { state, result } => {
+                    self.state = state;
+                    self.result = result;
+                    self.worker = None;
+                    if self.state == "complete" && self.categories[2] {
+                        if let (Some(accounts), Some(review)) =
+                            (&self.prepared_accounts, &self.review)
+                        {
+                            let accounts = std::sync::Arc::clone(accounts);
+                            let target = review.target_home().to_path_buf();
+                            let (tx, receiver) = std::sync::mpsc::channel();
+                            self.merging_accounts = Some(receiver);
+                            self.state = "connecting-accounts";
+                            std::thread::spawn(move || {
+                                let result = accounts.merge_into(&target).map(|()| accounts.count())
+                                    .map_err(|_| "Prepared accounts could not be delivered to the destination.".to_string());
+                                let _ = tx.send(result);
+                            });
                         }
                     }
                 }
@@ -420,21 +256,13 @@ impl Transfer {
     }
 
     pub fn busy(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.preparing_plan.is_some()
-                || self.reviewing.is_some()
-                || self.worker.is_some()
-                || self.merging_accounts.is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.preparing_plan.is_some()
+            || self.reviewing.is_some()
+            || self.worker.is_some()
+            || self.merging_accounts.is_some()
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn completed_home(&self) -> Option<super::super::user_transfer::TransferReview> {
+    pub fn completed_home(&self) -> Option<journey_transfer::TransferReview> {
         (self.state == "complete" && self.categories[0])
             .then(|| self.review.clone())
             .flatten()
@@ -447,7 +275,7 @@ impl Transfer {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::Transfer;
+    use super::{Transfer, journey_transfer};
     use std::{
         ffi::{CString, OsStr},
         os::unix::{ffi::OsStrExt, fs::PermissionsExt},
@@ -588,7 +416,7 @@ mod tests {
                 .open(writer_path);
         });
         let started = Instant::now();
-        assert!(super::read_flatpak_inventory(&fifo).is_err());
+        assert!(journey_transfer::read_flatpak_inventory(&fifo).is_err());
         let elapsed = started.elapsed();
         writer.join().unwrap();
         assert!(
@@ -600,7 +428,7 @@ mod tests {
         std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
         let link = root.join("inventory-link");
         symlink(&original, &link).unwrap();
-        assert!(super::read_flatpak_inventory(&link).is_err());
+        assert!(journey_transfer::read_flatpak_inventory(&link).is_err());
         assert_eq!(
             std::fs::read(original).unwrap(),
             b"unchanged private metadata fixture"

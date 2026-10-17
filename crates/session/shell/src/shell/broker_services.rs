@@ -64,12 +64,12 @@ impl NativeOwnerCommitService {
         self.owner.clone()
     }
 }
-impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn commit_member_effect_receipt(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         caller: tilo_user_identity::DeviceCert,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
@@ -108,8 +108,8 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
     }
     fn commit(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
@@ -118,10 +118,8 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             if let Some(network) = network {
                 network.check_native_custody(&owner, room)?;
                 // The room's receipts are its governor's to record.
-                if let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    redacted,
-                    ..
-                } = &request.operation
+                if let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
+                    &request.operation
                     && network.governed_elsewhere(room)
                 {
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
@@ -130,13 +128,13 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             }
             if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
                 return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
             ) {
                 let (key, governor) =
                     tilo_identity_host::broker::trusted_current_device(&request.room)
@@ -234,7 +232,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     }
 
     fn requires_room(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+        tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
     fn health(&self) -> Result<(), String> {
@@ -257,8 +255,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
@@ -273,7 +271,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             }
             let receipt = if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
                 owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
             } else {
@@ -309,10 +307,10 @@ async fn grant_authorship_at_host(
     network: &super::network::ShellNetwork,
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
     room: super::state::RoomId,
-    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
-) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    request: &tilo_owner_commit::OwnerCommitRequest,
+) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
     const REFUSED: &str = "workspace membership requires the governing owner";
-    let tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+    let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
         caller,
         command:
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
@@ -341,7 +339,7 @@ async fn grant_authorship_at_host(
                 {
                     return Ok(None);
                 }
-                Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
                     binding: request.binding()?,
                     generation: view.generation(),
                     aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
@@ -363,11 +361,10 @@ async fn record_receipt_elsewhere(
     network: &super::network::ShellNetwork,
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
     room: super::state::RoomId,
-    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+    request: &tilo_owner_commit::OwnerCommitRequest,
     redacted: &[u8],
-) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-    let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { invocation, .. } =
-        &request.operation
+) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+    let tilo_owner_commit::CommitOperation::EffectReceipt { invocation, .. } = &request.operation
     else {
         return Err("missing effect receipt operation".into());
     };
@@ -398,7 +395,7 @@ async fn record_receipt_elsewhere(
                             "admitted terminal receipt differs from this broker's outcome".into(),
                         );
                     }
-                    return Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                    return Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
                         binding: request.binding()?,
                         generation: view.generation(),
                         aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
@@ -1682,7 +1679,8 @@ impl ContinuationServices for NativeContinuations {
         }) = ui::collaboration::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+            if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)
+            {
                 return Err("app continuation permission is disabled".into());
             }
             return super::personal_continuity_registry::global_registry()
@@ -1883,6 +1881,7 @@ pub fn native_services(
                 pairing: super::device_pairing::Pairing::session(),
             }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
         }),
+        identity_admin: membership.as_ref().map(super::identity_admin::broker_door),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

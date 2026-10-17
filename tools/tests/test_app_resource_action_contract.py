@@ -19,13 +19,13 @@ class AppResourceActionContractTests(unittest.TestCase):
             ("let ratio = α / β;\n", "let ratio = α / β;\n"),
             ("fn f<'a>(x: &'a str) {}", "fn f<'a>(x: &'a str) {}"),
             ("a// hidden\nb", "a         \nb"),
-            ("a/* hidden */b", "a          b"),
+            ("a/* hidden */b", "a            b"),
             ('a"hidden\\\"text"b', "a              b"),
-            ("a'/' + '\"'b", "a    +    b"),
+            ("a('/', '\"')b", "a(   ,    )b"),
         ]
         for source, expected in cases:
             with self.subTest(source=source):
-                self.assertEqual(contract.rust_code_only(source), expected)
+                self.assertEqual(contract.code_only(source), expected)
 
     def fixture(
         self,
@@ -48,7 +48,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         return root
 
     def test_char_literals_do_not_hide_the_code_after_them(self):
-        code = contract.rust_code_only(
+        code = contract.code_only(
             "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
             "fn handler() { start_operation(); }\n"
         )

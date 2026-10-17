@@ -18,6 +18,7 @@ impl FrameHarness {
     /// app) keeps that one: wrapping it in the standalone adapter as well
     /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
+        self.invalidate_local();
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             self.invalidate_layout_tree();
@@ -220,6 +221,7 @@ impl FrameHarness {
     /// # Errors
     /// Returns an error if the captured document is no longer readable.
     pub fn local_history_resources(&mut self) -> Result<Vec<tilo_actions::Resource>, String> {
+        self.invalidate_local();
         if !self.history_chrome_enabled {
             return Ok(Vec::new());
         }
@@ -244,6 +246,7 @@ impl FrameHarness {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Result<(), String> {
+        self.invalidate_local();
         self.run_local_history_action(address, argument)?;
         self.idle_control_tick();
         self.relayout();
@@ -257,6 +260,7 @@ impl FrameHarness {
     ///
     /// Returns an error when the app has no History to open.
     pub fn open_history(&mut self) -> Result<(), String> {
+        self.invalidate_local();
         if let Some(history) = &self.history {
             if !history.request_open() {
                 return Err("History is unavailable".into());
@@ -404,6 +408,7 @@ impl FrameHarness {
         &mut self,
         factory: impl Fn() -> Result<Box<dyn Widget>, String> + 'static,
     ) {
+        self.invalidate_local();
         self.document_history
             .set_preview_root(std::rc::Rc::new(factory));
     }

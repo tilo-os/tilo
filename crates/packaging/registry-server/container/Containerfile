@@ -45,11 +45,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 
-ARG SOURCE_REVISION
+# No revision label: one build serves every commit with the same inputs, so the digest receipt
+# the publication writes names the commit, not the image.
 LABEL org.opencontainers.image.title="Tilo app registry server" \
       org.opencontainers.image.description="Signed Tilo application catalogue and moderation service" \
-      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
-      org.opencontainers.image.revision="${SOURCE_REVISION}"
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo"
 
 COPY --from=builder --chown=65532:65532 /out/tilo-registry-server /usr/local/bin/tilo-registry-server
 # rustls-native-certs is intentionally patched to Tilo's single immutable

@@ -6,7 +6,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-const SELECTOR: &str = "setup::journey::portable_source::mounted_permission::native_tests::actual_mounted_permission_controller_preserves_original_grant_and_refuses_stale_and_wrong_answers";
+const SELECTOR: &str = "setup::journey::portable_source_native::mounted_permission::native_tests::actual_mounted_permission_controller_preserves_original_grant_and_refuses_stale_and_wrong_answers";
 struct Binding(CString);
 impl Binding {
     fn new(source: &Path, target: &Path) -> Self {
@@ -189,18 +189,14 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
     std::fs::write(home.join("document"), b"original Home bytes").unwrap();
     std::fs::write(external.join("hidden-data"), b"original mounted bytes").unwrap();
     let bind = Binding::new(&external, &mounted);
-    let (selected_pin, expected_pin) =
+    let grant =
         validate_grant(&home, &home).unwrap_or_else(|_| panic!("matching actual Home grant"));
+    let selected_pin = crate::setup::migration::PinnedDirectory::open_absolute(&home).unwrap();
     let locations =
         MountedHomeLocations::discover(&selected_pin, &home, &AtomicBool::new(false)).unwrap();
     assert_eq!(locations.display_names(), vec!["mounted"]);
     let context = MountedContext {
-        grant: Arc::new(SourceGrant {
-            selected: home.clone(),
-            expected: home.clone(),
-            selected_pin,
-            expected_pin,
-        }),
+        grant,
         choices: Choices {
             home: true,
             ..Choices::default()

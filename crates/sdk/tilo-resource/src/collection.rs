@@ -1356,10 +1356,6 @@ impl<T: 'static> Entries for Collection<T> {
 }
 
 /// What `Collection<T>`'s table reaches into one with.
-#[allow(
-    clippy::type_complexity,
-    reason = "each field reaches into the collection one way"
-)]
 pub struct CollectionDesc {
     /// `T`'s table.
     item: &'static ModelTable,

@@ -20,14 +20,10 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-account-custody = { path = "../../crates/system/account-custody" }
-accounts = { path = "../../crates/system/accounts" }
+tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
 browser-continuity = { workspace = true, features = ["native"] }
 fnv.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
 zeroize.workspace = true
-# Session-store ownership and the private cache root's cleanup barrier.
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the

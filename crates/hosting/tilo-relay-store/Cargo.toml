@@ -1,0 +1,42 @@
+[package]
+name = "tilo-relay-store"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "Retained-store primitives a Tilo workspace host shares with its shell replay adapter: bounded spill sorting, counted durable barriers, retained frame decoding, the per-root tail cache and the seam the store drives shell replay through."
+license = "MIT OR Apache-2.0"
+
+# The relay core (`tilo-relay`) owns the workspace store; the desktop's
+# shell replay selection (`tilo-relay-shell`) reads and writes the same
+# retained tree. Both build on these primitives, and the store reaches
+# selection only through the `shell` seam, so neither names the other's
+# types and the core never names the desktop's proof vocabulary.
+
+[features]
+# One-shot barriers and fault injection scoped to a temporary store, and the
+# per-thread barrier counters tests assert on. Off in every shipped build.
+test-support = ["dep:tokio"]
+
+[dependencies]
+# Retained frames are relay envelopes carrying co-edit payloads.
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+tilo-relay-client = { path = "../tilo-relay-client" }
+# The device a bound shell authority names as its room's governor.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+tilo-files = { path = "../../platform/tilo-files" }
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+blake3.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"], optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+# The test barriers report through a oneshot channel.
+tokio = { workspace = true, features = ["sync"] }
+
+[lints]
+workspace = true

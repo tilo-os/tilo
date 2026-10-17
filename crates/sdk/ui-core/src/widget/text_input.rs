@@ -500,6 +500,20 @@ fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String>
     }
 }
 
+/// [`TextInput::accessibility_state`]: the state, selection and accessory
+/// a field's accessibility node is built from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextAccessibilityState {
+    secret: bool,
+    multiline: bool,
+    disabled: bool,
+    focused: bool,
+    invalid: bool,
+    selection: (usize, usize),
+    /// Where the accessory sits while shown, and whether its toggle is on.
+    accessory: Option<(Rect, Option<bool>)>,
+}
+
 /// What a field's trailing accessory does when pressed.
 pub enum AccessoryAction {
     /// Empty the field, as an edit by the person; shown only while the
@@ -3089,6 +3103,33 @@ impl TextInput {
     /// primary selection or an input method's suggestions.
     fn holds_secret(&self) -> bool {
         self.secret || matches!(self.kind.text_kind(), TextKind::Secret)
+    }
+
+    /// What [`Widget::accessibility`] reads of the field besides its text
+    /// and what it was configured with (its id, names, placeholder and bound
+    /// action). An owner that keeps the field's node between frames compares
+    /// this and the text to know a fresh node would equal the one it kept,
+    /// but for the names it gives the node itself.
+    pub(crate) fn accessibility_state(&self) -> TextAccessibilityState {
+        TextAccessibilityState {
+            secret: self.holds_secret(),
+            multiline: self.multiline,
+            disabled: self.effectively_disabled(),
+            focused: self.is_focused,
+            invalid: self.invalid,
+            selection: (self.core.anchor(), self.core.caret()),
+            accessory: self.accessory_rect().zip(self.accessory.as_ref()).map(
+                |(rect, accessory)| {
+                    (
+                        rect,
+                        match accessory.action {
+                            AccessoryAction::Toggle { pressed, .. } => Some(pressed),
+                            _ => None,
+                        },
+                    )
+                },
+            ),
+        }
     }
 
     /// Only meaningful together with `with_secret`. Secret fields start

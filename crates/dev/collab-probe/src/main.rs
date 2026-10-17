@@ -12,15 +12,6 @@
 //! own document. Exit status is zero only when the requested operation
 //! succeeds; failures identify the step that failed.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::process::ExitCode;
 use tilo_automerge::ApplyIncoming;
 

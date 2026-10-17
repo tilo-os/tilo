@@ -336,7 +336,7 @@ impl Room {
                     }
                 }
                 PeerEvent::DocumentRejected(reason) => {
-                    warn(&format!("dropped a document: {reason}"))
+                    warn(&format!("dropped a document: {reason}"));
                 }
                 _ => {}
             }
@@ -599,7 +599,7 @@ impl Room {
                     };
                     match outbound(store, &checkout, replica) {
                         Ok(Some((mutation, heads))) => {
-                            outgoing.push((route, mutation, (id, key, heads)))
+                            outgoing.push((route, mutation, (id, key, heads)));
                         }
                         Ok(None) => {}
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),

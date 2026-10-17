@@ -19,15 +19,6 @@
 //!   is materialised once from it by reflink, and a package's `.tapp` may be
 //!   thin because only blobs the store lacks are fetched.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod catalog;
 pub mod dev_env;
 pub mod integrity;

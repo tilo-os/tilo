@@ -419,12 +419,29 @@ visitor is their own person, and joining is rate-limited.
   person, valid for one hour and with no capabilities. The spectator person's
   root is generated at the room's first start and kept in the host's
   `tilo-secrets` store beside the owner root; it is a Viewer member of the
-  room, named "Watching visitors". A Viewer's live grant subscribes only, so a
-  spectator neither edits nor shows a cursor. Spectators are not counted
-  against `TILO_ROOMS_MAX_GUESTS` and do not appear in the member list one by
-  one. They have their own cap, `TILO_ROOMS_MAX_SPECTATORS` (default 1000),
-  and their own per-IP window (30 per 10 minutes); above the cap the embed shows
-  the site's static fallback. A spectator becomes a guest on the first
+  room, named "Watching visitors". The relay admits a device that person
+  certified as a spectator: it may subscribe, read the room's state and replay
+  its history, and nothing else. Its changes, commits, presence, record
+  content, compactions, actions and live join are all refused, so a spectator
+  neither edits nor shows a cursor. It still sees the members' cursors: the
+  relay's presence reaches every subscribed page, and its live grant lets it
+  receive on the live plane but not publish there. It is never a channel's
+  member and asks no channel for access. Because anyone may join this room as
+  a guest and then read every channel, letting a visitor who only watches
+  read them exposes nothing new: the room's steward hands the content keys of
+  a channel that exists (`POST /channel-keys`) to any device the spectator
+  person certified, while that device holds a spectator seat. That is one
+  grant to the spectator person, not one per device. A room that is not
+  public, and a record a Read Deny keeps from anyone, gets no keys, however
+  spectators are configured. The page asks for a record's keys when it opens
+  the record or a sealed document of it arrives that its keys cannot open,
+  for example after a new epoch. Spectators are not counted against `TILO_ROOMS_MAX_GUESTS` and do
+  not appear in the member list one by one. They have their own cap,
+  `TILO_ROOMS_MAX_SPECTATORS` (default 1000), which the room service passes to
+  the room's relay: the relay refuses a spectator's subscription while that
+  many spectators are subscribed, whichever transport they came by. They also
+  have their own per-IP window (30 per 10 minutes); above the cap the embed
+  shows the site's static fallback. A spectator becomes a guest on the first
   interactive gesture in the embed (a click, tap or key press, under a "click
   or type to join" hint): the page then runs the instant guest join above and
   remounts as that person. Opening the room in the Tilo app (its web entry,

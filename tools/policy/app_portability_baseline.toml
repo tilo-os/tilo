@@ -13,7 +13,7 @@ D1 = 1
 D2 = 2
 
 [apps.browser]
-D1 = 2
+D1 = 1
 D2 = 4
 
 [apps.calendar]
@@ -66,10 +66,10 @@ D2 = 3
 [apps.imager]
 D1 = 6
 D2 = 9
-R1 = 302
-R2 = 197
-R3 = 54
-R4 = 22
+R1 = 295
+R2 = 144
+R3 = 39
+R4 = 1
 
 [apps.logs]
 D1 = 1
@@ -119,7 +119,7 @@ D2 = 3
 
 [apps.settings]
 D1 = 4
-D2 = 19
+D2 = 18
 
 [apps.sheets]
 D2 = 3

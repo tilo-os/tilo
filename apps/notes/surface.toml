@@ -12,7 +12,7 @@ fields = [
   { path = "pages.*.tags", type = "Set<Id>" },
   { path = "tags", type = "Collection<Tag>", stored = "collection" },
   { path = "tags.*.name", type = "Atom", label = true },
-  { path = "images", type = "BTreeMap<String, Bytes>", readonly = true },
+  { path = "images", type = "Map<Bytes>", readonly = true },
 ]
 
 [[resources.verbs]]

@@ -16,7 +16,9 @@
 //! - **Sealed entries** the host cannot read. It asks a member device that
 //!   volunteered ([`Envelope::CompactRequest`]); the member commits a sealed
 //!   snapshot and signs a [`CoverageStatement`] naming the entries it
-//!   contains, and the host removes exactly those.
+//!   contains, and the host removes exactly those, from the channel it asked
+//!   about and only on the word of the member it asked, while that member
+//!   still subscribes.
 //!
 //! Admission authenticates the device that sent a delta, not the document
 //! signature inside it, so compaction verifies every entry it relies on
@@ -27,7 +29,7 @@
 //! already hold its content. Its certificate is retained beside it, so a
 //! replay carries it first (certificate lineages lead a replay) and a native
 //! shell accepts the host-signed state. Rooms whose replay a native shell
-//! selects (`shell_authority`) are left to that selection.
+//! selects (a bound `shell_binding`) are left to that selection.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -357,7 +359,7 @@ impl Compactor {
         min_tail: usize,
     ) -> Result<(), String> {
         let store = workspace.lock().await.store.clone();
-        if store.shell_authority().is_some() {
+        if store.shell_binding().is_some() {
             return Ok(());
         }
         let known = lock(&self.0.member_snapshots)
@@ -562,7 +564,13 @@ impl Compactor {
         Some(request)
     }
 
-    /// A member's answer: remove exactly the entries its snapshot covers.
+    /// A member's answer: remove exactly the entries its snapshot covers, in
+    /// the channel the host asked that member about.
+    ///
+    /// Only the device asked answers, while it still subscribes: removing a
+    /// device from the room drops its subscription at once, though its
+    /// session lives until the next access audit. A statement from anyone
+    /// else leaves the request open for the device asked.
     ///
     /// # Errors
     ///
@@ -576,18 +584,25 @@ impl Compactor {
         signature: &[u8; 64],
     ) -> Result<usize, String> {
         let decoded = CoverageStatement::decode(statement).map_err(|error| error.to_string())?;
-        let outstanding = lock(&self.0.requests)
-            .remove(&decoded.request)
-            .ok_or("no outstanding compaction request")?;
-        if outstanding.device != device
-            || outstanding.workspace_id != workspace_id
-            || decoded.workspace_id != workspace_id
-            || decoded.channel != outstanding.channel
-        {
-            return Err("statement does not answer this device's request".into());
-        }
         if !verify(&device, statement, signature) {
             return Err("statement signature does not verify".into());
+        }
+        {
+            let mut requests = lock(&self.0.requests);
+            let outstanding = requests
+                .get(&decoded.request)
+                .ok_or("no outstanding compaction request")?;
+            if outstanding.device != device
+                || outstanding.workspace_id != workspace_id
+                || decoded.workspace_id != workspace_id
+                || decoded.channel != outstanding.channel
+            {
+                return Err("statement does not answer this device's request".into());
+            }
+            requests.remove(&decoded.request);
+        }
+        if !workspace.lock().await.has_subscriber(&device) {
+            return Err("the statement's device no longer subscribes to the workspace".into());
         }
         let channel = decoded.channel;
         let snapshot: HashSet<[u8; 32]> = decoded.snapshot.iter().copied().collect();

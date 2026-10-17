@@ -710,7 +710,7 @@ impl NearbyTransferServices for NativeNearbyTransfer {
         context: &NearbyTransferRequestContext,
         command: runtime_collab::NearbyTransferCommand,
     ) -> Result<runtime_collab::NearbyTransferReply, String> {
-        if !nearby_policy_enabled(ContinuityPolicySnapshot::load())
+        if !nearby_policy_enabled(ContinuityPolicySnapshot::current())
             && !matches!(
                 command,
                 runtime_collab::NearbyTransferCommand::AirDropAvailability

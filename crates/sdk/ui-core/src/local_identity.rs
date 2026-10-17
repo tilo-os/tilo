@@ -133,12 +133,8 @@ impl LocalIdentitySource for RuntimeIdentity {
         Self::resolve(true)
     }
 
-    #[cfg(unix)]
     fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
-        // Automatic presentation uses only the launcher's authenticated broker,
-        // never an ungranted host config file or a username-derived location.
-        let metadata = runtime_identity::load_bound_metadata().ok()?;
-        Some((metadata.group_public_key, metadata.profile_photo?))
+        runtime_identity::bound_profile_photo()
     }
 }
 

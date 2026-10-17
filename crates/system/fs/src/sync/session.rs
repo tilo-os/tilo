@@ -171,10 +171,6 @@ pub struct SessionBlobV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "frames are decoded one at a time; boxing would change nothing but the wire-facing type"
-)]
 pub enum SessionFrameV1 {
     /// One answer per requested range, in order.
     Reconciled {

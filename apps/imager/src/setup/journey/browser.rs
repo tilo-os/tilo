@@ -1,129 +1,40 @@
-//! Independent, consented browser domains; never inferred from file/account choices.
-use std::io;
-use std::path::Path;
-use std::sync::Arc;
-
-use browser_continuity::{Plan, Profile};
+//! Presentation for independent, consented browser domains.
+//! Backend discovery admits sources or reports unsupported custody on every host.
+use crate::setup::account_transfer::Candidate;
+pub(super) use imager_backend::browser_selection::Domain;
+pub(crate) use imager_backend::browser_selection::SelectedSources;
+use std::{io, path::Path};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Checkbox, Column, Element, Text};
 
-use crate::setup::account_transfer::Candidate;
-use crate::setup::browser_profiles::{self, ReviewedProfile};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Domain {
-    Bookmarks,
-    History,
-}
-#[derive(Clone, Default)]
-pub(crate) struct SelectedSources {
-    profiles: Vec<(Arc<ReviewedProfile>, Profile)>,
-}
-impl SelectedSources {
-    #[cfg(test)]
-    pub(crate) fn from_reviewed(
-        profiles: Vec<(Arc<ReviewedProfile>, Profile)>,
-    ) -> io::Result<Self> {
-        for (index, (source, selected)) in profiles.iter().enumerate() {
-            selected.validate().map_err(io::Error::other)?;
-            if source.profile.id != selected.id
-                || source.profile.provider != selected.provider
-                || source.profile.relative_path != selected.relative_path
-                || (selected.bookmarks && !source.profile.bookmarks)
-                || (selected.history && !source.profile.history)
-                || profiles
-                    .iter()
-                    .take(index)
-                    .any(|(_, prior)| prior.id == selected.id)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Browser selection differs from its reviewed source",
-                ));
-            }
-        }
-        if profiles.len() > browser_continuity::MAX_PROFILES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Too many selected browser sources",
-            ));
-        }
-        Ok(Self { profiles })
-    }
-    pub(crate) fn profiles(&self) -> &[(Arc<ReviewedProfile>, Profile)] {
-        &self.profiles
-    }
-    pub(crate) fn plan(&self, binding: String, identity: [u8; 32]) -> io::Result<Plan> {
-        Plan::new(
-            binding,
-            identity,
-            self.profiles
-                .iter()
-                .map(|(_, profile)| profile.clone())
-                .collect(),
-        )
-        .map_err(io::Error::other)
-    }
-}
+#[derive(Default)]
 pub(super) struct Selection {
-    profiles: Vec<Arc<ReviewedProfile>>,
-    bookmarks: bool,
-    history: bool,
-}
-impl Default for Selection {
-    fn default() -> Self {
-        Self {
-            profiles: Vec::new(),
-            bookmarks: true,
-            history: true,
-        }
-    }
+    authority: imager_backend::browser_selection::Selection,
 }
 impl Selection {
     /// The caller runs this on its consented discovery worker, not the UI thread.
     pub(super) fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Self> {
         Ok(Self {
-            profiles: browser_profiles::discover(home, candidates)?
-                .into_iter()
-                .map(Arc::new)
-                .collect(),
-            ..Self::default()
+            authority: imager_backend::browser_selection::Selection::discover(home, candidates)?,
         })
     }
     pub(super) fn available(&self) -> bool {
-        !self.profiles.is_empty()
+        self.authority.available()
     }
     pub(super) fn chosen(&self, domain: Domain) -> bool {
-        match domain {
-            Domain::Bookmarks => self.bookmarks,
-            Domain::History => self.history,
-        }
+        self.authority.chosen(domain)
     }
     pub(super) fn set(&mut self, domain: Domain, included: bool) {
-        match domain {
-            Domain::Bookmarks => self.bookmarks = included,
-            Domain::History => self.history = included,
-        }
+        self.authority.set(domain, included);
     }
     pub(super) fn selected(&self) -> SelectedSources {
-        SelectedSources {
-            profiles: self
-                .profiles
-                .iter()
-                .filter_map(|source| {
-                    let mut profile = source.profile.clone();
-                    profile.bookmarks &= self.bookmarks;
-                    profile.history &= self.history;
-                    (profile.bookmarks || profile.history).then(|| (Arc::clone(source), profile))
-                })
-                .collect(),
-        }
+        self.authority.selected()
     }
     /// Both domains remain independent of Documents/Files and replacement logins.
     pub(super) fn view(&self, bindings: impl Fn(Domain, bool) + 'static + Clone) -> Element {
         let labels = self
-            .profiles
-            .iter()
+            .authority
+            .profiles()
             .map(|source| source.label.as_str())
             .collect::<Vec<_>>()
             .join(", ");
@@ -146,7 +57,7 @@ impl Selection {
                 "installer.browser.history",
             ),
         ] {
-            let available = self.profiles.iter().any(|source| match domain {
+            let available = self.authority.profiles().any(|source| match domain {
                 Domain::Bookmarks => source.profile.bookmarks,
                 Domain::History => source.profile.history,
             });
@@ -171,45 +82,28 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+
     #[test]
-    fn browsing_domain_selection_captures_only_its_actual_reviewed_files() {
-        let home = tempfile::tempdir().unwrap();
-        let profile = home.path().join(".config/chromium/Default");
-        fs::create_dir_all(&profile).unwrap();
-        fs::write(profile.join("Bookmarks"), b"bookmarks").unwrap();
-        fs::write(profile.join("History"), b"private history").unwrap();
-        fs::write(profile.join("Cookies"), b"not consented").unwrap();
-        let inventory = crate::setup::account_transfer::discover(
-            &crate::setup::account_transfer::SourceRoots {
-                home: home.path().into(),
-                config: home.path().join(".config"),
-            },
-        );
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert!(selection.available());
-        assert!(selection.chosen(Domain::Bookmarks));
-        assert!(selection.chosen(Domain::History));
-        selection.set(Domain::History, false);
-        let selected = selection.selected();
-        let plan = selected.plan("exact-setup".into(), [3; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 1);
-        assert!(!plan.profiles[0].history);
-        assert_eq!(plan.profiles[0].allowed_files(), ["Bookmarks"]);
-        let (source, profile) = &selected.profiles()[0];
-        let captured = source.capture_files(profile).unwrap();
-        assert_eq!(captured.files().len(), 1);
-        assert_eq!(captured.files()[0].name(), "Bookmarks");
-        assert_eq!(captured.files()[0].bytes(), b"bookmarks");
-        selection.set(Domain::Bookmarks, false);
+    fn domain_choices_without_reviewed_sources_never_create_source_authority() {
+        let mut selection = Selection::default();
+        assert!(!selection.available());
+        for domain in [Domain::Bookmarks, Domain::History] {
+            selection.set(domain, false);
+            assert!(!selection.chosen(domain));
+            selection.set(domain, true);
+            assert!(selection.chosen(domain));
+        }
+        assert!(!selection.available());
         assert!(selection.selected().profiles().is_empty());
-        assert_eq!(
-            fs::read(home.path().join(".config/chromium/Default/History")).unwrap(),
-            b"private history"
-        );
-        assert_eq!(
-            fs::read(home.path().join(".config/chromium/Default/Cookies")).unwrap(),
-            b"not consented"
-        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn unsupported_discovery_is_an_error_not_an_empty_success() {
+        let home = tempfile::tempdir().unwrap();
+        let error = Selection::discover(home.path(), &[])
+            .err()
+            .expect("unsupported source custody must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 }

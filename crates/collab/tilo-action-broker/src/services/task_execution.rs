@@ -129,7 +129,7 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         room: &str,
         binding: NativeTaskBinding,
         command: WorkspaceTaskCommand,
-    ) -> tilo_peer_state::owner_commit::CommitFuture;
+    ) -> tilo_owner_commit::CommitFuture;
     /// Check the current owner capability policy before observing retained action output.
     ///
     /// # Errors

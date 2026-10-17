@@ -1,6 +1,6 @@
 //! A sorted map from string keys whose clones share it chunk by chunk:
-//! [`ChunkMap`], what a [`Set`](crate::Set) and a [`Grid`](crate::Grid)
-//! keep their contents in.
+//! [`ChunkMap`], what a [`Map`](crate::Map), a [`Set`](crate::Set) and a
+//! [`Grid`](crate::Grid) keep their contents in.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -53,8 +53,26 @@ impl<V: fmt::Debug> fmt::Debug for ChunkMap<V> {
 }
 
 impl<V: PartialEq> PartialEq for ChunkMap<V> {
+    /// A chunk both maps share is equal without a look inside it, so a map
+    /// compared with a clone of it costs a pointer per chunk.
     fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.iter().eq(other.iter())
+        if self.len != other.len {
+            return false;
+        }
+        let aligned = self.chunks.len() == other.chunks.len()
+            && self
+                .chunks
+                .iter()
+                .zip(&other.chunks)
+                .all(|(mine, theirs)| mine.get().len() == theirs.get().len());
+        if aligned {
+            return self
+                .chunks
+                .iter()
+                .zip(&other.chunks)
+                .all(|(mine, theirs)| mine.same(theirs) || mine.get() == theirs.get());
+        }
+        self.iter().eq(other.iter())
     }
 }
 

@@ -288,9 +288,6 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 # stack is installed), so depending on this is safe in headless builds.
 tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
-
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).
 tilo-content = { version = "0.1.0", path = "../../system/content", optional = true, features = ["device"] }

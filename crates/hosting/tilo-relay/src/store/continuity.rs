@@ -458,12 +458,12 @@ mod tests {
             Self { tmp, store, peer }
         }
         fn frame(&self, snapshot: Vec<u8>, time: u64) -> ([u8; 32], Envelope, Vec<u8>, Receipt) {
-            let message = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+            let message = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key: self.peer.user_public_key,
                 publisher: 7,
                 snapshot,
             };
-            let (channel, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
             let envelope = Envelope::Delta {
                 workspace_id: 7,
                 author_device_public_key: self.peer.device_public_key,
@@ -717,9 +717,9 @@ mod tests {
                 "body-suffix" => body.push(0),
                 "channel" => channel[0] ^= 1,
                 "root" => {
-                    let mut message: tilo_peer_state::NeighbourMsg =
+                    let mut message: neighbour_wire::NeighbourMsg =
                         postcard::from_bytes(body).unwrap();
-                    let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    let neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
                         user_public_key,
                         ..
                     } = &mut message
@@ -727,9 +727,7 @@ mod tests {
                         unreachable!()
                     };
                     user_public_key[0] ^= 1;
-                    *channel = tilo_peer_state::transport::retention(&message, false)
-                        .unwrap()
-                        .0;
+                    *channel = neighbour_wire::retention(&message, false).unwrap().0;
                     *body = postcard::to_stdvec(&message).unwrap();
                 }
                 "author" => author_device_public_key[0] ^= 1,

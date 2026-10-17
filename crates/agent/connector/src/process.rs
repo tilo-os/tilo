@@ -292,10 +292,6 @@ fn set_status(shared: &Shared, healthy: bool, message: &str) {
     }
 }
 
-fn now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
-}
-
 /// The secret purposes a worker may ask for; `SecretStore::item` wants a
 /// `&'static str`, and a worker naming anything else gets nothing.
 fn secret_purpose(purpose: &str) -> Option<&'static str> {
@@ -349,12 +345,13 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
                 at_ms,
                 payload,
             } => {
-                let appended =
-                    shared
-                        .events
-                        .lock()
-                        .await
-                        .append(&source, &id, at_ms, now_ms(), payload);
+                let appended = shared.events.lock().await.append(
+                    &source,
+                    &id,
+                    at_ms,
+                    tilo_clock::unix_now_ms_i64(),
+                    payload,
+                );
                 if let Ok(Some(seq)) = appended {
                     shared.seq.send_replace(seq);
                 }

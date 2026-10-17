@@ -25,15 +25,6 @@
 //! Marks: only `strong` and `em` are drawn; underline, strike, colour,
 //! size and font family are not.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod metrics;
 mod pdf;
 

@@ -111,10 +111,6 @@ impl LogindManager {
     /// # Errors
     ///
     /// Returns an error if the `ListInhibitors` call fails.
-    #[allow(
-        clippy::type_complexity,
-        reason = "the tuple is logind's ListInhibitors D-Bus signature"
-    )]
     pub async fn list_inhibitors(
         &self,
     ) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>> {

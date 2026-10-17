@@ -1139,6 +1139,13 @@ pub(crate) fn hand_launch(
 ///
 /// # Errors
 /// A file of a type the app opens that cannot be read.
+#[cfg_attr(
+    not(tilo_native_runner),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only a device with paths reads a file"
+    )
+)]
 fn hand_launch_to(
     definition: &ApplicationDefinition,
     arguments: &[String],

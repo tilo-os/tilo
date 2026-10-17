@@ -93,7 +93,7 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
     let profile = projection
         .tree
         .root
-        .join(browser_continuity::PROFILES_DIRECTORY)
+        .join(imager_backend::browser_selection::PROFILES_DIRECTORY)
         .join(&declaration.plan.profiles[0].id);
     assert_eq!(fs::read_dir(&profile).unwrap().count(), 1);
     assert_eq!(

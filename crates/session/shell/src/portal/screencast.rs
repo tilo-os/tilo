@@ -22,7 +22,7 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
-use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
+use super::reply::{Ended, OrFail, Reply, Results, answer};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -256,10 +256,6 @@ impl ScreenCastBackend {
 
     /// `CreateSession` — register the session so `SelectSources`/`Start` can
     /// carry the negotiated selection. Consent-neutral: response=0, empty results.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.ScreenCast.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     async fn create_session(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -352,25 +348,28 @@ impl ScreenCastBackend {
             let supported_cursors = producer_available
                 .then(|| self.ctx.screencast_provisioner.available_cursor_modes())
                 .unwrap_or(0);
-            let requested_types = opt_u32(&options, "types").unwrap_or_else(|| {
-                // Absent options mean "choose a supported default", never
-                // silently substitute a monitor for an explicitly unsupported
-                // window/virtual request.
-                first_supported_bit(supported_types).unwrap_or(source_type::MONITOR)
-            });
+            let requested_types =
+                crate::portal::option::<u32>(&options, "types").unwrap_or_else(|| {
+                    // Absent options mean "choose a supported default", never
+                    // silently substitute a monitor for an explicitly unsupported
+                    // window/virtual request.
+                    first_supported_bit(supported_types).unwrap_or(source_type::MONITOR)
+                });
             let mut types = requested_types & supported_types;
             if types == 0 {
                 return Err(Ended::Failed);
             }
-            let requested_cursors = opt_u32(&options, "cursor_mode").unwrap_or_else(|| {
-                first_supported_bit(supported_cursors).unwrap_or(cursor_mode::HIDDEN)
-            });
+            let requested_cursors = crate::portal::option::<u32>(&options, "cursor_mode")
+                .unwrap_or_else(|| {
+                    first_supported_bit(supported_cursors).unwrap_or(cursor_mode::HIDDEN)
+                });
             let mut curs = requested_cursors & supported_cursors;
             if curs == 0 {
                 return Err(Ended::Failed);
             }
-            let mut multiple = opt_bool(&options, "multiple").unwrap_or(false);
-            let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
+            let mut multiple = crate::portal::option::<bool>(&options, "multiple").unwrap_or(false);
+            let mut persist_mode =
+                crate::portal::option::<u32>(&options, "persist_mode").unwrap_or(0);
 
             // `restore_data` is a standard `(suv)` tuple. Its payload is opaque
             // to xdg-desktop-portal; Tilo uses a random private-store key so an
@@ -450,169 +449,140 @@ impl ScreenCastBackend {
                 resource: LifecycleResource::Prompt,
             };
             let request_path = handle.to_string();
-            let registered = self
-                .lifecycle
-                .register_request(connection, &request_path, request_entry, move |_| {
-                    cancellation.store(true, Ordering::Release);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-
-            // SelectSources is mandatory. Never synthesize a session from fields
-            // supplied by an otherwise authenticated Start call.
-            let Some(session) = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned()) else {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            };
-            if session.owner != auth.owner.as_str()
-                || session.app_id != app_id
-                || session.caller.as_ref() != Some(&auth.caller)
-                || session.source_types == 0
-                || session.starting
-                || !session.streams.is_empty()
-            {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-            let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                sessions.get_mut(&key).is_some_and(|entry| {
-                    if entry.starting || !entry.streams.is_empty() {
-                        false
-                    } else {
-                        entry.starting = true;
-                        true
+            let cancel = move |_: &LifecycleEntry| cancellation.store(true, Ordering::Release);
+            self.lifecycle
+                .with_request(connection, &request_path, request_entry, cancel, async {
+                    // SelectSources is mandatory. Never synthesize a session from fields
+                    // supplied by an otherwise authenticated Start call.
+                    let Some(session) =
+                        self.sessions.lock().ok().and_then(|s| s.get(&key).cloned())
+                    else {
+                        return Err(Ended::Failed);
+                    };
+                    if session.owner != auth.owner.as_str()
+                        || session.app_id != app_id
+                        || session.caller.as_ref() != Some(&auth.caller)
+                        || session.source_types == 0
+                        || session.starting
+                        || !session.streams.is_empty()
+                    {
+                        return Err(Ended::Failed);
                     }
-                })
-            });
-            if !marked_starting {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
+                    let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        sessions.get_mut(&key).is_some_and(|entry| {
+                            if entry.starting || !entry.streams.is_empty() {
+                                false
+                            } else {
+                                entry.starting = true;
+                                true
+                            }
+                        })
+                    });
+                    if !marked_starting {
+                        return Err(Ended::Failed);
+                    }
 
-            // The sole consent prompt for this handshake lives here. A valid
-            // restore token is the only fast path.
-            if !session.restored && !session.consented {
-                let cap_template = Capability::Screencast { scope: GRANT_ONCE };
-                let outcome = flow::resolve(
-                    &self.ctx,
-                    auth.caller.clone(),
-                    CapabilityKind::Screencast,
-                    cap_template,
-                )
-                .await;
-                if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
-                    self.reset_starting(&key);
-                    self.lifecycle
-                        .complete_request_object(connection, &request_path)
+                    // The sole consent prompt for this handshake lives here. A valid
+                    // restore token is the only fast path.
+                    if !session.restored && !session.consented {
+                        let cap_template = Capability::Screencast { scope: GRANT_ONCE };
+                        let outcome = flow::resolve(
+                            &self.ctx,
+                            auth.caller.clone(),
+                            CapabilityKind::Screencast,
+                            cap_template,
+                        )
                         .await;
-                    return Err(Ended::Cancelled);
-                }
-            }
+                        if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
+                            self.reset_starting(&key);
+                            return Err(Ended::Cancelled);
+                        }
+                    }
 
-            // One stream per selected source type (bounded by `multiple`).
-            let (width, height) = size_from_options(&options);
-            let types = selected_source_types(session.source_types, session.multiple);
-            let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
-            for st in types {
-                let req = PipewireStreamRequest {
-                    caller: auth.caller.clone(),
-                    width,
-                    height,
-                    framerate: 30,
-                    source_type: st,
-                    cursor_mode: session.cursor_mode,
-                };
-                match self
-                    .ctx
-                    .screencast_provisioner
-                    .provision_blocking(req)
-                    .await
-                {
-                    Ok(info) => infos.push(info),
-                    Err(e) => {
+                    // One stream per selected source type (bounded by `multiple`).
+                    let (width, height) = size_from_options(&options);
+                    let types = selected_source_types(session.source_types, session.multiple);
+                    let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
+                    for st in types {
+                        let req = PipewireStreamRequest {
+                            caller: auth.caller.clone(),
+                            width,
+                            height,
+                            framerate: 30,
+                            source_type: st,
+                            cursor_mode: session.cursor_mode,
+                        };
+                        match self
+                            .ctx
+                            .screencast_provisioner
+                            .provision_blocking(req)
+                            .await
+                        {
+                            Ok(info) => infos.push(info),
+                            Err(e) => {
+                                for info in &infos {
+                                    self.ctx.screencast_provisioner.release(info.node_id);
+                                }
+                                self.reset_starting(&key);
+                                tracing::warn!("screencast: pipewire provision failed: {e}");
+                                return Err(Ended::Failed);
+                            }
+                        }
+                    }
+
+                    if cancelled.load(Ordering::Acquire) {
                         for info in &infos {
                             self.ctx.screencast_provisioner.release(info.node_id);
                         }
                         self.reset_starting(&key);
-                        self.lifecycle
-                            .complete_request_object(connection, &request_path)
-                            .await;
-                        tracing::warn!("screencast: pipewire provision failed: {e}");
+                        return Err(Ended::Cancelled);
+                    }
+
+                    // Persist: issue an opaque key carried in standard `restore_data` if
+                    // the session asked for it.
+                    let restore_key =
+                        (session.persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
+
+                    let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        let Some(entry) = sessions.get_mut(&key) else {
+                            return false;
+                        };
+                        entry.consented = true;
+                        entry.starting = false;
+                        entry.streams = infos.iter().map(|info| info.node_id).collect();
+                        true
+                    });
+                    if !updated {
+                        for info in &infos {
+                            self.ctx.screencast_provisioner.release(info.node_id);
+                        }
                         return Err(Ended::Failed);
                     }
-                }
-            }
 
-            if cancelled.load(Ordering::Acquire) {
-                for info in &infos {
-                    self.ctx.screencast_provisioner.release(info.node_id);
-                }
-                self.reset_starting(&key);
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-
-            // Persist: issue an opaque key carried in standard `restore_data` if
-            // the session asked for it.
-            let restore_key = (session.persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
-
-            let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                let Some(entry) = sessions.get_mut(&key) else {
-                    return false;
-                };
-                entry.consented = true;
-                entry.starting = false;
-                entry.streams = infos.iter().map(|info| info.node_id).collect();
-                true
-            });
-            if !updated {
-                for info in &infos {
-                    self.ctx.screencast_provisioner.release(info.node_id);
-                }
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-
-            if let Some(token) = &restore_key {
-                let data = RestoreData {
-                    app_id: session.app_id.clone(),
-                    source_types: session.source_types,
-                    cursor_mode: session.cursor_mode,
-                    multiple: session.multiple,
-                    persist_mode: session.persist_mode,
-                    issued_unix_seconds: tilo_clock::unix_now(),
-                };
-                let stored =
-                    self.restore.lock().map_err(|_| ()).and_then(|mut restore| {
-                        restore.insert(token.clone(), data).map_err(|_| ())
-                    });
-                if stored.is_err() {
-                    for info in &infos {
-                        self.ctx.screencast_provisioner.release(info.node_id);
+                    if let Some(token) = &restore_key {
+                        let data = RestoreData {
+                            app_id: session.app_id.clone(),
+                            source_types: session.source_types,
+                            cursor_mode: session.cursor_mode,
+                            multiple: session.multiple,
+                            persist_mode: session.persist_mode,
+                            issued_unix_seconds: tilo_clock::unix_now(),
+                        };
+                        let stored = self.restore.lock().map_err(|_| ()).and_then(|mut restore| {
+                            restore.insert(token.clone(), data).map_err(|_| ())
+                        });
+                        if stored.is_err() {
+                            for info in &infos {
+                                self.ctx.screencast_provisioner.release(info.node_id);
+                            }
+                            self.reset_starting(&key);
+                            return Err(Ended::Failed);
+                        }
                     }
-                    self.reset_starting(&key);
-                    self.lifecycle
-                        .complete_request_object(connection, &request_path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
-            }
 
-            let results = start_response(infos, restore_key, session.persist_mode);
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            Ok(results)
+                    Ok(start_response(infos, restore_key, session.persist_mode))
+                })
+                .await
         })
         .await
     }
@@ -651,18 +621,6 @@ fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
 #[cfg(target_os = "linux")]
 fn first_supported_bit(mask: u32) -> Option<u32> {
     (mask != 0).then_some(mask & mask.wrapping_neg())
-}
-
-#[cfg(target_os = "linux")]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
-}
-
-#[cfg(target_os = "linux")]
-fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
-    let v = options.get(key)?.try_clone().ok()?;
-    bool::try_from(v).ok()
 }
 
 /// Build `Start`'s results from the provisioned streams and optional restore data. The `streams` field is `a(ua{sv})`.

@@ -67,7 +67,7 @@ impl ActorState {
             super::HostEvent::NativeInput(input)
                 if matches!(
                     input.message(),
-                    tilo_peer_state::NeighbourMsg::SyncResp { .. }
+                    neighbour_wire::NeighbourMsg::SyncResp { .. }
                 ) =>
             {
                 input.clone()

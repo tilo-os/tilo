@@ -17,7 +17,6 @@ enum Answer {
     Resumed(Resumed),
     Retired,
     ChosenNew,
-    #[cfg(target_os = "linux")]
     Checkpoint(ReadyDraft),
 }
 #[derive(Default)]
@@ -26,9 +25,7 @@ pub(super) struct Restart {
     worker: Option<mpsc::Receiver<Result<Answer, ()>>>,
     state: &'static str,
     queued: Option<(Arc<PreparedIdentity>, PublicChoices)>,
-    #[cfg(target_os = "linux")]
     checkpoint: Option<ReadyDraft>,
-    #[cfg(target_os = "linux")]
     queued_checkpoint: Option<(
         super::accounts::checkpoint::Receipt,
         Option<super::accounts::checkpoint::Receipt>,
@@ -92,7 +89,6 @@ impl Restart {
             Ok(Answer::Retired)
         })
     }
-    #[cfg(target_os = "linux")]
     pub fn record_checkpoint(
         &mut self,
         receipt: super::accounts::checkpoint::Receipt,
@@ -113,7 +109,6 @@ impl Restart {
             Ok(Answer::Checkpoint(ready))
         })
     }
-    #[cfg(target_os = "linux")]
     pub fn take_checkpoint(&mut self) -> Option<ReadyDraft> {
         self.checkpoint.take()
     }
@@ -127,7 +122,6 @@ impl Restart {
             Ok(Answer::ChosenNew)
         })
     }
-    #[cfg(target_os = "linux")]
     pub fn mark_changed(&mut self) {
         self.state = "stale";
         self.queued = None;
@@ -146,6 +140,8 @@ impl Restart {
         if self.busy() {
             return Err("installer-restart-busy");
         }
+        imager_backend::prepared_identity::require_supported()
+            .map_err(|_| "installer-restart-unavailable")?;
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
         self.state = state;
@@ -155,7 +151,6 @@ impl Restart {
         Ok(())
     }
     pub fn poll(&mut self) -> Option<Result<Option<Resumed>, ()>> {
-        #[cfg(target_os = "linux")]
         if self.worker.is_none()
             && let Some((receipt, expected)) = self.queued_checkpoint.take()
         {
@@ -212,7 +207,6 @@ impl Restart {
                 self.queued = None;
                 Some(Ok(None))
             }
-            #[cfg(target_os = "linux")]
             Ok(Answer::Checkpoint(ready)) => {
                 self.checkpoint = Some(ready);
                 self.state = "resumed";

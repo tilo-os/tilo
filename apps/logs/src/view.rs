@@ -450,10 +450,6 @@ impl Widget for JournalPane {
         }
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "spacing tokens and widths are small logical-pixel values"
-    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -520,10 +516,6 @@ impl Widget for JournalPane {
         node
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "viewport heights are small logical-pixel values"
-    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let rect = layout_rect(taffy, node, origin);
         let width_changed = (rect.width() - self.rect.width()).abs() > 0.5;

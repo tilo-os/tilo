@@ -32,7 +32,6 @@ const GIB: u64 = 1 << 30;
 
 /// Device-local inputs already reviewed in the installer journey. This value
 /// retains encrypted custody; it is never shared UI state or helper authority.
-#[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub(crate) struct ReviewedFullOs {
     pub facts: HostFacts,
@@ -73,16 +72,7 @@ impl HelperRun for helper::Running {
 
 /// Host commands a person can ask for from Review. Each needs a restart or an
 /// administrator prompt, so none of them runs on the UI thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum HostCommand {
-    /// Restart now; firmware then consumes the one-time `BootNext`.
-    Restart,
-    /// Restart into firmware settings (to turn Secure Boot off). On Windows
-    /// with BitLocker, protection is suspended for exactly one restart first.
-    FirmwareSettings { suspend_bitlocker: bool },
-    /// Windows only: `powercfg /h off` behind an administrator prompt.
-    DisableFastStartup,
-}
+pub(super) use imager_backend::setup::native_host::HostCommand;
 
 type ProbeFn = dyn Fn() -> HostFacts + Send + Sync;
 type PlanFn = dyn Fn(&Basis, Requirements) -> Result<Plan, PlanError> + Send + Sync;
@@ -123,7 +113,7 @@ impl StagingRuntime {
     }
 }
 
-#[cfg(all(any(target_os = "linux", windows), not(test)))]
+#[cfg(not(test))]
 fn live_component_paths(selected: &SelectedManifest) -> Result<ComponentPaths, String> {
     let mut esp = None;
     let mut root = None;
@@ -148,7 +138,7 @@ fn live_component_paths(selected: &SelectedManifest) -> Result<ComponentPaths, S
     })
 }
 
-#[cfg(not(all(any(target_os = "linux", windows), not(test))))]
+#[cfg(test)]
 fn live_component_paths(_: &SelectedManifest) -> Result<ComponentPaths, String> {
     Err("Verified download paths are unavailable in this build.".into())
 }
@@ -156,11 +146,9 @@ fn live_component_paths(_: &SelectedManifest) -> Result<ComponentPaths, String> 
 /// The UI-owned description of the next `stage` the consumer runs.
 #[derive(Clone)]
 struct Intent {
-    #[cfg(target_os = "linux")]
     migration: Option<super::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
-    #[cfg(target_os = "linux")]
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     operation_id: String,
     plan: Plan,
@@ -311,7 +299,6 @@ fn stage_request(
     manifest_dir: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Request, Outcome> {
-    #[cfg(target_os = "linux")]
     selected
         .bundle()
         .require_service_session_protocol(
@@ -326,7 +313,6 @@ fn stage_request(
                 super::strings::t("imager-setup-account-consumer-unavailable"),
             )
         })?;
-    #[cfg(target_os = "linux")]
     selected
         .bundle()
         .require_account_protocol(
@@ -341,7 +327,6 @@ fn stage_request(
                 super::strings::t("imager-setup-account-consumer-unavailable"),
             )
         })?;
-    #[cfg(target_os = "linux")]
     selected
         .bundle()
         .require_home_protocol(
@@ -356,7 +341,6 @@ fn stage_request(
                 super::strings::t("imager-setup-home-consumer-unavailable"),
             )
         })?;
-    #[cfg(target_os = "linux")]
     selected
         .bundle()
         .require_applications_protocol(
@@ -422,17 +406,17 @@ fn stage_request(
         {
             return Err(stale());
         }
-        let digest = replanned.digest();
+        let digest = replanned
+            .digest()
+            .map_err(|error| refusal("plan-digest", error.to_string()))?;
         (replanned, digest)
     };
-    #[cfg(target_os = "linux")]
     let migration = intent
         .migration
         .as_ref()
         .map(|grant| grant.bind(&intent.operation_id, &plan))
         .transpose()
         .map_err(|error| refusal("migration-changed", error.to_string()))?;
-    #[cfg(target_os = "linux")]
     if let (Some(raw), Some(grant)) = (&migration, &intent.migration) {
         let source = super::migration_handoff::Plan::parse(
             &serde_json::to_vec(raw)
@@ -440,9 +424,8 @@ fn stage_request(
         )
         .map_err(|error| refusal("migration-changed", error.to_string()))?;
         if grant
-            .computer_applications()
+            .has_computer_applications()
             .map_err(|error| refusal("migration-changed", error.to_string()))?
-            .is_some()
         {
             let reservation = plan
                 .target_extent
@@ -528,11 +511,6 @@ fn stage_request(
             intent.prepared_custody = Some(prepared);
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    let migration = None;
-    #[cfg(not(target_os = "linux"))]
-    let _ = cancel;
-    #[cfg(target_os = "linux")]
     if let Some(prepared) = &intent.prepared_custody {
         prepared
             .validate_recovery_for_stage(&plan, cancel)
@@ -590,9 +568,7 @@ pub(super) fn staging_consumer(
             link.finish(Action::Stage, &outcome);
             return Err(outcome.message.unwrap_or_default());
         };
-        #[cfg(target_os = "linux")]
         let mut intent = intent;
-        #[cfg(target_os = "linux")]
         if let Some(prepared) = &intent.prepared_custody {
             if let Ok((fresh, artifact, expected)) = prepared
                 .refreshed_for_transfer(cancel.signal())
@@ -615,7 +591,6 @@ pub(super) fn staging_consumer(
                 return Err(outcome.message.unwrap_or_default());
             }
         }
-        #[cfg(target_os = "linux")]
         let _prepared_custody = intent.prepared_custody.clone();
         let manifest_dir = tempfile::Builder::new()
             .prefix("tilo-staging-")
@@ -665,9 +640,7 @@ pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
 /// UI-side state of the Full Tilo installation.
 pub(super) struct InternalInstall {
-    #[cfg(target_os = "linux")]
     migration_intent: Option<super::migration_intent::MigrationIntent>,
-    #[cfg(target_os = "linux")]
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
@@ -692,9 +665,7 @@ pub(super) struct InternalInstall {
 impl InternalInstall {
     pub(super) fn new(runtime: StagingRuntime, gate: bool, host: HostOs) -> Self {
         Self {
-            #[cfg(target_os = "linux")]
             migration_intent: None,
-            #[cfg(target_os = "linux")]
             prepared_custody: None,
             profile: serde_json::Map::new(),
             link: StagingLink {
@@ -917,13 +888,13 @@ impl InternalInstall {
 
     /// The digest an install must name: the current plan, or the plan of the
     /// unfinished operation Continue resumes.
-    pub(super) fn reviewed_digest(&self) -> Option<String> {
+    pub(super) fn reviewed_digest(&self) -> Result<Option<String>, String> {
         if let Some(record) = self.pending() {
-            return Some(record.plan_sha256.clone());
+            return Ok(Some(record.plan_sha256.clone()));
         }
         match &self.plan {
-            Some(Ok(plan)) => Some(plan.digest()),
-            _ => None,
+            Some(Ok(plan)) => plan.digest().map(Some).map_err(|error| error.to_string()),
+            _ => Ok(None),
         }
     }
 
@@ -972,7 +943,6 @@ impl InternalInstall {
     /// Queue the reviewed `stage` for the staging consumer. The caller then
     /// asks the download worker to consume; on failure it calls
     /// [`Self::abort_stage`].
-    #[cfg(target_os = "linux")]
     pub(super) fn set_migration_intent(
         &mut self,
         intent: Option<super::migration_intent::MigrationIntent>,
@@ -993,7 +963,6 @@ impl InternalInstall {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn adopt_reviewed(
         &mut self,
         reviewed: ReviewedFullOs,
@@ -1066,18 +1035,16 @@ impl InternalInstall {
         download_ready: bool,
     ) -> Result<(), String> {
         self.install_blocker(download_ready)?;
-        if self.reviewed_digest().as_deref() != Some(reviewed) {
+        if self.reviewed_digest()?.as_deref() != Some(reviewed) {
             return Err(super::strings::t(
                 "imager-setup-internal-error-plan-changed",
             ));
         }
         let intent = if let Some(record) = self.pending() {
             Intent {
-                #[cfg(target_os = "linux")]
                 migration: None,
                 profile: record.profile.clone(),
                 prepared_setup: None,
-                #[cfg(target_os = "linux")]
                 prepared_custody: None,
                 operation_id: record.operation_id.clone(),
                 plan: record.plan.clone(),
@@ -1088,11 +1055,9 @@ impl InternalInstall {
                 return Err(super::strings::t("imager-setup-internal-error-no-plan"));
             };
             Intent {
-                #[cfg(target_os = "linux")]
                 migration: self.migration_intent.clone(),
                 profile: self.profile.clone(),
                 prepared_setup: {
-                    #[cfg(target_os = "linux")]
                     {
                         self.prepared_custody
                             .as_ref()
@@ -1102,16 +1067,11 @@ impl InternalInstall {
                                 super::strings::t("imager-setup-internal-error-prepared-setup")
                             })?
                     }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        None
-                    }
                 },
-                #[cfg(target_os = "linux")]
                 prepared_custody: self.prepared_custody.clone(),
                 operation_id: new_operation_id(),
                 plan: plan.clone(),
-                plan_sha256: plan.digest(),
+                plan_sha256: plan.digest().map_err(|error| error.to_string())?,
             }
         };
         self.link.lock().intent = Some(intent);
@@ -1417,67 +1377,9 @@ pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
 
 /// The platform remedies behind [`StagingRuntime::host_command`]. Tests and
 /// shots inject fakes; nothing here runs outside a live session.
-mod remedies {
-    use super::HostCommand;
-
-    #[cfg(target_os = "linux")]
-    fn run_checked(program: &str, args: &[&str]) -> Result<(), String> {
-        const OUTPUT_LIMIT: usize = 64 * 1024;
-        // polkit may wait for a person to authorise the restart.
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
-        let output = bounded_command::run(program, args, None, OUTPUT_LIMIT, TIMEOUT)
-            .map_err(|error| error.to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!(
-                "{program} exited with {}: {}",
-                output.status,
-                stderr.trim()
-            ))
-        }
-    }
-
-    /// Unverified on real hardware.
-    pub(super) fn run(command: HostCommand) -> Result<(), String> {
-        #[cfg(windows)]
-        {
-            // Each call raises its own UAC prompt; the firmware restart
-            // suspends BitLocker for one restart when asked.
-            use crate::setup::staging::windows::remedies;
-            match command {
-                HostCommand::Restart => remedies::restart_now(),
-                HostCommand::FirmwareSettings { suspend_bitlocker } => {
-                    remedies::restart_to_firmware_settings(suspend_bitlocker)
-                }
-                HostCommand::DisableFastStartup => remedies::disable_fast_startup(),
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            match command {
-                HostCommand::Restart => run_checked("systemctl", &["reboot"]),
-                HostCommand::FirmwareSettings { .. } => {
-                    run_checked("systemctl", &["reboot", "--firmware-setup"])
-                }
-                HostCommand::DisableFastStartup => Err(crate::setup::strings::t(
-                    "imager-setup-internal-error-remedy-unavailable",
-                )),
-            }
-        }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = command;
-            Err(crate::setup::strings::t(
-                "imager-setup-internal-error-remedy-unavailable",
-            ))
-        }
-    }
-}
 
 fn live_host_command(command: HostCommand) -> Result<(), String> {
-    remedies::run(command)
+    imager_backend::setup::native_host::run(command)
 }
 
 /// Deterministic host facts and a spec-shaped planner for `--shots` and
@@ -1733,7 +1635,7 @@ pub(super) mod tests {
         Record {
             schema: 1,
             operation_id: operation.into(),
-            plan_sha256: plan.digest(),
+            plan_sha256: plan.digest().unwrap(),
             plan,
             release: ReleaseRef {
                 release_id: "fixture-only".into(),
@@ -1756,7 +1658,6 @@ pub(super) mod tests {
             migration: None,
             profile: serde_json::Map::new(),
             prepared_setup: None,
-            #[cfg(target_os = "linux")]
             prepared_browser: None,
         }
     }
@@ -1842,8 +1743,11 @@ pub(super) mod tests {
         assert!(gated.adopt_reviewed(reviewed.clone(), true).is_err());
         assert!(install.adopt_reviewed(reviewed.clone(), false).is_err());
         install.adopt_reviewed(reviewed.clone(), true).unwrap();
-        assert_eq!(install.reviewed_digest().unwrap(), reviewed.plan.digest());
-        let digest = reviewed.plan.digest();
+        assert_eq!(
+            install.reviewed_digest().unwrap().unwrap(),
+            reviewed.plan.digest().unwrap()
+        );
+        let digest = reviewed.plan.digest().unwrap();
         install.begin_stage(&digest, true).unwrap();
         let intent = install.link.lock().intent.take().unwrap();
         assert!(intent.prepared_custody.is_some());
@@ -2046,7 +1950,7 @@ pub(super) mod tests {
             let (min, max) = install.bounds_gib().unwrap();
             assert_eq!(min, 35);
             assert_eq!(max, 400 - 120 - 42);
-            let first = install.reviewed_digest().unwrap();
+            let first = install.reviewed_digest().unwrap().unwrap();
             assert!(install.set_target_gib(min - 1).is_err());
             assert!(install.set_target_gib(max + 1).is_err());
             install.set_target_gib(100).unwrap();
@@ -2055,7 +1959,7 @@ pub(super) mod tests {
                 panic!("plan")
             };
             assert_eq!(target_extent_bytes(plan), 100 * GIB);
-            assert_ne!(install.reviewed_digest().unwrap(), first);
+            assert_ne!(install.reviewed_digest().unwrap().unwrap(), first);
 
             install.target_state().set(1000.0);
             assert!(install.poll());
@@ -2069,7 +1973,7 @@ pub(super) mod tests {
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
-            let digest = install.reviewed_digest().unwrap();
+            let digest = install.reviewed_digest().unwrap().unwrap();
             install.begin_stage(&digest, true).unwrap();
             let intent = install.link.lock().intent.clone().unwrap();
             let reviewed = intent.plan.clone();
@@ -2084,7 +1988,7 @@ pub(super) mod tests {
             )
             .unwrap();
             assert_ne!(request.plan_sha256, digest);
-            assert_eq!(request.plan_sha256, request.plan.digest());
+            assert_eq!(request.plan_sha256, request.plan.digest().unwrap());
             let s = request.plan.basis.disk.sector_bytes;
             assert_eq!(request.plan.staging_esp.extent().lbas() * s, 64 << 20);
             assert_eq!(
@@ -2101,7 +2005,7 @@ pub(super) mod tests {
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
-            let digest = install.reviewed_digest().unwrap();
+            let digest = install.reviewed_digest().unwrap().unwrap();
             install.begin_stage(&digest, true).unwrap();
             let intent = install.link.lock().intent.take().unwrap();
             let dir = tempfile::tempdir().unwrap();
@@ -2129,7 +2033,7 @@ pub(super) mod tests {
                     plan.staging_root.last_lba
                 ) >= 48 * GIB
             );
-            assert_ne!(install.reviewed_digest().unwrap(), digest);
+            assert_ne!(install.reviewed_digest().unwrap().unwrap(), digest);
         }
     }
 
@@ -2200,7 +2104,7 @@ pub(super) mod tests {
             let mut install = probed(&fakes, true);
             assert!(install.begin_stage("stale", true).is_err());
             assert!(!install.is_running());
-            let digest = install.reviewed_digest().unwrap();
+            let digest = install.reviewed_digest().unwrap().unwrap();
             assert!(install.begin_stage(&digest, false).is_err());
             install.begin_stage(&digest, true).unwrap();
             assert!(install.is_running());
@@ -2218,7 +2122,7 @@ pub(super) mod tests {
         {
             let fakes = Fakes::new(Vec::new());
             let mut install = probed(&fakes, true);
-            let digest = install.reviewed_digest().unwrap();
+            let digest = install.reviewed_digest().unwrap().unwrap();
             install.begin_stage(&digest, true).unwrap();
             let intent = install.link.lock().intent.clone().unwrap();
             let dir = tempfile::tempdir().unwrap();
@@ -2233,7 +2137,7 @@ pub(super) mod tests {
             .unwrap();
             assert_eq!(request.action, Action::Stage);
             assert_eq!(request.plan_sha256, digest);
-            assert_eq!(request.plan.digest(), digest);
+            assert_eq!(request.plan.digest().unwrap(), digest);
             assert_eq!(request.release.release_id, "fixture-only");
             assert_eq!(request.release.architecture, "x86_64");
             assert_eq!(request.release.manifest_sha256, manifest.manifest_sha256());

@@ -1,14 +1,41 @@
 use super::*;
 use crate::auth;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::TransportHint;
-use tilo_peer_state::{SeedState, StatePeer, join, seed_room};
+use tilo_peer_state::{SeedState, StatePeer, seed_room};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_workspace_join::{self as join, TransportHint};
 use web_time::{Duration, SystemTime};
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+/// The same reads the committed native owner view answers in production
+/// (`tilo-joined-room`), here over a real governed `StatePeer`.
+impl CommittedWorkspace for StatePeer {
+    fn authority(&self) -> &DeviceCert {
+        StatePeer::authority(self)
+    }
+    fn room(&self) -> &str {
+        StatePeer::room(self)
+    }
+    fn governance_owner(&self) -> Option<String> {
+        self.admitted_room()
+            .and_then(|room| tilo_peer_state::room::governance_of(Some(room)).owner)
+    }
+    fn revocations(&self) -> Vec<RevocationEntry> {
+        StatePeer::revocations(self)
+    }
+    fn has_certificate(&self, device: &DeviceCert) -> bool {
+        self.certificates().contains(device)
+    }
+    fn is_member_device(&self, device: &[u8; 32], now: SystemTime) -> Result<bool, String> {
+        Ok(self.governed_access(now)?.member_devices.contains(device))
+    }
+    fn has_permissions(&self, device: [u8; 32], now: SystemTime) -> bool {
+        self.permissions(device, now).is_ok()
+    }
+}
 const NS: u64 = 1_000_000_000;
 
 struct Fixture {

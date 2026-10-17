@@ -184,13 +184,18 @@ async fn fresh_membership_inner(
     trace: Option<MembershipTrace>,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     {
+        let locking = crate::timing::start();
         let runtime = workspace.lock().await;
+        crate::timing::window("room.lock", locking);
         if runtime.membership_is_current() {
             // No disk IO, no worker, no lane.
             return Ok(runtime);
         }
     }
-    reload_membership(workspace, trace).await
+    let reloading = crate::timing::start();
+    let reloaded = reload_membership(workspace, trace).await;
+    crate::timing::window("room.membership_reload", reloading);
+    reloaded
 }
 
 async fn reload_membership(
@@ -363,7 +368,7 @@ pub(crate) async fn replace_governed_access(
         let _slot = slot;
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
-        {
+        let narrowed = {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
                 .membership_revision
@@ -371,34 +376,58 @@ pub(crate) async fn replace_governed_access(
                 .ok_or_else(|| io_error("workspace membership revision exhausted"))?;
             let requested_devices: std::collections::HashSet<_> =
                 access.member_devices.iter().copied().collect();
-            if let Some(ceiling) = &mut runtime.membership_ceiling {
-                ceiling.retain(|device| requested_devices.contains(device));
-            } else {
-                runtime.membership_ceiling = Some(requested_devices);
-            }
             let removed: Vec<[u8; 32]> = runtime
                 .membership
                 .devices
                 .iter()
                 .copied()
-                .filter(|device| !access.member_devices.contains(device))
+                .filter(|device| !requested_devices.contains(device))
                 .collect();
             runtime
                 .membership
                 .devices
-                .retain(|device| access.member_devices.contains(device));
+                .retain(|device| requested_devices.contains(device));
+            if let Some(ceiling) = &mut runtime.membership_ceiling {
+                ceiling.retain(|device| requested_devices.contains(device));
+            } else {
+                runtime.membership_ceiling = Some(requested_devices);
+            }
+            let requested_roots: std::collections::HashSet<_> =
+                access.member_user_roots.iter().collect();
+            let roots = runtime.governed_user_roots.len();
             runtime
                 .governed_user_roots
-                .retain(|root| access.member_user_roots.contains(root));
-            runtime.admission = AdmissionMode::Governed;
+                .retain(|root| requested_roots.contains(root));
+            let roots_removed = runtime.governed_user_roots.len() != roots;
+            let governed_before =
+                std::mem::replace(&mut runtime.admission, AdmissionMode::Governed)
+                    == AdmissionMode::Governed;
             // Refuse while the authority lane is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
+            !removed.is_empty() || roots_removed || !governed_before
+        };
+        // Sessions of removed devices and roots re-check now, before the
+        // write. A replacement that only admits narrows nobody's access: a
+        // public room's every admission woke every session it held.
+        if narrowed {
+            crate::authority_epoch::bump();
         }
-        // Sessions of removed devices and roots re-check now, before the write.
-        crate::authority_epoch::bump();
         let saved = access.clone();
-        authorization_io(move || store.save_governed_access(&saved), None).await?;
+        authorization_io(
+            move || {
+                let bytes = store.save_governed_access(&saved)?;
+                // Applied to the runtime below, its narrowing announced
+                // above: the watch need not announce the file again.
+                crate::membership_watch::wrote_own(
+                    &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
+                    &bytes,
+                );
+                Ok(())
+            },
+            None,
+        )
+        .await?;
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();

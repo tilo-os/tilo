@@ -1,5 +1,5 @@
 use super::{InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 
 fn fixture(
     root: &std::path::Path,

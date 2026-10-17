@@ -221,9 +221,10 @@ impl<R: Resource> Reader<R> {
     /// touch: every [`Collection`](crate::Collection) item, the items of each
     /// [`Keyed`](crate::Keyed) or [`Ordered`](crate::Ordered) field (a
     /// touched one is copied once), and the chunks of each
-    /// [`Set`](crate::Set) and [`Grid`](crate::Grid). Plain fields (a `Vec`,
-    /// a `BTreeMap`) are copied whole: a view that needs only part of a
-    /// state with large ones keeps that part rather than the `Rc`.
+    /// [`Map`](crate::Map), [`Set`](crate::Set) and [`Grid`](crate::Grid).
+    /// Plain fields (a `Vec`, a `BTreeMap`) are copied whole: a large one
+    /// belongs in one of those, and a view that needs only part of a state
+    /// keeps that part rather than the `Rc`.
     pub fn state(&self) -> &Rc<R::State> {
         &self.state
     }

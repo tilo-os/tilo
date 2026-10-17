@@ -216,7 +216,7 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         },
         manifest_path,
         component_paths,
-        plan_sha256: plan.digest(),
+        plan_sha256: plan.digest().map_err(|error| other(error.to_string()))?,
         plan,
         profile,
         migration: None,

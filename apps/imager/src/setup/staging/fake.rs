@@ -463,7 +463,7 @@ mod tests {
                 staging_esp: esp_path.to_string_lossy().into(),
                 staging_root: root_path.to_string_lossy().into(),
             },
-            plan_sha256: plan.digest(),
+            plan_sha256: plan.digest().unwrap(),
             plan,
             profile,
             migration: None,
@@ -1152,7 +1152,7 @@ mod tests {
                 } else {
                     plan.target_extent.first_lba -= 2048;
                 }
-                w.request.plan_sha256 = w.request.plan.digest();
+                w.request.plan_sha256 = w.request.plan.digest().unwrap();
                 let err = run(&mut p, &w, Action::Stage).unwrap_err();
                 assert_eq!(err.code, codes::REQUEST_INVALID, "{err}");
                 assert_eq!(p.mutations, 0);

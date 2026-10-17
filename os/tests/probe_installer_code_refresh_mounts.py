@@ -29,7 +29,7 @@ class RealMountTransaction(unittest.TestCase):
                             "run this probe under unshare -m --propagation private")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); state = root / 'state'
-            files = {'usr/libexec/tilo-install': b'new first', 'usr/libexec/tilo-install-dev-ssh.py': b'new second'}
+            files = {'usr/libexec/tilo-install': b'new first', 'usr/libexec/tilo-boot-mount-contract': b'new second'}
             targets = []
             for relative in files:
                 target = root / relative; target.parent.mkdir(parents=True, exist_ok=True)

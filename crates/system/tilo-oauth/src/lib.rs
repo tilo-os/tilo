@@ -29,15 +29,6 @@
 //! Nothing here stores tokens. Callers own custody (the account vault) and
 //! decide which party ever sees which token.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fmt;
 
 use base64::Engine as _;

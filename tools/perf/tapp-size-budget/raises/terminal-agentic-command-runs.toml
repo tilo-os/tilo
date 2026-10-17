@@ -2,5 +2,4 @@ reason = "the terminal records each command as a structured run (command, exit s
 run = 99935
 
 [apps."so.tilo.terminal"]
-x86_64 = 131072
 aarch64 = 131072

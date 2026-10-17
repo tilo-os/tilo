@@ -37,15 +37,6 @@
 //! - No networking. Fetching the payload of a thin `.tapp` belongs to
 //!   whoever knows where bytes are.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod blobs;
 pub mod chunks;
 #[cfg(not(target_arch = "wasm32"))]

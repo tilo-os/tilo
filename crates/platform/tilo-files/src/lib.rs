@@ -60,14 +60,6 @@
 //! - Native operations run on the polling thread rather than `tilo_rt::io`.
 
 #![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-#![cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(
         clippy::unused_async,
@@ -495,7 +487,6 @@ impl Dir {
     ///
     /// [`FsError::Unsupported`] with [`Feature::Trash`] on every target.
     #[allow(
-        clippy::unused_self,
         clippy::unused_async,
         reason = "the signature is the API; backends arrive later"
     )]
@@ -671,10 +662,6 @@ fn disk_watch(root: &std::path::Path, path: &VPath) -> Result<Watch, FsError> {
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 )))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the signature of the backend a `watch` build has"
-)]
 fn disk_watch(_root: &std::path::Path, _path: &VPath) -> Result<Watch, FsError> {
     Err(FsError::Unsupported {
         feature: Feature::Watch,

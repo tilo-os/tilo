@@ -31,8 +31,7 @@ ASSETS = {
            ('dependencies/common.py', 0o644),
        )},
     **{f'os/usr/libexec/{name}': (f'usr/libexec/{name}', 0o755) for name in (
-        'tilo-firstboot-user', 'tilo-staging-handoff',
-        'tilo-store-volume', 'tilo-install-handoff-copy.py',
+        'tilo-firstboot-user', 'tilo-store-volume',
     )},
     'os/scripts/verify-account-consumer-capability.py':
         ('usr/libexec/tilo-verify-account-consumer-capability', 0o755),
@@ -44,7 +43,7 @@ ASSETS = {
     'os/usr/lib/tmpfiles.d/tilo.conf': ('usr/lib/tmpfiles.d/tilo.conf', 0o644),
     'os/registry-runtime-publisher.hex':
         ('etc/tilo/runtime-bundle-trusted-publishers.txt', 0o644),
-    'apps/imager/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app':
+    'crates/platform/imager-backend/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app':
         ('usr/libexec/tilo-installer-source-fixture/fixture-app', 0o755),
     'os/scripts/installer-receive-fixture/prerequisite-readiness.py':
         ('usr/libexec/tilo-native-prerequisite-readiness', 0o755),

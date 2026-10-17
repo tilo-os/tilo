@@ -3,7 +3,7 @@ use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::SystemTime;
 use tilo_desktop::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId,
 };

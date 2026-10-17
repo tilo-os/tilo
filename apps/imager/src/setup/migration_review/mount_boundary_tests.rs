@@ -1,5 +1,6 @@
 //! Real disposable mount qualification, never a fake inventory or skipped test.
 use super::*;
+use crate::setup::migration::PinnedDirectory;
 use std::{
     ffi::CString,
     os::unix::{
@@ -9,6 +10,11 @@ use std::{
     },
     process::{Child, Command, ExitStatus},
     time::{Duration, Instant},
+};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 const CHILD: &str = "TILO_HOME_MOUNT_BOUNDARY_CHILD";
@@ -311,7 +317,7 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
         let binding = std::rc::Rc::new(std::cell::RefCell::new(None));
         let owned = binding.clone();
         let target = directory_target.clone();
-        let observer = super::mounted_locations::DiscoveryObserver::install(move |path| {
+        let observer = DiscoveryObserver::install(move |path| {
             assert_ne!(
                 path,
                 Path::new("bound-directory/must-not-enumerate"),

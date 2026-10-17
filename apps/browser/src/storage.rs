@@ -130,7 +130,7 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// recreate any part of the path.
 pub(crate) fn private_root_write_guard(
     directory: &Path,
-) -> Result<Option<advisory_lock::FileLock>, String> {
+) -> Result<Option<tilo_files::native::lock::FileLock>, String> {
     let Some(root) = ROOT.get() else {
         return Ok(None);
     };
@@ -145,7 +145,7 @@ pub(crate) fn private_root_write_guard(
         .write(true)
         .open(root.join(PRIVATE_ROOT_LOCK))
         .map_err(|_| "Private browser cache is closing".to_string())?;
-    let lock = advisory_lock::FileLock::shared(file)
+    let lock = tilo_files::native::lock::FileLock::shared(file)
         .map_err(|_| "Private browser cache lock is unavailable".to_string())?;
     if !is_owned_private_root(root) {
         return Err("Private browser cache is closing".into());

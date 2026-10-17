@@ -273,10 +273,6 @@ pub fn serve_workspace_connected_with_handoffs(
     })
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc servers are Rc-based and run on a LocalSet by construction"
-)]
 async fn accept(
     listener: &tokio::net::UnixListener,
     backend: &Arc<dyn WorkspaceBackend>,

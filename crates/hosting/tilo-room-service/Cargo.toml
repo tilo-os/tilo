@@ -12,6 +12,8 @@ anyhow.workspace = true
 bytes.workspace = true
 futures = { workspace = true, features = ["std"] }
 hex.workspace = true
+# A throwaway room's owner key, from the operating system.
+getrandom.workspace = true
 # Keyed hashes of client addresses for join limits and cooldowns.
 hmac.workspace = true
 sha2.workspace = true
@@ -23,6 +25,8 @@ rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The owner key is compared in constant time.
+subtle = "2.6"
 # The operator protocol spoken with each room's `tilo-relay room` child.
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # The HTTPS identity loader and server config the relay's listener uses too.

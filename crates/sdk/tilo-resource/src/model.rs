@@ -282,9 +282,14 @@ pub trait Model: Sized + 'static {
     /// The field edits that turn `self` into `after`, at `path` below the
     /// record: what a surface that edited a local copy submits. The default
     /// sets the value whole when it changed; containers and records edit
-    /// only what differs, item by item and field by field.
+    /// only what differs, item by item and field by field. A value that
+    /// would store as it is ([`Self::stores_as`]) is compared in memory,
+    /// without turning either side into JSON.
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        if after.stores_as(self) {
+            return;
+        }
         let value = after.to_json();
         if self.to_json() != value {
             out.push(crate::Edit::new(path.to_vec(), EditOp::Set { value }));

@@ -7,7 +7,8 @@ license.workspace = true
 description = "Portable feedback privacy review contract and deterministic redaction floor."
 
 [dependencies]
-regex.workspace = true
+# Its detectors run in the browser start module; all patterns are ASCII.
+regex-lite.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

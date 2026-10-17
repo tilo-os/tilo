@@ -347,6 +347,22 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
             text = (root / suite).read_text(encoding="utf-8")
             if re.search(r"\bTestCase\b", text) and "unittest.main(" not in text:
                 problems.append(f"{suite}: defines unittest cases but never calls unittest.main()")
+    # Cargo's automatically discovered integration targets are gates too.
+    # Require a tracked package manifest, an actual test, and an explicit
+    # reader declaration so covered drivers also participate in selection.
+    packages = {name: directory for directory, name in cargo_packages(root, tracked).items()}
+    for entry in manifest.cargo:
+        directory = packages.get(entry.package)
+        if directory is None:
+            continue
+        cargo = tomllib.loads((root / directory / "Cargo.toml").read_text(encoding="utf-8"))
+        if cargo.get("package", {}).get("autotests", True) is False:
+            continue
+        for reader in entry.readers:
+            if (reader in tracked_set
+                    and Path(reader).parent.as_posix() == f"{directory}/tests"
+                    and re.search(r"#\[test\]", (root / reader).read_text(encoding="utf-8"))):
+                gated.add(reader)
     for suite, by in sorted(manifest.covered.items()):
         if by not in gated and by not in required:
             problems.append(f"{suite}: covering suite {by} is not itself gated")

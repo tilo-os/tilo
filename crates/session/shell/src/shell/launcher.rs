@@ -1630,8 +1630,9 @@ fn trusted_identities_dir() -> PathBuf {
 /// Atomically stage a bounded governance projection for one room.
 ///
 /// The session owns both directory and file. A temporary 0600 inode is fully
-/// written and synced before rename, so Files sees either the previous whole
-/// snapshot or the next whole snapshot, never a prefix. This function accepts
+/// written before rename, so Files sees either the previous whole snapshot or
+/// the next whole snapshot, never a prefix. It is not synced: the runtime
+/// directory does not outlive the session (see [`write_runtime_private`]). This function accepts
 /// only the typed governance format; Contacts and presence payloads cannot be
 /// accidentally serialized through it.
 ///
@@ -1667,8 +1668,23 @@ pub fn write_trusted_identities_projection(
     let final_path = trusted_identities_dir()
         .join(room.to_string())
         .join(TRUSTED_IDENTITIES_FILE);
-    tilo_files::native::atomic::write_private(&final_path, &bytes)?;
+    write_runtime_private(&final_path, &bytes)?;
     Ok(final_path)
+}
+
+/// Atomically replace a private file under the runtime directory: the parent
+/// is created owner-only (`0700`, tightened when it exists) and the file lands
+/// with mode `0600` before it is visible at `path`.
+///
+/// Nothing is synced. These files live in `$XDG_RUNTIME_DIR`, a tmpfs a crash
+/// discards and the session regenerates, so a sync buys no durability; and
+/// they are written on the compositor's loop (on every peer sync and launch),
+/// where a sync under I/O pressure froze the desktop for seconds.
+pub(crate) fn write_runtime_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tilo_files::native::atomic::create_private_directory(parent)?;
+    }
+    tilo_files::native::atomic::write_regenerable_with_mode(path, bytes, 0o600)
 }
 
 /// Publish a complete accepted room-governance projection for later Files
@@ -1842,8 +1858,11 @@ fn write_capabilities_file(
         .prefix("launch-")
         .suffix(".json")
         .tempfile_in(capabilities_dir())?;
+    // Not synced: the launcher reads it through the page cache, and the
+    // runtime tmpfs does not outlive the session. This runs on the
+    // compositor's loop for synchronous launches, where a sync under I/O
+    // pressure froze the desktop.
     file.write_all(&json)?;
-    file.as_file().sync_all()?;
     Ok(Some(file))
 }
 
@@ -2500,6 +2519,9 @@ fn build_launch_command_for(
         uri,
     } = *extras;
     let application_creation = original_application_creation(app);
+    if application_creation.is_none() {
+        note_missing_creation_evidence(app);
+    }
     register_signed_surface(app);
     let mut args = vec![
         "run".to_string(),
@@ -2643,6 +2665,69 @@ fn original_application_creation(
     cached_creation_evidence(key, || {
         verify_original_application_creation(app, &installed, &manifest)
     })
+}
+
+/// Why `app`'s launch carries no creation evidence: the first link of
+/// [`original_application_creation`] that does not hold. Diagnostic only;
+/// it decides nothing.
+fn creation_evidence_gap(app: &InstalledApp) -> String {
+    let installed = match package_store::find_installed(&app.package_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => return "the package store holds no installed copy".into(),
+        Err(error) => return format!("the package store cannot be read: {error}"),
+    };
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return format!(
+            "the launched copy ({}, {}) is not the installed one ({}, {})",
+            app.manifest_path.display(),
+            app.payload_root.display(),
+            installed.manifest_path.display(),
+            installed.payload_root.display()
+        );
+    }
+    let Ok(manifest) = std::fs::read(&app.manifest_path) else {
+        return "the installed manifest cannot be read".into();
+    };
+    let dir = package_store::integrity::record_dir(&installed);
+    let record =
+        match package_store::integrity::read_record(&dir, &installed.id, &installed.package_id_hex)
+        {
+            Ok(record) => record,
+            Err(error) => return format!("the signed record in {} fails: {error}", dir.display()),
+        };
+    if manifest != record.manifest_bytes {
+        return "the installed manifest differs from the signed one".into();
+    }
+    let declared = std::str::from_utf8(&record.manifest_bytes)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(text).ok())
+        .and_then(|manifest| {
+            manifest
+                .get("resources")?
+                .get("kinds")?
+                .as_array()
+                .map(Vec::len)
+        });
+    match declared {
+        None => "the signed manifest declares no resource kinds".into(),
+        Some(kinds) => format!("the signed manifest's {kinds} resource kinds do not verify"),
+    }
+}
+
+/// Log once per package and session why its launches carry no creation
+/// evidence: such an app cannot create its record in a committed workspace.
+fn note_missing_creation_evidence(app: &InstalledApp) {
+    static NOTED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(Mutex::default);
+    if !lock(&NOTED).insert(app.package_id.clone()) {
+        return;
+    }
+    tracing::error!(
+        target: "tilo::app_launch",
+        package_id = %app.package_id,
+        reason = %creation_evidence_gap(app),
+        "launch carries no original-package creation evidence"
+    );
 }
 
 /// `verify`'s evidence for `key`, verified once while it holds.
@@ -8617,8 +8702,62 @@ mod tests {
             );
         }
 
+        /// Peer syncs publish the projection and synchronous launches stage
+        /// the capability file from the compositor's loop. Both live in the
+        /// runtime tmpfs and must never wait for the disk there.
+        #[cfg(target_os = "linux")]
+        fn runtime_files_never_wait_for_the_disk() {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", tmp.path());
+            let room = RoomId::new();
+            let grants = sandbox(vec![fs_grant(
+                "so.tilo.hello",
+                "/var/workspace/books",
+                Access::Read,
+            )]);
+            let (projection, capabilities) =
+                crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+                    let projection = write_trusted_identities_projection(
+                        room,
+                        &tilo_user_identity::TrustedIdentityProjectionV2::empty(),
+                    )
+                    .expect("staging the projection needs no disk sync");
+                    let capabilities = write_capabilities_file("so.tilo.hello", &grants)
+                        .expect("staging the capabilities needs no disk sync")
+                        .expect("grants need a file");
+                    (projection, capabilities)
+                });
+            assert_eq!(
+                serde_json::from_slice::<tilo_user_identity::TrustedIdentityProjectionV2>(
+                    &std::fs::read(&projection).unwrap(),
+                )
+                .unwrap(),
+                tilo_user_identity::TrustedIdentityProjectionV2::empty()
+            );
+            assert_eq!(
+                std::fs::metadata(&projection).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::read(capabilities.path()).unwrap(),
+                serde_json::to_vec(&grants).unwrap()
+            );
+            assert_eq!(
+                std::fs::metadata(capabilities.path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
         governance_projection_is_atomic_bounded_and_owner_only();
         files_launch_receives_only_the_staged_projection_path();
+        #[cfg(target_os = "linux")]
+        runtime_files_never_wait_for_the_disk();
     }
 }
 

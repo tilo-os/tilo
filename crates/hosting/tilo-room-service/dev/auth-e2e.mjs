@@ -47,6 +47,27 @@
 //                  the new host: the old state was never reused or handed to it
 //   stale-rejoined the old room's link once joined again: refused without a
 //                  join, the new membership kept
+//   pruned-membership
+//                  the host started again (not anew) with a one-minute prune
+//                  horizon (TILO_ROOMS_PRUNE_AFTER_MINS), and the person away
+//                  past it and its next prune: the host no longer has them.
+//                  The bare entry joins at the door exactly once, and the
+//                  desktop presents as the same person in the same room
+//   removed-member the host started again with the person as one of the
+//                  room's moderators (TILO_ROOMS_MODERATORS: a moderator
+//                  removes the guests ranked below them); a second person
+//                  joins, and the moderator removes them through the
+//                  desktop's own door (the room's remove-member action,
+//                  confirmed). The removed person's
+//                  page makes no join while open; reloaded, it is refused,
+//                  saying they may have been removed, with no desktop and at
+//                  most one join, which the door turns away
+//   removed-entry  the removed person opens the bare entry: refused, saying
+//                  they were removed and that an invitation brings them back,
+//                  with no desktop, one join the door turns away, and the
+//                  membership no longer kept
+//   cooling-down   a fresh profile from the removed person's address is
+//                  refused at the door, saying why, with no desktop
 //
 // Every check runs and is reported (summary.json, summary.md under --out,
 // with each page's console and a screenshot of each failure); the run exits 1
@@ -177,12 +198,13 @@ async function freePort(taken, span = 0) {
 }
 
 /** run.py with `ports`, until its banner; resolves to `{room, stop}`. */
-async function startStack(options, ports, {fresh}) {
+async function startStack(options, ports, {fresh, env = {}}) {
   const args = [RUN_PY, '--scratch', options.scratch, '--bundle', options.bundle,
     '--relay-bin', options.relayBin, '--room-service-bin', options.roomServiceBin, '--name', 'auth',
     '--web-port', String(ports.web), '--api-port', String(ports.api), '--port-base', String(ports.base),
     ...(fresh ? ['--fresh'] : [])];
-  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe']});
+  // run.py hands TILO_ROOMS_* in its environment to the room service.
+  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ...env}});
   let output = '';
   const exited = new Promise(done => child.once('exit', code => done(code)));
   const banner = new Promise((done, fail) => {
@@ -263,6 +285,7 @@ async function settle(tab, {relay, timeout}) {
     arrival: document.documentElement.dataset.arrival ?? null,
     status: document.getElementById('status')?.textContent ?? '',
     hash: location.hash,
+    desktop: Boolean(globalThis.tiloMount),
     membership: (${membershipFor})(localStorage.getItem(${JSON.stringify(MEMBERSHIPS)}), ${JSON.stringify(relay)}),
     // Where a page that never settled stood: still loading its modules, or past them.
     loading: document.documentElement.dataset.entry ? undefined : {readyState: document.readyState,
@@ -318,6 +341,41 @@ async function keptFor(browser, context, web, profile) {
   } finally {
     await probe.close();
   }
+}
+
+/** The prune horizon the pruned-membership check runs the host with, in
+ * minutes, and how long it waits for the host to prune: the horizon, then
+ * the next prune pass (the relay prunes at most once a minute, and a guest
+ * it first sees on a pass is pruned two passes on), and a margin. */
+export const PRUNE_AFTER_MINS = 1;
+export const PRUNE_WAIT_MS = (2 * PRUNE_AFTER_MINS * 60 + 30) * 1000;
+
+/** The expression a moderator's page evaluates to remove `person` from `room`
+ * through the desktop's door: the room's own `remove-member` action,
+ * confirmed. Resolves to `{ok, removed, error}`. */
+export const REMOVE_MEMBER = (room, person) => `(async () => {
+  try {
+    const result = await globalThis.tiloMount.invokeAction(${JSON.stringify(`workspace.permissions:${room}`)}, 'remove-member',
+      {person: ${JSON.stringify(person)}}, {confirm: true});
+    const removed = result?.output?.value?.members?.find(member => member.userPublicKey === ${JSON.stringify(person)})?.removed ?? null;
+    return {ok: result?.state === 'completed' && removed === true, state: result?.state ?? null, removed};
+  } catch (error) {
+    return {ok: false, error: String(error?.message ?? error)};
+  }
+})()`;
+
+/** Remove `person` from `room` from a moderator's `tab`; resolves to what
+ * the last attempt answered. The relay gives a declared moderator their role
+ * once it governs the room, which may follow the room's start by a moment,
+ * so a refusal is asked again a few times. */
+async function removeMember(tab, room, person) {
+  let answer = {ok: false, error: 'not asked'};
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    answer = {...await tab.evaluate(REMOVE_MEMBER(room, person)).catch(error => ({ok: false, error: error.message})), attempt};
+    if (answer.ok) break;
+    await sleep(3000);
+  }
+  return answer;
 }
 
 /** Whether the page shows an entry card (an offer waiting for the person). */
@@ -556,6 +614,90 @@ async function main() {
       membership: staleAgainOpened.membership});
     if (staleAgainOpened.entry !== 'refused') await shoot('stale-rejoined', staleAgain);
     await staleAgain.close();
+
+    // pruned-membership: the same host started again (its room kept) with a
+    // short prune horizon, every tab of the person closed, and the person
+    // away past it: the host prunes them.
+    const keptRoom = stack.room;
+    await stack.stop();
+    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_PRUNE_AFTER_MINS: String(PRUNE_AFTER_MINS)}});
+    await sleep(PRUNE_WAIT_MS);
+    const returning = await page(browser, person);
+    const returned = await open(returning, `${web}/`, settleOptions);
+    keepLog('pruned-membership', returning);
+    const prunedJoins = joinsTo(returning.requests, api);
+    check('pruned-membership', stack.room === keptRoom && returned.entry === 'open' && returned.arrival === 'done'
+      && prunedJoins.length === 1 && prunedJoins[0].status === 200
+      && returned.membership?.userPublicKey === me && returned.membership?.room === keptRoom,
+    {entry: returned.entry, arrival: returned.arrival, joins: prunedJoins.map(j => j.status), membership: returned.membership,
+      room: stack.room, keptRoom, status: returned.status, loading: returned.loading});
+    if (returned.entry !== 'open') await shoot('pruned-membership', returning);
+    await returning.close();
+
+    // removed-member: the host started again with the person as one of the
+    // room's moderators, and someone new in the room for them to remove.
+    // This comes last: the removal cools the address every person here
+    // joins from down for a day, and the room keeps that across restarts.
+    await stack.stop();
+    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_MODERATORS: me}});
+    const moderator = await page(browser, person);
+    const moderating = await open(moderator, `${web}/`, settleOptions);
+    keepLog('moderator', moderator);
+    if (moderating.entry !== 'open') await shoot('moderator', moderator);
+    const visitor = await browser.context();
+    const guest = await page(browser, visitor);
+    const guestOpened = await open(guest, `${web}/`, settleOptions);
+    const guestKey = guestOpened.membership?.userPublicKey ?? null;
+    const guestJoins = joinsTo(guest.requests, api);
+    if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
+    const removal = moderating.entry === 'open' && /^[0-9a-f]{64}$/.test(guestKey ?? '') && guestKey !== me
+      ? await removeMember(moderator, stack.room, guestKey) : {ok: false, error: 'no moderator and guest to remove'};
+    // Their page, left open, makes no join of its own; reloaded, it is refused.
+    const sinceRemoval = guest.requests.length;
+    await sleep(10_000);
+    const leftOpen = joinsTo(guest.requests.slice(sinceRemoval), api).length;
+    const removedOpened = await reload(guest, settleOptions);
+    keepLog('removed-member', guest);
+    const removedJoins = joinsTo(guest.requests.slice(sinceRemoval), api);
+    check('removed-member', moderating.entry === 'open' && moderating.membership?.userPublicKey === me
+      && guestOpened.entry === 'open' && guestJoins.length === 1 && guestJoins[0].status === 200 && removal.ok
+      && leftOpen === 0 && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done'
+      && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= 1 && removedJoins.every(j => j.status === 403),
+    {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
+      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
+        userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, leftOpen,
+      entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
+      joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,
+      hash: removedOpened.hash});
+    if (removedOpened.entry !== 'refused') await shoot('removed-member', guest);
+    await guest.close();
+
+    // removed-entry: the bare entry, where the host's door is asked.
+    const entering = await page(browser, visitor);
+    const removedEntry = await open(entering, `${web}/`, settleOptions);
+    keepLog('removed-entry', entering);
+    const entryJoins = joinsTo(entering.requests, api);
+    check('removed-entry', removedEntry.entry === 'refused' && !removedEntry.desktop && removedEntry.arrival !== 'done'
+      && /\bremoved\b/.test(removedEntry.status) && /invitation/.test(removedEntry.status) && removedEntry.membership === null
+      && entryJoins.length === 1 && entryJoins[0].status === 403,
+    {entry: removedEntry.entry, desktop: removedEntry.desktop, arrival: removedEntry.arrival, joins: entryJoins.map(j => j.status),
+      membership: removedEntry.membership, status: removedEntry.status});
+    if (removedEntry.entry !== 'refused') await shoot('removed-entry', entering);
+    await entering.close();
+
+    // cooling-down: a fresh profile from the address the removed person
+    // joined from.
+    const newcomer = await page(browser, await browser.context());
+    const turnedAway = await open(newcomer, `${web}/`, settleOptions);
+    keepLog('cooling-down', newcomer);
+    const coolingJoins = joinsTo(newcomer.requests, api);
+    check('cooling-down', turnedAway.entry === 'refused' && !turnedAway.desktop && turnedAway.membership === null
+      && coolingJoins.length === 1 && coolingJoins[0].status === 403 && /\bremoved\b/.test(turnedAway.status),
+    {entry: turnedAway.entry, desktop: turnedAway.desktop, joins: coolingJoins.map(j => j.status),
+      membership: turnedAway.membership, status: turnedAway.status});
+    if (turnedAway.entry !== 'refused') await shoot('cooling-down', newcomer);
+    await newcomer.close();
+    await moderator.close();
   } finally {
     await browser.close().catch(error => console.error(`closing Chrome: ${error.message}`));
     await stack.stop();

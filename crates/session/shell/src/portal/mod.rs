@@ -255,6 +255,16 @@ pub(crate) fn option<T: TryFrom<zbus::zvariant::OwnedValue>>(
     T::try_from(options.get(key)?.try_clone().ok()?).ok()
 }
 
+/// A text option an app may show the user or pass on: at most `max` bytes
+/// and free of control characters; `None` otherwise.
+pub(crate) fn text_option(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+    max: usize,
+) -> Option<String> {
+    option::<String>(options, key).filter(|v| v.len() <= max && !v.chars().any(char::is_control))
+}
+
 /// Identity of the sandboxed app that issued a portal request.
 ///
 /// Production fills this in from the bridge tag + per-workspace PID→app

@@ -1417,13 +1417,29 @@ fn export_home_peer(
     Ok(())
 }
 
+/// Serve this replica's small file versions to the compute worker beside it
+/// ([`fs::replica_content`]), owner-only, from the workspace's own cache
+/// directory. Best-effort: without it the worker fetches those inputs.
+fn spawn_replica_content(
+    cache_dir: &Path,
+    store: Arc<ContentStore>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let socket = fs::replica_content::socket_path(cache_dir);
+    match bind_private_socket(&socket) {
+        Ok(listener) => Some(tokio::spawn(fs::replica_content::serve(listener, store))),
+        Err(error) => {
+            eprintln!(
+                "could not serve replica content at {}: {error}",
+                socket.display()
+            );
+            None
+        }
+    }
+}
+
 /// Join a workspace as a durable, serving peer without a FUSE mount. The
 /// normal workspace router keeps the supplied live capability policy in front
 /// of its blob provider, so a home peer never becomes an unenforced source.
-#[allow(
-    clippy::too_many_lines,
-    reason = "replica startup is one ordered validation and service-lifetime sequence"
-)]
 async fn replica(config_path: PathBuf) -> Result<()> {
     let config_text = std::fs::read_to_string(&config_path)
         .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
@@ -1517,6 +1533,7 @@ async fn replica_workspace(
     let acl = authority.handle();
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
+    let _replica_content = spawn_replica_content(&bundle.cache_dir, Arc::clone(&store));
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
     let namespace_path = namespace_path(Some(&bundle.cache_dir));
     let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
@@ -3365,10 +3382,6 @@ fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>
 
 /// Atomically persist the namespace document and retain bounded known-good
 /// generations. A damaged primary is never overwritten by the live daemon.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "durable replacement is serialized with mutations"
-)]
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
     if let Err(error) = persist_namespace_generation(namespace, path) {
         eprintln!("namespace persist to {} failed: {error}", path.display());
@@ -3714,6 +3727,19 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     }
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    // The person's prefetch switch and cache budget, applied before the
+    // mount is served.
+    let (cache_policies, kept_policy) = fs::cache_policy::CachePolicies::load(
+        predictive_cache_root
+            .as_ref()
+            .map(|root| root.join(fs::cache_policy::CACHE_POLICY_FILE)),
+        Arc::clone(&heuristics),
+        Arc::clone(hydrator.store.files()),
+    );
+    if let Err(error) = kept_policy {
+        eprintln!("ignoring the kept cache policy: {error:#}");
+    }
+    let cache_policies = Arc::new(cache_policies);
     let predictive_policy_task =
         fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it must
@@ -3837,7 +3863,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             storage_eviction_queue,
             storage_history,
             "Current workspace",
-        );
+        )
+        .with_cache_policy(Arc::clone(&cache_policies));
         #[cfg(target_os = "linux")]
         let authority = authority.with_external_history(external_history.clone());
         authority

@@ -17,7 +17,9 @@ ConditionPathExists=/var/lib/tilo/secureboot/db.key
 #   composefs + UKI     a Unified Kernel Image on the ESP: the image build's
 #                       EFI/Linux/<kver>.efi, and the one `bootc upgrade`
 #                       stages at EFI/Linux/bootc/<name>.efi. The ESP is
-#                       mounted at /boot on that layout, not /boot/efi.
+#                       mounted at /boot on the sealed disk, and at /boot/efi
+#                       on an installed system, whose /boot is a separate
+#                       partition (tilo-esp-generator).
 # A path watch is not recursive: a new file in the existing bootc
 # subdirectory changes only that directory, so it is watched on its own.
 PathChanged=/boot/ostree
@@ -25,6 +27,10 @@ PathChanged=/boot/EFI/Linux
 PathModified=/boot/EFI/Linux
 PathChanged=/boot/EFI/Linux/bootc
 PathModified=/boot/EFI/Linux/bootc
+PathChanged=/boot/efi/EFI/Linux
+PathModified=/boot/efi/EFI/Linux
+PathChanged=/boot/efi/EFI/Linux/bootc
+PathModified=/boot/efi/EFI/Linux/bootc
 # The ESP loaders are the other half, and the one with no natural second chance:
 # whatever replaces systemd-bootx64.efi and BOOTX64.EFI leaves them unsigned,
 # and the boot that would notice is the boot the firmware refuses. Nothing else

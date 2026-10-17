@@ -6,7 +6,7 @@ use crate::setup::{
     migration_intent::MigrationIntent,
 };
 impl PreparedMedia {
-    pub(in crate::setup) fn prepare_staging_copy(
+    pub(in crate::setup) fn native_prepare_staging_copy(
         self: &Arc<Self>,
         intent: &MigrationIntent,
         source: &Plan,
@@ -81,7 +81,7 @@ impl PreparedMedia {
 }
 
 impl PreparedMedia {
-    pub(in crate::setup) fn prepare_computer_applications(
+    pub(in crate::setup) fn native_prepare_computer_applications(
         self: &Arc<Self>,
         intent: &MigrationIntent,
         operation: &str,

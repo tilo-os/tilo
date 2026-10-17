@@ -17,19 +17,12 @@ const SHOP: &str = "notes.page:9b8e7d6c-1111-4222-8333-777788889999";
 const TODO_BODY: &str = "notes.notebook/page/3fa2c1d0-1111-4222-8333-444455556666/body";
 const SHOP_BODY: &str = "notes.notebook/page/9b8e7d6c-1111-4222-8333-777788889999/body";
 
-fn hex(text: &str) -> String {
-    text.bytes().fold(String::new(), |mut hex, byte| {
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    })
-}
-
 /// The id a broker mints for a bound resource: per publication, so it
 /// differs after every restart; only the hex tail is the app's own name.
 fn bound(publication: &str, key: &str) -> String {
     format!(
         "tilo-ui-bound:v1:{publication}:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:{}",
-        hex(key)
+        hex::encode(key)
     )
 }
 

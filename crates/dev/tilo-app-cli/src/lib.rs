@@ -5791,7 +5791,14 @@ fn collect_cargo_message(
         .get("manifest_path")
         .and_then(serde_json::Value::as_str)
         .map(Path::new)
-        .is_some_and(|path| path == expected_manifest);
+        // Cargo reports the path it was given; the caller's is canonical, and a path through a
+        // symlink (macOS's /tmp, a CARGO_HOME under it) differs from it only in spelling.
+        .is_some_and(|path| {
+            path == expected_manifest
+                || path
+                    .canonicalize()
+                    .is_ok_and(|path| path == expected_manifest)
+        });
     if !manifest_matches {
         return;
     }

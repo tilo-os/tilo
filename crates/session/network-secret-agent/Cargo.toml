@@ -1,0 +1,42 @@
+[package]
+name = "tilo-network-secret-agent"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "NetworkManager secret agent: asks in a sheet its host draws"
+
+[features]
+# `testing`: a stand-in NetworkManager over a peer-to-peer link, an in-memory
+# store and a log capture, for hosts that test the agent with their own sheet.
+test-support = ["dep:tracing-subscriber", "tokio/net", "zbus/p2p"]
+
+[dependencies]
+# Re-registers with a restarted NetworkManager from its name-owner stream.
+futures-util.workspace = true
+# The Wi-Fi security a remembered passphrase roams under.
+os-actions = { path = "../../system/os-actions" }
+serde_json.workspace = true
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
+# The sealed vault remembered secrets are kept in.
+tilo-secret-vault = { path = "../../system/secret-vault" }
+tokio = { workspace = true, features = ["macros", "rt"] }
+# Cancels a request NetworkManager withdraws.
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+zbus = { workspace = true, features = ["tokio"] }
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-copy-lint = { path = "../../dev/copy-lint" }
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
+tracing-subscriber.workspace = true
+zbus = { workspace = true, features = ["p2p", "tokio"] }
+
+[lints]
+workspace = true

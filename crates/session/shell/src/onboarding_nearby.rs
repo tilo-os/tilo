@@ -430,9 +430,16 @@ impl NearbyPairing {
             if let Some(detail) = &failure.detail {
                 status.insert("error".into(), detail.clone().into());
             }
+            // The status of a pairing child that no longer runs: removed
+            // before every pairing and never read after a restart, so it is
+            // not synced. This runs on the compositor's loop, where a sync
+            // under I/O pressure froze the desktop.
             if let Ok(bytes) = serde_json::to_vec(&status) {
-                let _ =
-                    tilo_files::native::atomic::write_with_mode(&self.status_path, &bytes, 0o600);
+                let _ = tilo_files::native::atomic::write_regenerable_with_mode(
+                    &self.status_path,
+                    &bytes,
+                    0o600,
+                );
             }
         }
         NearbyEvent::Failed(failure)
@@ -737,6 +744,31 @@ mod tests {
                 NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
+    }
+
+    /// The onboarding view polls the pairing from the compositor's loop;
+    /// recording a failed attempt must not wait for the disk there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recording_a_failed_pairing_never_waits_for_the_disk() {
+        let fixture = fixture();
+        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+        let event = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            poll_until_over(&mut pairing)
+        });
+        assert_eq!(
+            event,
+            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+        );
+        assert!(
+            matches!(read_progress(&fixture.status), NearbyProgress::Failed(_)),
+            "the failure is recorded for the screen"
+        );
+        let mode = std::fs::metadata(&fixture.status)
+            .expect("status")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

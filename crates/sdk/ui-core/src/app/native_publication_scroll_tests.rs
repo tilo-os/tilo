@@ -416,7 +416,7 @@ impl ViewScrollFixture {
 fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry() {
     for view_only in [false, true] {
         let mut fixture = ViewScrollFixture::new(view_only, false);
-        let before_doc = crate::widget::settle_mark(&fixture.app.state.doc);
+        let before_doc = crate::doc::settle_mark(&fixture.app.state.doc);
         fixture.app.refresh_semantic_tree();
         let before_geometry = fixture
             .app
@@ -453,7 +453,7 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
             );
         }
         assert_eq!(
-            crate::widget::settle_mark(&fixture.app.state.doc),
+            crate::doc::settle_mark(&fixture.app.state.doc),
             before_doc,
             "view input leaves the canonical document unchanged"
         );
@@ -542,7 +542,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .expect("real bound owner");
         let before = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::widget::settle_mark(doc)
+                crate::doc::settle_mark(doc)
             })
             .unwrap();
         assert_eq!(before.1, 0, "bound fixture is committed");
@@ -565,7 +565,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
         );
         let after = binding
             .read_document(&fixture.app.state.doc, |doc, _| {
-                crate::widget::settle_mark(doc)
+                crate::doc::settle_mark(doc)
             })
             .unwrap();
         if edit {

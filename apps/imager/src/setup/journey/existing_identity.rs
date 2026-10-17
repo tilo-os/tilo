@@ -94,6 +94,8 @@ impl ExistingIdentity {
         Ok(())
     }
     pub fn use_current(&mut self) -> Result<(), &'static str> {
+        imager_backend::prepared_identity::require_supported()
+            .map_err(|_| "installer-preview-identity-unavailable")?;
         if self.active() {
             return Err("installer-existing-busy");
         }
@@ -142,6 +144,8 @@ impl ExistingIdentity {
         })
     }
     pub fn restore(&mut self) -> Result<(), &'static str> {
+        imager_backend::prepared_identity::require_supported()
+            .map_err(|_| "installer-preview-identity-unavailable")?;
         if self.busy() {
             return Err("installer-existing-busy");
         }

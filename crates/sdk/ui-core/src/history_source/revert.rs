@@ -264,14 +264,6 @@ fn later_writers(
     let versions = tilo_resource::history::versions(doc);
     let start_at = first_index_after(doc, after, versions.len());
     let mut out: HashMap<Slot, String> = HashMap::new();
-    // `i` is more than an array subscript here -- `prefix_heads(doc, i)` and
-    // `i - 1`/`i == 0` need the absolute version index itself, so an
-    // `.iter().enumerate()` rewrite would just reconstruct `i` from the
-    // enumerated offset for no clarity gain.
-    #[allow(
-        clippy::needless_range_loop,
-        reason = "the absolute history index drives prefix-head reconstruction"
-    )]
     for i in start_at..versions.len() {
         // `i` is always `< versions.len()` by the loop bound; retain the
         // checked access for a panic-free path.

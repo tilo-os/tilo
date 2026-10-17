@@ -33,9 +33,19 @@ the Secret Service does not answer, or fails while a record is being secured
 Tilo falls back automatically to `identity/secrets/<public-key>.key`, mode
 0600, inside mode-0700 user-owned directories; `TILO_IDENTITY_FILE_SECRETS`
 forces that file store for tests. No sandbox is given this path, so an app
-cannot name it by default; a filesystem grant to a folder containing it (the
-whole home directory, or `~/.config`) would expose it, as it would every other
-file of the person's. Settings labels it **Private session file + app-scoped
+cannot name it by default, and a filesystem grant cannot hand it over either:
+the launcher refuses a grant at or inside `$XDG_CONFIG_HOME/tilo`, and a grant
+containing it (the whole home directory, or `~/.config`) shows that directory
+as an empty read-only tmpfs. Inside a writable grant every directory on the way
+there is bound onto itself, so the app cannot move the real store aside and
+plant another for Tilo to read; a writable grant holding a symlink on that way
+is bound read-only. The same masking covers the accounts vault key, the
+publisher trust and revocation lists and every other file under
+`$XDG_CONFIG_HOME/tilo`, and a `TILO_SECRETS_DIR` store
+(`crates/packaging/launcher/src/capabilities.rs`). On macOS the Seatbelt profile
+denies every store outright after every grant, and denies writes to each
+directory and symlink on its way, to the same effect
+(`crates/packaging/launcher-macos/src/policy.rs`). Settings labels it **Private session file + app-scoped
 signing broker**; it is intentionally not described as encrypted or
 hardware-backed.
 
@@ -52,23 +62,6 @@ above and Settings says so, while a key already in the Secret Service fails to
 load: it is neither re-keyed nor moved to a file, and the store file is never
 replaced, so the key loads again once the device identity is back.
 
-Known limit: the store names each caller by reading `/proc/<pid>/exe`, and it
-refuses a caller it cannot examine. Loading the device key makes a process
-non-dumpable (`tilo_user_identity::persist`), and a non-dumpable process's
-executable cannot be read by another process of the same user. The compositor
-loads the device key at startup, so the store refuses every call the
-compositor makes. On an installed image, an identity the compositor
-provisions therefore falls back to the file store, and Settings shows
-**Private session file**. A development VM showed this: with
-`tilo-secret-service` open, `shell --provision-identity` wrote
-`broker-file-v1`. A client that made itself non-dumpable got `the caller's
-process cannot be examined`, while the same client, still dumpable, stored and
-read its item. The same check, read in the source, also turns off MLS endpoint
-state (which has no file fallback) and refuses the compositor's portal Secret
-backend as a store manager. Nothing claims protection it does not have. The
-fix has to let the store identify the compositor without making it dumpable
-again.
-
 Metadata replacement uses an exclusive no-follow temporary file, fsync,
 rename, and directory fsync. Record and secret reads open once with
 `O_NOFOLLOW|O_CLOEXEC` and validate the open handle's type, owner, permissions,
@@ -83,6 +76,79 @@ after it actually sealed the secret. No TPM provider is implemented: the
 default resolver deliberately refuses `tpm2-sealed-v1` records, and no record
 reports `HardwareBacked`. Detecting `/dev/tpm*` alone is never presented as
 protection.
+
+### Callers the store cannot examine
+
+The store names each caller by reading `/proc/<pid>/exe`. Loading the device
+key makes a process non-dumpable (`tilo_user_identity::persist`), and the
+kernel then refuses that link to every other process of the same user
+(`EACCES`: only `CAP_SYS_PTRACE` passes, which nothing in the session holds,
+and the store's unit has no capabilities at all). The compositor
+loads the device key at startup and stays non-dumpable, so the store could
+not examine it: every identity it provisioned fell back to the file store
+(`broker-file-v1`, Settings showing **Private session file**), MLS endpoint
+state (which has no file fallback) stayed off, and its portal Secret backend
+was refused as a store manager.
+
+The compositor stays non-dumpable. Instead, a process that holds the device
+key proves it, on each bus connection, to the store:
+
+1. Reading the device key (`persist::read_device_key`, behind every device
+   key loader) arms the process with `CallerKey = HKDF-SHA256(device secret,
+   info = "tilo-seal/v1/store-caller-proof")` (`tilo_seal::secret_service`).
+   Only that derived key is kept for proofs.
+2. While the process is non-dumpable, `tilo-secrets` asks the store for a
+   fresh 32-byte challenge (`so.tilo.Secrets1.CallerChallenge`) before it
+   opens a session, and answers it (`ProveCaller`) with its executable,
+   read from its own `/proc/self/exe`, and `HMAC-SHA256(CallerKey, challenge
+   ‖ its unique bus name ‖ that executable)`. The portal backend proves on
+   its own connection the same way when the store refuses it.
+3. The store derives the same key from the device key it opens the vault
+   with, spends the challenge, and checks the proof in constant time. If it
+   holds, the named executable stands in for `/proc/<pid>/exe` for that one
+   connection, but only while the kernel refuses the link (`EACCES`): a
+   readable link always names the caller, and a link that is gone (the
+   process exited) is never replaced by a proof. The executable is then
+   classified exactly as a link would be: `binary:` only for a root-owned,
+   non-writable executable under `/usr` that is no interpreter, otherwise
+   `local-process:`; a replaced (`(deleted)`) executable is refused. The
+   proof is forgotten when the connection leaves the bus or the store
+   restarts; `tilo-secrets` then proves again and retries the refused call
+   once.
+
+Why this is at least as strong as reading the link:
+
+- **It grants nothing the prover does not already have.** The device
+  secret, with the person's salt in their own data directory, is what the
+  store's own key derives from. Whoever can make the proof can already
+  decrypt the store's file, whatever executable it names. A process without
+  the device key, such as any sandboxed app or a same-user process that only
+  turned itself non-dumpable, has nothing to prove with and stays refused.
+- **It cannot be replayed or moved.** The challenge is random, single-use and
+  issued to one unique bus name; the proof covers that name, and the bus
+  never hands a unique name to another connection. A proof seen by a bus
+  monitor is useless on any other connection.
+- **Nothing a same-user process can set is trusted.** Not `comm`, not the
+  cgroup (a delegated user manager lets the person's processes join any of
+  its cgroups, and apps the compositor launches share its scope), not the
+  environment.
+- **PID reuse does not apply.** The proof binds the bus connection, not a
+  PID; the store still takes the PID from the bus daemon's credentials only
+  to check the user and to read the link first.
+
+Rejected alternatives: a dumpable relay process that makes the calls for the
+compositor would itself be a confused deputy (any same-user process can
+start it and ask), and would carry the identity root secret through a
+dumpable process; caching an identity read while the compositor was still
+dumpable would be lost whenever the store restarts, since the compositor
+cannot become dumpable again; identifying by cgroup or systemd unit is
+spoofable as above, and the compositor is not a unit of its own.
+
+Residual: like an executable read from `/proc`, a named executable says what
+was executed, not what code runs in it; the store already accepts that for
+every caller (`LD_PRELOAD` into a system binary). A device-key holder that
+`exec`s another program while leaking its bus connection across the `exec`
+would pass its proof on; Tilo's bus clients open connections close-on-exec.
 
 ## Compatibility and limits
 
@@ -111,6 +177,21 @@ kept running signs on its next call. While the service is locked, a secured key
 does not load and is not re-keyed or moved, the store file is unchanged, and a
 new key falls back to the file. Once the device identity is back, the original
 key signs again. A truncated record fails its launch with a named error.
+
+The same test runs clients in child processes, against a store, both
+without capabilities (as the store's unit `CapabilityBoundingSet=` and a
+person's session run them). A dumpable client is the control: the store
+examines it and keeps its key. Clients that turned themselves non-dumpable
+with no device key, or after reading another machine's device key, are
+refused and fall back to the file; with the control, that refusal is what
+shows the store really cannot read a non-dumpable executable. One that read
+this machine's device key, as the compositor does, gets `secret-service-v1`
+and no key file, signs, stays non-dumpable, and signs again after the store
+restarts under it. A second test serves the store's management interface
+with that test binary as portal host: a dumpable host is answered by its
+executable, a non-dumpable host is refused `SandboxSecret` until its
+connection proves the device key, a proof from another device's key is
+refused, and a proof covers only the connection that made it.
 
 Nothing exercises a hardware TPM: no TPM provider exists, so no identity is
 ever reported as hardware-backed.

@@ -1347,6 +1347,8 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
                 .is_some()
         );
     });
+    // The checkpoint is written on the state writer; this one cannot land.
+    crate::shell::durable_writer::global().flush();
     let interrupted = pair.target_snapshot();
     assert!(interrupted.stamp.counter > remote[0].counter);
     assert!(
@@ -1377,6 +1379,9 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
         confirmed.stamp, interrupted.stamp,
         "quiet retry does not invent another owner revision"
     );
+    // The acknowledgement waits for the state writer to put the retry on
+    // disk.
+    crate::shell::durable_writer::global().flush();
     let ack = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });
@@ -1400,6 +1405,7 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
         confirmed.resume,
         "an old token cannot overwrite the confirmed view"
     );
+    crate::shell::durable_writer::global().flush();
     let restored = load_personal_continuity(&durable);
     assert_eq!(
         restored
@@ -1555,6 +1561,8 @@ async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp
         },
     )
     .await;
+    // Each claimant's acknowledgement waits for its checkpoint to be on disk.
+    crate::shell::durable_writer::global().flush();
     for (session, registry) in [
         (&pair.left, &pair.left_registry),
         (&pair.right, &pair.right_registry),

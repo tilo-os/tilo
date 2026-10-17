@@ -27,6 +27,8 @@ futures = { workspace = true, default-features = true }
 ed25519-dalek.workspace = true
 hex.workspace = true
 blake3.workspace = true
+# Content addresses: how they are derived and what shape they have.
+tilo-content = { path = "../../system/content", default-features = false }
 libc.workspace = true
 tokio-util.workspace = true
 
@@ -47,6 +49,8 @@ tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
 settings-store = { path = "../../system/settings-store" }
 tilo-peer-state = { path = "../tilo-peer-state" }
+# The owner commit requests and receipts the broker hands its room owner.
+tilo-owner-commit = { path = "../owner-commit" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # The relay session client; the relay daemon is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }

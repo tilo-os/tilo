@@ -288,6 +288,8 @@ enum FieldKind {
     /// Any element (a read-only value, a row of controls): the label is
     /// announced as a label of its own.
     Custom,
+    /// Read-only text: reserve a readable phrase, not only its longest word.
+    Value,
     /// No label: a row that spans both columns.
     Row,
 }
@@ -349,6 +351,23 @@ impl Field {
             ),
             content,
         )
+    }
+    /// A read-only setting that fills the space beside its label. Reserve
+    /// a readable phrase width, bounded by the theme's chooser measure.
+    /// When that pair cannot fit, the section stacks labels above values.
+    pub fn value(label: impl Into<String>, value: impl Into<String>) -> Self {
+        let mut field = Self::custom(
+            label,
+            Box::new(
+                Text::new(&value.into())
+                    .numeric()
+                    .dimmed()
+                    .with_align(crate::ParagraphAlign::End),
+            ),
+        )
+        .with_filling_control();
+        field.kind = FieldKind::Value;
+        field
     }
     fn row(content: Element) -> Self {
         Self::with_parts(FieldKind::Row, Box::new(super::Absent::new()), content)
@@ -495,7 +514,15 @@ impl Field {
         let Some(control) = controls.first_mut() else {
             return (label, self.comfortable_control);
         };
-        let measured = measure_owned(*control, AvailableSpace::MinContent, text).width;
+        let mut measured = measure_owned(*control, AvailableSpace::MinContent, text).width;
+        if self.kind == FieldKind::Value {
+            // Min-content is just the longest word. A value needs enough
+            // room for a phrase before it can stand beside its label,
+            // rather than wrap a word per line. Bound its phrase width by
+            // the live theme rather than a guessed localized string.
+            let natural = measure_owned(*control, AvailableSpace::MaxContent, text).width;
+            measured = measured.max(natural.min(self.comfortable_control));
+        }
         let (declared, expandable) = tree.style(control_node).map_or((0.0, true), |style| {
             let fixed = style.size.width.into_option();
             let minimum = style.min_size.width.into_option().unwrap_or(0.0);

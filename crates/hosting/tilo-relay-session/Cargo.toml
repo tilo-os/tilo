@@ -26,8 +26,10 @@ tilo-relay-client = { path = "../tilo-relay-client" }
 # Delivery v2/v3, private actions and the workspace join contract.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-# Join, governance and state-peer types the room and join clients carry.
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The join contract and governed member rows the room and join clients carry.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
+# Co-edit bodies are neighbour messages; presence slots classify them.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 iroh.workspace = true
 iroh-base.workspace = true

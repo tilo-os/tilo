@@ -156,7 +156,10 @@ impl ShellOverlayHost {
             .last_tick
             .is_some_and(|last| now.saturating_duration_since(last) < TICK_INTERVAL)
         {
-            return false;
+            // A schedule firing held for its ledger write runs as soon as the
+            // write lands (which wakes the loop), not a whole tick later.
+            let settled = self.shortcut_triggers.triggers.take_settled_firings();
+            return self.start_firings(settled);
         }
         self.shortcut_triggers.last_tick = Some(now);
         self.observe_shortcut_triggers(TriggerEvent::Tick)
@@ -166,6 +169,17 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn action_chords(&self) -> &[ActionChord] {
         &self.shortcut_config.actions
+    }
+
+    /// When an idle loop must look again for a schedule firing that waits
+    /// for its ledger write. The write wakes the loop itself; this is the
+    /// backstop for a loop no wake reaches.
+    pub(super) fn held_firings_wake_deadline(&self, now: Instant) -> Option<Instant> {
+        self.shortcut_triggers
+            .triggers
+            .holds_firings()
+            .then(|| now.checked_add(TICK_INTERVAL))
+            .flatten()
     }
 
     /// [`Self::tick_shortcut_triggers`] without the frame throttle.

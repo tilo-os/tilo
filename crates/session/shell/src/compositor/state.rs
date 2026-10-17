@@ -1076,6 +1076,10 @@ pub struct State {
     /// The workspace topic each streamed window's traffic goes to: its tab's
     /// room, which need not be the workspace this device shows.
     legacy_stream_routes: HashMap<SurfaceId, u64>,
+    /// Shared windows whose stream could not start, with the viewers' codec
+    /// generation and window size it failed for, and when. Retried when
+    /// either changes, or after [`LEGACY_SHARE_RETRY`], not on every pump.
+    legacy_share_failures: HashMap<SurfaceId, LegacyShareFailure>,
     /// Windows streamed to the person's own other devices, by viewer: those
     /// devices are the person, so their focus moves this seat's keyboard.
     personal_stream_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
@@ -2066,6 +2070,7 @@ impl State {
             paint_apps: HashMap::new(),
             legacy_stream_publisher: None,
             legacy_stream_routes: HashMap::new(),
+            legacy_share_failures: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
             personal_keyboard_focus: None,
             headless_host_viewers: std::collections::HashSet::new(),
@@ -3221,6 +3226,29 @@ impl State {
         }
     }
 
+    /// Grant (or revoke) each of `peers` workspace control of `surface`, on
+    /// the stream's route, when legacy streams are published at all.
+    fn publish_share_grants<'a>(
+        &self,
+        surface: SurfaceId,
+        peers: impl IntoIterator<Item = &'a MsgPeerId>,
+        granted: bool,
+    ) {
+        if self.legacy_stream_publisher.is_none() {
+            return;
+        }
+        let state = if granted { "granted" } else { "revoked" };
+        for peer in peers {
+            let _ = self.publish_legacy(
+                surface,
+                crate::network::NeighbourMsg::PermissionGrant {
+                    peer: *peer,
+                    capability: format!("workspace-control:{surface}:{state}"),
+                },
+            );
+        }
+    }
+
     /// Bring a running share up to date with its current viewer set: grant
     /// and revoke workspace control, renegotiate the codec and announce the
     /// stream again when a viewer joined or the codec switched.
@@ -3241,26 +3269,8 @@ impl State {
             .copied()
             .filter(|peer| session.viewer_share(*peer).is_none())
             .collect::<Vec<_>>();
-        if self.legacy_stream_publisher.is_some() {
-            for peer in &removed {
-                let _ = self.publish_legacy(
-                    surface,
-                    crate::network::NeighbourMsg::PermissionGrant {
-                        peer: *peer,
-                        capability: format!("workspace-control:{surface}:revoked"),
-                    },
-                );
-            }
-            for peer in &added {
-                let _ = self.publish_legacy(
-                    surface,
-                    crate::network::NeighbourMsg::PermissionGrant {
-                        peer: *peer,
-                        capability: format!("workspace-control:{surface}:granted"),
-                    },
-                );
-            }
-        }
+        self.publish_share_grants(surface, &removed, false);
+        self.publish_share_grants(surface, &added, true);
         // A viewer joining or leaving (or re-advertising) can change which
         // codec everyone decodes; a switch is announced like a new stream so
         // receivers rebuild.
@@ -3300,6 +3310,8 @@ impl State {
         for surface in stale {
             self.unregister_share_session(surface);
         }
+        self.legacy_share_failures
+            .retain(|surface, _| desired.contains_key(surface));
 
         for (&surface, share) in desired {
             let LegacyShare {
@@ -3323,19 +3335,7 @@ impl State {
             else {
                 continue;
             };
-            // What each viewer advertised it can decode; a viewer that never
-            // advertised is treated as H.264-only.
-            let receivers = recipients
-                .iter()
-                .map(|peer| {
-                    let mut caps = crate::network::media_caps::capabilities(*peer);
-                    if let Some(limits) = decode_limits.get(peer) {
-                        caps.hardware_decode.extend(limits.keys().copied());
-                        caps.hardware_decode_max.clone_from(limits);
-                    }
-                    caps
-                })
-                .collect::<Vec<_>>();
+            let receivers = share_receivers(&recipients, decode_limits);
             let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
                 session.app_id == *app_id
                     && session.tab() == *tab
@@ -3346,6 +3346,15 @@ impl State {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
                     self.update_reused_share_session(&session, surface, &recipients, &receivers);
                 }
+                continue;
+            }
+            // A stream that could not start for these viewers at this size
+            // waits for them (or the size) to change, not every pump.
+            if self
+                .legacy_share_failures
+                .get(&surface)
+                .is_some_and(|failure| failure.holds(&receivers, (width, height)))
+            {
                 continue;
             }
 
@@ -3359,33 +3368,29 @@ impl State {
                     host_peer, app_id, surface, width, height, config, &receivers, None,
                 )
             };
-            let Ok(session) = started else {
-                tracing::warn!(
-                    surface,
-                    app_id,
-                    width,
-                    height,
-                    "legacy share encoder failed to start"
-                );
-                if let Some(replaced) = replaced {
-                    self.active_sessions.insert(surface, replaced);
-                    self.unregister_share_session(surface);
-                }
-                continue;
-            };
-            let session = Arc::new(session.with_tab(*tab));
-            session.sync_viewers(&recipients);
-            if self.legacy_stream_publisher.is_some() {
-                for peer in &recipients {
-                    let _ = self.publish_legacy(
+            let session = match started {
+                Ok(session) => session,
+                Err(error) => {
+                    log_share_failure(surface, app_id, (width, height), &error, &receivers);
+                    self.legacy_share_failures.insert(
                         surface,
-                        crate::network::NeighbourMsg::PermissionGrant {
-                            peer: *peer,
-                            capability: format!("workspace-control:{surface}:granted"),
+                        LegacyShareFailure {
+                            receivers,
+                            size: (width, height),
+                            at: std::time::Instant::now(),
                         },
                     );
+                    if let Some(replaced) = replaced {
+                        self.active_sessions.insert(surface, replaced);
+                        self.unregister_share_session(surface);
+                    }
+                    continue;
                 }
-            }
+            };
+            self.legacy_share_failures.remove(&surface);
+            let session = Arc::new(session.with_tab(*tab));
+            session.sync_viewers(&recipients);
+            self.publish_share_grants(surface, &recipients, true);
             self.install_share_session(Arc::clone(&session), replaced);
             if paint {
                 self.seed_paint_share(&session, surface);
@@ -4547,6 +4552,94 @@ pub struct LegacyShare {
     /// where the viewer said: the stream is encoded no larger.
     pub decode_limits:
         HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+}
+
+/// A shared window whose stream could not start is tried again this often
+/// while nothing it depends on changed (this device's encoders can, when the
+/// codec pack is turned on).
+const LEGACY_SHARE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a shared window's stream last failed to start for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LegacyShareFailure {
+    /// What its viewers decoded then.
+    receivers: Vec<media::realtime::CodecCapabilities>,
+    size: (u32, u32),
+    at: std::time::Instant,
+}
+
+impl LegacyShareFailure {
+    /// Whether starting again now could only fail the same way: the same
+    /// viewers' decoders (in any order) at the same size, not long ago.
+    fn holds(&self, receivers: &[media::realtime::CodecCapabilities], size: (u32, u32)) -> bool {
+        self.size == size
+            && self.at.elapsed() < LEGACY_SHARE_RETRY
+            && self.receivers.len() == receivers.len()
+            && receivers.iter().all(|caps| self.receivers.contains(caps))
+            && self.receivers.iter().all(|caps| receivers.contains(caps))
+    }
+}
+
+/// What each of `recipients` advertised it can decode, a viewer that never
+/// advertised being treated as H.264-only, with the hardware limits its share
+/// named.
+fn share_receivers(
+    recipients: &std::collections::HashSet<MsgPeerId>,
+    decode_limits: &HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+) -> Vec<media::realtime::CodecCapabilities> {
+    recipients
+        .iter()
+        .map(|peer| {
+            let mut caps = crate::network::media_caps::capabilities(*peer);
+            if let Some(limits) = decode_limits.get(peer) {
+                caps.hardware_decode.extend(limits.keys().copied());
+                caps.hardware_decode_max.clone_from(limits);
+            }
+            caps
+        })
+        .collect()
+}
+
+/// Say why a shared window's stream could not start. When the viewers'
+/// decoders and this device's encoders share no codec, name both, so a
+/// person (or a host operator) sees why the window reaches nobody.
+fn log_share_failure(
+    surface: SurfaceId,
+    app_id: &str,
+    (width, height): (u32, u32),
+    error: &crate::collab::flatpak_share::ShareError,
+    receivers: &[media::realtime::CodecCapabilities],
+) {
+    use media::realtime::CodecCapabilities;
+    if !matches!(
+        error,
+        crate::collab::flatpak_share::ShareError::EncoderUnavailable { .. }
+    ) {
+        tracing::warn!(surface, app_id, width, height, %error, "legacy share encoder failed to start");
+        return;
+    }
+    let decode = receivers
+        .iter()
+        .map(|caps| {
+            let mut labels = CodecCapabilities::labels(&caps.software_decode);
+            labels.extend(CodecCapabilities::labels(&caps.hardware_decode));
+            labels.sort();
+            labels.dedup();
+            labels.join("+")
+        })
+        .collect::<Vec<_>>();
+    let local = media::realtime::local_capabilities();
+    let mut encode = CodecCapabilities::labels(&local.software_encode);
+    encode.extend(CodecCapabilities::labels(&local.hardware_encode));
+    tracing::warn!(
+        surface,
+        app_id,
+        viewers_decode = ?decode,
+        this_device_encodes = ?encode,
+        "a shared window has no codec every viewer decodes and this device encodes; it streams \
+         once a viewer advertises one (a browser member's page says it decodes VP9) or this \
+         device gains an encoder"
+    );
 }
 
 /// Most bytes of an app's page stream kept for viewers that start later.
@@ -5791,7 +5884,6 @@ impl State {
         });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "output geometry is bounded by the i32 Wayland logical coordinate space"
         )]
         Rectangle::new(
@@ -5815,7 +5907,6 @@ impl State {
             .map(|rect| {
                 #[allow(
                     clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
                     reason = "Wayland logical coordinates are i32 by protocol"
                 )]
                 (rect.x0.round() as i32, rect.y0.round() as i32)
@@ -6246,10 +6337,6 @@ impl XdgActivationHandler for State {
         }
     }
 
-    #[allow(
-        clippy::collapsible_if,
-        reason = "The nested host-launch branch keeps the one-shot activation token's relocation decision visually separate from its post-relocation label mutation."
-    )]
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
@@ -7406,7 +7493,6 @@ impl InputMethodHandler for State {
             });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "Wayland parent geometry is represented as i32 logical coordinates"
         )]
         Rectangle::new(
@@ -8841,6 +8927,71 @@ mod tick_hook_tests {
             )),
             "a window no longer shared ends its stream"
         );
+        frames.forget(SURFACE);
+    }
+
+    /// A shared window no viewer's decoders fit (the viewer takes no codec
+    /// this device encodes) does not stream, and is not tried again on every
+    /// pump; once the viewer advertises a codec it takes, the stream starts.
+    #[test]
+    fn a_share_no_viewer_can_decode_waits_for_a_codec_and_then_streams() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0x5eed_1017;
+        const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        crate::network::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "app".into(),
+                viewers: [VIEWER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        let started = |sent: &std::sync::Mutex<Vec<crate::network::NeighbourMsg>>| {
+            sent.lock().unwrap().iter().any(|m| {
+                matches!(
+                    m,
+                    crate::network::NeighbourMsg::SurfaceStreamStart {
+                        surface: SURFACE,
+                        ..
+                    }
+                )
+            })
+        };
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert!(!started(&sent), "nothing the viewer decodes can be sent");
+        assert!(!state.active_sessions.contains_key(&SURFACE));
+        let failed = state.legacy_share_failures.get(&SURFACE).cloned();
+        assert!(failed.is_some(), "the failure is remembered");
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert_eq!(
+            state.legacy_share_failures.get(&SURFACE),
+            failed.as_ref(),
+            "the next pump does not try again for the same viewers"
+        );
+
+        crate::network::media_caps::record(
+            VIEWER,
+            &[],
+            &["hevc-main10".into(), "h264".into()],
+            &[],
+            &[],
+        );
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert!(started(&sent), "a codec the viewer takes starts the stream");
+        assert!(!state.legacy_share_failures.contains_key(&SURFACE));
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        crate::network::media_caps::forget(VIEWER);
         frames.forget(SURFACE);
     }
 

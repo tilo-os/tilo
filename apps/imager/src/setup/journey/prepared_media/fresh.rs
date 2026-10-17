@@ -1,7 +1,9 @@
 //! One immutable transfer generation: selected browser bytes and parent seal agree.
 use super::*;
 use std::fs::OpenOptions;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
 
 impl PreparedMedia {
     /// Refresh browser contents under the same grants before any transfer begins.
@@ -50,11 +52,10 @@ impl PreparedMedia {
             .browser
             .as_ref()
             .ok_or_else(|| io::Error::other("Browser custody missing"))?;
-        let custody = tempfile::Builder::new()
-            .prefix("tilo-prepared-media-")
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()?;
-        let root = custody.path().canonicalize()?;
+        let custody = imager_backend::session::BackendSession::create(
+            imager_backend::session::SessionIntent::PrepareMedia,
+        )?;
+        let root = custody.path().to_path_buf();
         let original = root.join("source-parent.sealed");
         let mut output = OpenOptions::new()
             .read(true)
@@ -132,7 +133,7 @@ impl PreparedMedia {
         for (source, _) in refreshed.source.profiles() {
             source.validate()?;
         }
-        let prepared = Arc::new(Self {
+        let prepared = Arc::new(Self::from_native(NativePreparedMedia {
             _custody: custody,
             delivery: Mutex::new(delivery),
             public_key: self.public_key,
@@ -160,7 +161,7 @@ impl PreparedMedia {
                     .clone(),
             ),
             transfer_generation: Mutex::new(None),
-        });
+        }));
         Ok(prepared)
     }
 }
@@ -328,7 +329,7 @@ mod tests {
         let profile = projection
             .tree
             .root
-            .join(browser_continuity::PROFILES_DIRECTORY)
+            .join(imager_backend::browser_selection::PROFILES_DIRECTORY)
             .join(&browser.plan.profiles[0].id);
         assert_eq!(
             fs::read(profile.join("Bookmarks")).unwrap(),
@@ -386,7 +387,7 @@ mod tests {
         let projected = projection
             .tree
             .root
-            .join(browser_continuity::PROFILES_DIRECTORY)
+            .join(imager_backend::browser_selection::PROFILES_DIRECTORY)
             .join(&browser.plan.profiles[0].id);
         assert_eq!(
             fs::read(projected.join("Bookmarks")).unwrap(),

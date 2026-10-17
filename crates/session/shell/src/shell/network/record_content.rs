@@ -300,8 +300,9 @@ pub(super) mod tests {
     use crate::shell::state::WorkspaceTree;
     use std::collections::BTreeMap;
     use tilo_action_broker::record_content::{
-        ContentPeers, ContentScope, ContentShelf, PIECE_BYTES, RouteContent, content_hash,
+        ContentPeers, ContentScope, ContentShelf, PIECE_BYTES, RouteContent,
     };
+    use tilo_content::hash_bytes;
     use tokio::sync::mpsc;
 
     #[derive(Default)]
@@ -406,7 +407,7 @@ pub(super) mod tests {
         let picture: Vec<u8> = (0..PIECE_BYTES * 2 + 17)
             .map(|index| u8::try_from(index % 251).expect("byte"))
             .collect();
-        let hash = content_hash(&picture);
+        let hash = hash_bytes(&picture);
         laptop
             .content
             .offer(&route, &hash, &picture)

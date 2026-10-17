@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED, NOT_REJOINED} from './peer.mjs';
 
@@ -11,6 +11,7 @@ const KEY = 'tilo-host-memberships';
 
 const reply = ({status = 200, headers = {}, body = {}}) => ({
   ok: status === 200, status, headers: new Map(Object.entries(headers)), json: async () => body,
+  text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
 });
 
 function harness({person = identity(0x22), membership = null, joinReply = {status: 200, body: {invitation: 'INV', admissionToken: 'TOKEN', origin: 'https://rooms.example'}}, connectFails = false} = {}) {
@@ -84,6 +85,33 @@ test('a kept membership the host refuses once the session starts is joined again
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
   assert.equal(peer.room, 'ROOM');
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)});
+});
+
+test('a person the host removed is told so, asks the door once and is not let in again', async () => {
+  // Removed and pruned look alike to the returning browser: the host no
+  // longer has the person. The door tells them apart, turning away the
+  // address a removed person joined from.
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership,
+    joinReply: {status: 403, body: {error: 'this address is cooling down after a removal'}}});
+  options.connect = async connected => {
+    calls.connected.push(connected);
+    return {room: connected.room, dispose: async () => {},
+      whenReady: async () => { throw new Error('device was removed from workspace membership'); }};
+  };
+  await assert.rejects(joinViaHost(options), {name: 'AdmissionError', code: 'removed', message: removedFrom('Commons')});
+  assert.equal(calls.posted.length, 1);
+  assert.equal(calls.joined.length, 0);
+  assert.equal(keptMembership(commons, {getItem: key => store.get(key)}), null);
+  assert.match(removedFrom('Commons'), /^You were removed from Commons\. .*new invitation/);
+  assert.match(removedFrom(null), /^You were removed from this workspace\./);
+});
+
+test('an address cooling down after a removal turns away someone who kept no membership, as the door said', async () => {
+  const {calls, options} = harness({person: identity(0x22), joinReply: {status: 403, body: {error: 'cooling down'}}});
+  await assert.rejects(joinViaHost(options), {name: 'HostAdmissionError', code: 'cooling-down'});
+  assert.equal(calls.posted.length, 1);
+  assert.equal(calls.connected.length, 0);
 });
 
 test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
@@ -220,6 +248,7 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(connected.origin, 'https://rooms.example');
   assert.equal(connected.room, 'ROOM');
   assert.equal(connected.userPublicKey, '5e'.repeat(32));
+  assert.equal(connected.watching, true, 'the page only watches');
   assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
   assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
   assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);
@@ -227,6 +256,16 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
   await connected.store.put('k', 'v');
   assert.equal(await connected.store.get('k'), 'v');
+});
+
+test("the host's certificate reaches a spectator's session byte for byte, its nanosecond timestamps intact", async () => {
+  const nanos = '1792023733547123457';
+  const certificate = `{"user_public_key":[${Array(32).fill(94)}],"device_public_key":[1],"issued_at_ns":${nanos}}`;
+  const {calls, options} = spectating({body: {certificate, origin: 'https://rooms.example', room: 'ROOM'}});
+  options.runtime = {hostInfo: async () => `{"hostCert":{"issued_at_ns":${nanos}}}`};
+  await spectate(options);
+  assert.equal(calls.connected[0].deviceCertificate, `{"cert":${certificate},"hostCert":{"issued_at_ns":${nanos}}}`);
+  assert.equal(calls.connected[0].userPublicKey, '5e'.repeat(32));
 });
 
 test('above the spectator cap the embed is told the room is full', async () => {

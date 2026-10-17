@@ -32,7 +32,7 @@ disallowed-methods = [
     { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
-    { path = "libc::flock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock", allow-invalid = true },
     { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
     # The credential getters are plain syscalls with no unsafe contract in rustix.
     # A package without libc has nothing to ban, so an unresolved path is expected.

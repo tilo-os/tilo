@@ -26,7 +26,9 @@ tilo-automerge.workspace = true
 chrono = { workspace = true, features = ["std"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
-regex = "1"
+# JSON Schema patterns are ECMA-262, whose `\d`, `\w` and `\b` are ASCII as
+# here; the full `regex` engine would sit in the browser start module.
+regex-lite.workspace = true
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 thiserror.workspace = true
 blake3.workspace = true

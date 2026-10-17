@@ -205,9 +205,13 @@ impl ComputeJobLifecycle {
         }
         let allowed = matches!(
             (&self.phase, &next),
+            // A job can fail before it starts: its worker is lost or
+            // revoked before it reports running.
             (
                 ComputeJobPhase::Pending,
-                ComputeJobPhase::Running | ComputeJobPhase::Cancelled
+                ComputeJobPhase::Running
+                    | ComputeJobPhase::Failed { .. }
+                    | ComputeJobPhase::Cancelled
             ) | (
                 ComputeJobPhase::Running,
                 ComputeJobPhase::Completed { .. }
@@ -304,6 +308,43 @@ pub trait ComputeContentStore: Send + Sync {
     ///
     /// Returns an error when the local content store cannot persist the bytes.
     fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String>;
+    /// Where this store keeps the bytes of `digest`, as a 32-byte locator
+    /// another device's [`HeldContent`] may understand (workspace content
+    /// names the file version's manifest hash), or `None`. A hint offered
+    /// with a possession proof, never authority.
+    fn locator(&self, _digest: [u8; 32]) -> Option<[u8; 32]> {
+        None
+    }
+}
+
+/// Content a worker device already holds, which a job may run on in place
+/// of an input fetched from its requester — but only once the requester
+/// proved it holds the same bytes
+/// ([`prove_job_input`](crate::compute_content::prove_job_input)). Holding
+/// bytes is never authority to bind them to a job; the proof is.
+pub trait HeldContent: Send + Sync {
+    /// The bytes this device holds as `digest`, looked up by the digest or,
+    /// when given, by the requester's `locator`
+    /// ([`ComputeContentStore::locator`]); `Ok(None)` when it holds none or
+    /// they would exceed `max_bytes`. Called off the async runtime. The
+    /// caller checks the bytes against `digest` and the proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when local content cannot be read.
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String>;
+
+    /// Whether [`Self::held`] can find content by a locator it would not
+    /// find by digest alone. When `false`, a worker asks for a proof only
+    /// for digests it already found, so a miss costs nothing.
+    fn locates(&self) -> bool {
+        false
+    }
 }
 
 /// The outputs a worker retains for the requesters of the jobs it ran.

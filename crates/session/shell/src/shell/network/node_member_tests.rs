@@ -155,6 +155,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                 cert: browser,
                 host_cert: node.clone(),
                 revocations: RevocationList::new(),
+                watching: false,
             },
             Arc::new(browser_key),
             Arc::new(MemoryPeerStore::default()),

@@ -14,6 +14,29 @@
 //!
 //! A `local-process:` caller can use the store, and sees only what it made
 //! itself: it cannot read what the system's own programs keep there.
+//!
+//! # A caller the kernel will not show
+//!
+//! The executable is read from `/proc/<pid>/exe`. A process that loaded the
+//! device key made itself non-dumpable (`tilo_user_identity::persist`), and
+//! the kernel refuses that link of a non-dumpable process to every other
+//! process of the user (`EACCES`); the compositor is one. Such a caller may
+//! prove, on its own bus connection, that it holds the device key, and name
+//! its executable (`so.tilo.Secrets1.ProveCaller`,
+//! `tilo_seal::secret_service::CallerKey`). The named executable then
+//! stands in for the link, for that connection only, and is classified
+//! exactly as a link read from `/proc` would be. It is consulted only while
+//! the kernel refuses the link: a caller whose link is readable is always
+//! named by it.
+//!
+//! This is no weaker than reading the link. Whoever can make the proof holds
+//! the device key, and the device key with the person's salt is what the
+//! store's own key derives from: such a process can already open the store's
+//! file, whatever program it claims to be. The proof is bound to a fresh
+//! challenge and to the prover's unique bus name, which the bus never hands
+//! to another connection, so one seen on the bus cannot be replayed. What a
+//! same-user process can set (its `comm`, its cgroup, which a delegated user
+//! manager lets it join, its environment) is never used.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -133,12 +156,34 @@ pub fn identify_process(
     pid: u32,
     expected_uid: u32,
 ) -> Result<AppId, UnknownCaller> {
+    identify_proven_process(proc_root, pid, expected_uid, None)
+}
+
+/// [`identify_process`] for a caller that may have proved it holds the
+/// device key: `proven` is the executable it named then, which stands in
+/// for `/proc/<pid>/exe` only while the kernel refuses that link (see the
+/// module docs).
+///
+/// # Errors
+///
+/// As [`identify_process`].
+pub fn identify_proven_process(
+    proc_root: &Path,
+    pid: u32,
+    expected_uid: u32,
+    proven: Option<&Path>,
+) -> Result<AppId, UnknownCaller> {
     let process = proc_root.join(pid.to_string());
     if process_uid(&process).ok_or(UnknownCaller::Unreadable)? != expected_uid {
         return Err(UnknownCaller::OtherUser);
     }
-    let executable =
-        std::fs::read_link(process.join("exe")).map_err(|_| UnknownCaller::Unreadable)?;
+    let executable = executable(std::fs::read_link(process.join("exe")), proven)?;
+    classify(&process, &executable)
+}
+
+/// The identity of `process` running `executable`, whether the kernel
+/// showed the executable or the caller proved it.
+fn classify(process: &Path, executable: &Path) -> Result<AppId, UnknownCaller> {
     if executable.to_string_lossy().ends_with(" (deleted)") {
         return Err(UnknownCaller::Replaced);
     }
@@ -152,15 +197,32 @@ pub fn identify_process(
         // the portal instead.
         return Err(UnknownCaller::Proxied);
     }
-    if let Some(app) = flatpak_app(&process) {
+    if let Some(app) = flatpak_app(process) {
         return AppId::parse(&format!("flatpak:{app}")).ok_or(UnknownCaller::Unreadable);
     }
-    let kind = if is_interpreter(&leaf) || !immutable_system_binary(&executable) {
+    let kind = if is_interpreter(&leaf) || !immutable_system_binary(executable) {
         "local-process"
     } else {
         "binary"
     };
     AppId::parse(&format!("{kind}:{}", executable.display())).ok_or(UnknownCaller::Unreadable)
+}
+
+/// The caller's executable: the link the kernel shows, or, only when it
+/// refuses to show it (`EACCES`, a non-dumpable process), what the caller
+/// proved. A link that is gone (the process exited) is never replaced by a
+/// proof.
+fn executable(
+    link: std::io::Result<PathBuf>,
+    proven: Option<&Path>,
+) -> Result<PathBuf, UnknownCaller> {
+    match link {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => proven
+            .map(Path::to_path_buf)
+            .ok_or(UnknownCaller::Unreadable),
+        Err(_) => Err(UnknownCaller::Unreadable),
+    }
 }
 
 fn process_uid(process: &Path) -> Option<u32> {
@@ -342,6 +404,84 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .starts_with("local-process:")
+        );
+    }
+
+    #[test]
+    fn a_proof_stands_in_only_for_a_link_the_kernel_refuses() {
+        let refused = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let shell = Path::new("/usr/bin/shell");
+        // Non-dumpable and proven: the proven executable.
+        assert_eq!(executable(refused(), Some(shell)), Ok(shell.to_path_buf()));
+        // Non-dumpable and unproven: refused, as before.
+        assert_eq!(executable(refused(), None), Err(UnknownCaller::Unreadable));
+        // An exited process is never named by an earlier proof.
+        assert_eq!(
+            executable(gone(), Some(shell)),
+            Err(UnknownCaller::Unreadable)
+        );
+        // A readable link always wins over what the caller claimed.
+        assert_eq!(
+            executable(Ok(PathBuf::from("/home/me/chat")), Some(shell)),
+            Ok(PathBuf::from("/home/me/chat"))
+        );
+    }
+
+    #[test]
+    fn a_proven_executable_is_classified_like_a_link() {
+        let tree = tempfile::tempdir().unwrap();
+        fake_process(
+            tree.path(),
+            7,
+            1000,
+            Path::new("/usr/bin/true"),
+            "0::/\n",
+            None,
+        );
+        let process = tree.path().join("7");
+        assert_eq!(
+            classify(&process, Path::new("/usr/bin/true"))
+                .unwrap()
+                .as_str(),
+            "binary:/usr/bin/true"
+        );
+        let home = tree.path().join("home/chat");
+        fs::create_dir_all(home.parent().unwrap()).unwrap();
+        fs::write(&home, b"").unwrap();
+        assert!(
+            classify(&process, &home)
+                .unwrap()
+                .as_str()
+                .starts_with("local-process:")
+        );
+        assert_eq!(
+            classify(&process, Path::new("/usr/bin/shell (deleted)")),
+            Err(UnknownCaller::Replaced)
+        );
+        assert_eq!(
+            classify(&process, Path::new("/usr/bin/xdg-dbus-proxy")),
+            Err(UnknownCaller::Proxied)
+        );
+        // A caller of another user is refused before any proof is looked at.
+        fake_process(
+            tree.path(),
+            8,
+            1001,
+            Path::new("/usr/bin/true"),
+            "0::/\n",
+            None,
+        );
+        assert_eq!(
+            identify_proven_process(tree.path(), 8, 1000, Some(Path::new("/usr/bin/true"))),
+            Err(UnknownCaller::OtherUser)
+        );
+        // A readable link names the caller, whatever it proved.
+        assert_eq!(
+            identify_proven_process(tree.path(), 7, 1000, Some(&home))
+                .unwrap()
+                .as_str(),
+            "binary:/usr/bin/true"
         );
     }
 

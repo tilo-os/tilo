@@ -891,16 +891,52 @@ pub fn svc_env_var(name: &str) -> String {
 /// would be the model lying); write grants under `/dev` get
 /// `--dev-bind-try`.
 pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
-    for path in &capabilities.ro_paths {
+    push_grant_binds(argv, capabilities, |_| true);
+    push_private_store_masks(argv, capabilities);
+}
+
+/// The grant binds `keep` selects, read-only ones first.
+fn push_grant_binds(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+    keep: impl Fn(&Path) -> bool,
+) {
+    for path in capabilities.ro_paths.iter().filter(|p| keep(p)) {
         push_bind(argv, "--ro-bind-try", path, path);
     }
-    for path in &capabilities.rw_paths {
+    for path in capabilities.rw_paths.iter().filter(|p| keep(p)) {
         let flag = if path.starts_with("/dev") {
             "--dev-bind-try"
         } else {
             "--bind-try"
         };
         push_bind(argv, flag, path, path);
+    }
+}
+
+/// Hide the private stores a grant contains — after every grant, or a later
+/// bind would show them again (bwrap applies its operations in order).
+///
+/// Pins first: each directory on the way to a store inside a writable grant
+/// is bound onto itself, a mount point the app cannot rename or remove. A pin
+/// re-binds the host directory, which would hide any grant bound beneath it,
+/// so those are bound again. Then each store: an empty tmpfs, remounted
+/// read-only, so the directory reads as empty and refuses every write.
+fn push_private_store_masks(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {
+    for dir in &capabilities.pinned_dirs {
+        push_bind(argv, "--bind", dir, dir);
+    }
+    push_grant_binds(argv, capabilities, |path| {
+        capabilities
+            .pinned_dirs
+            .iter()
+            .any(|dir| path != dir && path.starts_with(dir))
+    });
+    for dir in &capabilities.masked_dirs {
+        argv.push("--tmpfs".to_string());
+        argv.push(dir.display().to_string());
+        argv.push("--remount-ro".to_string());
+        argv.push(dir.display().to_string());
     }
 }
 
@@ -2487,6 +2523,67 @@ mod tests {
             ));
         }
         expected
+    }
+
+    /// The argv masks the private store after every grant: a later bind
+    /// would show it again. A nested grant re-bound after a pin keeps its own
+    /// read-only mount.
+    #[test]
+    fn private_stores_are_masked_after_every_grant_bind() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let store = home.join(".config/tilo");
+        let notes = home.join(".config/notes");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&notes).unwrap();
+        // The home is writable; `notes` inside it is capped at Read, so it
+        // has its own read-only mount the pin must not shadow.
+        let caps = vec![
+            fs_grant("so.tilo.files", &home.display().to_string(), Access::Write),
+            fs_grant("so.tilo.files", &notes.display().to_string(), Access::Read),
+            CapOverride::new(
+                Subject::app("so.tilo.files"),
+                Scope::FsPath(notes.display().to_string()),
+                collab_types::caps::Effect::Restrict,
+                Access::Read,
+            ),
+        ];
+        let plan = CapabilityPlan::for_app_with("so.tilo.files", &caps, Some(1), fake_device_paths)
+            .confine_private_stores(std::slice::from_ref(&store));
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &plan,
+        );
+        let s = |p: &Path| p.display().to_string();
+        let position = |pattern: &[&str]| {
+            argv.windows(pattern.len())
+                .position(|w| w.iter().zip(pattern).all(|(a, b)| a == b))
+                .unwrap_or_else(|| panic!("{pattern:?} missing from {argv:?}"))
+        };
+        let config = home.join(".config");
+        let home_bind = position(&["--bind-try", &s(&home), &s(&home)]);
+        let pin = position(&["--bind", &s(&config), &s(&config)]);
+        let tmpfs = position(&["--tmpfs", &s(&store), "--remount-ro", &s(&store)]);
+        assert!(home_bind < pin && pin < tmpfs, "{argv:?}");
+        let last_notes_bind = argv
+            .windows(3)
+            .rposition(|w| w[0] == "--ro-bind-try" && w[1] == s(&notes) && w[2] == s(&notes))
+            .unwrap();
+        assert!(
+            pin < last_notes_bind && last_notes_bind < tmpfs,
+            "the read-only grant under the pin must be bound again after it: {argv:?}"
+        );
+        assert!(
+            !argv[tmpfs + 4..]
+                .windows(3)
+                .any(|w| w[0].contains("bind") && Path::new(&w[2]).starts_with(&home)),
+            "nothing may be bound over the home after the store is masked: {argv:?}"
+        );
     }
 
     #[test]

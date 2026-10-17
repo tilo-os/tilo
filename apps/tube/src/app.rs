@@ -487,10 +487,6 @@ impl TubeApp {
     ///
     /// The transport carries a compact, bounded metadata package; every
     /// imported identifier is validated here first.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded validation per imported device-sync field keeps the import reviewable"
-    )]
     #[cfg(feature = "grayjay-sync")]
     fn import_device_sync_state(&mut self, remote: crate::sync::SyncState) -> bool {
         const MAX_SYNC_ENTITIES: usize = 100;
@@ -1531,11 +1527,6 @@ impl TubeApp {
 
     /// Apply one drained action. Returns true if the model changed enough to
     /// warrant a structural rebuild.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per Action variant; the length is the number of actions the \
-                  screens push, not complexity in any one arm"
-    )]
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Navigate(route) => {
@@ -2136,11 +2127,6 @@ impl Widget for TubeApp {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
-                  branch is a short, independent dispatch to an already-extracted helper"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Back-navigation via the keyboard: Alt+Left / the BrowserBack key pop the
         // nav stack (the Back button, Escape below and the edge-swipe do too).

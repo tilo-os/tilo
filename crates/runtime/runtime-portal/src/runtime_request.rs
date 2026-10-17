@@ -192,6 +192,10 @@ impl Client {
     }
 
     #[cfg(not(unix))]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "shares the signature of the Unix exchange"
+    )]
     fn exchange(&mut self, _request: &Request) -> io::Result<Response> {
         match self.0 {}
     }

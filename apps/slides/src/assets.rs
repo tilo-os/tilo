@@ -44,7 +44,7 @@ pub fn app_content() -> ContentStore {
 /// A deck carries this content identity, never a machine-local file path.
 pub fn is_asset_id(id: &str) -> bool {
     id.strip_prefix(ASSET_PREFIX)
-        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .is_some_and(tilo_content::valid_hash)
 }
 
 /// Store supplied bytes in `content` by their BLAKE3 content hash and return

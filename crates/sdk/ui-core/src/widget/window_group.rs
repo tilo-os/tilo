@@ -3361,10 +3361,6 @@ mod tests {
         );
 
         crate::testing::inert_widget_methods!(name = "RetainedTraversalProbe");
-        #[allow(
-            private_interfaces,
-            reason = "focused retained-owner traversal regression"
-        )]
         fn visit_resource_owners_mut(
             &mut self,
             _: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,

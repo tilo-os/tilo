@@ -49,15 +49,6 @@
 //! Welcome/commit/key-history bytes; [`GovernanceJournal`] persists its
 //! targeted delivery outbox.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod content;
 pub mod crypto;
 pub mod endpoint;

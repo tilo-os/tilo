@@ -26,37 +26,32 @@ test = false
 
 [features]
 thin = ["dep:runtime-dylib"]
-capture-worker = ["runtime-fs/selected-fuse", "dep:fuser"]
+capture-worker = ["imager-backend/capture-worker"]
 # Explicit new signed cohort; default capture-worker preserves shipped Home5.
-capture-worker-applications = ["capture-worker"]
+capture-worker-applications = ["capture-worker", "imager-backend/capture-worker-applications"]
 # Privileged acceptance tests require a disposable, observable native store.
-native-capture-qualification = ["dep:zbus", "launcher/native-home-alias-qualification"]
+native-capture-qualification = ["imager-backend/native-capture-qualification"]
 native-current-device-qualification = []
 # Explicit isolated original-owner SecretService + pinned public Slack fixture.
-native-slack-qualification = ["dep:zbus"]
+native-slack-qualification = ["imager-backend/native-slack-qualification"]
 # Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
-host-media-writer = []
+host-media-writer = ["imager-backend/host-media-writer"]
 # Flatpak cannot safely elevate a binary from inside its mutable mount
 # namespace.  This backend asks the host's root-owned UDisks2 service for one
 # polkit-authorized, exclusive file descriptor to the reviewed removable
 # drive.  No /dev access or host-command escape is granted to the sandbox.
-flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
+flatpak-media-writer = ["imager-backend/flatpak-media-writer"]
 
 [dependencies]
-blake3.workspace = true
 ed25519-dalek.workspace = true
-browser-continuity = { workspace = true, features = ["native"] }
 tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
 install-profile-model = { path = "../../crates/session/install-profile-model" }
+imager-backend = { path = "../../crates/platform/imager-backend" }
 staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true
-crc32fast.workspace = true
-# Advisory locks on ownership, journal and target files.
-tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
@@ -73,26 +68,8 @@ cap-std = "3.4.6"
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
-accounts = { path = "../../crates/system/accounts" }
-account-custody = { path = "../../crates/system/account-custody" }
-cloud-source-dav = { path = "../../crates/system/cloud-source-dav" }
-tilo-dav = { path = "../../crates/system/tilo-dav" }
 zeroize.workspace = true
-tilo-seal = { path = "../../crates/system/tilo-seal" }
-tilo-unlock-protocol = { path = "../../crates/collab/tilo-unlock-protocol" }
-tar.workspace = true
-runtime-fs = { path = "../../crates/runtime/runtime-fs" }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-# Root retained actor shares the canonical native-person proof and frame codec.
-runtime-collab = { path = "../../crates/runtime/runtime-collab" }
-wire-frame = { path = "../../crates/system/wire-frame" }
-aes = { version = "0.9.3", features = ["zeroize"] }
-hmac.workspace = true
-pbkdf2.workspace = true
-sha1 = "0.11"
-ctr = "0.10.1"
-url.workspace = true
 hex.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
@@ -106,7 +83,6 @@ taffy.workspace = true
 tempfile.workspace = true
 block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
-zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 workspace-hack = { version = "0.1" }
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
@@ -115,20 +91,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { workspace = true, optional = true }
-glib = "=0.21.5"
-block-devices = { path = "../../crates/system/block-devices", features = ["udisks"] }
-desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
-fs-native = { path = "../../crates/system/fs-native" }
 launcher = { path = "../../crates/packaging/launcher" }
-runtime-portal = { path = "../../crates/runtime/runtime-portal", default-features = false }
-runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
-package-store = { path = "../../crates/packaging/package-store" }
-tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
-tilo-secrets.workspace = true
-rusqlite = { version = "0.37.0", features = ["bundled"] }
-# Read granted Chromium origin storage through LevelDB's recovery semantics.
-leveldb-sys = { version = "=2.0.9", features = ["snappy"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -149,6 +112,14 @@ blake3 = { workspace = true, features = ["no_neon"] }
 ignored = ["blake3"]
 
 [dev-dependencies]
+accounts = { path = "../../crates/system/accounts" }
+account-custody = { path = "../../crates/system/account-custody" }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+url.workspace = true
+crc32fast.workspace = true
+tilo-seal = { path = "../../crates/system/tilo-seal" }
+imager-backend = { path = "../../crates/platform/imager-backend", features = ["test-support"] }
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
 vello_encoding.workspace = true
 cloud-source-dav = { path = "../../crates/system/cloud-source-dav", features = ["fake-server"] }
@@ -158,6 +129,10 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+fs-native = { path = "../../crates/system/fs-native" }
+tilo-secrets.workspace = true
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+runtime-fs = { path = "../../crates/runtime/runtime-fs", features = ["selected-fuse"] }
 # Installer transport must reach the canonical storage consumer, not only the vault.
 # Its FUSE backend is a Linux service, not part of hosted Windows tests.
 tilo-fs = { path = "../../crates/system/fs" }

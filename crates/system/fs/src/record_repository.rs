@@ -1293,10 +1293,6 @@ impl RecordRepository {
     ///
     /// Returns an error for invalid batch/key/workspace data, authorization or
     /// replication rejection, capacity limits, poisoned state, or persistence.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans batch validation, durable replacement, and in-memory publication"
-    )]
     pub fn apply_batch<A: RecordAuthorizer + ?Sized>(
         &self,
         key: RecordRepositoryKey,
@@ -1722,10 +1718,6 @@ impl RecordRepository {
     ///
     /// Returns the same errors as [`Self::apply_transaction`], plus a supplied
     /// checkpoint failure.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the transaction coordinator intentionally keeps one writer lock across all participant validation and durable record replacement"
-    )]
     pub fn apply_transaction_with_checkpoint<A, F>(
         &self,
         journal: &mut RecordTransactionJournal,

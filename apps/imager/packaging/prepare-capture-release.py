@@ -85,7 +85,9 @@ def prepare(output, feature, env, build_only=False):
     run(['bash', HERE / 'capture-native-preflight.sh'], clean)
     run([recorder, 'build', '--locked', '--release', '-p', 'shell', '--bin', 'shell',
          '-p', 'tilo-fs', '--bin', 'fs', '-p', 'tilo-control', '--bin', 'tilo-control',
-         '-p', 'account-custody', '--bin', 'tilo-account-credential'], clean)
+         '-p', 'account-custody', '--bin', 'tilo-account-credential',
+         '-p', 'tilo-install-helpers', '--bin', 'tilo-staging-handoff', '--bin', 'tilo-install-handoff-copy',
+         '-p', 'tilo-firstboot-files', '--bin', 'tilo-firstboot-files'], clean)
     run(['bash', HERE / 'package-capture-service.sh', '--with-writer', '--build-only',
          output / 'sidecar', output / 'pins.json'], clean)
     run([recorder, 'assemble', '--sidecar', output / 'sidecar', '--pins', output / 'pins.json'], clean)
@@ -95,7 +97,7 @@ def prepare(output, feature, env, build_only=False):
          '--bin', 'tilo-prepared-setup', '--bin', 'tilo-installer-prepared-setup-extract',
          '-p', 'installer', '--bin', 'tilo-installer', '--bin', 'tilo-firstboot-home-seeds',
          '--features', 'imager/' + feature], env)
-    run([recorder, 'test', '--locked', '--release', '-p', 'imager', '--lib', '--no-run',
+    run([recorder, 'test', '--locked', '--release', '-p', 'imager', '-p', 'imager-backend', '--lib', '--no-run',
          '--features', feature + ',native-capture-qualification'], env)
     browser = qualifier.fixed_module(HERE / 'prepare-capture-browser.py', 'capture_browser')
     browser.prepare(

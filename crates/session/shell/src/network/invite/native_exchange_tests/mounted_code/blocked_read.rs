@@ -133,7 +133,7 @@ fn prepare_edit(
     owner: &NativeWorkspaceOwner,
     base: &str,
     expected: &str,
-) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
+) -> tilo_owner_commit::OwnerCommitRequest {
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let changes = owner
         .with_current(room, |view| {

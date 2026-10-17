@@ -518,10 +518,6 @@ pub(crate) fn serve_lines<'a>(
 /// Returns an error when the runtime, session or action broker cannot start,
 /// an app cannot be launched or exits, the input stream fails, or a reply
 /// cannot be written.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the session holds the profile lock and services until the server loop ends"
-)]
 pub fn serve<S, R, W>(
     profile: &Path,
     manifest: ValidatedManifest,

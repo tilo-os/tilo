@@ -97,9 +97,15 @@ impl Entry {
     }
 }
 
+/// The snoozed alarms of the last committed ledger, every room's. The
+/// compositor's loop reads these to draw pending snoozes; it must not take
+/// the store's lock, which a commit holds across its disk write.
+pub(super) type SnoozedView = std::sync::Arc<std::sync::Mutex<Vec<super::SnoozedAlarm>>>;
+
 pub(super) struct ScheduleStore {
     entries: Vec<Entry>,
     path: Option<PathBuf>,
+    snoozed: SnoozedView,
 }
 impl ScheduleStore {
     pub fn open(path: Option<PathBuf>) -> Result<Self, String> {
@@ -118,7 +124,25 @@ impl ScheduleStore {
         if entries.len() > MAX_ENTRIES {
             return Err("too many stored notification schedules".into());
         }
-        Ok(Self { entries, path })
+        let store = Self {
+            entries,
+            path,
+            snoozed: SnoozedView::default(),
+        };
+        store.publish_snoozed();
+        Ok(store)
+    }
+
+    /// The committed snoozes, readable without this store's lock.
+    pub fn snoozed_view(&self) -> SnoozedView {
+        std::sync::Arc::clone(&self.snoozed)
+    }
+
+    fn publish_snoozed(&self) {
+        let snoozed = self.snoozed_alarms();
+        if let Ok(mut view) = self.snoozed.lock() {
+            *view = snoozed;
+        }
     }
 
     fn commit(&mut self, entries: Vec<Entry>) -> Result<(), String> {
@@ -130,6 +154,7 @@ impl ScheduleStore {
             tilo_files::native::atomic::write_private(path, &bytes).map_err(|e| e.to_string())?;
         }
         self.entries = entries;
+        self.publish_snoozed();
         Ok(())
     }
 
@@ -254,13 +279,12 @@ impl ScheduleStore {
             .collect()
     }
 
-    pub fn snoozed_alarms(&self, room: &str) -> Vec<super::SnoozedAlarm> {
+    fn snoozed_alarms(&self) -> Vec<super::SnoozedAlarm> {
         self.entries
             .iter()
             .filter_map(|entry| {
                 let active = entry.active.as_ref()?;
-                if entry.room != room
-                    || entry.calendar.is_none()
+                if entry.calendar.is_none()
                     || entry.snooze_at_ms.is_none()
                     || active.action != Some(ScheduledAction::Snooze)
                 {
@@ -492,7 +516,7 @@ pub(super) async fn drive(
             // Recheck the wall clock to observe suspend and timezone/clock
             // corrections. Empty ledgers park without polling.
             let millis = next
-                .saturating_sub(i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+                .saturating_sub(tilo_clock::unix_now_ms_i64())
                 .clamp(1000, 30_000);
             let delay = std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(1000));
             tokio::select! { () = tokio::time::sleep(delay) => {}, () = changed.wait() => {} }
@@ -1119,6 +1143,45 @@ mod tests {
             .expect("past deadline");
         assert!(bridge.drain_incoming().is_empty());
         assert!(restarted.next_at_ms().is_none());
+    }
+
+    /// The compositor's loop draws pending snoozes while the scheduler may
+    /// hold its store across a commit's disk write; it reads the committed
+    /// view and never waits for that lock.
+    #[test]
+    fn pending_snoozes_are_read_without_the_store_lock() {
+        let temp = tempfile::tempdir().expect("private fixture");
+        let due = at("2026-04-14T12:00:00+00:00");
+        let fixture = alarm_fixture(due, 0, Some(temp.path().join("schedules.json")));
+        let snooze = invoke_fixture_alarm_action(
+            &fixture.chrome,
+            &format!("notification.{}.snooze", fixture.id),
+        );
+        fixture
+            .store
+            .lock()
+            .expect("store")
+            .service_step(&fixture.bridge, &due, None)
+            .expect("snooze commit");
+        fixture.chrome.borrow_mut().pump_dbus_notifications();
+        assert!(snooze().expect("receipt").is_some());
+
+        let held = fixture.store.lock().expect("a commit holds the store");
+        let (read_tx, read) = std::sync::mpsc::channel();
+        let bridge = fixture.bridge.clone();
+        let room = fixture.target.room.clone();
+        std::thread::spawn(move || {
+            let _ = read_tx.send(bridge.snoozed_alarms(&room));
+        });
+        let snoozed = read.recv_timeout(std::time::Duration::from_secs(10));
+        drop(held);
+        let snoozed = snoozed.expect("reading pending snoozes waited for the store lock");
+        assert_eq!(snoozed.len(), 1, "the committed snooze is pending");
+        assert_eq!(snoozed[0].target.token, fixture.target.token);
+        assert!(
+            fixture.bridge.snoozed_alarms("another-room").is_empty(),
+            "snoozes are scoped to their room"
+        );
     }
 
     #[test]

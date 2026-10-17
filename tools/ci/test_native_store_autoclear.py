@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Bounded ownership journal tests; kernel LOOP_CONFIGURE proof is native-only."""
 import ctypes
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import importlib.util
 import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -70,15 +72,27 @@ class OwnershipJournal(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.read_journal(path)
 
+    @contextmanager
     def subject_inventory(self, entries):
-        actual = os.scandir
-        system = os.stat('/sys/block')
-        def scan(fd):
-            held = os.fstat(fd)
-            if (held.st_dev, held.st_ino) == (system.st_dev, system.st_ino):
-                return nullcontext(entries())
-            return actual(fd)
-        return scan
+        # Unit-test the production observer without requiring host sysfs. Keep
+        # real directory FDs and metadata; this is not loop qualification.
+        actual_open, actual_scan = os.open, os.scandir
+        with tempfile.TemporaryDirectory() as temporary:
+            inventory = os.stat(temporary)
+
+            def opened(path, flags, *args, **kwargs):
+                return actual_open(temporary if path == '/sys/block' else path,
+                                   flags, *args, **kwargs)
+
+            def scan(fd):
+                held = os.fstat(fd)
+                if (held.st_dev, held.st_ino) == (inventory.st_dev, inventory.st_ino):
+                    return nullcontext(entries())
+                return actual_scan(fd)
+
+            with patch.object(subject.os, 'open', side_effect=opened), \
+                    patch.object(subject.os, 'scandir', side_effect=scan):
+                yield
 
     def test_empty_inventory_still_queries_selected_device(self):
         value = {'schema': 1, 'entries': [{'device': 19, 'inode': 83, 'number': 7}]}
@@ -88,7 +102,7 @@ class OwnershipJournal(unittest.TestCase):
             return os.open('/dev/null', os.O_RDONLY)
         with patch.object(subject.os, 'geteuid', return_value=0), \
              patch.object(subject, 'associations', return_value=value), \
-             patch.object(subject.os, 'scandir', side_effect=self.subject_inventory(lambda: iter(()))), \
+             self.subject_inventory(lambda: iter(())), \
              patch.object(subject, 'loop_fd', side_effect=opened), \
              patch.object(subject, 'status', return_value=None):
             self.assertEqual(subject.observe(Path('/unused'))['observed_backings'], 1)
@@ -98,10 +112,33 @@ class OwnershipJournal(unittest.TestCase):
         value = {'schema': 1, 'entries': [{'device': 19, 'inode': 83, 'number': 7}]}
         with patch.object(subject.os, 'geteuid', return_value=0), \
              patch.object(subject, 'associations', return_value=value), \
-             patch.object(subject.os, 'scandir', side_effect=self.subject_inventory(lambda: iter(()))), \
+             self.subject_inventory(lambda: iter(())), \
              patch.object(subject, 'loop_fd', side_effect=OSError('unobservable')):
             with self.assertRaises(OSError):
                 subject.observe(Path('/unused'))
+
+    def test_unavailable_selected_device_fails_child(self):
+        # Exercise the actual observer in a child: inability to open its owned
+        # subject must be a failure, never a successful hardware-unavailable skip.
+        child = '''
+import importlib.util
+import sys
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('autoclear', sys.argv[1])
+subject = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(subject)
+value = {'schema': 1, 'entries': [{'device': 19, 'inode': 83, 'number': 7}]}
+with patch.object(subject.os, 'geteuid', return_value=0), \\
+     patch.object(subject, 'associations', return_value=value), \\
+     patch.object(subject, 'loop_fd', side_effect=OSError('owned loop unavailable')):
+    subject.observe(Path('/unused'))
+'''
+        result = subprocess.run([sys.executable, '-c', child, str(Path(subject.__file__).resolve())],
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('OSError: owned loop unavailable', result.stderr)
+        self.assertEqual(result.stdout, '')
 
     def test_same_backing_on_different_loop_is_refused(self):
         value = {'schema': 1, 'entries': [{'device': 19, 'inode': 83, 'number': 7}]}
@@ -111,7 +148,7 @@ class OwnershipJournal(unittest.TestCase):
             return os.open('/dev/null', os.O_RDONLY)
         with patch.object(subject.os, 'geteuid', return_value=0), \
              patch.object(subject, 'associations', return_value=value), \
-             patch.object(subject.os, 'scandir', side_effect=self.subject_inventory(lambda: iter([Path('loop8')]))), \
+             self.subject_inventory(lambda: iter([Path('loop8')])), \
              patch.object(subject, 'loop_fd', side_effect=opened), \
              patch.object(subject, 'status', side_effect=[None, SimpleNamespace(device=19, inode=83)]):
             with self.assertRaisesRegex(ValueError, 'remains associated'):
@@ -127,7 +164,7 @@ class OwnershipJournal(unittest.TestCase):
                 yield Path('other' + str(index))
         with patch.object(subject.os, 'geteuid', return_value=0), \
              patch.object(subject, 'associations', return_value=value), \
-             patch.object(subject.os, 'scandir', side_effect=self.subject_inventory(inventory)), \
+             self.subject_inventory(inventory), \
              patch.object(subject, 'loop_fd', side_effect=lambda *args: os.open('/dev/null', os.O_RDONLY)), \
              patch.object(subject, 'status', return_value=None):
             with self.assertRaisesRegex(ValueError, 'inventory exceeds bound'):

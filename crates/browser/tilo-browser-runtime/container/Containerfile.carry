@@ -1,0 +1,16 @@
+# The image to deploy: the incoming web entry image, plus the one version
+# directory of the image it replaces. A tab opened before the deploy keeps
+# running that version and fetches each app's module only when the app first
+# opens, so its files must stay served until the next deploy. Built by
+# carry.sh, which reads OUTGOING_VERSION from the outgoing image's
+# version.json and refuses an incoming image that already carries a version:
+# each deploy carries at most one, so the image never grows past two.
+# The context is empty; everything comes from the two images.
+ARG INCOMING
+ARG OUTGOING
+FROM ${OUTGOING} AS outgoing
+
+FROM ${INCOMING}
+ARG OUTGOING_VERSION
+LABEL so.tilo.web-entry.carried-version="${OUTGOING_VERSION}"
+COPY --from=outgoing /srv/tilo-web/v/${OUTGOING_VERSION}/ /srv/tilo-web/v/${OUTGOING_VERSION}/

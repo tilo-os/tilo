@@ -33,4 +33,17 @@ for card in "$drm_sysfs"/card[0-9]*; do
   fi
 done
 
+# The greeter keeps its startup record where tilo-boot-health can read it: the
+# record is complete once the greeter has presented its first frame, which is
+# how the boot assessment tells a greeter on screen from one that crash-loops
+# while greetd stays active. The directory is the greeter user's own
+# (tmpfiles.d/tilo.conf), so nothing else can claim the greeter drew. The
+# health check reads it without privileges, so a stricter session umask must
+# not make it unreadable; the greeter user keeps nothing private.
+greeter_record_dir="${TILO_GREETER_RECORD_DIR:-/run/tilo-greeter}"
+if [[ ${1##*/} == tilo-greeter && -z ${TILO_STARTUP_METRICS_PATH:-} && -d $greeter_record_dir ]]; then
+  export TILO_STARTUP_METRICS_PATH="$greeter_record_dir/startup-metrics.json"
+  umask 0022
+fi
+
 exec "${TILO_CAGE:-/usr/bin/cage}" -s -- "$@"

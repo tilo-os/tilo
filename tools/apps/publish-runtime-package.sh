@@ -10,14 +10,25 @@
 # TILO_PACKAGE_TOKEN, PACKAGE_API (the authenticated generic-package base),
 # REGISTRY_URL, OWNER, REGISTRY_CLI (tilo-app-package), REGISTRY_IDENTITY
 # (publisher identity file), RUNNER_TEMP.
+#
+# RUNTIME_PACKAGE_STAGE splits the two by credential: `upload` only uploads,
+# with TILO_PACKAGE_TOKEN and no identity or metadata; `submit` only signs and
+# submits the entry, with REGISTRY_IDENTITY and no package token, after an
+# upload stage put the objects in place. Unset, it does both.
 set -euo pipefail
+stage=${RUNTIME_PACKAGE_STAGE:-all}
 dir=$1
 arch=$2
 package_id=$3
 artifact=$4
-metadata=$5
-: "${VERSION:?}" "${TILO_PACKAGE_TOKEN:?}" "${PACKAGE_API:?}" "${REGISTRY_URL:?}" \
-  "${OWNER:?}" "${REGISTRY_CLI:?}" "${REGISTRY_IDENTITY:?}"
+metadata=${5:-}
+: "${VERSION:?}" "${PACKAGE_API:?}" "${REGISTRY_URL:?}" "${OWNER:?}" "${REGISTRY_CLI:?}"
+case $stage in
+  upload) : "${TILO_PACKAGE_TOKEN:?}" ;;
+  submit) : "${REGISTRY_IDENTITY:?}" "${metadata:?}" ;;
+  all) : "${TILO_PACKAGE_TOKEN:?}" "${REGISTRY_IDENTITY:?}" "${metadata:?}" ;;
+  *) printf 'RUNTIME_PACKAGE_STAGE must be upload, submit or all\n' >&2; exit 2 ;;
+esac
 temp=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -56,6 +67,7 @@ if jq -e --arg pkg "$package_id" --arg id "$provides" --arg arch "$arch" --arg v
   exit 0
 fi
 
+if [[ $stage != submit ]]; then
 uploads="$temp/tilo-runtime-uploads-$arch.tsv"
 : > "$uploads"
 while IFS= read -r object; do
@@ -69,6 +81,8 @@ mkdir -p "${twin%/*}"
 "$REGISTRY_CLI" compress -o "$twin" "$tapp"
 printf '%s\t%s\n' "$twin" "$PACKAGE_API/$artifact/$VERSION/${twin##*/}" >> "$uploads"
 TILO_PACKAGE_UPLOAD_WORKERS=8 "$here/../upload_immutable_packages.sh" "$uploads"
+fi
+[[ $stage != upload ]] || exit 0
 
 for attempt in 1 2 3; do
   (( attempt == 1 )) || fetch_snapshot

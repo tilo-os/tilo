@@ -15,8 +15,6 @@ LIMIT = 4 << 20
 
 # Shared no-replace publication keeps interrupted writes out of final paths.
 _atomic_path = Path(__file__).with_name('tilo-firstboot-files.py')
-if not _atomic_path.exists():
-    _atomic_path = Path(__file__).resolve().parents[2] / 'usr/libexec/tilo-firstboot-files.py'
 _spec = importlib.util.spec_from_file_location('firstboot_files', _atomic_path)
 atomic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(atomic)

@@ -701,7 +701,13 @@ fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
+    let key = signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)?;
+    // Reading the key made this process non-dumpable, so the person's Secret
+    // Service can no longer read its executable to know who is calling. The
+    // process proves it holds the device key instead.
+    #[cfg(target_os = "linux")]
+    tilo_secrets::arm_device_proof(Zeroizing::new(key.to_bytes()).as_ref());
+    Ok(key)
 }
 
 /// Read this device's key from wherever `paths` keeps it.

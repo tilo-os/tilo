@@ -1082,3 +1082,55 @@ fn the_reader_publishes_only_where_it_is() {
     app.adopt_resource_state(&Rc::new(Ebook::default()));
     assert_eq!(app.library().len(), before);
 }
+
+/// A page turn while the shelf holds the library copies the turned book's
+/// chunk of the progress, not every book's; shelving a book copies none.
+#[test]
+fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
+    use ui::tilo_resource::Reader;
+    let book = |n: usize| format!("book:{n:032x}");
+    let record = |n: usize, fraction: f32| {
+        Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+            book: book(n),
+            chapter: 1,
+            block: 2,
+            fraction,
+            opened: false,
+        })
+    };
+    let mut library = Replica::<Ebook>::new();
+    for n in 0..500 {
+        apply(&mut library, record(n, 0.1)).unwrap();
+    }
+    let mut reader = Reader::<Ebook>::open(library.doc_mut()).unwrap();
+    let shared = |now: &Ebook, shown: &Ebook| {
+        (0..500)
+            .filter(|n| {
+                std::ptr::eq(
+                    now.progress.get(&book(*n)).unwrap(),
+                    shown.progress.get(&book(*n)).unwrap(),
+                )
+            })
+            .count()
+    };
+
+    // A view holds the library while a book is shelved.
+    let shown = Rc::clone(reader.state());
+    apply(&mut library, shelve(&row(BOOK, "Shelved"))).unwrap();
+    assert!(reader.sync(library.doc()).unwrap());
+    assert_eq!(shared(reader.state(), &shown), 500, "no progress copied");
+
+    // And while a page is turned.
+    let shown = Rc::clone(reader.state());
+    apply(&mut library, record(250, 0.75)).unwrap();
+    assert!(reader.sync(library.doc()).unwrap());
+    let now = reader.state();
+    assert_eq!(shown.progress_of(&book(250)).fraction, 0.1);
+    assert_eq!(now.progress_of(&book(250)).fraction, 0.75);
+    assert_eq!(now.as_ref(), &state(&library));
+    let kept = shared(now, &shown);
+    assert!(
+        kept >= 500 - 64,
+        "{kept} of 500 books' progress still shared"
+    );
+}

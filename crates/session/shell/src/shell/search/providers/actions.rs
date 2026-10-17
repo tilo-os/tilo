@@ -23,6 +23,7 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 mod device_pairing;
 mod enrollment_tokens;
+mod identity_admin;
 mod native_identity;
 
 use crate::shell::shared_display_actions;
@@ -174,23 +175,7 @@ const PRESENCE_SHARING_PARAMS: &[ActionParam] = &[ActionParam::required(
     "off, manual, or automatic.",
 )];
 
-const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "device",
-        ParamType::Text,
-        "The enrolled device's 64-character public-key fingerprint.",
-    ),
-    ActionParam::optional(
-        "reason",
-        ParamType::Text,
-        "lost, stolen, retired, or compromised (defaults to retired).",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that this permanent administrative revocation should run.",
-    ),
-];
+const DEVICE_REVOKE_PARAMS: &[ActionParam] = crate::shell::identity_admin::REVOKE_PARAMS;
 
 fn workspace_create_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -280,6 +265,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         id if enrollment_tokens::role_of(id).is_some() => contract = enrollment_tokens::contract(),
         id if device_pairing::is_pair_action(id) => contract = device_pairing::contract(id),
+        id if identity_admin::is_identity_action(id) => contract = identity_admin::contract(id),
         "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
@@ -641,12 +627,6 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
 /// pre-checks. One lock scope reads and destructures the workspace
 /// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
 /// tree's read guard is already gone before the caller does anything else.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
-              there is nothing after it to hoist the drop past without cloning the \
-              workspace out for no real gain"
-)]
 /// Let the identity `principal` govern `workspace_id` as fully as `actor`:
 /// a member of the room, granted everything in it.
 fn delegate_room_to_identity(
@@ -719,6 +699,10 @@ fn pairing_needs_lifecycle() -> ActionError {
     ActionError::Refused("device pairing requires lifecycle dispatch".into())
 }
 
+fn identity_needs_lifecycle() -> ActionError {
+    ActionError::Refused("identity administration requires lifecycle dispatch".into())
+}
+
 fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), ActionError> {
     if args.boolean("confirm") == Some(true) {
         Ok(())
@@ -763,26 +747,6 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
         )));
     }
     Ok(name)
-}
-
-fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
-    let value = value.trim();
-    if value.len() != 64 {
-        return Err(ActionError::Refused(
-            "device fingerprint must be 64 hex characters".into(),
-        ));
-    }
-    let mut key = [0_u8; 32];
-    for (index, slot) in key.iter_mut().enumerate() {
-        let start = index.saturating_mul(2);
-        let end = start.saturating_add(2);
-        let chunk = value
-            .get(start..end)
-            .ok_or_else(|| ActionError::Refused("device fingerprint is not hex".into()))?;
-        *slot = u8::from_str_radix(chunk, 16)
-            .map_err(|_| ActionError::Refused("device fingerprint is not hex".into()))?;
-    }
-    Ok(key)
 }
 
 /// What `peer.invite.named` must be told. Both required — an invite to
@@ -1496,6 +1460,55 @@ impl Action {
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
         Action {
+            id: identity_admin::LIST_ID,
+            label: "search-action-identity-list",
+            subtitle: "search-action-identity-list-subtitle",
+            params: crate::shell::identity_admin::LIST_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::ACTIVATE_ID,
+            label: "search-action-identity-activate",
+            subtitle: "search-action-identity-activate-subtitle",
+            params: crate::shell::identity_admin::ACTIVATE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::REMOVE_ID,
+            label: "search-action-identity-remove",
+            subtitle: "search-action-identity-remove-subtitle",
+            params: crate::shell::identity_admin::REMOVE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::PROTECT_ID,
+            label: "search-action-identity-protect",
+            subtitle: "search-action-identity-protect-subtitle",
+            params: crate::shell::identity_admin::PROTECT_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::DEVICES_ID,
+            label: "search-action-identity-devices-list",
+            subtitle: "search-action-identity-devices-list-subtitle",
+            params: crate::shell::identity_admin::DEVICES_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::HOME_PEER_REMOVE_ID,
+            label: "search-action-identity-home-peer-remove",
+            subtitle: "search-action-identity-home-peer-remove-subtitle",
+            params: crate::shell::identity_admin::HOME_PEER_REMOVE_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
+            id: identity_admin::HOME_PEER_RETRY_ID,
+            label: "search-action-identity-home-peer-retry",
+            subtitle: "search-action-identity-home-peer-retry-subtitle",
+            params: crate::shell::identity_admin::HOME_PEER_RETRY_PARAMS,
+            apply: |_, _| Err(identity_needs_lifecycle()),
+        },
+        Action {
             id: "identity.device.revoke",
             label: "search-action-identity-device-revoke",
             subtitle: "search-action-identity-device-revoke-subtitle",
@@ -1507,28 +1520,10 @@ impl Action {
                     ));
                 }
                 let (_, profile) = active_identity(st)?;
-                let key = parse_device_key(args.text("device").unwrap_or_default())?;
-                let reason = match args
-                    .text("reason")
-                    .unwrap_or("retired")
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "lost" => tilo_user_identity::RevocationReason::Lost,
-                    "stolen" => tilo_user_identity::RevocationReason::Stolen,
-                    "retired" => tilo_user_identity::RevocationReason::Retired,
-                    "compromised" => tilo_user_identity::RevocationReason::Compromised,
-                    _ => {
-                        return Err(ActionError::Refused(
-                            "reason must be lost, stolen, retired, or compromised".into(),
-                        ));
-                    }
-                };
-                let now = tilo_clock::unix_now_ns();
-                crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| store.revoke(&profile.id, key, reason, now))
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                let store = crate::shell::identity_admin::Store::from_env()
+                    .map_err(ActionError::Refused)?;
+                crate::shell::identity_admin::revoke(&store, &profile, args)
+                    .map_err(ActionError::Refused)?;
                 // Revoking this machine must immediately withdraw any
                 // device-key filesystem grants exported for it.
                 st.tree().export_fs_capabilities();
@@ -3447,6 +3442,28 @@ impl ActionsProvider {
                           args: &ActionArgs| {
                         device_pairing::begin(
                             crate::shell::device_pairing::Pairing::session(),
+                            chrome,
+                            action_id,
+                            args,
+                        )
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if identity_admin::is_identity_action(action.id) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| { Err(identity_needs_lifecycle()) },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        identity_admin::begin(
+                            crate::shell::identity_admin::IdentityAdmin::session(),
                             chrome,
                             action_id,
                             args,

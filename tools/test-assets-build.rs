@@ -23,8 +23,16 @@ fn prepare_fixture_assets(
     }
     let python = std::env::var_os("PYTHON")
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
+    let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     let mut command = Command::new(python);
     command.arg(tool).arg(manifest);
+    // A build script writes only under OUT_DIR: the source tree may be read-only, as it
+    // is in the check containers. TILO_TEST_ASSET_CACHE still names a shared cache.
+    if std::env::var_os("TILO_TEST_ASSET_CACHE").is_none() {
+        command
+            .arg("--cache-root")
+            .arg(directory.join("test-assets"));
+    }
     if let Some(filename) = filename {
         command.args(["--file", filename]);
     }
@@ -39,7 +47,6 @@ fn prepare_fixture_assets(
         )
         .into());
     }
-    let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     for source in String::from_utf8(output.stdout)?.lines() {
         let source = PathBuf::from(source);
         let name = source.file_name().ok_or("missing fixture filename")?;

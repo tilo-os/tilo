@@ -330,6 +330,14 @@ pub(crate) struct BrowserShell {
     cursor: Option<Point>,
 }
 
+/// What the top bar's chrome reads from the page besides the desktop tree.
+pub struct ChromeSources {
+    pub here: tilo_desktop::here::Here,
+    pub shared: crate::desktop::Shared,
+    pub room: Room,
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
 impl BrowserShell {
     pub fn new(
         surface: DesktopSurface,
@@ -337,11 +345,14 @@ impl BrowserShell {
         generation: String,
         offers: HostOffers,
         requests: HostRequests,
-        here: tilo_desktop::here::Here,
-        shared: crate::desktop::Shared,
-        room: Room,
-        wake: Arc<dyn Fn() + Send + Sync>,
+        sources: ChromeSources,
     ) -> Self {
+        let ChromeSources {
+            here,
+            shared,
+            room,
+            wake,
+        } = sources;
         let chrome = Rc::new(PageChrome {
             handle: handle.clone(),
             shared,
@@ -605,11 +616,11 @@ impl BrowserShell {
         self.handle.read(|tree| room_cards(tree, &host, now))
     }
 
-    fn apply_pick(&mut self, pick: OverviewPick) {
+    fn apply_pick(&mut self, pick: &OverviewPick) {
         self.overview.set_open(false, Vec::new());
         match pick {
             OverviewPick::Window(tab) => {
-                self.handle.focus_tab(tab);
+                self.handle.focus_tab(*tab);
             }
             OverviewPick::Workspace(id) => self.dispatch(&Command::Workspace {
                 generation: self.generation.clone(),
@@ -684,6 +695,7 @@ impl BrowserShell {
     /// A desktop chord (see the module docs), applied; false when `event`
     /// is not one.
     fn chord(&mut self, event: &ui::winit::event::KeyEvent, modifiers: &Modifiers) -> bool {
+        use ui::winit::keyboard::KeyCode;
         if event.state != ElementState::Pressed {
             return false;
         }
@@ -709,7 +721,6 @@ impl BrowserShell {
             ui::winit::keyboard::PhysicalKey::Code(code) => Some(code),
             ui::winit::keyboard::PhysicalKey::Unidentified(_) => None,
         };
-        use ui::winit::keyboard::KeyCode;
         let nth = digit(&event.logical_key).or_else(|| match physical? {
             KeyCode::Digit1 => Some(1),
             KeyCode::Digit2 => Some(2),
@@ -748,8 +759,10 @@ impl BrowserShell {
                 self.apply_intent(ChromeIntent::SwitchWorkspace(1));
             }
             _ => {
-                let Some(nth) = nth else { return false };
-                if let Some(tab) = self.window_tab(None, Some(nth - 1)) {
+                let Some(index) = nth.and_then(|nth| nth.checked_sub(1)) else {
+                    return false;
+                };
+                if let Some(tab) = self.window_tab(None, Some(index)) {
                     self.handle.focus_tab(tab);
                 }
             }
@@ -841,7 +854,7 @@ impl Widget for BrowserShell {
             self.apply_intent(intent);
         }
         if let Some(pick) = self.overview.take_pick() {
-            self.apply_pick(pick);
+            self.apply_pick(&pick);
             changed = true;
         }
         if self.overview.is_open() && self.overview_revision != self.handle.revision() {
@@ -1105,8 +1118,9 @@ impl Widget for BrowserShell {
     /// The next minute, for the bar's clock, unless something wakes sooner.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let seconds = ui::time::unix_now_i64().rem_euclid(60);
-        let clock = ui::time::Instant::now()
-            + ui::time::Duration::from_secs(u64::try_from(60 - seconds).unwrap_or(60));
+        let clock = ui::time::Instant::now().checked_add(ui::time::Duration::from_secs(
+            60_u64.saturating_sub(seconds.unsigned_abs()),
+        ));
         [
             &self.backdrop as &dyn Widget,
             &self.bar,
@@ -1121,7 +1135,7 @@ impl Widget for BrowserShell {
                 .then(|| self.people.next_wake_deadline())
                 .flatten(),
         )
-        .chain(std::iter::once(clock))
+        .chain(clock)
         .min()
     }
 

@@ -13,15 +13,6 @@
 //! - [`state`]     — the user's per-room app data: what uninstalling
 //!   must ask about rather than assume.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod gc;
 pub mod isa;
 pub mod runtime_blobs;

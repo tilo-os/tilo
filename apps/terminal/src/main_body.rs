@@ -787,10 +787,6 @@ impl TerminalWidget {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "terminal MainBody wires many host services at construction"
-    )]
     pub fn new(
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -2973,10 +2969,6 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Terminal painting intentionally keeps grid, selection, cursor, and the find and session bands in one ordered compositing pass"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

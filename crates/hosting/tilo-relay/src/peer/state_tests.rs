@@ -18,6 +18,7 @@ use crate::{
     auth::PeerRole,
     workspace::{Membership, WorkspaceRuntime},
 };
+use tilo_relay_shell::ShellAuthority as _;
 use tilo_user_identity::{RevocationList, UserIdentity};
 
 mod presence_cost;
@@ -314,7 +315,7 @@ impl Fixture {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_relay_protocol::retention::RetentionAuthority::new(
                         &room,
                         fixture.source.peer.cert.clone(),
                     )
@@ -334,12 +335,12 @@ impl Fixture {
     }
 
     fn continuity_checkpoint(&self, snapshot: Vec<u8>) -> ([u8; 32], Vec<u8>) {
-        let msg = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+        let msg = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key: self.source.peer.user_public_key,
             publisher: 7,
             snapshot,
         };
-        let (channel, _) = tilo_peer_state::transport::retention(&msg, false).unwrap();
+        let (channel, _) = neighbour_wire::retention(&msg, false).unwrap();
         (channel, postcard::to_stdvec(&msg).unwrap())
     }
 
@@ -984,7 +985,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
 
 #[tokio::test]
 async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates() {
-    use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
+    use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
     let metadata = producer_metadata();
     let raw = producer_frame(&metadata, &metadata["baseline"][1], 1);
     let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
@@ -998,8 +999,8 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
         panic!("signed checkpoint fixture was not a checkpoint")
     };
     assert!(matches!(
-        postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&signed_body).unwrap(),
-        tilo_peer_state::NeighbourMsg::AppDocument { .. }
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&signed_body).unwrap(),
+        neighbour_wire::NeighbourMsg::AppDocument { .. }
     ));
     for prefix in [false, true] {
         for case in [
@@ -1029,20 +1030,18 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
                 }
                 "trailing" => body.push(0),
                 "foreign_root" => {
-                    let msg = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    let msg = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
                         user_public_key: [77; 32],
                         publisher: 7,
                         snapshot: vec![1],
                     };
-                    channel = tilo_peer_state::transport::retention(&msg, false)
-                        .unwrap()
-                        .0;
+                    channel = neighbour_wire::retention(&msg, false).unwrap().0;
                     body = postcard::to_stdvec(&msg).unwrap();
                 }
                 "channel_mismatch" => channel[0] ^= 1,
                 "other_variant" => {
                     body = postcard::to_stdvec(
-                        &tilo_peer_state::NeighbourMsg::PersonalContinuityRequest {
+                        &neighbour_wire::NeighbourMsg::PersonalContinuityRequest {
                             user_public_key: fixture.source.peer.user_public_key,
                             requester: 7,
                         },
@@ -1293,6 +1292,82 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         .unwrap()
         .unwrap();
     assert!(matches!(acknowledged, Some(Envelope::Committed { op, .. }) if op == [5; 16]));
+    assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
+}
+
+/// Commits are no longer admitted one at a time per room, so a copy of a
+/// commit (a resend after a reconnect) can arrive while the first is still
+/// being made durable: it waits for that one and is answered with its host
+/// order, and the change is retained once.
+#[tokio::test]
+async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
+    let fixture = Fixture::new();
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "state-persist");
+    let session = SessionCtx {
+        workspaces: &fixture.registry,
+        autobind: None,
+        outbound: &fixture.source.tx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &fixture.source.own_user,
+        own_device_cert: &fixture.source.peer.cert,
+        own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        app_serving: None,
+        metrics: &fixture.metrics,
+        trust_policy: &fixture.source.policy,
+        disconnect: &fixture.source.disconnect,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
+        private_tx: &fixture.private,
+        revocations: &fixture.source.revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
+        unreachable!()
+    };
+    let commit = Envelope::Commit {
+        workspace_id: 7,
+        op: [5; 16],
+        author_device_public_key: fixture.source.peer.device_public_key,
+        authored_at_ns: 1,
+        delta,
+    };
+    let mut first = Box::pin(handle_commit(
+        &fixture.source.peer,
+        &session,
+        &[7],
+        commit.clone(),
+    ));
+    tokio::select! {
+        _ = &mut first => panic!("a commit was acknowledged before it was retained"),
+        reached = reached => reached.unwrap(),
+    }
+    let mut copy = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut copy)
+            .await
+            .is_err(),
+        "a copy of a commit in flight was answered before the commit was durable"
+    );
+    drop(release);
+    let (first, copy) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(first, copy)
+    })
+    .await
+    .unwrap();
+    let order = |answer: Option<Envelope>| match answer {
+        Some(Envelope::Committed { op, seq, .. }) if op == [5; 16] => seq,
+        other => panic!("expected the commit's order, got {other:?}"),
+    };
+    assert_eq!(order(first.unwrap()), order(copy.unwrap()));
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
 }
 
@@ -2940,6 +3015,7 @@ async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() 
                 source: None,
                 _budget: None,
                 live: session.live.clone(),
+                fanned: None,
             })
             .unwrap();
         let catchup = Arc::new(ReplayCatchup::new(
@@ -3038,6 +3114,7 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
                 source: None,
                 _budget: None,
                 live: live.clone(),
+                fanned: None,
             })
             .unwrap();
     }

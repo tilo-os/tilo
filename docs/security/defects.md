@@ -1017,6 +1017,24 @@ without such a grant ([identity-security.md](../identity-security.md)).
 **Fix direction:** mask these paths in the mount namespace after the grant's bind (a tmpfs over
 the directories, `/dev/null` over the files), on both launcher pipelines.
 
+**Resolved in source.** `CapabilityPlan::for_app` confines every plan against
+`private_store_roots()` (`$XDG_CONFIG_HOME/tilo`, `$HOME/.config/tilo`, `$TILO_SECRETS_DIR`): a
+grant at or inside one is refused; a grant containing one keeps its bind and the whole directory is
+covered by an empty read-only tmpfs after every grant (`sandbox::push_capability_binds`, shared by
+both pipelines, and the Windows capsule planner). Masking alone would leave a writable grant able
+to rename `~/.config` aside and plant new trust files at the old path, so each directory between a
+writable grant and the store is bound onto itself (a mount point cannot be renamed or removed), and
+a writable grant holding a symlink on the store's route is bound read-only. Held by
+`room_confinement::a_home_grant_never_reaches_tilos_private_configuration` (live bwrap and
+Landlock: unreadable secret and vault key, unwritable trust files, unmovable `~/.config`, Documents
+grant unchanged) and the plan/argv tests in `capabilities.rs` and `sandbox.rs`. The macOS Seatbelt
+profile confines the same plan (`launcher_macos::policy::SeatbeltPolicy::resolve`) and, after every
+grant and the chooser's picked-path extension, denies each store outright and every write to each
+directory and symlink its path resolves through, spelled as the disk spells it, so nothing can
+rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `sandbox-exec`
+launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
+(`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
+
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 
 `crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the

@@ -998,7 +998,9 @@ mod linux {
     }
 }
 
-fn main() -> std::process::ExitCode {
+// Also called by the lightweight Cargo regression driver, which compiles this
+// exact entry point without linking the graphical installer library.
+pub(crate) fn main() -> std::process::ExitCode {
     #[cfg(target_os = "linux")]
     {
         linux::run()

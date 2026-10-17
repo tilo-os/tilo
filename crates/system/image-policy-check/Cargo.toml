@@ -1,0 +1,27 @@
+[package]
+name = "tilo-image-policy-check"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Boot audit check: proves containers-policy.json makes every Tilo image scope require the pinned Cosign signature."
+
+[lib]
+name = "tilo_image_policy_check"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-image-policy-check"
+path = "src/main.rs"
+
+[dependencies]
+# An ordered, duplicate-refusing JSON tree, read through serde_json's parser.
+serde.workspace = true
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -37,6 +37,12 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
+# The archive smoke remains a prerequisite of t's image publication. Its
+# required hermetic contract runs the real shell with a stub archive runner.
+[[covered]]
+suite = "os/tests/ci_fast_images.sh"
+by = "os/tests/test_ci_fast_images.py"
+
 [[covered]]
 suite = "os/tests/image_size_budget.py"
 by = "os/tests/test_image_size_budget.py"
@@ -80,7 +86,13 @@ name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
 # to the helper's own early return.
-inputs = ["os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs"]
+inputs = [
+  "os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs",
+  "crates/system/install-helpers/src/staging_handoff.rs",
+  "crates/system/install-helpers/src/staging_handoff/",
+  "crates/system/install-helpers/tests/fixtures/",
+  "apps/staging-handoff-model/",
+]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-export-sdk-compiler.py",
@@ -93,8 +105,8 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
+  "os/tests/boot_health_greeter.sh",
   "os/tests/board_release_promotion.py",
-  "os/tests/test_board_successor.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
@@ -111,12 +123,10 @@ suites = [
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
+  "os/tests/esp_generator.sh",
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
-  "os/tests/test_firstboot_credential_transport.py",
-  "os/tests/test_firstboot_transaction.py",
-  "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
@@ -167,14 +177,10 @@ suites = [
   "os/tests/test_image_cohort_archives.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
-  "os/tests/test_install_dev_ssh.py",
-  "os/tests/test_install_handoff_copy.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
-  "os/tests/test_installer_firstboot_runtime.py",
-  "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
@@ -200,12 +206,12 @@ suites = [
   "os/tests/test_rebind_development_rootfs.py",
   "os/tests/test_rebind_development_trust.py",
   "os/scripts/installer-receive-fixture/test_prerequisite_image.py",
+  "os/scripts/installer-receive-fixture/test_delivery.py",
   "os/scripts/installer-source-fixture/test_bounded_native.py",
   "os/scripts/installer-source-fixture/test_source.py",
   "os/tests/data_consumer_capability_test.py",
   "os/tests/test_install_purpose.py",
   "os/tests/test_optional_service_consumer.py",
-  "os/tests/test_prepared_first_use_binding.py",
   "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
@@ -221,7 +227,6 @@ suites = [
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
-  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
@@ -248,8 +253,9 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/"]
+inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
 suites = [
+  "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
   "os/containers/tilo-agent-host/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
@@ -394,23 +400,6 @@ inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/de
 suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py"]
 
 [[group]]
-name = "imager-windows-native-contract"
-inputs = [
-  ".forgejo/workflows/dev-imager-windows-native.yml",
-  "tools/ci/run-imager-windows-native.ps1",
-  "tools/ci/runners/imager-ephemeral-windows.ps1",
-  "tools/tests/test_imager_windows_native.py",
-  "rust-toolchain.toml",
-  "apps/imager/src/setup/folders.rs",
-  "apps/imager/src/setup/nofollow.rs",
-  "apps/imager/src/setup/windows_inventory/tests.rs",
-  "apps/imager/src/setup/account_transfer/windows_source.rs",
-  "apps/imager/src/profile.rs",
-  "apps/imager/src/model.rs",
-]
-suites = ["tools/tests/test_imager_windows_native.py"]
-
-[[group]]
 name = "native-qualification-storage"
 inputs = ["tools/ci/native-stores.sh", "tools/ci/native-store-virtio.py", "tools/ci/disposable-native-vm.py", "tools/ci/test_native_store_virtio.py"]
 suites = ["tools/ci/test_native_store_virtio.py"]
@@ -509,12 +498,16 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
+  # session example draws.
+  "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
+  "scripts/perf/native_stream_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -620,6 +613,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
@@ -770,6 +764,108 @@ inputs = [
   "os/components.toml",
 ]
 readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+
+[[cargo]]
+package = "tilo-firstboot-files"
+# The first-boot cases run the shipped tilo-firstboot-user with this helper.
+inputs = ["os/usr/libexec/tilo-firstboot-user"]
+readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
+
+[[cargo]]
+package = "tilo-board-successor"
+# The selector's tests run the shipped tilo-verified-update with it, read the
+# shipped hardware definitions as profile fixtures, and hold the reader to the
+# module the installer still uses.
+inputs = [
+  "os/usr/libexec/tilo-verified-update",
+  "os/hardware/profiles/*.json",
+  "os/dev/hardware_profile.py",
+]
+readers = [
+  "crates/system/board-successor/tests/successor.rs",
+  "crates/system/board-successor/tests/profile.rs",
+]
+
+[[cargo]]
+package = "tilo-image-policy-check"
+# The checker's tests judge the shipped container policy and check that the
+# boot audit runs it.
+inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+readers = ["crates/system/image-policy-check/tests/policy.rs"]
+
+[[cargo]]
+package = "tilo-staging-reclaim"
+# The reclaim tests check the units on both sides of a USB-free install, the
+# installer image that enables them and the component that ships the helper.
+inputs = [
+  "os/usr/lib/systemd/system/tilo-staging-reclaim.service",
+  "os/usr/lib/systemd/system/tilo-staging-handoff.service",
+  "os/usr/lib/systemd/system/tilo-installer-grow-root.service",
+  "os/Containerfile.installer",
+  "os/components.toml",
+]
+readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
+
+[[covered]]
+suite = "os/tests/oracles/staging_handoff_test.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[covered]]
+suite = "os/tests/test_firstboot_credential_transport.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[covered]]
+suite = "os/tests/test_firstboot_home_seeds_native.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[covered]]
+suite = "os/tests/test_firstboot_transaction.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[covered]]
+suite = "os/tests/test_installer_firstboot_runtime.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[covered]]
+suite = "os/tests/test_prepared_first_use_binding.py"
+by = "crates/system/install-helpers/tests/native_python.rs"
+
+[[cargo]]
+package = "tilo-install-helpers"
+# The helpers' tests check how the installer backend and its guided
+# partitioner call them.
+# Binary-dependent Python drivers run as Cargo tests in the native builder,
+# not the source-only ci-fast suite. Include their production binary sources
+# and all oracle inputs in this package's result key.
+inputs = [
+  "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition",
+  "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/",
+  "os/usr/libexec/tilo-firstboot-autologin-cleanup",
+  "os/usr/libexec/tilo-session-recovery",
+  "os/usr/lib/systemd/system/tilo-firstboot-user.service",
+  "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
+  "os/usr/lib/systemd/system/tilo-session-recovery.service",
+  "os/etc/greetd/config.toml", "os/components.toml",
+  "os/tests/oracles/",
+  "os/tests/test_firstboot_credential_transport.py",
+  "os/tests/test_firstboot_home_seeds_native.py",
+  "os/tests/test_firstboot_transaction.py",
+  "os/tests/test_installer_firstboot_runtime.py",
+  "os/tests/test_prepared_first_use_binding.py",
+  "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
+  "crates/session/installer/src/account_handoff.rs",
+  "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
+]
+readers = [
+  "crates/system/install-helpers/tests/native_python.rs",
+  "crates/system/install-helpers/src/bin/test_home_seeds.rs",
+  "crates/system/install-helpers/tests/handoff_copy.rs",
+  "crates/system/install-helpers/tests/dev_ssh.rs",
+  "crates/system/install-helpers/tests/bootc_copy_cache.rs",
+  "crates/system/install-helpers/tests/offline_target.rs",
+  "crates/system/install-helpers/tests/staging_handoff.rs",
+  "crates/system/install-helpers/tests/install_proof.rs",
+]
 
 [[cargo]]
 package = "greeter"
@@ -982,8 +1078,15 @@ readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
 package = "installer"
-inputs = ["crates/system/block-devices/tests/fixtures/installer.json"]
-readers = ["crates/session/installer/src/disks.rs"]
+inputs = [
+  "crates/system/block-devices/tests/fixtures/installer.json",
+  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
+]
+readers = [
+  "crates/session/installer/src/disks.rs",
+  "crates/session/installer/src/installer_app/surface_tests/capacity_tests.rs",
+  "crates/session/installer/src/online_accounts/browser.rs",
+]
 
 [[cargo]]
 package = "imager"
@@ -992,7 +1095,7 @@ inputs = [
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
-  "os/usr/libexec/tilo-firstboot-home-seeds.py", "os/usr/libexec/tilo-firstboot-user",
+  "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
   "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
 ]
 readers = [
@@ -1001,7 +1104,13 @@ readers = [
   "apps/imager/src/media_layout/tests.rs", "apps/imager/src/setup/account_admission.rs",
   "apps/imager/src/setup/home_transfer/promotion/seeds_native_tests.rs",
   "apps/imager/tests/profile_transport.rs",
+  "apps/imager/src/setup/staging/handoff.rs", "apps/imager/tests/prepared_extract_cli.rs",
 ]
+
+[[cargo]]
+package = "tilo-app-package-cli"
+inputs = ["apps/browser/tilo-app.toml"]
+readers = ["crates/packaging/tilo-app-package-cli/src/main.rs"]
 
 [[cargo]]
 package = "tilo-imager-profile"
@@ -1212,10 +1321,6 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
-[[covered]]
-suite = "tools/ci/focused_test.py"
-by = "tools/tests/test_focused_test.py"
-
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1239,8 +1344,7 @@ workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image"
-workflow = "release-registry-server.yml"
+reason = "needs the built registry-server image: t's image-registry-server check runs it"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1525,9 +1629,12 @@ reason = "runs inside a booted guest, as root, and repartitions its disk"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
+suite = "os/tests/development_signing_native.sh"
+reason = "needs a privileged node for nested Podman: t's development-signing-<arch> checks run it"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image"
-workflow = "build-release-tools.yml"
+reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
@@ -1588,8 +1695,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
-reason = "drives a VM over SSH"
-workflow = "ci-filesystem.yml"
+reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"

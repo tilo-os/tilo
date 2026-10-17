@@ -31,15 +31,6 @@
 // `pub use`, not a bare `extern crate`: that's what keeps the symbols and
 // records these crates as provided-by-this-dylib in the metadata, which
 // the downstream `-C prefer-dynamic` link step consumes.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub use account_custody;
 pub use accounts;
 pub use agent_provider_config;

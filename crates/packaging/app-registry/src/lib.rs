@@ -39,15 +39,6 @@
 //! AND the publisher signature embedded in the tapp must validate
 //! against the entry's publisher. Any mismatch aborts the fetch.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod config;
 pub mod http_blobs;
 pub mod index;

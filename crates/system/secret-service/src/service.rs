@@ -20,6 +20,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,7 +34,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 use zbus::{Connection, ObjectServer, interface};
 use zeroize::Zeroizing;
 
-use crate::app::{AppId, UnknownCaller, identify_process, proc_root, trusted_managers};
+use crate::app::{AppId, UnknownCaller, identify_proven_process, proc_root, trusted_managers};
 use crate::store::{ItemRef, NewItem, Store, StoreError};
 use crate::vault::{Access, LOGIN_COLLECTION, SESSION_COLLECTION};
 
@@ -52,19 +54,40 @@ pub trait CallerResolver: Send + Sync + 'static {
         &'a self,
         sender: Option<&'a str>,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<AppId, UnknownCaller>> + Send + 'a>>;
+
+    /// `sender` proved it holds the device identity and named `program` as
+    /// its executable (see [`crate::app`]): the program stands in for the
+    /// executable the kernel does not show of that connection. A resolver
+    /// that never examines processes ignores it.
+    fn proven(&self, _sender: &str, _program: PathBuf) {}
+
+    /// `sender` left the bus: forget what it proved.
+    fn forget(&self, _sender: &str) {}
 }
 
 /// Identity from the session bus: the daemon reports the sender's user and
-/// process, and the process is examined under `/proc`.
+/// process, and the process is examined under `/proc`. A connection whose
+/// process the kernel will not show is named by what it proved, if it did.
 pub struct BusResolver {
     connection: Connection,
     uid: u32,
+    /// Unique bus name → the executable that connection proved. The bus
+    /// never gives a unique name to another connection.
+    proven: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl BusResolver {
     #[must_use]
     pub fn new(connection: Connection, uid: u32) -> Self {
-        Self { connection, uid }
+        Self {
+            connection,
+            uid,
+            proven: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn proven_program(&self, sender: &str) -> Option<PathBuf> {
+        self.proven.lock().ok()?.get(sender).cloned()
     }
 }
 
@@ -76,6 +99,7 @@ impl CallerResolver for BusResolver {
         Box::pin(async move {
             let name = zbus::names::BusName::try_from(sender.ok_or(UnknownCaller::Unreadable)?)
                 .map_err(|_| UnknownCaller::Unreadable)?;
+            let proven = self.proven_program(name.as_str());
             let bus = zbus::fdo::DBusProxy::new(&self.connection)
                 .await
                 .map_err(|_| UnknownCaller::Unreadable)?;
@@ -87,8 +111,20 @@ impl CallerResolver for BusResolver {
                 return Err(UnknownCaller::OtherUser);
             }
             let pid = credentials.process_id().ok_or(UnknownCaller::Unreadable)?;
-            identify_process(&proc_root(), pid, self.uid)
+            identify_proven_process(&proc_root(), pid, self.uid, proven.as_deref())
         })
+    }
+
+    fn proven(&self, sender: &str, program: PathBuf) {
+        if let Ok(mut proven) = self.proven.lock() {
+            proven.insert(sender.to_owned(), program);
+        }
+    }
+
+    fn forget(&self, sender: &str) {
+        if let Ok(mut proven) = self.proven.lock() {
+            proven.remove(sender);
+        }
     }
 }
 
@@ -131,7 +167,13 @@ pub struct Core {
     managers: Managers,
     sessions: Mutex<HashMap<String, SessionEntry>>,
     next_session: AtomicU64,
+    /// Unique bus name → the challenge it was last given to prove the
+    /// device identity against. Each answers one proof.
+    challenges: Mutex<HashMap<String, [u8; CHALLENGE_LEN]>>,
 }
+
+/// Length of a `CallerChallenge`.
+const CHALLENGE_LEN: usize = 32;
 
 /// The `(oayays)` secret of the API.
 #[derive(Debug, Serialize, Deserialize, Type)]
@@ -220,6 +262,7 @@ impl Core {
             managers,
             sessions: Mutex::new(HashMap::new()),
             next_session: AtomicU64::new(1),
+            challenges: Mutex::new(HashMap::new()),
         })
     }
 
@@ -251,11 +294,16 @@ impl Core {
             .map_err(|_| SecretError::Failed("session table poisoned".into()))
     }
 
-    /// Forget every session opened by a bus name that went away.
-    pub fn drop_sessions_of(&self, owner: &str) {
+    /// Forget everything a bus name that went away held: its sessions, its
+    /// challenge and what it proved.
+    pub fn forget_departed(&self, owner: &str) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.retain(|_, session| session.owner != owner);
         }
+        if let Ok(mut challenges) = self.challenges.lock() {
+            challenges.remove(owner);
+        }
+        self.resolver.forget(owner);
     }
 
     fn encrypt(&self, session: &str, sender: &str, plain: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -1047,6 +1095,59 @@ impl ManagementIface {
             .manager(&header, &self.core.managers.settings)
             .await?;
         Ok(self.core.store.forget_app(&parse_identity(&app)?)?)
+    }
+
+    /// A fresh challenge for the caller to prove, with [`Self::prove_caller`],
+    /// that it holds the device identity. It replaces any earlier one of the
+    /// same caller.
+    async fn caller_challenge(&self, #[zbus(header)] header: Header<'_>) -> Result<Vec<u8>> {
+        let sender =
+            sender_of(&header).ok_or_else(|| SecretError::AccessDenied("no caller".into()))?;
+        let mut challenge = [0_u8; CHALLENGE_LEN];
+        tilo_seal::fill_random(&mut challenge)
+            .map_err(|error| SecretError::Failed(error.to_string()))?;
+        self.core
+            .challenges
+            .lock()
+            .map_err(|_| SecretError::Failed("challenge table poisoned".into()))?
+            .insert(sender, challenge);
+        Ok(challenge.to_vec())
+    }
+
+    /// The caller's answer to its challenge: `proof` that it holds the
+    /// device identity, for its own unique bus name running `program`
+    /// (`tilo_seal::secret_service::CallerKey`). Its challenge is spent
+    /// either way. On success `program` names this connection wherever the
+    /// kernel will not show its executable ([`crate::app`]), and the reply
+    /// is the identity the caller now has.
+    async fn prove_caller(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        program: Vec<u8>,
+        proof: Vec<u8>,
+    ) -> Result<String> {
+        let sender =
+            sender_of(&header).ok_or_else(|| SecretError::AccessDenied("no caller".into()))?;
+        let challenge = self
+            .core
+            .challenges
+            .lock()
+            .map_err(|_| SecretError::Failed("challenge table poisoned".into()))?
+            .remove(&sender)
+            .ok_or_else(|| SecretError::AccessDenied("no challenge to answer".into()))?;
+        let key = self
+            .core
+            .store
+            .caller_key()
+            .map_err(|locked| SecretError::IsLocked(locked.to_string()))?;
+        if !key.verify(&challenge, &sender, &program, &proof) {
+            return Err(SecretError::AccessDenied(
+                "the proof does not hold this device's identity".into(),
+            ));
+        }
+        let program = PathBuf::from(std::ffi::OsString::from_vec(program));
+        self.core.resolver.proven(&sender, program);
+        Ok(self.core.caller(&header).await?.to_string())
     }
 
     /// The master secret of the sandboxed app `package`, for the portal

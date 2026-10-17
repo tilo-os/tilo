@@ -27,7 +27,7 @@ use collab_types::{
     ChannelId, ChannelRoute, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
 };
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;
@@ -67,6 +67,18 @@ impl Readers {
     pub(super) fn of(&self, channel: ChannelId) -> BTreeSet<Ed25519PublicKey> {
         let withheld = self.withheld.get(&channel).unwrap_or(&self.unrouted);
         self.room.difference(withheld).copied().collect()
+    }
+
+    /// Whether a Read Deny keeps `channel`'s record from any device; a
+    /// channel whose record the steward cannot name counts as withheld when
+    /// a Deny over a pattern of records could reach it.
+    #[cfg(feature = "web")]
+    pub(super) fn withholds(&self, channel: ChannelId) -> bool {
+        !self
+            .withheld
+            .get(&channel)
+            .unwrap_or(&self.unrouted)
+            .is_empty()
     }
 
     /// Whether every device these readers let read a channel, `later` lets
@@ -285,7 +297,7 @@ impl Stewardship {
 
     /// Read keys for an existing channel, recovering its sealed state if cold.
     /// Missing channels are refused; this path never initializes a group.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     pub(super) fn existing_keys(
         &mut self,
         channel: ChannelId,
@@ -321,6 +333,12 @@ impl Stewardship {
 
     fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
+    }
+
+    /// The members of `channel`'s group, when this room stewards it.
+    #[cfg(test)]
+    pub(super) fn members(&self, channel: ChannelId) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.stewards.get(&channel).map(ChannelSteward::members)
     }
 
     fn steward<'a>(
@@ -746,5 +764,65 @@ mod tests {
         )
         .unwrap();
         assert!(open().routes().is_empty());
+    }
+
+    /// What a member seals in a channel opens with the content keys the
+    /// steward reads for a spectator, also from a stewardship that only
+    /// finds the channel on disk; a channel never created stays missing.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    #[test]
+    fn a_members_content_opens_with_the_stewards_existing_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("room.channels");
+        let steward_key = SigningKey::from_bytes(&[9; 32]);
+        let mut stewardship = Stewardship::new("room", dir.clone(), &steward_key);
+        let device = SigningKey::from_bytes(&[2; 32]);
+        let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        let channel = ChannelId::new();
+        let allowed = Readers::new(
+            BTreeSet::from([device_key]),
+            HashMap::new(),
+            BTreeSet::new(),
+        );
+        std::fs::create_dir_all(tmp.path().join("member")).unwrap();
+        let mut member = channel_crypto::ChannelMember::open(
+            &tmp.path().join("member"),
+            channel,
+            device_key,
+            Ed25519PublicKey::from_bytes(steward_key.verifying_key().to_bytes()),
+            &VaultKey::new([2; 32]),
+        )
+        .unwrap();
+        let request = member
+            .access_request(&device, 1, &VaultKey::new([2; 32]))
+            .unwrap()
+            .unwrap();
+        stewardship
+            .request(device.verifying_key().to_bytes(), request, None, &allowed)
+            .unwrap();
+        for message in stewardship.admit_pending(&allowed).unwrap() {
+            if let NeighbourMsg::MlsGovernance { frame, .. } = message {
+                member.receive(*frame, &VaultKey::new([2; 32])).unwrap();
+            }
+        }
+        let artifact = collab_types::ArtifactId::new();
+        let (metadata, sealed) = member
+            .content_keys()
+            .expect("the admitted member holds the channel's keys")
+            .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
+            .unwrap();
+        let opened = |stewardship: &mut Stewardship| {
+            stewardship
+                .existing_keys(channel)
+                .unwrap()
+                .open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .to_vec()
+        };
+        assert_eq!(opened(&mut stewardship), b"hello");
+        drop(stewardship);
+        let mut cold = Stewardship::new("room", dir, &steward_key);
+        assert_eq!(opened(&mut cold), b"hello");
+        assert!(cold.existing_keys(ChannelId::new()).is_err());
     }
 }

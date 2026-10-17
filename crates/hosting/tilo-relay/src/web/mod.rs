@@ -50,7 +50,7 @@ use tilo_moq::live::fallback::{
     FallbackError, FallbackStream, MAX_SEND_BYTES, session_id,
 };
 use tilo_relay_protocol::certify::CertifyReply;
-use tilo_relay_protocol::legacy_window::InputRequest;
+use tilo_relay_protocol::legacy_window::{CodecsRequest, InputRequest};
 use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
@@ -135,7 +135,8 @@ impl WebHandle {
     /// Open browser sessions per person (user root) now, for a public
     /// host's presence count and idle-guest pruning. One person on two
     /// devices is one entry; a shared spectator person is one entry whose
-    /// count is its sessions.
+    /// count is its sessions, seated or still waiting for a seat (how many
+    /// watch is [`crate::rooms::Rooms::seated_spectators`]).
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.sessions.online_users()
@@ -290,10 +291,6 @@ impl Relay {
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         let live_origin = checked_origins(&config).map_err(failed)?;
@@ -323,7 +320,11 @@ impl Relay {
             legacy: legacy.clone(),
         }));
         let tasks_bridge = bridge_browser_presence(&live, &grants, &context);
-        let tasks_legacy = tokio::spawn(maintain_legacy(legacy.clone(), context.clone()));
+        let tasks_legacy = tokio::spawn(maintain_legacy(
+            legacy.clone(),
+            grants.clone(),
+            context.clone(),
+        ));
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
@@ -487,11 +488,16 @@ impl crate::peer::BrowserBridge for Bridge {
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
-async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::daemon::WebContext) {
+async fn maintain_legacy(
+    legacy: Arc<legacy::LegacyWindows>,
+    grants: Arc<live::LiveGrants>,
+    context: crate::daemon::WebContext,
+) {
     let mut tick = tokio::time::interval(legacy::MAINTAIN_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        advertise_legacy_codecs(&legacy, &grants, &context).await;
         for (workspace_id, device) in legacy.publishers() {
             let workspace = context
                 .relay
@@ -534,6 +540,67 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
             legacy.present(workspace_id, device, here, std::time::Instant::now());
         }
         legacy.maintain(std::time::Instant::now());
+    }
+}
+
+/// Tell the sessions of every room with members in its live plane what
+/// those members decode ([`legacy::LegacyWindows::advertise`]), so a session
+/// picks a codec for this host's windows that every member's page plays.
+/// Lossy like presence: a full queue misses one advert, and the next restates it.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the values kept are clones"
+)]
+async fn advertise_legacy_codecs(
+    legacy: &legacy::LegacyWindows,
+    grants: &live::LiveGrants,
+    context: &crate::daemon::WebContext,
+) {
+    let mut rooms = Vec::new();
+    let mut queues = std::collections::HashMap::new();
+    for (workspace_id, members) in grants.viewers() {
+        let workspace = context
+            .relay
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        let Some(workspace) = workspace else {
+            continue;
+        };
+        let runtime = workspace.lock().await;
+        let sessions = runtime.subscribers.keys().copied().collect::<Vec<_>>();
+        for device in &sessions {
+            if let Some(queue) = runtime.subscriber_queue(device) {
+                queues.insert((workspace_id, *device), queue);
+            }
+        }
+        drop(runtime);
+        rooms.push(legacy::RoomViewers {
+            workspace_id,
+            members,
+            sessions,
+        });
+    }
+    let adverts = legacy.advertise(
+        &rooms,
+        &context.relay.identity.cert,
+        std::time::Instant::now(),
+    );
+    for advert in adverts {
+        let Some(queue) = queues.get(&(advert.workspace_id, advert.device)) else {
+            continue;
+        };
+        for payload in advert.payloads {
+            let envelope = crate::Envelope::Presence {
+                workspace_id: advert.workspace_id,
+                payload,
+            };
+            if queue.try_send(envelope).is_err() {
+                break;
+            }
+        }
     }
 }
 
@@ -937,10 +1004,6 @@ async fn body(
 
 /// Whether `user` is admitted to any workspace this relay serves: whose
 /// envelope it keeps.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "each workspace is locked only for its own lookup"
-)]
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     let workspaces: Vec<_> = web
         .sessions
@@ -1121,6 +1184,30 @@ async fn route(
             }
             legacy_input(web, &session.peer, request).await
         }
+        "/live/legacy-codecs" => {
+            let session = authed()?;
+            let request: CodecsRequest = decode(&bytes)?;
+            if !request.valid() {
+                return Err(status(StatusCode::BAD_REQUEST, "codecs out of bounds"));
+            }
+            if !live::admitted(&web.sessions, &session.peer, request.workspace_id).await {
+                return Err(status(
+                    StatusCode::FORBIDDEN,
+                    "not admitted to this workspace",
+                ));
+            }
+            if !web.legacy.member_codecs(
+                session.token(),
+                request.video_codecs(),
+                std::time::Instant::now(),
+            ) {
+                return Err(status(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "too many members are watching",
+                ));
+            }
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
         protocol::HERE_PATH => {
             let session = authed()?;
             let request: protocol::HereRequest = decode(&bytes)?;
@@ -1138,12 +1225,37 @@ async fn route(
                 session.peer.device_public_key,
                 session.peer.user_public_key,
                 std::time::Instant::now(),
-                tilo_clock::unix_now_ns() / 1_000_000,
+                tilo_clock::unix_now_ms(),
             );
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }
             Ok(encoded(&reply))
+        }
+        protocol::CHANNEL_KEYS_PATH => {
+            let session = authed()?;
+            let request: protocol::ChannelKeysRequest = decode(&bytes)?;
+            let relay = &sessions.context().relay;
+            let keys = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?
+                .spectator_keys(&request, |runtime| {
+                    crate::room_access::decide(
+                        runtime,
+                        &relay.trust(),
+                        &session.peer,
+                        crate::room_access::RoomOperation::ChannelReadKeys,
+                    )
+                })
+                .await
+                .map_err(|why| status(StatusCode::FORBIDDEN, &why))?;
+            let keys = keys
+                .to_bytes()
+                .map_err(|why| status(StatusCode::INTERNAL_SERVER_ERROR, &why.to_string()))?;
+            Ok(encoded(&protocol::ChannelKeys {
+                keys: keys.to_vec(),
+            }))
         }
         "/rooms" => {
             let session = authed()?;
@@ -1165,7 +1277,7 @@ async fn route(
             Ok(encoded(&rooms.page_join(step).await))
         }
         "/envelope" | "/profile" => {
-            let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
+            let now_ms = tilo_clock::unix_now_ms();
             let kept = if route == "/profile" {
                 &web.profiles
             } else {

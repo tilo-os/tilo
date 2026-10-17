@@ -15,8 +15,8 @@ and log. `summarize` reads a sweep's reports and derives:
 - what 100 concurrent guests cost on each `[room_node.*]` of
   tools/perf/prices.toml.
 
-The Perf / room host capacity workflow (.forgejo/workflows/perf-room-capacity.yml)
-runs both on a runner of known size; docs/benchmarks/room-host-capacity-2026-10.md
+The perf-room-capacity check in t.toml (`t dispatch perf-room-capacity`)
+runs both on a node of known size; docs/benchmarks/room-host-capacity-2026-10.md
 records a run.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep
@@ -208,6 +208,9 @@ def row(run: dict[str, Any]) -> dict[str, Any]:
         "join_p50_ms": report["join_ms"]["p50"],
         "join_p99_ms": report["join_ms"].get("p99", report["join_ms"]["max"]),
         "chat_p99_ms": report["chat_ms"].get("p99", report["chat_ms"]["max"]),
+        # Chat changes the senders heard `Committed` for, of those sent.
+        "chat_committed": report.get("committed", 0),
+        "chat_sent": report.get("chat_tx", 0),
         "spectator_join_p99_ms": spectators.get("join_ms", {}).get("p99", 0.0),
         "spectator_chat_p99_ms": spectators.get("chat_ms", {}).get("p99", 0.0),
         "cpu_cores": host["hold_cpu_cores"],
@@ -217,6 +220,8 @@ def row(run: dict[str, Any]) -> dict[str, Any]:
         "egress_mbit_s": host.get("egress_bytes_per_s", 0.0) * 8 / 1e6,
         "driver_cores": host["driver_cpu_cores_avg"],
         "machine_cores": host["machine_cores"],
+        # Where the host's time went (tilo_relay::timing), per phase.
+        "timings": report.get("timings") or {},
     }
 
 
@@ -300,19 +305,34 @@ def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, A
             "derived": derived, "cost": costs}
 
 
+def timing_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """Each run's phase timings, as the bench summarized them: per-join and
+    per-commit phases by arrival tenth, owner and lock phases as
+    milliseconds spent per second of the run."""
+    out: list[str] = []
+    for r in rows:
+        if not r.get("timings"):
+            continue
+        out += ["", f"{r['name']} phase timings:", ""]
+        out += [f"- `{step}`: {value}" for step, value in sorted(r["timings"].items())]
+    return out
+
+
 def markdown(summary: dict[str, Any]) -> str:
     lines = ["| run | guests joined | spectators | refused (full) | failures | join p50 / p99 ms | chat p99 ms "
-             "| spectator join p99 ms | host CPU cores (busiest thread) | peak memory MiB | egress Mbit/s "
-             "| driver cores |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| chat committed | spectator join p99 ms | host CPU cores (busiest thread) | peak memory MiB "
+             "| egress Mbit/s | driver cores |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in summary["rows"]:
         lines.append(
             f"| {r['name']} | {r['joined']}/{r['guests']} | {r['watching']}/{r['spectators']} "
             f"| {r['refused_full'] + r['spectators_refused_full']} | {r['failures']} "
             f"| {r['join_p50_ms']:.0f} / {r['join_p99_ms']:.0f} | {r['chat_p99_ms']:.0f} "
+            f"| {r.get('chat_committed', 0)}/{r.get('chat_sent', 0)} "
             f"| {r['spectator_join_p99_ms']:.0f} | {r['cpu_cores']:.2f} ({r['busiest_thread_cores']:.2f}) "
             f"| {r['rss_mib_peak']} "
             f"| {r['egress_mbit_s']:.1f} | {r['driver_cores']:.1f} |")
+    lines += timing_lines(summary["rows"])
     d = summary["derived"]
     if not d:
         return "\n".join(lines) + "\n"

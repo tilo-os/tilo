@@ -1705,7 +1705,7 @@ thread_local! {
 pub fn origin_now_ms() -> i64 {
     ORIGIN_CLOCK
         .with(std::cell::Cell::get)
-        .unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+        .unwrap_or_else(tilo_clock::unix_now_ms_i64)
 }
 
 /// Run `f` with the origin clock reading `now_ms`: every action built

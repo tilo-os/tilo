@@ -140,7 +140,7 @@ pub fn request_phone_tethering(
     network: &ShellNetwork,
     provider: &DeviceId,
 ) -> Result<TetheringId, String> {
-    if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+    if !crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
         .permits(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
     {
         return Err(crate::shell::i18n::t("tethering-error-continuity-off"));

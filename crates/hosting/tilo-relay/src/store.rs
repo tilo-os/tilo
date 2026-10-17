@@ -21,28 +21,42 @@
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — a peer can be offline and still catch up when it reconnects.
 
-pub(crate) mod bounded;
+pub(crate) use tilo_relay_store::bounded;
 pub(crate) mod compaction;
 pub(crate) mod continuity;
 pub(crate) mod replay;
 pub(crate) mod resume;
 pub(crate) mod retained;
+/// The seam this store drives native shell replay selection through. The
+/// selection itself, and the retention authority behind a
+/// [`ShellBinding`](shell_selection::ShellBinding), belong to the embedder's
+/// adapter (`tilo-relay-shell` for the desktop).
+pub use tilo_relay_store::shell as shell_selection;
 #[cfg(test)]
-pub(crate) mod shell_proof_fixture;
-#[cfg(test)]
-pub(crate) mod shell_proof_tests;
-pub(crate) mod shell_selection;
-#[cfg(test)]
-pub(crate) mod shell_selection_fixture;
-#[cfg(test)]
-pub(crate) mod test_barrier;
+pub(crate) use tilo_relay_store::test_barrier;
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test drivers: a store step that fails is the test failing"
+)]
+pub mod test_support;
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use shell_selection::ShellBinding;
+use tilo_relay_store::tail_cache::SharedTailCache;
+
+#[cfg(test)]
+pub(crate) use tilo_relay_store::thread_fsyncs;
+pub use tilo_relay_store::{StoreError, fsyncs};
+pub(crate) use tilo_relay_store::{atomic_write, credit_fsyncs, fsync, helper_fsyncs};
 
 /// Filename used for the pinned Automerge snapshot inside a
 /// workspace directory.
@@ -98,62 +112,14 @@ pub fn save_revocations(
     Ok(())
 }
 
-/// fsyncs the relay's workspace stores issued since this process started.
-static FSYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(test)]
-thread_local! {
-    /// [`FSYNCS`] of this thread only: tests run in parallel, and a store
-    /// driven synchronously issues its barriers on the calling thread.
-    static THREAD_FSYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// `tilo_files::native::atomic::write` syncs the staged file, and after the
-/// rename the directory holding it.
-const ATOMIC_WRITE_FSYNCS: u64 = 2;
-
-fn count_fsyncs(count: u64) {
-    FSYNCS.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(test)]
-    THREAD_FSYNCS.with(|fsyncs| fsyncs.set(fsyncs.get().saturating_add(count)));
-}
-
-/// fsyncs (file and directory barriers) the relay's workspace stores have
-/// issued in this process: the cost the hosting bench divides by edits.
-#[must_use]
-pub fn fsyncs() -> u64 {
-    FSYNCS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn thread_fsyncs() -> u64 {
-    THREAD_FSYNCS.with(std::cell::Cell::get)
-}
-
-/// The barriers this thread issued on behalf of another, which
-/// [`credit_fsyncs`] counts on that one: a store's work stays countable on
-/// its calling thread when it spreads independent barriers over helpers.
-pub(crate) fn helper_fsyncs() -> u64 {
-    #[cfg(test)]
-    return thread_fsyncs();
-    #[cfg(not(test))]
-    0
-}
-
-pub(crate) fn credit_fsyncs(count: u64) {
-    #[cfg(test)]
-    THREAD_FSYNCS.with(|fsyncs| fsyncs.set(fsyncs.get().saturating_add(count)));
-    #[cfg(not(test))]
-    let _ = count;
-}
-
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.
 static LISTED_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 thread_local! {
-    /// [`LISTED_ENTRIES`] of this thread only, as [`THREAD_FSYNCS`].
+    /// [`LISTED_ENTRIES`] of this thread only, as [`thread_fsyncs`] counts
+    /// barriers.
     static THREAD_LISTED_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -176,29 +142,6 @@ pub fn listed_entries() -> u64 {
 #[cfg(test)]
 pub(crate) fn thread_listed_entries() -> u64 {
     THREAD_LISTED_ENTRIES.with(std::cell::Cell::get)
-}
-
-/// `file.sync_all()`, counted in [`fsyncs`].
-pub(crate) fn fsync(file: &fs::File) -> io::Result<()> {
-    count_fsyncs(1);
-    file.sync_all()
-}
-
-/// `tilo_files::native::atomic::write`, counted in [`fsyncs`].
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    count_fsyncs(ATOMIC_WRITE_FSYNCS);
-    tilo_files::native::atomic::write(path, bytes)
-}
-
-/// Errors from store operations.
-#[derive(Debug, Error)]
-pub enum StoreError {
-    /// I/O failure.
-    #[error("io: {0}")]
-    Io(#[from] io::Error),
-    /// JSON encode/decode failure for a metadata file.
-    #[error("json: {0}")]
-    Json(String),
 }
 
 /// Ledger of admitted `Commit`s, see [`CommitRecord`].
@@ -246,9 +189,15 @@ pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
-    shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
-    /// Shared by every handle on `root`; see `shell_selection::tail_cache`.
-    tail_cache: shell_selection::tail_cache::SharedTailCache,
+    /// The shell retention authority the embedder's adapter bound; the store
+    /// only steps what it hands out.
+    shell_binding: Option<Arc<dyn ShellBinding>>,
+    /// Shared by every handle on `root`; see `tilo_relay_store::tail_cache`.
+    tail_cache: SharedTailCache,
+    /// Shared by every handle on `root`: the captures whose retained frames
+    /// are listed but not yet pinned, and the collections that wait for
+    /// them ([`replay::CaptureLeases`]).
+    capture_leases: Arc<replay::CaptureLeases>,
     /// Classifies retained co-edit bodies: checkpoint replacement and
     /// continuity evidence.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
@@ -358,11 +307,12 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         remove_legacy_delta_log(&root);
         Ok(Self {
-            tail_cache: shell_selection::tail_cache::SharedTailCache::for_root(&root),
+            tail_cache: SharedTailCache::for_root(&root),
+            capture_leases: replay::CaptureLeases::for_root(&root),
             root,
             workspace_id,
             pinned,
-            shell_authority: None,
+            shell_binding: None,
             payloads,
         })
     }
@@ -382,65 +332,83 @@ impl WorkspaceStore {
         self.workspace_id
     }
 
-    /// Install a locally supplied shell pin before handing this store to the
-    /// ordered persistence owner. Persisted bytes are a conflict fence, never an
-    /// independent source of trust; `open` remains unbound until this call.
+    /// Bind the locally supplied shell retention `authority` (the injected
+    /// adapter's serialised form) before handing this store to the ordered
+    /// persistence owner. The adapter this store was opened with
+    /// ([`crate::payloads::ShellPayloads::replay`]) checks it, persists it as
+    /// a conflict fence and installs it; persisted bytes are never an
+    /// independent source of trust, so `open` stays unbound until this call.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError` if the inputs violate this operation's bounds or invariants.
-    pub fn bind_shell_authority(
-        &mut self,
-        authority: tilo_peer_state::retained_proof::RetentionAuthority,
-    ) -> Result<(), StoreError> {
-        #[derive(Serialize, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Binding {
-            version: u32,
-            authority: tilo_peer_state::retained_proof::RetentionAuthority,
-        }
-        let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
-        if !crate::room_workspace_id_matches(authority.room(), self.workspace_id) {
-            return Err(invalid("shell authority room/workspace mismatch"));
-        }
-        if self
-            .shell_authority
-            .as_ref()
-            .is_some_and(|prior| prior != &authority)
-        {
-            return Err(invalid("conflicting local shell authority"));
-        }
-        let path = self.root.join("shell-authority-v1.json");
-        match fs::read(&path) {
-            Ok(bytes) => {
-                let prior: Binding =
-                    serde_json::from_slice(&bytes).map_err(|e| StoreError::Json(e.to_string()))?;
-                if prior.version != 1 || prior.authority != authority {
-                    return Err(invalid("conflicting persisted shell authority"));
-                }
-                // Re-establish the durability barrier even after an interrupted
-                // previous attempt left the exact file visible.
-                fsync(&fs::File::open(&path)?)?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let bytes = serde_json::to_vec(&Binding {
-                    version: 1,
-                    authority: authority.clone(),
-                })
-                .map_err(|e| StoreError::Json(e.to_string()))?;
-                atomic_write(&path, &bytes)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        fsync(&fs::File::open(&self.root)?)?;
-        self.shell_authority = Some(authority);
-        self.tail_cache.invalidate();
-        Ok(())
+    /// Returns `StoreError` when the adapter has no shell replay, or refuses
+    /// `authority`: it names another workspace or conflicts with a prior
+    /// binding.
+    pub fn bind_shell(&mut self, authority: &serde_json::Value) -> Result<(), StoreError> {
+        let payloads = self.payloads.clone();
+        let replay = payloads.replay().ok_or_else(|| {
+            StoreError::Io(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this host's shell adapter has no shell replay",
+            ))
+        })?;
+        replay.bind(self, authority)
     }
 
-    /// Exact locally supplied authority, absent for generic workspace stores.
-    pub fn shell_authority(&self) -> Option<&tilo_peer_state::retained_proof::RetentionAuthority> {
-        self.shell_authority.as_ref()
+    /// The bound shell retention authority, absent for generic workspace
+    /// stores.
+    pub fn shell_binding(&self) -> Option<&Arc<dyn ShellBinding>> {
+        self.shell_binding.as_ref()
+    }
+
+    /// The bound shell retention authority, for a selection that must have
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` while no authority is bound.
+    pub(crate) fn bound_shell(&self) -> Result<&Arc<dyn ShellBinding>, StoreError> {
+        self.shell_binding.as_ref().ok_or_else(|| {
+            StoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unbound shell selector",
+            ))
+        })
+    }
+
+    /// A reader of the committed selected shell basis; `None` while no
+    /// authority is bound, whatever the disk holds.
+    pub(crate) fn selected_read(
+        &self,
+    ) -> Result<Option<Box<dyn shell_selection::SelectedReplay>>, StoreError> {
+        match &self.shell_binding {
+            Some(binding) => binding.selected_read(self),
+            None => Ok(None),
+        }
+    }
+
+    /// The tail cache's cursor for the retained tail `bytes`, when bound.
+    pub(crate) fn checkout_tail(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<Box<dyn shell_selection::ShellTail>>, StoreError> {
+        match &self.shell_binding {
+            Some(binding) => binding.checkout_tail(self, bytes),
+            None => Ok(None),
+        }
+    }
+
+    /// A shell selection of this store's retained history, staged under
+    /// `scratch`; `None` while no authority is bound.
+    pub(crate) fn shell_selection(
+        &self,
+        scratch: PathBuf,
+        incoming: Option<[u8; 32]>,
+    ) -> Result<Option<Box<dyn shell_selection::ShellSelection>>, StoreError> {
+        match &self.shell_binding {
+            Some(binding) => binding.selection(self, scratch, incoming).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Whether this workspace is pinned (holds a persistent CRDT
@@ -522,7 +490,7 @@ impl WorkspaceStore {
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
         if let Some(mut access) = self.load_governed_access()? {
             access.member_devices = devices.to_vec();
-            return self.save_governed_access(&access);
+            return self.save_governed_access(&access).map(drop);
         }
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
@@ -571,7 +539,7 @@ impl WorkspaceStore {
     pub(crate) fn save_governed_access(
         &self,
         access: &GovernedAccessRecord,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<u8>, StoreError> {
         let encoded = GovernedAccessFile {
             version: 1,
             member_devices: access.member_devices.iter().map(hex::encode).collect(),
@@ -580,7 +548,7 @@ impl WorkspaceStore {
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
         atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
-        Ok(())
+        Ok(bytes)
     }
 
     /// Claim a compute job identifier durably before routing it. Returns the
@@ -654,6 +622,36 @@ impl WorkspaceStore {
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
         atomic_write(&path, &bytes)?;
         Ok(())
+    }
+
+    /// Every durable compute record of this workspace. A record that no
+    /// longer decodes is skipped with a warning rather than hiding the rest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the job directory cannot be enumerated or a
+    /// record cannot be read.
+    pub(crate) fn load_compute_jobs(
+        &self,
+    ) -> Result<Vec<crate::compute_transport::DurableComputeJob>, StoreError> {
+        let directory = self.root.join(COMPUTE_DIR);
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut jobs = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            match serde_json::from_slice(&fs::read(&path)?) {
+                Ok(job) => jobs.push(job),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping an unreadable compute record");
+                }
+            }
+        }
+        Ok(jobs)
     }
 
     fn compute_job_path(&self, job_id: &[u8; 16]) -> PathBuf {
@@ -972,6 +970,36 @@ impl WorkspaceStore {
 
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
         self.root.join("pending").join(hex::encode(device_pubkey))
+    }
+}
+
+impl shell_selection::ShellStore for WorkspaceStore {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn workspace_id(&self) -> u64 {
+        self.workspace_id
+    }
+    fn tail_cache(&self) -> &SharedTailCache {
+        &self.tail_cache
+    }
+    fn shell_binding(&self) -> Option<&Arc<dyn ShellBinding>> {
+        self.shell_binding.as_ref()
+    }
+    fn install_shell_binding(&mut self, binding: Arc<dyn ShellBinding>) {
+        self.shell_binding = Some(binding);
+        self.tail_cache.invalidate();
+    }
+    fn copy_measured(
+        &self,
+        source: &Path,
+        destination: &Path,
+        stats: &mut bounded::WorkStats,
+    ) -> Result<(), StoreError> {
+        continuity::copy_measured(self, source, destination, stats, 0).map(|_| ())
+    }
+    fn handle(&self) -> Arc<dyn shell_selection::ShellStore> {
+        Arc::new(self.clone())
     }
 }
 

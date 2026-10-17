@@ -2045,8 +2045,11 @@ impl Project {
     pub fn clip(&self, id: ClipId) -> Option<&Clip> {
         self.clips.iter().find(|c| c.id == id)
     }
+    /// The clip `id`, to change. Found through [`Keyed::find_mut`], so a
+    /// copy of the project remembers which clips changed and the edits
+    /// submitted from it compare only those, not every clip.
     pub fn clip_mut(&mut self, id: ClipId) -> Option<&mut Clip> {
-        self.clips.iter_mut().find(|c| c.id == id)
+        self.clips.find_mut(&key(id))
     }
 
     /// Every lane in `lanes` with its fader brought **down** by `db`, as the

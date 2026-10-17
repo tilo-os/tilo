@@ -3,9 +3,9 @@ use super::NativeOwnerCommitService;
 use tilo_action_broker::services::{
     NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution,
 };
-use tilo_peer_state::{
-    owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService},
-    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot},
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::workspace_task::{
+    WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
 };
 
 impl WorkspaceTaskExecution for NativeOwnerCommitService {
@@ -36,7 +36,7 @@ impl WorkspaceTaskExecution for NativeOwnerCommitService {
         room: &str,
         binding: NativeTaskBinding,
         command: WorkspaceTaskCommand,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+    ) -> tilo_owner_commit::CommitFuture {
         let prepared = (|| {
             let room_id = super::super::state::RoomId::parse(room).ok_or("invalid task room")?;
             let owner = self.owner.as_ref().ok_or("native task owner unavailable")?;

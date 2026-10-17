@@ -10,10 +10,20 @@ pub struct Migration {
     schema: u32,
     operation_id: String,
     categories: Categories,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_policy"
+    )]
     home_policy: Option<Policy>,
     home: Home,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_computer_applications_scope: Option<PendingComputerApplicationsScope>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_inventory"
+    )]
     flatpak_inventory: Option<FlatpakInventory>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +47,7 @@ struct Home {
     relative: NativePath,
     inode: u64,
     original_uid: u32,
+    #[serde(deserialize_with = "required_subvolume")]
     subvolume: Option<Identity>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,12 +154,58 @@ struct Deployment {
     deploy_sha256: [u8; 32],
 }
 
+fn present_inventory<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<FlatpakInventory>, D::Error> {
+    FlatpakInventory::deserialize(deserializer).map(Some)
+}
+
+fn required_subvolume<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Identity>, D::Error> {
+    Option::<Identity>::deserialize(deserializer)
+}
+
+fn present_policy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Policy>, D::Error> {
+    Policy::deserialize(deserializer).map(Some)
+}
+
 fn non_nil_guid(value: &str) -> bool {
     is_guid(value) && value.bytes().any(|b| b.is_ascii_hexdigit() && b != b'0')
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingComputerApplicationsScope {
+    schema: u32,
+    source_operation: String,
+    applications_operation: String,
+    staging_operation: String,
+    staging_plan_sha256: String,
+    setup_binding: String,
+    identity_public_key: [u8; 32],
+}
+
 impl Migration {
-    pub(super) fn validate(&self, handoff: &Handoff) -> Result<(), String> {
+    /// Validate descriptive source metadata without granting source access.
+    ///
+    /// # Errors
+    /// Returns the first malformed source, consent or inventory binding.
+    pub fn validate_standalone(&self) -> Result<(), String> {
+        self.validate_context(None)
+    }
+
+    /// Validate the source against the retained disk and installation extents.
+    ///
+    /// # Errors
+    /// Returns the first malformed or mismatched source binding.
+    pub fn validate_in_handoff(&self, handoff: &Handoff) -> Result<(), String> {
+        self.validate_context(Some(handoff))
+    }
+
+    fn validate_source(&self, handoff: Option<&Handoff>) -> Result<(), String> {
         let volume = &self.home.volume;
         let NativePath::Unix(path) = &self.home.relative;
         let source = Extent {
@@ -156,12 +213,18 @@ impl Migration {
             last_lba: volume.last_lba,
         };
         if self.schema != 1
-            || self.operation_id != handoff.operation_id
+            || !is_guid(&self.operation_id)
             || !(self.categories.home || self.categories.flatpak || self.categories.accounts)
             || (self.home_policy.is_some_and(|p| p != Policy::Copy) && !self.categories.home)
-            || handoff.host_os != HostOs::Linux
-            || !volume.disk_guid.eq_ignore_ascii_case(&handoff.disk_guid)
-            || volume.disk_bytes != handoff.disk_size_bytes
+            || handoff.is_some_and(|h| {
+                self.operation_id != h.operation_id
+                    || h.host_os != HostOs::Linux
+                    || !volume.disk_guid.eq_ignore_ascii_case(&h.disk_guid)
+                    || volume.disk_bytes != h.disk_size_bytes
+            })
+            || volume.disk_bytes == 0
+            || volume.disk_bytes >= super::MAX_LBA
+            || self.home.inode >= super::MAX_LBA
             || ![
                 &volume.disk_guid,
                 &volume.partition_guid,
@@ -189,6 +252,24 @@ impl Migration {
                 "migration source or consent differs from retained Linux installation".into(),
             );
         }
+        self.validate_subvolume()?;
+        if let Some(handoff) = handoff {
+            for staged in [&handoff.staging_esp, &handoff.staging_root] {
+                if volume.partition_guid.eq_ignore_ascii_case(&staged.partuuid)
+                    || source.overlaps(staged.extent())
+                {
+                    return Err("migration source overlaps staged installer".into());
+                }
+            }
+            if source.overlaps(handoff.target_extent) {
+                return Err("migration source overlaps installation space".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_subvolume(&self) -> Result<(), String> {
+        let volume = &self.home.volume;
         match (&self.home.subvolume, volume.filesystem) {
             (Some(id), Filesystem::Btrfs) => {
                 let uuid = volume.filesystem_uuid.replace('-', "").to_ascii_lowercase();
@@ -212,15 +293,35 @@ impl Migration {
             (None, Filesystem::Ext4 | Filesystem::Xfs) => {}
             _ => return Err("migration subvolume identity differs".into()),
         }
-        for staged in [&handoff.staging_esp, &handoff.staging_root] {
-            if volume.partition_guid.eq_ignore_ascii_case(&staged.partuuid)
-                || source.overlaps(staged.extent())
+        Ok(())
+    }
+
+    fn validate_context(&self, handoff: Option<&Handoff>) -> Result<(), String> {
+        self.validate_source(handoff)?;
+        if let Some(scope) = &self.pending_computer_applications_scope {
+            let operations = [
+                &scope.source_operation,
+                &scope.applications_operation,
+                &scope.staging_operation,
+            ];
+            if scope.schema != 1
+                || operations
+                    .iter()
+                    .any(|id| !non_nil_guid(id) || **id != id.to_ascii_lowercase())
+                || operations[0] == operations[1]
+                || operations[0] == operations[2]
+                || operations[1] == operations[2]
+                || scope.source_operation != self.operation_id
+                || !self.categories.home
+                || self.categories.flatpak
+                || self.home_policy != Some(Policy::AccessReadWrite)
+                || !lower_hex_digest(&scope.staging_plan_sha256)
+                || scope.setup_binding.is_empty()
+                || scope.setup_binding.len() > 256
+                || scope.setup_binding.chars().any(char::is_control)
             {
-                return Err("migration source overlaps staged installer".into());
+                return Err("pending Computer applications scope differs".into());
             }
-        }
-        if source.overlaps(handoff.target_extent) {
-            return Err("migration source overlaps installation space".into());
         }
         if let Some(inventory) = &self.flatpak_inventory {
             if !self.categories.flatpak {
@@ -238,14 +339,62 @@ impl Migration {
                         return Err("protected original inventory binding differs".into());
                     }
                 }
-                FlatpakInventory::Inline(inventory) => inventory.validate(handoff)?,
+                FlatpakInventory::Inline(inventory) => {
+                    inventory.validate(&self.operation_id, handoff)?;
+                }
             }
         }
         Ok(())
     }
 }
+pub(super) fn lower_hex_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+impl Installation {
+    fn valid(&self) -> bool {
+        match self {
+            Self::User => true,
+            Self::System(name) => {
+                (1..=128).contains(&name.len())
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            }
+        }
+    }
+}
+
+fn bounded_text(value: &str) -> bool {
+    value.chars().count() <= 4096 && !value.chars().any(|c| (c as u32) < 32)
+}
+
+impl Remote {
+    fn valid(&self) -> bool {
+        let authority = self
+            .url
+            .strip_prefix("https://")
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        self.installation.valid()
+            && [&self.name, &self.url, &self.options]
+                .into_iter()
+                .all(|s| bounded_text(s))
+            && !authority.is_empty()
+            && !authority.starts_with(':')
+            && !authority.contains('@')
+            && !authority.chars().any(char::is_whitespace)
+            && !self.url.contains(['?', '#'])
+    }
+}
+
 impl ReviewedInventory {
-    fn validate(&self, handoff: &Handoff) -> Result<(), String> {
+    fn validate(&self, operation: &str, handoff: Option<&Handoff>) -> Result<(), String> {
         if !matches!(self.schema, 1 | 2)
             || self.installations.len() > 64
             || self.inventory.refs.len() > 100_000
@@ -254,13 +403,23 @@ impl ReviewedInventory {
         {
             return Err("Flatpak inventory bounds or schema differ".into());
         }
+        if self.inventory.refs.iter().chain(&self.selected).any(|r| {
+            !r.installation.valid()
+                || ![&r.reference, &r.origin, &r.name]
+                    .into_iter()
+                    .all(|s| bounded_text(s))
+        }) || self.inventory.remotes.iter().any(|r| !r.valid())
+        {
+            return Err("Flatpak metadata text or scope is malformed".into());
+        }
         for item in &self.selected {
             if !self.inventory.refs.contains(item) {
                 return Err("Flatpak selection is outside inventory".into());
             }
         }
         for source in &self.installations {
-            if source.source_plan.len() > super::MAX_BYTES
+            if !source.installation.valid()
+                || source.source_plan.len() > super::MAX_BYTES
                 || source.repositories.len() > 4096
                 || source.deployments.len() > 100_000
             {
@@ -271,17 +430,21 @@ impl ReviewedInventory {
             if plan.flatpak_inventory.is_some() {
                 return Err("recursive Flatpak source inventory".into());
             }
-            plan.validate(handoff)?;
+            if plan.operation_id != operation {
+                return Err("Flatpak source belongs to another operation".into());
+            }
+            plan.validate_context(handoff)?;
             for repo in &source.repositories {
-                if repo.remote.installation != source.installation
+                if !repo.remote.valid()
+                    || repo.remote.installation != source.installation
                     || !self.inventory.remotes.contains(&repo.remote)
                 {
                     return Err("Flatpak repository binding differs".into());
                 }
             }
             for deployment in &source.deployments {
-                if deployment.commit.len() != 64
-                    || !deployment.commit.bytes().all(|b| b.is_ascii_hexdigit())
+                if !lower_hex_digest(&deployment.commit)
+                    || !bounded_text(&deployment.reference)
                     || !self.inventory.refs.iter().any(|r| {
                         r.installation == source.installation && r.reference == deployment.reference
                     })

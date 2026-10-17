@@ -6,10 +6,55 @@
  * `tilo.workspace`): they become the peer's `/rooms` requests
  * (`membership()`, see `membership.mjs`), which the host decides by the
  * room's policy. The answer is the invocation's receipt. It may also ask
- * the room's host for a record resource's `share-link` (`peer.actions`). */
+ * the room's host for a record resource's `share-link` (`peer.actions`).
+ * The page itself takes the same membership actions through the mount's
+ * door (`invokeRoomMembership`). */
 const GOVERNANCE_PROVIDER = 'tilo.workspace';
 const MEMBERSHIP = {'remove-member': 'remove', ban: 'ban', unban: 'unban'};
+/** The membership request an action names, if it is one (never an inherited name). */
+const membershipVerb = action => (typeof action === 'string' && Object.hasOwn(MEMBERSHIP, action) ? MEMBERSHIP[action] : undefined);
+/** Taking someone out of the room: run only on the person's confirmation. */
+const DESTRUCTIVE = new Set(['remove-member', 'ban']);
 const SHARE_LINK = 'share-link';
+
+/** The id of `room`'s governance resource (`room_governance_resource`). */
+export const roomGovernanceResource = room => `workspace.permissions:${room}`;
+
+const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`));
+
+/**
+ * The room's membership actions through a mount's own action door
+ * (`invokeAction`), as a script, an agent or assistive technology takes
+ * them on the page: `remove-member`, `ban` and `unban` on `room`'s
+ * governance resource, each `{person}` (the person's root key, hex). They
+ * become the same `/rooms` requests an app's do (`membership`, see
+ * `membership.mjs`), which the host decides by the room's policy; removing
+ * and banning run only with `confirm`, as the door runs any action whose
+ * contract asks first.
+ *
+ * `undefined` when `resource` and `action` name no such action of this
+ * room, so the application's door answers them; else a promise of the
+ * `ActionResult` (`{state: 'completed', output: {value: {room, members}}}`
+ * once the host applied it), rejected `code: reason` as the door's errors
+ * read when the host refused it.
+ */
+export function invokeRoomMembership({membership, room, resource, action, args = {}, confirm = false}) {
+  const verb = membershipVerb(action);
+  if (!verb || !room || resource !== roomGovernanceResource(room)) return undefined;
+  if (!membership) return refusal('action_unavailable', 'this page holds no membership in the room');
+  const person = args?.person;
+  if (typeof person !== 'string' || !/^[0-9a-f]{64}$/.test(person)) {
+    return refusal('invalid_arguments', 'person must be 64 lowercase hex characters');
+  }
+  if (Object.keys(args).some(name => name !== 'person')) return refusal('invalid_arguments', 'the only argument is person');
+  if (DESTRUCTIVE.has(action) && !confirm) {
+    return refusal('action_confirmation_required', `${action} takes ${person} out of the room; invoke it with confirm`);
+  }
+  return Promise.resolve().then(() => membership[verb](person)).then(
+    changed => ({state: 'completed', output: {value: {room: changed?.room ?? room, members: changed?.members ?? []}}}),
+    error => refusal('action_failed', String(error?.message ?? error)),
+  );
+}
 
 export function createNativeCatalogueBridge({take, deliver, actions, membership = () => undefined, current, onError = () => {}}) {
   let closed = false, scheduled = false;
@@ -56,7 +101,7 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
       shareLink(invocation, target, argument);
       return;
     }
-    const verb = MEMBERSHIP[target?.address?.action];
+    const verb = membershipVerb(target?.address?.action);
     if (target?.provider !== GOVERNANCE_PROVIDER || !verb) {
       rejected(invocation, 'Only the room\'s membership actions run from an app here');
       return;

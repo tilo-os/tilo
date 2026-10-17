@@ -4,15 +4,6 @@
 //! and runs the accept loop. Best-effort systemd `READY=1` notify so a
 //! `Type=notify` user unit can serialise dependent units behind us.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 

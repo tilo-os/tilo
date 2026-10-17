@@ -17,15 +17,6 @@
 //! `/usr/lib/tilo-runtime/<v>/`, otherwise print the per-user path
 //! (which is where `tilo-install runtime install` would write to).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

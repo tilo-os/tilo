@@ -53,8 +53,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use neighbour_wire::PresenceSlot;
 use tilo_delivery_protocol::transport_v2::{MAX_SLOTTED_PRESENCE_BYTES, PresenceSlotKey};
-use tilo_peer_state::PresenceSlot;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 

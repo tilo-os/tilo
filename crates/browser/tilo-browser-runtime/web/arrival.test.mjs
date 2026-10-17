@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, isCoffeeHost, lineParts,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, isCoffeeHost, lineParts, refusedByHost,
   parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -73,6 +73,18 @@ test('a slow fetch or join says so in plain words instead of a joke', () => {
   assert.equal(arrival.update({arrival: 'join'}, 15_000).note, 'Verbindet noch.');
   assert.equal(arrival.update({arrival: 'join', statusShown: true}, 15_100).note, null,
     'what the page says (waiting for the owner) is said instead');
+});
+
+test('a first frame that is late says so instead of waiting in silence', () => {
+  const arrival = createArrival({lines: {jokes, tips}});
+  arrival.update(loading, 0);
+  arrival.update({arrival: 'draw'}, 2000);
+  assert.ok(arrival.update({arrival: 'draw'}, 11_999).line);
+  const slow = arrival.update({arrival: 'draw'}, 12_000);
+  assert.equal(slow.line, null);
+  assert.equal(slow.note, 'Still starting graphics. Without a graphics card this takes longer.');
+  assert.equal(slow.bar, true);
+  assert.equal(arrival.update({arrival: 'done'}, 12_100).note, null);
 });
 
 test('the bar follows the measured phases, creeps within one, and never runs backwards', () => {
@@ -184,6 +196,18 @@ test('a failure says what happened in plain words, never as a raw error', () => 
   const general = failureMessage(new Error('RuntimeError: unreachable executed at 0x1f'), {workspace: 'Lounge'});
   assert.equal(general, 'Something went wrong opening Lounge. Try again, or come back later.');
   for (const said of [failureMessage(host), general]) assert.doesNotMatch(said, /Failed|HTTP|Error/);
+});
+
+test('an address the host turns away after a removal is told why and that trying again will not help today', () => {
+  const cooling = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'cooling-down'});
+  assert.ok(refusedByHost(cooling));
+  assert.ok(!refusedByHost(Object.assign(new Error('x'), {name: 'HostAdmissionError', code: 'full'})));
+  assert.ok(!refusedByHost(new Error('cooling-down')));
+  assert.equal(failureMessage(cooling, {workspace: 'Lounge'}),
+    'Lounge is not letting anyone in from your network for now, because someone here was removed from it. '
+    + 'Ask someone in it for an invitation, or try again tomorrow.');
+  assert.match(failureMessage(cooling), /^This workspace is not letting anyone in/);
+  assert.doesNotMatch(failureMessage(cooling), /HTTP|connection/);
 });
 
 test('a page whose device key another tab holds says to use that tab', () => {

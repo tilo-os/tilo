@@ -425,12 +425,6 @@ impl CaptureExecutor {
     }
 
     /// Drain picker intents and advance continuous recording/mirror work.
-    // This is the ordered capture state-machine tick. Splitting it would hide
-    // the sequencing constraints between mirrors, recording, and replay.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered capture tick keeps mirror, recording, and replay transitions in one state-machine boundary"
-    )]
     pub fn execute_ready(
         &mut self,
         frame_builder: &mut FrameBuilder,

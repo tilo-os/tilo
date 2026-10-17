@@ -7,7 +7,6 @@ mod icloud;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
-#[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
 
 use ui::icons::Icon;
@@ -18,8 +17,8 @@ use ui::widget::{
 };
 
 use super::super::account_transfer::{
-    AccountActions, AccountJobState, Candidate, ConnectionError, ConnectionProvider, Connector,
-    DavConnection, DestinationGuard, Inventory, Provider, SourceRoots, TiloCandidate,
+    AccountActions, AccountJobState, Candidate, ConnectionError, ConnectionProvider, DavConnection,
+    Inventory, Provider, SourceRoots, TiloCandidate,
 };
 use super::super::strings::{t, t_args};
 use crate::page;
@@ -187,15 +186,8 @@ impl Selection {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PreparedEntry {
-    id: String,
-    source_id: Option<String>,
-    label: String,
-    revoke_on_remove: bool,
-}
-
+pub(in crate::setup) use imager_backend::account_checkpoint::PreparedAccounts;
+use imager_backend::account_checkpoint::PreparedEntry;
 struct Work {
     selected: Selection,
     job: String,
@@ -235,79 +227,6 @@ enum Step {
     },
 }
 
-/// Retained by the install plan until the target's private home is available.
-/// Never serialize this handle or put its path/key in an InstallProfile.
-#[derive(Clone)]
-pub(in crate::setup) struct PreparedAccounts {
-    stage: Arc<tempfile::TempDir>,
-    entries: Vec<PreparedEntry>,
-    guard: DestinationGuard,
-}
-impl PreparedAccounts {
-    pub fn home(&self) -> &Path {
-        self.stage.path()
-    }
-    pub fn config_root(&self) -> PathBuf {
-        self.home().join(".config/tilo")
-    }
-    pub fn count(&self) -> usize {
-        self.entries.len()
-    }
-    #[cfg(target_os = "linux")]
-    pub fn selected_ids(&self) -> Vec<String> {
-        self.entries.iter().map(|entry| entry.id.clone()).collect()
-    }
-    #[cfg(unix)]
-    pub fn validate_artifact_destination(&self, destination: &Path) -> Result<(), ConnectionError> {
-        self.guard
-            .validate_destination(
-                destination
-                    .parent()
-                    .ok_or(ConnectionError::InvalidConfiguration)?,
-            )
-            .map(drop)
-            .map_err(|_| ConnectionError::InvalidConfiguration)
-    }
-    /// Export only consented staged accounts to a new private artifact outside
-    /// the original computer's source grant. Password/key custody stays private.
-    #[cfg(unix)]
-    pub fn export_password_sealed(
-        &self,
-        destination: &Path,
-        password: &[u8],
-        binding: &[u8],
-    ) -> Result<usize, ConnectionError> {
-        self.validate_artifact_destination(destination)?;
-        let selected: Vec<_> = self
-            .entries
-            .iter()
-            .map(|entry| accounts::AccountId::new(&entry.id))
-            .collect();
-        Connector::new(self.config_root()).export_selected_accounts(
-            &selected,
-            destination,
-            password,
-            binding,
-        )?;
-        Ok(selected.len())
-    }
-    /// Run after full home copy settles. Reseal each selected account into the
-    /// target vault, preserving existing unrelated accounts and the stage for
-    /// retry if any account cannot be delivered. No media-profile secret fields.
-    pub fn merge_into(&self, target_home: &Path) -> Result<(), ConnectionError> {
-        let target = self
-            .guard
-            .validate_destination(target_home)
-            .map_err(|_| ConnectionError::InvalidConfiguration)?;
-        let connector = Connector::new(target);
-        for entry in &self.entries {
-            connector
-                .handoff_prepared(&self.config_root(), &accounts::AccountId::new(&entry.id))?;
-        }
-        Ok(())
-    }
-}
-
 pub(super) struct Accounts {
     inventory: Inventory,
     source_roots: Option<SourceRoots>,
@@ -316,7 +235,6 @@ pub(super) struct Accounts {
     prepared: Vec<PreparedEntry>,
     reviewed_empty: bool,
     saved: batch::SavedConnections,
-    #[cfg(target_os = "linux")]
     checkpoint_worker: Option<checkpoint::Worker>,
     step: Step,
     opener: Arc<dyn BrowserOpener>,
@@ -332,7 +250,6 @@ impl Default for Accounts {
             prepared: Vec::new(),
             reviewed_empty: false,
             saved: batch::SavedConnections::default(),
-            #[cfg(target_os = "linux")]
             checkpoint_worker: None,
             step: Step::Overview,
             opener: Arc::new(PortalOpener),
@@ -372,7 +289,6 @@ impl Accounts {
         Ok(())
     }
     pub fn busy(&mut self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.checkpoint_worker.is_some() {
             return true;
         }
@@ -389,7 +305,6 @@ impl Accounts {
             || self.actions.busy()
     }
     pub fn active(&self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.checkpoint_worker.is_some() {
             return true;
         }
@@ -398,7 +313,6 @@ impl Accounts {
             || matches!(&self.step, Step::ICloud(flow) if flow.active())
     }
     pub fn can_continue(&self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.checkpoint_worker.is_some() {
             return false;
         }
@@ -416,10 +330,9 @@ impl Accounts {
         if (self.prepared.is_empty() && !self.reviewed_empty) || !self.can_continue() {
             return None;
         }
-        self.stage.as_ref().map(|stage| PreparedAccounts {
-            stage: stage.clone(),
-            entries: self.prepared.clone(),
-            guard: self.actions.destination_snapshot(),
+        self.stage.as_ref().map(|stage| {
+            self.actions
+                .prepared_accounts(stage.clone(), self.prepared.clone())
         })
     }
     pub(super) fn navigation_step(&self) -> &'static str {
@@ -468,20 +381,11 @@ impl Accounts {
     }
     fn stage_home(&mut self) -> Result<PathBuf, &'static str> {
         if self.stage.is_none() {
-            let mut builder = tempfile::Builder::new();
-            builder.prefix("tilo-prepared-accounts-");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                builder.permissions(std::fs::Permissions::from_mode(0o700));
-            }
-            let stage = Arc::new(
-                builder
-                    .tempdir()
+            self.stage = Some(
+                self.actions
+                    .create_staging()
                     .map_err(|_| "installer-accounts-save-failed")?,
             );
-            self.actions.retain_staging(stage.clone());
-            self.stage = Some(stage);
         }
         self.stage
             .as_ref()
@@ -528,7 +432,6 @@ impl Accounts {
         Ok(())
     }
     pub fn apply(&mut self, request: AccountRequest) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
         if self.checkpoint_worker.is_some() {
             return Err("installer-accounts-busy");
         }
@@ -700,9 +603,9 @@ impl Accounts {
                     return Err("installer-accounts-dav-required");
                 }
                 if field == 0 {
-                    let server = account_custody::nextcloud::server_url(&value)
+                    let server = imager_backend::account_dav_readiness::normalize_server(&value)
                         .map_err(|_| "installer-accounts-dav-server-invalid")?;
-                    self.dav_fields[0].set(server.to_string());
+                    self.dav_fields[0].set(server);
                 }
                 if field == 0
                     && matches!(
@@ -1463,7 +1366,6 @@ impl Accounts {
     // Native client configuration identifies an account, not the state of its sync queue.
     // Keep this advice separate from authentication and migration destination choices.
     fn source_review_keys(&self) -> Vec<&'static str> {
-        #[cfg(target_os = "linux")]
         {
             use super::super::account_transfer::Origin;
             let native = |candidate: &Candidate| candidate.origin == Origin::Nextcloud;
@@ -2041,11 +1943,9 @@ mod source_review_tests;
 #[cfg(test)]
 mod tests;
 
-#[cfg(target_os = "linux")]
 #[path = "accounts_checkpoint.rs"]
 pub(super) mod checkpoint;
 
-#[cfg(target_os = "linux")]
 impl Accounts {
     pub(super) fn checkpoint_selection(&self) -> Option<[u8; 32]> {
         use sha2::{Digest, Sha256};
@@ -2128,16 +2028,16 @@ impl Accounts {
             }),
             Ok(checkpoint::Completion::Saved(receipt, handle)) => {
                 if self.stage.is_none() {
-                    self.actions.retain_staging(handle.stage.clone());
-                    self.stage = Some(handle.stage);
+                    self.actions.retain_staging(handle.stage());
+                    self.stage = Some(handle.stage());
                 }
                 Ok(Some(receipt))
             }
             Ok(checkpoint::Completion::Restored(handle, generation_guard)) => {
-                self.stage = Some(handle.stage.clone());
+                self.stage = Some(handle.stage());
                 self.actions = AccountActions::default();
-                self.actions.retain_staging(handle.stage);
-                self.prepared = handle.entries;
+                self.actions.retain_staging(handle.stage());
+                self.prepared = handle.entries().to_vec();
                 self.saved.reviewed = true;
                 self.require_saved_review();
                 self.reviewed_empty = true;

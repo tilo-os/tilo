@@ -275,12 +275,6 @@ fn prepare(
 ) -> Result<Reviewed, ReviewFailure> {
     context
         .grant
-        .selected_pin
-        .validate()
-        .map_err(|_| ReviewFailure::SourceChanged)?;
-    context
-        .grant
-        .expected_pin
         .validate()
         .map_err(|_| ReviewFailure::SourceChanged)?;
     let roots = Arc::new(
@@ -288,12 +282,12 @@ fn prepare(
             .into_granted_roots(cancel)
             .map_err(ReviewFailure::home)?,
     );
-    let home = HomeSource::review_granted_original_roots(&context.grant.selected, roots, cancel)
+    let home = HomeSource::review_granted_original_roots(context.grant.selected(), roots, cancel)
         .map_err(ReviewFailure::home)?;
     let applications = if context.choices.applications && !context.choices.system_refs.is_empty() {
         let source = PortableFlatpakSource::review(
             &NativeRunner,
-            &context.grant.selected,
+            context.grant.selected(),
             context.choices.system_refs.clone(),
         )
         .map_err(|_| ReviewFailure::Applications)?;
@@ -306,20 +300,14 @@ fn prepare(
         .map_err(ReviewFailure::home)?;
     context
         .grant
-        .selected_pin
-        .validate()
-        .map_err(|_| ReviewFailure::SourceChanged)?;
-    context
-        .grant
-        .expected_pin
         .validate()
         .map_err(|_| ReviewFailure::SourceChanged)?;
     crate::setup::migration::check_cancel(cancel).map_err(ReviewFailure::home)?;
-    let original = Arc::new(OriginalSource {
+    let original = Arc::new(OriginalSource::from_native(super::NativeOriginalSource {
         grant: context.grant.clone(),
         choices: context.choices.clone(),
         intent: Mutex::new(None),
-    });
+    }));
     Ok(Reviewed {
         original: Some(original),
         grant: context.grant,
@@ -330,4 +318,5 @@ fn prepare(
 }
 
 #[cfg(all(test, feature = "native-capture-qualification"))]
+#[path = "mounted_permission/native_tests.rs"]
 mod native_tests;

@@ -25,7 +25,11 @@ bind caller-owned files and call them root-owned installed consumers.
 
 The closed cohort object has exactly `schema` (integer1), `source_root` (this
 checkout), `source_inputs` (relative source path to actual SHA256) and `roles`.
-Source-only mode requires `worker`, `runtime`, `host`, `imager_tests`. Full mode
+Source-only mode requires `worker`, `runtime`, `host`, `imager_tests` and
+`backend_tests`. Native source cases execute the backend lib-test ELF; UI
+preparation assertions execute the matching frontend lib-test ELF through
+`TILO_IMAGER_FRONTEND_TESTS`. Both are measured compiler roles, not interchangeable
+binaries. Full mode
 also requires `shell`, `fs`, `control`, `launcher`, `credential_helper`,
 `prepared_helper`, `home_seeds`, `prepared_extract`, `files`, `writer`, `browser`,
 `app_package`, `runtime_bundle`,
@@ -56,7 +60,10 @@ ledger after compilation or restamp an old producer.
 
 The required source map covers the checkout's actual Rust, Cargo and Fluent
 inputs, Imager packaging, OS scripts and installed helper sources, including
-untracked candidate source files. Capture these *before* each actual role build
+untracked candidate source files. The canonical data contract is measured at
+`crates/platform/imager-backend/src/imager_model.rs`, alongside the native setup
+source tree; a frontend reexport is not a substitute for those bytes.
+Capture these *before* each actual role build
 and again after, rather than synthesizing them from this documentation. A new
 qualifier/source change requires a fresh producer graph (a genuine compiler
 cache hit is fine). The script does not mint compiler receipts.

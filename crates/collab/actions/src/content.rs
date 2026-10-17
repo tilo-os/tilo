@@ -84,11 +84,6 @@ impl IntoIterator for ContentParts {
     }
 }
 
-/// Whether `hash` has the shape of a content address (64 hex digits).
-fn valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 /// Whether `bytes` are the content `hash` (lower-case) names.
 fn verify(hash: &str, bytes: &[u8]) -> bool {
     blake3::hash(bytes).to_hex().as_str() == hash
@@ -286,7 +281,8 @@ fn referenced(object: &Map<String, Value>) -> Option<(&str, &str)> {
     }
     let hash = object.get(CONTENT_REFERENCE_KEY)?.as_str()?;
     let kind = object.get(AS)?.as_str()?;
-    (valid_hash(hash) && matches!(kind, TEXT | BYTES | JSON)).then_some((hash, kind))
+    (tilo_content_types::valid_hash(hash) && matches!(kind, TEXT | BYTES | JSON))
+        .then_some((hash, kind))
 }
 
 fn collect(value: &Value, hashes: &mut Vec<String>) {

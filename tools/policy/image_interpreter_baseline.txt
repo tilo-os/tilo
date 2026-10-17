@@ -7,20 +7,6 @@
 # exception made in review, with the reason after `#`.
 #
 # path  # what it does, and so what porting it touches
-os/usr/libexec/tilo-board-successor.py  # verified update: picks the authenticated board successor
-os/usr/libexec/tilo-boot-order  # dual boot, run by hand: enlists Tilo after Windows in the firmware boot order
-os/usr/libexec/tilo-firstboot-files.py  # firstboot: durable intent and home defaults
-os/usr/libexec/tilo-image-policy-check  # security audit: containers-policy.json requires the pinned Cosign signature
-os/usr/libexec/tilo-install-dev-ssh.py  # installer, development images only: owner SSH keys
-os/usr/libexec/tilo-install-handoff-copy.py  # installer: copies handoff contents without staging metadata
-os/usr/libexec/tilo-installer-code-bootstrap.py  # installer, CI VMs only: /etc bootstrap for old immutable media
 os/usr/libexec/tilo-installer-code-protocol.py  # installer, dev VMs only: named-file protocol for helper refresh
 os/usr/libexec/tilo-installer-code-refresh.py  # installer, dev VMs only: refreshes allowlisted helpers
-os/usr/libexec/tilo-installer-code-target-probe.py  # installer, CI VMs only: probes the original boot inputs
 os/usr/libexec/tilo-installer-dev-target-uki.py  # installer, CI development targets only: unsigned target UKI
-os/usr/libexec/tilo-installer-offline-target.py  # installer: authenticates and imports the signed offline target
-os/usr/libexec/tilo-installer-target-transport.py  # installer: checks and stages one immutable CI target
-os/usr/libexec/tilo-staging-handoff  # installer: live side of USB-free installation
-os/usr/libexec/tilo-staging-reclaim  # installed system: returns the temporary installer space (service and timer)
-os/usr/libexec/tilo-vm-bootc-copy-cache.py  # installer, VMs only: opt-in cache for the bootc-to-Podman export
-os/usr/libexec/tilo-vm-install-proof.py  # installer, VMs only: binds a VM install to its medium and deployment

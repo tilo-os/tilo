@@ -1506,10 +1506,6 @@ impl AccountsPane {
     ///
     /// Sample rows report an "Example" status; they do not represent a live
     /// connection.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the full account-row action hierarchy is kept together for auditability"
-    )]
     fn account_row(&self, view: &AccountView) -> Item {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);

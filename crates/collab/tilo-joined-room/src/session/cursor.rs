@@ -12,19 +12,8 @@ impl Cursor {
     pub(super) fn drive<'a>(
         &mut self,
         queued: impl Iterator<Item = [u8; 32]>,
-        frames: impl Iterator<
-            Item = (
-                [u8; 32],
-                &'a [u8],
-                [u8; 32],
-                tilo_peer_state::transport::Retention,
-            ),
-        >,
-        mut send: impl FnMut(
-            &[u8],
-            [u8; 32],
-            tilo_peer_state::transport::Retention,
-        ) -> Result<(), String>,
+        frames: impl Iterator<Item = ([u8; 32], &'a [u8], [u8; 32], neighbour_wire::Retention)>,
+        mut send: impl FnMut(&[u8], [u8; 32], neighbour_wire::Retention) -> Result<(), String>,
     ) -> Result<(), String> {
         // The owner bounds entries to128 (64 originals plus64 recovery projections). Never retain ids no longer in its queue.
         let frames: Vec<_> = frames.take(129).collect();
@@ -53,7 +42,7 @@ mod tests {
             [1; 32],
             b"exact signed bytes".as_slice(),
             [2; 32],
-            tilo_peer_state::transport::Retention::Delta,
+            neighbour_wire::Retention::Delta,
         );
         let mut cursor = Cursor::default();
         assert!(
@@ -119,7 +108,7 @@ mod tests {
                         [id; 32],
                         b"exact".as_slice(),
                         [id % 2; 32],
-                        tilo_peer_state::transport::Retention::Delta,
+                        neighbour_wire::Retention::Delta,
                     )
                 }),
                 |_, _, _| {
@@ -137,7 +126,7 @@ mod tests {
                         [id; 32],
                         b"exact".as_slice(),
                         [id % 2; 32],
-                        tilo_peer_state::transport::Retention::Delta,
+                        neighbour_wire::Retention::Delta,
                     )
                 }),
                 |_, _, _| {
@@ -160,7 +149,7 @@ mod tests {
                         [i; 32],
                         b"x".as_slice(),
                         [0; 32],
-                        tilo_peer_state::transport::Retention::Delta
+                        neighbour_wire::Retention::Delta
                     )),
                     |_, _, _| panic!("over quota")
                 )
@@ -173,7 +162,7 @@ mod tests {
             [3; 32],
             b"recovery projection".as_slice(),
             [4; 32],
-            tilo_peer_state::transport::Retention::Delta,
+            neighbour_wire::Retention::Delta,
         );
         let mut cursor = Cursor::default();
         let mut sent = 0;

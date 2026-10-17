@@ -2,15 +2,6 @@
 //! router, spins up the inotify watcher, then enters the
 //! Cap'n Proto accept loop on the Unix socket.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use format_host::{
     default_registry_path,
     router::{Router, load_into},

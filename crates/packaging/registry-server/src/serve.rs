@@ -1098,14 +1098,6 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
 
 // ---- response helpers ------------------------------------------
 
-// Both `.expect()`s below can only fail on an invalid status/header, and
-// every status and header here is a hardcoded constant — never a value
-// that could make `Response::builder()` reject it.
-#[allow(
-    clippy::expect_used,
-    reason = "status codes and header values are hardcoded constants, never attacker- or \
-              caller-controlled, so the builder cannot actually fail here"
-)]
 /// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
 /// downloaded a thin package fetches only the blobs it lacks. Content
 /// addressing makes the response self-verifying; clients check every blob.

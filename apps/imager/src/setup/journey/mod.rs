@@ -6,41 +6,38 @@
 
 mod accounts;
 mod belongings;
-#[cfg(unix)]
 pub(crate) mod browser;
 mod capabilities;
-#[cfg(target_os = "linux")]
 mod desktop;
 mod diagram;
-#[cfg(target_os = "linux")]
 mod direct;
-#[cfg(unix)]
 mod draft;
-#[cfg(unix)]
 mod existing_identity;
 #[cfg(target_os = "linux")]
 mod live_inventory;
 #[cfg(all(test, target_os = "linux"))]
 pub(super) mod main_story_tests;
-#[cfg(target_os = "linux")]
 mod migration_selection;
 mod model;
-#[cfg(target_os = "linux")]
+mod native_ownership;
 mod pairing;
-#[cfg(unix)]
 pub(in crate::setup) mod personal;
-#[cfg(target_os = "linux")]
+#[path = "portable_source/presentation.rs"]
 pub(crate) mod portable_source;
 #[cfg(target_os = "linux")]
+#[path = "portable_source.rs"]
+mod portable_source_native;
+#[path = "prepared_media/presentation.rs"]
 pub(crate) mod prepared_media;
+#[cfg(target_os = "linux")]
+#[path = "prepared_media.rs"]
+mod prepared_media_native;
 mod promotion;
 mod recovery;
-#[cfg(unix)]
 mod restart_controller;
 #[cfg(all(test, target_os = "linux"))]
 mod restart_tests;
 mod retained_preview;
-#[cfg(target_os = "linux")]
 mod service_sessions;
 #[cfg(all(test, target_os = "linux"))]
 mod source_change_tests;
@@ -478,7 +475,6 @@ struct FlatpakAppChoice {
 }
 
 const CATEGORIES: [&str; 3] = ["files", "flatpak", "accounts"];
-#[cfg(unix)]
 fn identity_color(value: &str) -> Result<[u8; 3], &'static str> {
     hex::decode(value)
         .ok()
@@ -519,9 +515,7 @@ fn queue_continue(commands: &Commands) {
 
 pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
     let media = cx.local(false);
-    #[cfg(target_os = "linux")]
     let prepared = cx.local(None::<std::sync::Arc<prepared_media::PreparedMedia>>);
-    #[cfg(target_os = "linux")]
     let navigation = prepared_media::Navigation {
         artifact: prepared.clone(),
         showing_media: media.clone(),
@@ -537,7 +531,6 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
                     .as_ref()
                     .and_then(|preview| preview.windows.media_handoff()),
             );
-            #[cfg(target_os = "linux")]
             let app = app
                 .with_prepared_media(prepared.get())
                 .with_preparation_navigation(navigation.clone())
@@ -554,9 +547,7 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
             let returned = previous.is_some();
             let preview = previous.unwrap_or_else(|| InstallerPreview {
                 media: Some(media.clone()),
-                #[cfg(target_os = "linux")]
                 media_bundle: Some(prepared.clone()),
-                #[cfg(target_os = "linux")]
                 media_return: Some(navigation.reason.clone()),
                 ..InstallerPreview::default()
             });
@@ -598,52 +589,33 @@ pub struct InstallerPreview {
     profile_breakpoint: f64,
     field_values: [ui::LocalState<String>; 4],
     storage: storage::Storage,
-    install_preferences: crate::model::InstallProfile,
-    #[cfg(target_os = "linux")]
+    install_preferences: imager_backend::imager_model::InstallProfile,
     direct: direct::Direct,
-    #[cfg(target_os = "linux")]
     desktop_pending: bool,
     user_transfer: transfer::Transfer,
     home_promotion: promotion::Promotion,
     account_actions: super::account_transfer::AccountActions,
     accounts: accounts::Accounts,
-    #[cfg(unix)]
     personal: personal::Personal,
-    #[cfg(unix)]
     restart: restart_controller::Restart,
-    #[cfg(unix)]
     resume_draft: Option<draft::ReadyDraft>,
-    #[cfg(target_os = "linux")]
     checkpoint_restoring: bool,
-    #[cfg(target_os = "linux")]
     checkpoint_restored: bool,
-    #[cfg(target_os = "linux")]
     checkpoint_signature: Option<[u8; 32]>,
-    #[cfg(target_os = "linux")]
     checkpoint_pending: Option<[u8; 32]>,
-    #[cfg(target_os = "linux")]
     checkpoint_failed: bool,
-    #[cfg(target_os = "linux")]
     account_continue: bool,
-    #[cfg(unix)]
     existing_identity: existing_identity::ExistingIdentity,
-    #[cfg(target_os = "linux")]
     pairing: pairing::Pairing,
-    #[cfg(unix)]
     personal_continue: Option<Page>,
     account_answer: serde_json::Value,
     live: bool,
     media: Option<ui::LocalState<bool>>,
-    #[cfg(target_os = "linux")]
     media_bundle: Option<ui::LocalState<Option<std::sync::Arc<prepared_media::PreparedMedia>>>>,
-    #[cfg(target_os = "linux")]
     media_preparation: prepared_media::Controller,
-    #[cfg(target_os = "linux")]
     media_return: Option<ui::LocalState<Option<prepared_media::ReturnReason>>>,
     dispatcher: Option<ui::framework::Dispatcher<Imager>>,
-    #[cfg(target_os = "linux")]
     migration_selection: migration_selection::Selection,
-    #[cfg(target_os = "linux")]
     portable_source: portable_source::Selection,
     recovery: super::migration_recovery::Flow,
     belongings: belongings::Belongings,
@@ -684,52 +656,33 @@ impl Default for InstallerPreview {
             profile_breakpoint: 0.0,
             field_values: std::array::from_fn(|_| ui::LocalState::new(String::new())),
             storage: storage::Storage::default(),
-            install_preferences: crate::model::InstallProfile::default(),
-            #[cfg(target_os = "linux")]
+            install_preferences: imager_backend::imager_model::InstallProfile::default(),
             direct: direct::Direct::default(),
-            #[cfg(target_os = "linux")]
             desktop_pending: false,
             user_transfer: transfer::Transfer::default(),
             home_promotion: promotion::Promotion::default(),
             account_actions: super::account_transfer::AccountActions::default(),
             accounts: accounts::Accounts::default(),
-            #[cfg(unix)]
             personal: personal::Personal::default(),
-            #[cfg(unix)]
             restart: restart_controller::Restart::default(),
-            #[cfg(unix)]
             resume_draft: None,
-            #[cfg(target_os = "linux")]
             checkpoint_restoring: false,
-            #[cfg(target_os = "linux")]
             checkpoint_restored: false,
-            #[cfg(target_os = "linux")]
             checkpoint_signature: None,
-            #[cfg(target_os = "linux")]
             checkpoint_pending: None,
-            #[cfg(target_os = "linux")]
             checkpoint_failed: false,
-            #[cfg(target_os = "linux")]
             account_continue: false,
-            #[cfg(unix)]
             existing_identity: existing_identity::ExistingIdentity::default(),
-            #[cfg(target_os = "linux")]
             pairing: pairing::Pairing::default(),
-            #[cfg(unix)]
             personal_continue: None,
             account_answer: serde_json::Value::Null,
             live: false,
             media: None,
-            #[cfg(target_os = "linux")]
             media_bundle: None,
-            #[cfg(target_os = "linux")]
             media_return: None,
-            #[cfg(target_os = "linux")]
             media_preparation: prepared_media::Controller::default(),
             dispatcher: None,
-            #[cfg(target_os = "linux")]
             migration_selection: migration_selection::Selection::default(),
-            #[cfg(target_os = "linux")]
             portable_source: portable_source::Selection::default(),
             recovery: super::migration_recovery::Flow::default(),
             windows: windows::Preparation::default(),
@@ -750,7 +703,6 @@ impl Default for InstallerPreview {
 
 impl InstallerPreview {
     fn unlocking_preparation(&self) -> bool {
-        #[cfg(target_os = "linux")]
         {
             self.live
                 && self.journey.page == Page::Password
@@ -760,65 +712,29 @@ impl InstallerPreview {
                     .as_ref()
                     .is_some_and(|ready| ready.account_checkpoint().is_some())
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
     }
 
     fn migration_busy(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.migration_selection.busy() || self.portable_source.busy()
+        if self.migration_selection.busy() {
+            return true;
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.portable_source.busy()
     }
     fn migration_choosing(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.migration_selection.choosing() || self.portable_source.choosing()
+        if self.migration_selection.choosing() {
+            return true;
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.portable_source.choosing()
     }
     fn existing_identity_active(&self) -> bool {
-        #[cfg(unix)]
-        {
-            self.existing_identity.active() || {
-                #[cfg(target_os = "linux")]
-                {
-                    self.pairing.busy()
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    false
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
+        self.existing_identity.active() || self.pairing.busy()
     }
 
     fn personal_busy(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        if self.media_preparation.busy() || self.pairing.busy() {
-            return true;
-        }
-        #[cfg(unix)]
-        {
-            self.personal.busy() || self.existing_identity.busy()
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
+        self.media_preparation.busy()
+            || self.pairing.busy()
+            || self.personal.busy()
+            || self.existing_identity.busy()
     }
     fn guided_host_available(&self) -> bool {
         !self.live || self.capabilities.prepared_installation
@@ -828,14 +744,7 @@ impl InstallerPreview {
         if !self.live {
             return true;
         }
-        #[cfg(target_os = "linux")]
-        {
-            super::internal_install_flow::live_gate_open()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        super::internal_install_flow::live_gate_open()
     }
 
     fn storage_content(&self) -> ui::widget::Column {
@@ -983,7 +892,6 @@ impl InstallerPreview {
                 "installer-preview-storage-unreadable",
             ))));
         }
-        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(facts) = &self.storage.facts {
             for blocker in &facts.blockers {
                 content = content.push(Box::new(Text::new(
@@ -999,7 +907,6 @@ impl InstallerPreview {
             }
         }
         if self.live {
-            #[cfg(target_os = "linux")]
             if self.media_preparation.busy() {
                 content = content.push(Box::new(Text::new(&t(self
                     .media_preparation
@@ -1040,11 +947,8 @@ impl InstallerPreview {
     fn invalidate_migration_preparation(&mut self) {
         self.storage
             .set_application_minimum(super::staging::MIN_TARGET_BYTES);
-        #[cfg(target_os = "linux")]
-        {
-            self.migration_selection.invalidate();
-            self.portable_source.invalidate();
-        }
+        self.migration_selection.invalidate();
+        self.portable_source.invalidate();
     }
 
     // These actions operate on the current guided page. Explicit source grants,
@@ -1169,19 +1073,7 @@ impl InstallerPreview {
         if self.windows.enabled && self.live && !recovery::is_recovery_effect(&effect) {
             return self.apply_windows(effect);
         }
-        #[cfg(unix)]
-        if self.live
-            && !{
-                #[cfg(target_os = "linux")]
-                {
-                    self.direct.active
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    false
-                }
-            }
-        {
+        if self.live && !{ { self.direct.active } } {
             match effect {
                 InstallerPreviewEffect::ResumeInstallerPreparation if self.restart.blocks() => {
                     return self.restart.resume();
@@ -1246,7 +1138,6 @@ impl InstallerPreview {
             // the original route and must not be used with tentative choices.
             return Err("installer-preview-wrong-page");
         }
-        #[cfg(target_os = "linux")]
         if matches!(
             effect,
             InstallerPreviewEffect::SetPreviewPassword { .. }
@@ -1255,7 +1146,6 @@ impl InstallerPreview {
         {
             return Err("installer-accounts-busy");
         }
-        #[cfg(target_os = "linux")]
         if self.direct.active {
             match effect {
                 InstallerPreviewEffect::ReadPreview => return Ok(()),
@@ -1268,7 +1158,6 @@ impl InstallerPreview {
                 _ => return Err("installer-preview-identity-busy"),
             }
         }
-        #[cfg(target_os = "linux")]
         if (self.media_preparation.busy()
             || (self.migration_selection.busy()
                 && !(self.migration_selection.choosing()
@@ -1285,7 +1174,6 @@ impl InstallerPreview {
         {
             return Err("installer-preview-transfer-busy");
         }
-        #[cfg(target_os = "linux")]
         if self.portable_source.busy()
             && !(matches!(
                 effect,
@@ -1297,12 +1185,9 @@ impl InstallerPreview {
         {
             return Err("installer-portable-source-busy");
         }
-        #[cfg(unix)]
         let cancel_photo_read = profile_edit
             && matches!(effect, InstallerPreviewEffect::BackInPreview)
             && self.personal.cancellable_photo_read();
-        #[cfg(not(unix))]
-        let cancel_photo_read = false;
         if self.personal_busy()
             && !cancel_photo_read
             && !matches!(
@@ -1355,7 +1240,6 @@ impl InstallerPreview {
         if !self.effect_page_admitted(effect.id()) {
             return Err("installer-preview-wrong-page");
         }
-        #[cfg(unix)]
         let save_choices = (!choices_edit
             && matches!(
                 effect,
@@ -1371,7 +1255,6 @@ impl InstallerPreview {
                         && self.live
                         && !self.has_storage_decision()))
                 && matches!(effect, InstallerPreviewEffect::ContinuePreview));
-        #[cfg(target_os = "linux")]
         if save_choices
             || matches!(
                 effect,
@@ -1435,7 +1318,8 @@ impl InstallerPreview {
                 destination,
                 setup_binding,
             } if self.live && self.journey.categories[2] => {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 {
                     let prepared = self
                         .accounts
@@ -1448,17 +1332,13 @@ impl InstallerPreview {
                         setup_binding,
                     )?;
                 }
-                #[cfg(not(unix))]
-                {
-                    let _ = (destination, setup_binding);
-                    return Err("installer-preview-identity-unavailable");
-                }
             }
             InstallerPreviewEffect::CreatePreparedIdentity {
                 private_custody,
                 avatar_color,
             } if self.live && self.journey.identity == Some(Identity::New) => {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 {
                     self.personal.create(
                         private_custody.into(),
@@ -1466,40 +1346,27 @@ impl InstallerPreview {
                         identity_color(&avatar_color)?,
                     )?;
                 }
-                #[cfg(not(unix))]
-                {
-                    let _ = (private_custody, avatar_color);
-                    return Err("installer-preview-identity-unavailable");
-                }
             }
             InstallerPreviewEffect::UpdatePreparedIdentity { avatar_color }
                 if self.live && self.journey.identity == Some(Identity::New) =>
             {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 {
                     self.personal
                         .update(self.journey.name.clone(), identity_color(&avatar_color)?)?;
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = avatar_color;
-                    return Err("installer-preview-identity-unavailable");
                 }
             }
             InstallerPreviewEffect::ExportPreparedIdentity { destination }
                 if self.live && self.journey.identity.is_some() =>
             {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 {
                     self.personal.export(
                         destination.into(),
                         zeroize::Zeroizing::new(self.journey.password.clone()),
                     )?;
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = destination;
-                    return Err("installer-preview-identity-unavailable");
                 }
             }
             InstallerPreviewEffect::AccountStep { step, selection }
@@ -1613,7 +1480,6 @@ impl InstallerPreview {
                     self.accounts.prepared_handle(),
                 )?;
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::GrantMountedHomeLocation { location }
                 if self.live
                     && page == Page::Belongings
@@ -1625,7 +1491,6 @@ impl InstallerPreview {
                 self.dirty = true;
                 return Ok(());
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::ContinueMountedHomeReview
                 if self.live
                     && page == Page::Belongings
@@ -1637,7 +1502,6 @@ impl InstallerPreview {
                 self.dirty = true;
                 return Ok(());
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::CancelMountedHomePermission
                 if self.live
                     && page == Page::Belongings
@@ -1656,11 +1520,12 @@ impl InstallerPreview {
                     && self.portable_source.mounted_needs_restart() =>
             {
                 let (home, system_refs) = self.migration_sources()?;
+                let selected_applications = self.selected_applications();
                 self.portable_source.refresh_mounted(
                     home,
                     portable_source::Choices {
                         home: self.journey.categories[0],
-                        applications: self.selected_applications(),
+                        applications: selected_applications,
                         accounts: self.journey.categories[2],
                         system_refs,
                         preparation: Some(
@@ -1686,12 +1551,13 @@ impl InstallerPreview {
                 {
                     let (home, refs) = self.migration_sources()?;
                     if self.journey.destination == Some(Destination::Another) {
+                        let selected_applications = self.selected_applications();
                         self.portable_source.start_with_choices(
                             source.into(),
                             home,
                             portable_source::Choices {
                                 home: self.journey.categories[0],
-                                applications: self.selected_applications(),
+                                applications: selected_applications,
                                 accounts: self.journey.categories[2],
                                 system_refs: refs,
                                 preparation: Some(
@@ -1806,8 +1672,9 @@ impl InstallerPreview {
                 if !std::path::Path::new(&source_file).is_absolute() {
                     return Err("installer-preview-avatar-failed");
                 }
-                #[cfg(unix)]
-                self.personal.select_photo(source_file.clone())?;
+                if imager_backend::prepared_identity::require_supported().is_ok() {
+                    self.personal.select_photo(source_file.clone())?;
+                }
                 self.avatar = Some(source_file);
             }
             InstallerPreviewEffect::ChoosePreviewAvatar
@@ -1840,46 +1707,35 @@ impl InstallerPreview {
                 if !self.identity_route_available("device") {
                     return Err("installer-identity-route-unavailable");
                 }
-                #[cfg(target_os = "linux")]
                 self.pairing.start(&self.journey.device_name)?;
-                #[cfg(not(target_os = "linux"))]
-                return Err("installer-pairing-helper-unavailable");
             }
             InstallerPreviewEffect::CancelExistingDevicePairing if self.live => {
-                #[cfg(target_os = "linux")]
-                self.pairing.cancel()?;
+                if imager_backend::pairing::Pairing::supported() {
+                    self.pairing.cancel()?;
+                }
             }
             InstallerPreviewEffect::ChooseExistingIdentityBackup
                 if page == Page::Connect && self.live =>
             {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 self.existing_identity.choose()?;
-                #[cfg(not(unix))]
-                return Err("installer-preview-identity-unavailable");
             }
             InstallerPreviewEffect::SelectExistingIdentityBackup { source_file }
                 if page == Page::Connect && self.live =>
             {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 self.existing_identity.select(source_file)?;
-                #[cfg(not(unix))]
-                {
-                    let _ = source_file;
-                    return Err("installer-preview-identity-unavailable");
-                }
                 self.journey.transfer = Some("backup".into());
             }
             InstallerPreviewEffect::SetExistingIdentityPassword { value }
                 if page == Page::Connect && self.live =>
             {
-                #[cfg(unix)]
+                imager_backend::prepared_identity::require_supported()
+                    .map_err(|_| "installer-preview-identity-unavailable")?;
                 self.existing_identity
                     .set_password(zeroize::Zeroizing::new(value))?;
-                #[cfg(not(unix))]
-                {
-                    let _ = value;
-                    return Err("installer-preview-identity-unavailable");
-                }
             }
             InstallerPreviewEffect::ChoosePreview { choice } => {
                 if matches!(page, Page::Destination | Page::Migration)
@@ -1896,7 +1752,6 @@ impl InstallerPreview {
                 {
                     return Err("installer-identity-route-unavailable");
                 }
-                #[cfg(unix)]
                 if self.live
                     && page == Page::Connect
                     && self.journey.transfer.as_deref() != Some(&choice)
@@ -1907,7 +1762,6 @@ impl InstallerPreview {
                     self.existing_identity = existing_identity::ExistingIdentity::default();
                 }
                 self.journey.choose(&choice, self.linux)?;
-                #[cfg(target_os = "linux")]
                 if choice == "fresh" && !choices_edit {
                     self.belongings.sessions.clear();
                 }
@@ -1915,7 +1769,6 @@ impl InstallerPreview {
                 if matches!(page, Page::Destination | Page::Migration) && !choices_edit {
                     self.invalidate_migration_preparation();
                 }
-                #[cfg(unix)]
                 if self.live
                     && page == Page::Identity
                     && choice == "new"
@@ -1924,10 +1777,7 @@ impl InstallerPreview {
                     self.restart.retire_for_choice()?;
                     self.personal.reset_preparation()?;
                     self.existing_identity = existing_identity::ExistingIdentity::default();
-                    #[cfg(target_os = "linux")]
-                    {
-                        self.pairing = pairing::Pairing::default();
-                    }
+                    self.pairing = pairing::Pairing::default();
                     self.avatar = None;
                 }
             }
@@ -1996,7 +1846,6 @@ impl InstallerPreview {
                     if let Some(replacement) = replacement_accounts {
                         self.accounts = replacement;
                         self.user_transfer.invalidate_accounts();
-                        #[cfg(target_os = "linux")]
                         {
                             self.checkpoint_signature = None;
                             self.checkpoint_failed = false;
@@ -2038,6 +1887,8 @@ impl InstallerPreview {
                     return Ok(());
                 }
                 if page == Page::Connect && self.live {
+                    imager_backend::prepared_identity::require_supported()
+                        .map_err(|_| "installer-preview-identity-unavailable")?;
                     if self
                         .journey
                         .transfer
@@ -2046,7 +1897,6 @@ impl InstallerPreview {
                     {
                         return Err("installer-identity-route-unavailable");
                     }
-                    #[cfg(unix)]
                     {
                         if self.existing_identity.ready()
                             && matches!(
@@ -2056,14 +1906,11 @@ impl InstallerPreview {
                         {
                             self.advance_journey()?;
                         } else if self.journey.transfer.as_deref() == Some("device") {
-                            #[cfg(target_os = "linux")]
                             if self.pairing.ready() {
                                 self.advance_journey()?;
                             } else {
                                 self.pairing.start(&self.journey.device_name)?;
                             }
-                            #[cfg(not(target_os = "linux"))]
-                            return Err("installer-pairing-helper-unavailable");
                         } else if self.journey.transfer.as_deref() == Some("current") {
                             self.existing_identity.use_current()?;
                         } else if self.existing_identity.selected() {
@@ -2076,8 +1923,6 @@ impl InstallerPreview {
                         self.dirty = true;
                         return Ok(());
                     }
-                    #[cfg(not(unix))]
-                    return Err("installer-preview-identity-unavailable");
                 }
                 if page == Page::Accounts && !self.accounts.can_continue() {
                     return Err("installer-accounts-busy");
@@ -2106,11 +1951,12 @@ impl InstallerPreview {
                         return Err("installer-mounted-home-grants-required");
                     }
                     let (home, system_refs) = self.migration_sources()?;
+                    let selected_applications = self.selected_applications();
                     self.portable_source.request_with_choices(
                         home,
                         portable_source::Choices {
                             home: self.journey.categories[0],
-                            applications: self.selected_applications(),
+                            applications: selected_applications,
                             accounts: self.journey.categories[2],
                             system_refs,
                             preparation: Some(
@@ -2123,7 +1969,6 @@ impl InstallerPreview {
                     self.dirty = true;
                     return Ok(());
                 }
-                #[cfg(target_os = "linux")]
                 if page == Page::Belongings
                     && self.live
                     && self.journey.destination == Some(Destination::Computer)
@@ -2135,7 +1980,6 @@ impl InstallerPreview {
                     self.dirty = true;
                     return Ok(());
                 }
-                #[cfg(target_os = "linux")]
                 if page == Page::Password
                     && self.live
                     && !self.checkpoint_restored
@@ -2150,7 +1994,6 @@ impl InstallerPreview {
                     self.dirty = true;
                     return Ok(());
                 }
-                #[cfg(target_os = "linux")]
                 if page == Page::Accounts && self.live {
                     self.checkpoint_failed = false;
                     if self.save_account_checkpoint()? || self.checkpoint_pending.is_some() {
@@ -2159,7 +2002,6 @@ impl InstallerPreview {
                         return Ok(());
                     }
                 }
-                #[cfg(unix)]
                 if (page == Page::Password || (page == Page::Profile && profile_edit))
                     && self.live
                     && self.journey.identity == Some(Identity::New)
@@ -2191,7 +2033,6 @@ impl InstallerPreview {
                 if renew_destination {
                     self.invalidate_migration_preparation();
                 }
-                #[cfg(target_os = "linux")]
                 if self.journey.saving_edit() {
                     if self.belongings.sessions.commit_edit() {
                         self.invalidate_migration_preparation();
@@ -2220,14 +2061,12 @@ impl InstallerPreview {
                     && self.journey.page == Page::Review
                     && self.journey.identity == Some(Identity::New)
                 {
-                    #[cfg(unix)]
                     self.personal.begin_photo_edit()?;
                 }
                 self.journey.edit(&section)?;
                 if section == "profile" {
                     self.profile_avatar_original = Some(OriginalAvatar(self.avatar.clone()));
                 }
-                #[cfg(target_os = "linux")]
                 self.belongings.sessions.begin_edit();
             }
             InstallerPreviewEffect::ChooseRecoveryDestination { source_id }
@@ -2241,7 +2080,6 @@ impl InstallerPreview {
                 self.recovery
                     .choose(source_id)
                     .map_err(|_| "installer-recovery-review-failed")?;
-                #[cfg(target_os = "linux")]
                 {
                     self.direct.prepared_belongings = None;
                 }
@@ -2258,7 +2096,6 @@ impl InstallerPreview {
                 self.recovery
                     .review_directory(inventory, &source_id, std::path::Path::new(&directory))
                     .map_err(|_| "installer-recovery-review-failed")?;
-                #[cfg(target_os = "linux")]
                 {
                     self.direct.prepared_belongings = None;
                 }
@@ -2281,7 +2118,6 @@ impl InstallerPreview {
                         std::path::Path::new(&journal),
                     )
                     .map_err(|_| "installer-recovery-review-failed")?;
-                #[cfg(target_os = "linux")]
                 {
                     self.direct.prepared_belongings = None;
                 }
@@ -2304,7 +2140,6 @@ impl InstallerPreview {
                         std::path::Path::new(&journal),
                     )
                     .map_err(|_| "installer-recovery-review-failed")?;
-                #[cfg(target_os = "linux")]
                 {
                     self.direct.prepared_belongings = None;
                 }
@@ -2333,48 +2168,37 @@ impl InstallerPreview {
             InstallerPreviewEffect::SetStorageSize { gib } if page == Page::Storage => {
                 self.storage.set_size(gib)?;
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::CancelMediaPreparation if page == Page::Review && self.live => {
                 self.media_preparation.cancel()?;
                 self.dirty = true;
             }
             InstallerPreviewEffect::ReviewChangedFiles if page == Page::Review && self.live => {
-                #[cfg(target_os = "linux")]
+                if !self.media_preparation.needs_source_review()
+                    || self.journey.destination != Some(Destination::Another)
                 {
-                    if !self.media_preparation.needs_source_review()
-                        || self.journey.destination != Some(Destination::Another)
-                    {
-                        return Err("installer-preview-wrong-page");
-                    }
-                    self.portable_source.refresh()?;
-                    self.media_preparation = prepared_media::Controller::default();
-                    if let Some(bundle) = &self.media_bundle {
-                        bundle.set(None);
-                    }
-                    while self.journey.page != Page::Belongings {
-                        self.journey.back()?;
-                    }
-                    self.error = None;
-                    self.pending_slide = Some(-1.0);
-                    self.dirty = true;
-                    return Ok(());
+                    return Err("installer-preview-wrong-page");
                 }
-                #[cfg(not(target_os = "linux"))]
-                return Err("installer-preview-import-unavailable");
+                self.portable_source.refresh()?;
+                self.media_preparation = prepared_media::Controller::default();
+                if let Some(bundle) = &self.media_bundle {
+                    bundle.set(None);
+                }
+                while self.journey.page != Page::Belongings {
+                    self.journey.back()?;
+                }
+                self.error = None;
+                self.pending_slide = Some(-1.0);
+                self.dirty = true;
+                return Ok(());
             }
             InstallerPreviewEffect::PrepareDesktopInstallation
                 if page == Page::Review && self.live =>
             {
-                #[cfg(target_os = "linux")]
                 self.prepare_desktop()?;
-                #[cfg(not(target_os = "linux"))]
-                return Err("installer-desktop-unavailable");
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::PrepareBelongings => {
                 self.prepare_belongings()?;
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::ReviewPreparedBelongings { target_gib } if self.live => {
                 if self.journey.destination != Some(Destination::Computer)
                     || !matches!(page, Page::Review | Page::Storage)
@@ -2416,7 +2240,6 @@ impl InstallerPreview {
                 self.direct.belongings_pending = true;
                 self.direct.belongings_continue = false;
             }
-            #[cfg(target_os = "linux")]
             InstallerPreviewEffect::ExportPreparedBelongings { destination } if self.live => {
                 let prepared = self
                     .direct
@@ -2430,10 +2253,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::PrepareDirectInstallation
                 if page == Page::Review && self.live =>
             {
-                #[cfg(target_os = "linux")]
                 self.prepare_direct()?;
-                #[cfg(not(target_os = "linux"))]
-                return Err("installer-preview-import-unavailable");
             }
             InstallerPreviewEffect::PrepareUsb
                 if page == Page::Review
@@ -2505,6 +2325,8 @@ impl InstallerPreview {
                     } else {
                         None
                     };
+                    let home_applications = self.selected_applications();
+                    let install_profile = self.public_install_profile()?;
                     self.media_preparation.start_with_selections(
                         identity,
                         accounts,
@@ -2513,7 +2335,7 @@ impl InstallerPreview {
                             sessions: self.belongings.sessions.selected_for_accounts(
                                 self.journey.migrate == Some(true) && self.journey.categories[2],
                             ),
-                            home_applications: self.selected_applications(),
+                            home_applications,
                             home,
                             retained,
                             applications,
@@ -2523,18 +2345,16 @@ impl InstallerPreview {
                             .filter(|selected| !selected.profiles().is_empty()),
                         },
                         zeroize::Zeroizing::new(self.journey.password.clone()),
-                        Some(self.public_install_profile()?),
+                        Some(install_profile),
                     )?;
                 }
                 #[cfg(not(target_os = "linux"))]
                 return Err("installer-preview-import-unavailable");
             }
             InstallerPreviewEffect::BackInPreview => {
-                #[cfg(target_os = "linux")]
                 if page == Page::Belongings {
                     self.migration_selection.cancel_permission();
                 }
-                #[cfg(target_os = "linux")]
                 if self.live
                     && page == Page::Connect
                     && self.journey.transfer.as_deref() == Some("device")
@@ -2544,11 +2364,9 @@ impl InstallerPreview {
                     self.dirty = true;
                     return Ok(());
                 }
-                #[cfg(target_os = "linux")]
                 if page == Page::Belongings && !choices_edit {
                     self.portable_source.invalidate();
                 }
-                #[cfg(unix)]
                 if self.live
                     && page == Page::Connect
                     && (self.existing_identity.selected()
@@ -2568,10 +2386,8 @@ impl InstallerPreview {
                         self.pending_slide = Some(-1.0);
                     }
                 } else {
-                    #[cfg(unix)]
                     let restore_browser = choices_edit && self.journey.cancels_edit();
                     let cancel_profile = profile_edit && self.journey.cancels_edit();
-                    #[cfg(unix)]
                     if cancel_profile {
                         self.personal.cancel_photo_edit()?;
                     }
@@ -2583,12 +2399,9 @@ impl InstallerPreview {
                             .take()
                             .and_then(|original| original.0);
                     }
-                    #[cfg(unix)]
-                    #[cfg(target_os = "linux")]
                     if restore_browser {
                         self.belongings.sessions.cancel_edit();
                     }
-                    #[cfg(unix)]
                     if restore_browser {
                         self.belongings
                             .browser
@@ -2606,18 +2419,14 @@ impl InstallerPreview {
                 let linux = self.linux;
                 let live = self.live;
                 let media = self.media.clone();
-                #[cfg(target_os = "linux")]
                 let media_bundle = self.media_bundle.clone();
-                #[cfg(target_os = "linux")]
                 if let Some(bundle) = &media_bundle {
                     bundle.set(None);
                 }
                 let dispatcher = self.dispatcher.clone();
                 let last_frame = self.last_frame.take();
-                #[cfg(unix)]
                 let personal = std::mem::take(&mut self.personal);
                 *self = Self::default();
-                #[cfg(unix)]
                 {
                     self.personal = personal;
                 }
@@ -2629,10 +2438,7 @@ impl InstallerPreview {
                 self.linux = linux;
                 self.live = live;
                 self.media = media;
-                #[cfg(target_os = "linux")]
-                {
-                    self.media_bundle = media_bundle;
-                }
+                self.media_bundle = media_bundle;
                 self.dispatcher = dispatcher;
                 return Ok(());
             }
@@ -2654,7 +2460,6 @@ impl InstallerPreview {
                 }
                 self.field_values[1].set(value.clone());
                 self.journey.device_name = value;
-                #[cfg(unix)]
                 if self.live
                     && !choices_edit
                     && let Some(prepared) = self.personal.prepared_handle()
@@ -2666,7 +2471,6 @@ impl InstallerPreview {
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewPassword { value } if page == Page::Password => {
-                #[cfg(target_os = "linux")]
                 if self.journey.password != value {
                     self.checkpoint_signature = None;
                 }
@@ -2686,7 +2490,6 @@ impl InstallerPreview {
             InstallerPreviewEffect::SetPreviewCategory { category, included }
                 if page == Page::Belongings && self.journey.details =>
             {
-                #[cfg(unix)]
                 if matches!(category.as_str(), "bookmarks" | "history") {
                     let (domain, index) = if category == "bookmarks" {
                         (browser::Domain::Bookmarks, 0)
@@ -2704,8 +2507,6 @@ impl InstallerPreview {
                 } else {
                     self.set_category(&category, included)?;
                 }
-                #[cfg(not(unix))]
-                self.set_category(&category, included)?;
                 if category == "files" && !included {
                     self.migration_source_location = false;
                 }
@@ -2743,25 +2544,20 @@ impl InstallerPreview {
                 && self.journey.migrate == Some(true)
                 && self.journey.categories[2] =>
             {
-                #[cfg(target_os = "linux")]
-                {
-                    let service = match service.as_str() {
-                        "slack" => browser_continuity::sessions::Service::Slack,
-                        "discord" => browser_continuity::sessions::Service::Discord,
-                        _ => return Err("installer-preview-invalid-choice"),
-                    };
-                    let changed = self
-                        .belongings
-                        .sessions
-                        .set(&source_id, service, included)?;
-                    if changed && !choices_edit {
-                        self.invalidate_migration_preparation();
-                    }
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    let _ = (source_id, service, included);
+                if !imager_backend::service_selection::supported() {
                     return Err("installer-preview-import-unavailable");
+                }
+                let service = match service.as_str() {
+                    "slack" => imager_backend::browser_selection::Service::Slack,
+                    "discord" => imager_backend::browser_selection::Service::Discord,
+                    _ => return Err("installer-preview-invalid-choice"),
+                };
+                let changed = self
+                    .belongings
+                    .sessions
+                    .set(&source_id, service, included)?;
+                if changed && !choices_edit {
+                    self.invalidate_migration_preparation();
                 }
             }
             InstallerPreviewEffect::ToggleFlatpakAccessDetails
@@ -2801,7 +2597,6 @@ impl InstallerPreview {
                 self.storage.check();
             }
         }
-        #[cfg(unix)]
         if self.live
             && save_choices
             && let Some(prepared) = self.personal.prepared_handle()
@@ -2811,7 +2606,6 @@ impl InstallerPreview {
         }
         if profile_edit && self.journey.page == Page::Review {
             self.profile_avatar_original = None;
-            #[cfg(unix)]
             self.personal.commit_photo_edit();
         }
         self.error = None;
@@ -2837,8 +2631,9 @@ impl InstallerPreview {
         match result {
             ui::PortalOutcome::Opened(path) => {
                 let path = path.to_string_lossy().into_owned();
-                #[cfg(unix)]
-                if self.personal.select_photo(path.clone()).is_err() {
+                if imager_backend::prepared_identity::require_supported().is_ok()
+                    && self.personal.select_photo(path.clone()).is_err()
+                {
                     self.error = Some("installer-preview-avatar-failed");
                     return true;
                 }
@@ -2853,17 +2648,13 @@ impl InstallerPreview {
 
     fn avatar(&self, name: &str) -> Avatar {
         let avatar = Avatar::person(name, "installer-person").size(AvatarSize::Hero);
-        #[cfg(unix)]
         if let Some(photo) = self.personal.photo() {
             return avatar.with_profile_photo(photo);
         }
         #[cfg(not(unix))]
         if let Some(path) = &self.avatar {
-            avatar.with_image_url(self.images.clone(), path)
-        } else {
-            avatar
+            return avatar.with_image_url(self.images.clone(), path);
         }
-        #[cfg(unix)]
         avatar
     }
 
@@ -3019,7 +2810,6 @@ impl InstallerPreview {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn migration_sources(
         &self,
     ) -> Result<
@@ -3049,7 +2839,6 @@ impl InstallerPreview {
         Ok((home, refs))
     }
 
-    #[cfg(target_os = "linux")]
     fn save_account_checkpoint(&mut self) -> Result<bool, &'static str> {
         let Some(signature) = self.accounts.checkpoint_selection() else {
             return Ok(false);
@@ -3082,7 +2871,6 @@ impl InstallerPreview {
         Ok(true)
     }
 
-    #[cfg(target_os = "linux")]
     fn poll_account_checkpoint(&mut self) -> bool {
         if let Some(ready) = self.restart.take_checkpoint() {
             self.resume_draft = Some(ready);
@@ -3139,13 +2927,11 @@ impl InstallerPreview {
         true
     }
 
-    #[cfg(unix)]
     fn resume_preparation(
         &mut self,
         resumed: restart_controller::Resumed,
     ) -> Result<(), &'static str> {
         let metadata = resumed.metadata;
-        #[cfg(target_os = "linux")]
         if resumed.kind == draft::IdentityKind::Enrolled {
             self.pairing = pairing::Pairing::resume(resumed.prepared.clone())
                 .map_err(|_| "installer-restart-unavailable")?;
@@ -3172,7 +2958,6 @@ impl InstallerPreview {
         self.accounts.require_saved_review();
         self.storage = storage::Storage::default();
         self.resume_draft = Some(resumed.draft);
-        #[cfg(target_os = "linux")]
         {
             self.checkpoint_restored = false;
             self.checkpoint_signature = None;
@@ -3183,14 +2968,10 @@ impl InstallerPreview {
         Ok(())
     }
 
-    #[cfg(unix)]
     fn retire_preparation(&mut self) {
         self.personal = personal::Personal::default();
         self.existing_identity = existing_identity::ExistingIdentity::default();
-        #[cfg(target_os = "linux")]
-        {
-            self.pairing = pairing::Pairing::default();
-        }
+        self.pairing = pairing::Pairing::default();
         self.journey = Journey::new(String::new());
         self.journey.device_name = t("installer-preview-device-default");
         self.avatar = None;
@@ -3202,7 +2983,6 @@ impl InstallerPreview {
         self.belongings_worker = None;
         self.storage = storage::Storage::default();
         self.invalidate_migration_preparation();
-        #[cfg(target_os = "linux")]
         {
             self.checkpoint_restoring = false;
             self.checkpoint_restored = false;
@@ -3222,7 +3002,6 @@ impl InstallerPreview {
             let changed = self.poll_windows();
             self.dirty |= changed;
         }
-        #[cfg(target_os = "linux")]
         let navigation_changed = if let Some(returning) = &self.media_return
             && let Some(reason) = returning.get()
         {
@@ -3236,9 +3015,6 @@ impl InstallerPreview {
         } else {
             false
         };
-        #[cfg(not(target_os = "linux"))]
-        let navigation_changed = false;
-        #[cfg(unix)]
         let restart_changed = if self.live {
             if let Some(result) = self.restart.poll() {
                 match result {
@@ -3251,7 +3027,6 @@ impl InstallerPreview {
                     Ok(None) => {}
                     Err(()) => {
                         self.error = Some("installer-restart-unavailable");
-                        #[cfg(target_os = "linux")]
                         if self.checkpoint_pending.take().is_some() {
                             self.checkpoint_failed = true;
                             self.account_continue = false;
@@ -3266,11 +3041,8 @@ impl InstallerPreview {
         } else {
             false
         };
-        #[cfg(not(unix))]
-        let restart_changed = false;
-        #[cfg(target_os = "linux")]
+
         let media_progress_changed = self.media_preparation.take_progress_changed();
-        #[cfg(target_os = "linux")]
         let media_changed = if let Some(result) = self.media_preparation.poll() {
             match result {
                 Ok(prepared) if self.direct.belongings_pending => {
@@ -3325,27 +3097,26 @@ impl InstallerPreview {
                     }
                 }
                 Err(error) => {
-                    self.direct.pending = None;
-                    let belongings = self.direct.belongings_pending;
-                    self.direct.belongings_pending = false;
-                    self.direct.belongings_continue = false;
-                    self.desktop_pending = false;
-                    self.error = Some(if belongings && error == "installer-media-prepare-failed" {
-                        "installer-migration-prepare-failed"
-                    } else {
-                        error
-                    });
+                    let error = {
+                        self.direct.pending = None;
+                        let belongings = self.direct.belongings_pending;
+                        self.direct.belongings_pending = false;
+                        self.direct.belongings_continue = false;
+                        self.desktop_pending = false;
+                        if belongings && error == "installer-media-prepare-failed" {
+                            "installer-migration-prepare-failed"
+                        } else {
+                            error
+                        }
+                    };
+                    self.error = Some(error);
                 }
             }
             true
         } else {
             false
         };
-        #[cfg(not(target_os = "linux"))]
-        let media_changed = false;
-        #[cfg(target_os = "linux")]
         let media_changed = media_changed || media_progress_changed;
-        #[cfg(target_os = "linux")]
         let migration_changed = if let Some(result) = self.migration_selection.poll() {
             match result {
                 Ok(true) if self.journey.page == Page::Belongings => match self.advance_journey() {
@@ -3368,9 +3139,6 @@ impl InstallerPreview {
         } else {
             false
         };
-        #[cfg(not(target_os = "linux"))]
-        let migration_changed = false;
-        #[cfg(target_os = "linux")]
         let portable_changed = if let Some(result) = self.portable_source.poll() {
             match result {
                 Ok(true) if self.journey.page == Page::Belongings => match self.advance_journey() {
@@ -3385,8 +3153,6 @@ impl InstallerPreview {
         } else {
             false
         };
-        #[cfg(not(target_os = "linux"))]
-        let portable_changed = false;
         let avatar_changed = self.poll_avatar();
         let storage_changed = self.storage.poll()
             | self.recovery.poll()
@@ -3395,10 +3161,7 @@ impl InstallerPreview {
                 .poll_selection(self.belongings.windows.as_ref());
         let transfer_changed = self.user_transfer.poll();
         let promotion_changed = self.home_promotion.poll();
-        #[cfg(target_os = "linux")]
         let checkpoint_changed = self.poll_account_checkpoint();
-        #[cfg(not(target_os = "linux"))]
-        let checkpoint_changed = false;
         let account_page = self.accounts.navigation_step();
         let accounts_changed = self.accounts.poll();
         if self.journey.page == Page::Accounts && self.accounts.navigation_step() != account_page {
@@ -3408,7 +3171,6 @@ impl InstallerPreview {
                 1.0
             });
         }
-        #[cfg(target_os = "linux")]
         if self.live
             && self.journey.page == Page::Accounts
             && !self.checkpoint_failed
@@ -3420,15 +3182,9 @@ impl InstallerPreview {
                 self.error = Some(error);
             }
         }
-        #[cfg(unix)]
         let personal_changed = self.personal.poll();
-        #[cfg(unix)]
         let existing_changed = self.existing_identity.poll();
-        #[cfg(target_os = "linux")]
         let pairing_changed = self.pairing.poll();
-        #[cfg(not(target_os = "linux"))]
-        let pairing_changed = false;
-        #[cfg(target_os = "linux")]
         if pairing_changed
             && self.journey.identity == Some(Identity::Existing)
             && self.journey.transfer.as_deref() == Some("device")
@@ -3447,7 +3203,6 @@ impl InstallerPreview {
             }
         }
 
-        #[cfg(unix)]
         if existing_changed && self.existing_identity.ready() {
             if let Some(prepared) = self.existing_identity.prepared() {
                 if let Ok(metadata) = prepared.metadata() {
@@ -3469,9 +3224,7 @@ impl InstallerPreview {
                 }
             }
         }
-        #[cfg(not(unix))]
-        let existing_changed = false;
-        #[cfg(unix)]
+
         if personal_changed {
             if let Some(page) = self.personal_continue.take() {
                 if self.personal.ready() && self.journey.page == page {
@@ -3490,8 +3243,7 @@ impl InstallerPreview {
                 }
             }
         }
-        #[cfg(not(unix))]
-        let personal_changed = false;
+
         let folder_changed = if let Some(worker) = &self.belongings_worker {
             match worker.try_recv() {
                 Ok(belongings) => {
@@ -3504,7 +3256,6 @@ impl InstallerPreview {
                             .update_sources(roots, belongings.accounts.clone());
                     }
                     self.belongings = belongings;
-                    #[cfg(unix)]
                     {
                         self.belongings
                             .browser
@@ -3587,7 +3338,6 @@ impl InstallerPreview {
         {
             enabled = false;
         }
-        #[cfg(unix)]
         if self.journey.editing_profile()
             && matches!(effect, InstallerPreviewEffect::BackInPreview)
             && self.personal.cancellable_photo_read()
@@ -3597,7 +3347,6 @@ impl InstallerPreview {
             enabled = true;
         }
 
-        #[cfg(target_os = "linux")]
         if matches!(effect, InstallerPreviewEffect::CancelMountedHomePermission)
             && self.live
             && self.journey.page == Page::Belongings
@@ -3608,13 +3357,11 @@ impl InstallerPreview {
         {
             enabled = true;
         }
-        #[cfg(target_os = "linux")]
         if matches!(effect, InstallerPreviewEffect::CancelMediaPreparation)
             && self.media_preparation.busy()
         {
             enabled = true;
         }
-        #[cfg(target_os = "linux")]
         if matches!(effect, InstallerPreviewEffect::BackInPreview)
             && self.migration_selection.choosing()
             && !self.media_preparation.busy()
@@ -3622,7 +3369,6 @@ impl InstallerPreview {
         {
             enabled = true;
         }
-        #[cfg(target_os = "linux")]
         if matches!(effect, InstallerPreviewEffect::BackInPreview)
             && self.portable_source.busy()
             && !self.migration_selection.busy()
@@ -3663,7 +3409,6 @@ impl InstallerPreview {
                 t("installer-review-person-body"),
             )
             .avatar(name, "installer-person");
-        #[cfg(unix)]
         if let Some(photo) = self.personal.photo() {
             return row.with_profile_photo(photo);
         }
@@ -3671,14 +3416,12 @@ impl InstallerPreview {
     }
 
     fn device_label_locked(&self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.journey.identity == Some(Identity::Existing)
             && self.journey.transfer.as_deref() == Some("device")
             && self.pairing.locked_label()
         {
             return true;
         }
-        #[cfg(unix)]
         if self
             .personal
             .prepared_handle()
@@ -3690,7 +3433,6 @@ impl InstallerPreview {
     }
 
     fn device_label_locked_message(&self) -> &'static str {
-        #[cfg(unix)]
         if self
             .personal
             .prepared_handle()
@@ -3763,7 +3505,6 @@ impl InstallerPreview {
     }
 
     fn advance_journey(&mut self) -> Result<(), &'static str> {
-        #[cfg(target_os = "linux")]
         if self.live
             && self.journey.destination == Some(Destination::Computer)
             && (matches!(self.journey.page, Page::Belongings | Page::Accounts)
@@ -3978,21 +3719,16 @@ impl InstallerPreview {
         } else {
             TextRole::LargeTitle
         };
-        #[cfg(target_os = "linux")]
-        let choosing_pair_name = self.live
+        let choosing_pair_name = imager_backend::pairing::Pairing::supported()
+            && self.live
             && j.page == Page::Connect
             && j.transfer.as_deref() == Some("device")
             && !self.pairing.started();
-        #[cfg(not(target_os = "linux"))]
-        let choosing_pair_name = false;
-        #[cfg(target_os = "linux")]
         let mounted_step = self.live
             && j.page == Page::Belongings
             && j.destination == Some(Destination::Another)
             && j.categories[0]
             && self.portable_source.mounted_permission_active();
-        #[cfg(not(target_os = "linux"))]
-        let mounted_step = false;
         let heading = if mounted_step {
             t("installer-mounted-home-permission-heading")
         } else if self.unlocking_preparation() {
@@ -4030,7 +3766,6 @@ impl InstallerPreview {
         } else {
             t(&format!("installer-preview-{key}-intro"))
         };
-        #[cfg(target_os = "linux")]
         let intro =
             if self.live && j.page == Page::Connect && j.transfer.as_deref() == Some("device") {
                 self.pairing.intro()
@@ -4069,7 +3804,6 @@ impl InstallerPreview {
         let mut body = page::stack()
             .with_rhythm(Rhythm::Sibling)
             .push(Box::new(header));
-        #[cfg(target_os = "linux")]
         if self.live && self.direct.belongings_pending && j.page != Page::Review {
             body = body.push(Box::new(
                 Text::new(&t(self
@@ -4167,7 +3901,6 @@ impl InstallerPreview {
                 }
             }
             Page::Connect => {
-                #[cfg(target_os = "linux")]
                 if self.live
                     && self.journey.transfer.as_deref() == Some("device")
                     && self.identity_route_available("device")
@@ -4196,7 +3929,6 @@ impl InstallerPreview {
                     return body;
                 }
 
-                #[cfg(unix)]
                 if self.live && self.journey.transfer.as_deref() == Some("backup") {
                     let commands = self.commands.clone();
                     let edit_commands = self.commands.clone();
@@ -4216,7 +3948,6 @@ impl InstallerPreview {
                     ));
                     return body;
                 }
-                #[cfg(unix)]
                 if self.live && self.journey.transfer.as_deref() == Some("current") {
                     body = body.push(self.existing_identity.current_view());
                     return body;
@@ -4324,15 +4055,11 @@ impl InstallerPreview {
                 }
             }
             Page::Belongings => {
-                #[cfg(target_os = "linux")]
                 let mounted_step = self.live
                     && j.destination == Some(Destination::Another)
                     && j.categories[0]
                     && self.portable_source.mounted_permission_active();
-                #[cfg(not(target_os = "linux"))]
-                let mounted_step = false;
                 if mounted_step {
-                    #[cfg(target_os = "linux")]
                     {
                         let choices = self.portable_source.mounted_choices();
                         if self.portable_source.mounted_needs_restart() {
@@ -4661,7 +4388,6 @@ impl InstallerPreview {
                             ))));
                         }
                     }
-                    #[cfg(unix)]
                     if self.live
                         && self.belongings.browser.available()
                         && (j.details || j.browser_domains.iter().any(|included| *included))
@@ -4702,7 +4428,6 @@ impl InstallerPreview {
                             ));
                         }
                     }
-                    #[cfg(target_os = "linux")]
                     if self.live && self.belongings.sessions.available() {
                         let commands = self.commands.clone();
                         if j.details {
@@ -4824,7 +4549,6 @@ impl InstallerPreview {
                         })
                         .role(ButtonRole::Plain),
                     ));
-                    #[cfg(target_os = "linux")]
                     if self.live {
                         let locations = self.portable_source.mounted_locations();
                         if !locations.is_empty() {
@@ -4911,7 +4635,6 @@ impl InstallerPreview {
                         .with_id("installer.review.usb-fallback"),
                     ));
                 }
-                #[cfg(target_os = "linux")]
                 if self.live && self.media_preparation.busy() {
                     body = body.push(Box::new(Text::new(&t(self
                         .media_preparation
@@ -5016,7 +4739,6 @@ impl InstallerPreview {
                             )));
                         }
                     }
-                    #[cfg(unix)]
                     if self.live {
                         let selected = self.belongings.browser.selected();
                         for (id, key, bookmarks) in [
@@ -5075,7 +4797,6 @@ impl InstallerPreview {
         body
     }
 
-    #[cfg(unix)]
     fn restart_view(&self) -> Box<dyn Widget> {
         let mut body = page::stack()
             .push(Box::new(
@@ -5144,7 +4865,6 @@ impl InstallerPreview {
         if self.windows.enabled && self.live {
             return self.windows_view();
         }
-        #[cfg(unix)]
         if self.live && self.restart.blocks() {
             return self.restart_view();
         }
@@ -5183,7 +4903,6 @@ impl InstallerPreview {
                 .role(ButtonRole::Primary),
             ));
         }
-        #[cfg(target_os = "linux")]
         if self.live && self.journey.page == Page::Review && self.media_preparation.busy() {
             actions = actions.push(Box::new(self.button(
                 "installer.cancel-preparation",
@@ -5191,14 +4910,10 @@ impl InstallerPreview {
                 InstallerPreviewEffect::CancelMediaPreparation,
             )));
         }
-        #[cfg(target_os = "linux")]
         let changed_source = self.live
             && self.journey.page == Page::Review
             && !self.journey.editing_destination()
             && self.media_preparation.needs_source_review();
-        #[cfg(not(target_os = "linux"))]
-        let changed_source = false;
-        #[cfg(target_os = "linux")]
         if changed_source {
             actions = actions.push(Box::new(
                 self.button(
@@ -5239,7 +4954,6 @@ impl InstallerPreview {
                 ),
             ));
         }
-        #[cfg(target_os = "linux")]
         if self.live
             && self.journey.page == Page::Review
             && !self.journey.editing_destination()
@@ -5256,7 +4970,6 @@ impl InstallerPreview {
                 .with_enabled(self.direct_available()),
             ));
         }
-        #[cfg(target_os = "linux")]
         if self.live
             && self.journey.page == Page::Review
             && !self.journey.editing_destination()
@@ -5322,21 +5035,17 @@ impl InstallerPreview {
             && !(self.live
                 && self.journey.page == Page::Connect
                 && matches!(self.journey.transfer.as_deref(), Some("backup" | "current")));
-        #[cfg(target_os = "linux")]
         let chooses_path = chooses_path
             && !(self.live
                 && self.journey.page == Page::Connect
                 && self.journey.transfer.as_deref() == Some("device")
                 && self.pairing.ready());
         let accounts_waiting = self.journey.page == Page::Accounts && !self.accounts.can_continue();
-        #[cfg(target_os = "linux")]
         let mounted_step = self.live
             && self.journey.page == Page::Belongings
             && self.journey.destination == Some(Destination::Another)
             && self.journey.categories[0]
             && self.portable_source.mounted_permission_active();
-        #[cfg(not(target_os = "linux"))]
-        let mounted_step = false;
         if !chooses_path
             && !mounted_step
             && !accounts_waiting
@@ -5379,7 +5088,6 @@ impl InstallerPreview {
 
 impl InstallerPreview {
     fn reattach_after_media(&mut self, cx: SurfaceCx<Imager>) {
-        #[cfg(target_os = "linux")]
         {
             self.direct.context = Some(cx.clone());
         }
@@ -5418,30 +5126,20 @@ impl InstallerPreview {
         status["account_answer"] = self.account_answer.clone();
         status["user_transfer"] = self.user_transfer.status();
         status["home_promotion"] = self.home_promotion.status();
-        #[cfg(unix)]
         {
             status["restart"] = self.restart.projection();
             status["prepared_identity"] = self.personal.projection();
             status["existing_identity"] = self.existing_identity.projection();
         }
-        #[cfg(target_os = "linux")]
+        status["pairing"] = self.pairing.projection();
         {
-            status["pairing"] = self.pairing.projection();
             status["account_checkpoint"] = serde_json::json!({
                 "saving": self.checkpoint_pending.is_some(),
                 "restoring": self.checkpoint_restoring,
                 "failed": self.checkpoint_failed,
-                "accounts": self.resume_draft.as_ref().and_then(|ready| ready.account_checkpoint().map(|receipt| receipt.accounts)),
+                "accounts": self.resume_draft.as_ref().and_then(|ready| ready.account_checkpoint().map(|receipt| receipt.accounts())),
             });
             status["migration_preparation"] = self.migration_selection.projection();
-            let mut portable = self.portable_source.projection();
-            if let Some(active) = self.media_preparation.active_home_projection() {
-                for field in ["capture", "files", "bytes"] {
-                    portable[field] = active[field].clone();
-                }
-            }
-            status["portable_preparation"] = portable;
-            status["media_preparation"] = self.media_preparation.projection();
             status["belongings_preparation"] = serde_json::json!({
                 "pending": self.direct.belongings_pending,
                 "prepared": self.direct.prepared_belongings.is_some()
@@ -5453,6 +5151,14 @@ impl InstallerPreview {
                 "can_return": self.direct.active && self.direct.navigation.get(),
             });
         }
+        let mut portable = self.portable_source.projection();
+        if let Some(active) = self.media_preparation.active_home_projection() {
+            for field in ["capture", "files", "bytes"] {
+                portable[field] = active[field].clone();
+            }
+        }
+        status["portable_preparation"] = portable;
+        status["media_preparation"] = self.media_preparation.projection();
         status["recovery"] = self.recovery.report();
         status["belongings"] = self.belongings.report();
         status["belongings"]["apps"] = serde_json::json!(self.flatpak_apps());
@@ -5462,20 +5168,24 @@ impl InstallerPreview {
                 && self.journey.categories[1]
                 && self.flatpak_access_details
         );
-        #[cfg(target_os = "linux")]
         if self.journey.migrate != Some(true) || !self.journey.categories[2] {
             status["belongings"]["website_sessions"]["selected"] = serde_json::json!([]);
         }
         status["belongings_checking"] = self.belongings_worker.is_some().into();
-        #[cfg(target_os = "linux")]
         let direct_available = self.direct_available();
-        #[cfg(not(target_os = "linux"))]
-        let direct_available = false;
+        let plan_digest = self
+            .storage
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.as_ref().ok())
+            .map(|plan| plan.digest())
+            .transpose()
+            .map_err(|error| error.to_string())?;
         status["storage"] = serde_json::json!({
             "checking": self.storage.checking(),
             "size_gib": self.storage.selected(),
             "bounds_gib": self.storage.bounds,
-            "plan_digest": self.storage.plan.as_ref().and_then(|plan| plan.as_ref().ok()).map(|plan| plan.digest()),
+            "plan_digest": plan_digest,
             "direct_install_available": direct_available,
         });
         Ok(Effected::value(status))
@@ -5487,7 +5197,9 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         self.install_preferences = state.profile.clone();
         self.install_preferences.user.password.clear();
         self.install_preferences.encryption_passphrase.clear();
-        if self.install_preferences.user.username == crate::model::UserAccount::default().username {
+        if self.install_preferences.user.username
+            == imager_backend::imager_model::UserAccount::default().username
+        {
             if let Ok(login) = std::env::var("USER") {
                 let mut candidate = self.install_preferences.clone();
                 candidate.user.username = login;
@@ -5502,9 +5214,9 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             return;
         }
         self.live = true;
-        #[cfg(unix)]
-        let _ = self.restart.inspect();
-        #[cfg(target_os = "linux")]
+        if imager_backend::prepared_identity::require_supported().is_ok() {
+            let _ = self.restart.inspect();
+        }
         {
             self.direct.context = Some(cx.clone());
         }
@@ -5635,7 +5347,6 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                 ));
             }
         }
-        #[cfg(unix)]
         if self.live && self.restart.blocks() {
             statuses.push(EffectStatus::unavailable(
                 InstallerPreviewEffect::CONTINUE_PREVIEW,
@@ -5643,7 +5354,6 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                 t("installer-restart-intro"),
             ));
         }
-        #[cfg(target_os = "linux")]
         {
             if !self.direct_available() {
                 statuses.push(EffectStatus::unavailable(
@@ -5721,10 +5431,7 @@ impl Widget for InstallerPreview {
         let presentation = self.presentation_theme(theme);
         let theme = &presentation;
         self.profile_breakpoint = f64::from(theme.tokens.metrics.content_min_width);
-        #[cfg(target_os = "linux")]
         let showing_direct = self.direct.active;
-        #[cfg(not(target_os = "linux"))]
-        let showing_direct = false;
         if !showing_direct && (self.dirty || self.composed.is_none()) {
             let focus = self.validation_focus.take().or_else(|| {
                 self.composed
@@ -5914,16 +5621,7 @@ impl Widget for InstallerPreview {
             || self.existing_identity_active()
             || self.personal_busy()
             || self.migration_busy()
-            || {
-                #[cfg(unix)]
-                {
-                    self.restart.busy()
-                }
-                #[cfg(not(unix))]
-                {
-                    false
-                }
-            }
+            || self.restart.busy()
     }
     fn needs_idle_sync(&self) -> bool {
         self.windows.choosing() || self.avatar_picker.is_some() || self.migration_choosing()
@@ -5935,7 +5633,6 @@ impl Widget for InstallerPreview {
 
 /// Discovery labels are public product/profile metadata, never source paths or credentials.
 /// Keep review copy bounded even when upstream profile metadata is unusual.
-#[cfg(unix)]
 fn review_source_label(label: &str) -> String {
     label
         .chars()

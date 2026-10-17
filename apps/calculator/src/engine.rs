@@ -660,10 +660,6 @@ mod tests {
         Near(f64),
     }
 
-    #[allow(
-        clippy::float_cmp,
-        reason = "Exact cases are small integers, exact in f64 — an approximate\n                  compare would stop proving what they prove"
-    )]
     fn check(case: &str, got: f64, want: f64, cmp: Cmp) {
         match cmp {
             Cmp::Exact => assert_eq!(got, want, "case {case}"),

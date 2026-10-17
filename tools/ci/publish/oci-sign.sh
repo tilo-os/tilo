@@ -4,6 +4,11 @@
 # OUT/signature). It holds signing credentials and nothing else: no registry token, so it
 # publishes nothing itself. It refuses to sign anything but the digest the build produced.
 #
+# With TILO_SIGN_TLOG=1 the signature is also entered in the public transparency log (Rekor) and
+# its entry kept as OUT/bundle.json, which oci-publish.sh attaches: images that release builds
+# verify with a plain `cosign verify --key keys/cosign.pub` (the kernel buildroot, the
+# env-runtime) need that log entry, since such a verification requires one.
+#
 # usage: oci-sign.sh REPOSITORY OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -16,8 +21,14 @@ actual=$(archive_digest "$out/image.oci.tar")
 use_cosign
 . "$repo_root/os/dev/configure-cosign-kms.sh"
 signing_payload "$repository" "$expected" > "$out/payload.json"
-cosign sign-blob --yes --tlog-upload=false --key "$COSIGN_KEY_REF" \
-  --output-signature "$out/signature" "$out/payload.json"
-cosign verify-blob --insecure-ignore-tlog=true --key "$repo_root/keys/cosign.pub" \
-  --signature "$out/signature" "$out/payload.json"
+if [[ ${TILO_SIGN_TLOG:-} == 1 ]]; then
+  cosign sign-blob --yes --key "$COSIGN_KEY_REF" --bundle "$out/bundle.json" \
+    --output-signature "$out/signature" "$out/payload.json"
+  cosign verify-blob --key "$repo_root/keys/cosign.pub" --bundle "$out/bundle.json" "$out/payload.json"
+else
+  cosign sign-blob --yes --tlog-upload=false --key "$COSIGN_KEY_REF" \
+    --output-signature "$out/signature" "$out/payload.json"
+  cosign verify-blob --insecure-ignore-tlog=true --key "$repo_root/keys/cosign.pub" \
+    --signature "$out/signature" "$out/payload.json"
+fi
 printf 'signed %s@%s\n' "$repository" "$expected"

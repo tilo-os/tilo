@@ -55,10 +55,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
-# Public identity summaries + active selector. The secret share never enters
-# Settings state; switching writes only the non-secret active id.
+# Public identity summaries, as the host's identity actions answer them. The
+# identity store itself is the host's: no record or secret enters Settings.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Device role, workspace residency and server relay policy use the same types
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.

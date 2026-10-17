@@ -1,14 +1,5 @@
 //! tilo-launcher binary entry.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::ExitCode;

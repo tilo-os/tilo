@@ -479,8 +479,8 @@ files = [
 name = "user-identity"
 kind = "userspace"
 scope = "vm"
-packages = ["tilo-user-identity"]
-bins = ["tilo-image-trust", "tilo-device-key-init"]
+packages = ["tilo-user-identity", "tilo-board-successor"]
+bins = ["tilo-image-trust", "tilo-device-key-init", "tilo-board-successor"]
 units = ["tilo-device-key-init.service"]
 layer = "desktop-binaries"
 files = [
@@ -488,7 +488,7 @@ files = [
   { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
   { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
   { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
-  { from = "@manifest/usr/libexec/tilo-board-successor.py", to = "/usr/libexec/tilo-board-successor.py", mode = "0755" },
+  { from = "tilo-board-successor", to = "/usr/libexec/tilo-board-successor", mode = "0755" },
   { from = "@manifest/dev/hardware_profile.py", to = "/usr/lib/tilo/hardware_profile.py", mode = "0644" },
   { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
@@ -524,6 +524,92 @@ bins = ["tilo-esp-write"]
 layer = "recovery-files"
 files = [
   { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
+]
+
+# First-boot account files: tilo-firstboot-user runs the copy beside it, this
+# one or the one a custom installer stages in the target's /etc/tilo, so a swap
+# takes effect at the next account handoff (or install).
+[[component]]
+name = "firstboot-files"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-firstboot-files"]
+bins = ["tilo-firstboot-files"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-firstboot-files", to = "/usr/libexec/tilo-firstboot-files", mode = "0755" },
+]
+
+# The boot security audit's proof that containers-policy.json requires the
+# pinned Cosign signature; tilo-security-audit runs it, so a swap takes effect
+# at the next audit.
+[[component]]
+name = "image-policy-check"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-image-policy-check"]
+bins = ["tilo-image-policy-check"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-image-policy-check", to = "/usr/libexec/tilo-image-policy-check", mode = "0755" },
+]
+
+# Dual boot: run by hand after the first Tilo boot to enlist it after Windows
+# in the firmware boot order (docs/windows-first-tilo-boot-order.md). The
+# installer image, and so every target it installs, inherits it from here.
+[[component]]
+name = "boot-order"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-boot-order"]
+bins = ["tilo-boot-order"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-boot-order", to = "/usr/libexec/tilo-boot-order", mode = "0755" },
+]
+
+# USB-free install: tilo-staging-reclaim.service (enabled by the installer
+# image, which inherits the helper from here) returns the staging partitions to
+# the Tilo root after the first real session; a swap takes effect at its next
+# start.
+[[component]]
+name = "staging-reclaim"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-staging-reclaim"]
+bins = ["tilo-staging-reclaim"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-staging-reclaim", to = "/usr/libexec/tilo-staging-reclaim", mode = "0755" },
+]
+
+# The live installer's privileged helpers. tilo-staging-handoff.service runs
+# the USB-free installation guard before greetd; the installer backend
+# (tilo-install) runs the rest: the signed offline target's verification and
+# import, the setup handoff copy, a dev self-install's owner SSH keys and, in
+# a VM, the bootc export cache and the install proof. The installer image
+# inherits them from here; a swap takes effect at the next install.
+[[component]]
+name = "install-helpers"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-install-helpers"]
+bins = [
+  "tilo-install-handoff-copy",
+  "tilo-install-dev-ssh",
+  "tilo-vm-bootc-copy-cache",
+  "tilo-installer-offline-target",
+  "tilo-staging-handoff",
+  "tilo-vm-install-proof",
+]
+layer = "recovery-files"
+files = [
+  { from = "tilo-install-handoff-copy", to = "/usr/libexec/tilo-install-handoff-copy", mode = "0755" },
+  { from = "tilo-install-dev-ssh", to = "/usr/libexec/tilo-install-dev-ssh", mode = "0755" },
+  { from = "tilo-vm-bootc-copy-cache", to = "/usr/libexec/tilo-vm-bootc-copy-cache", mode = "0755" },
+  { from = "tilo-installer-offline-target", to = "/usr/libexec/tilo-installer-offline-target", mode = "0755" },
+  { from = "tilo-staging-handoff", to = "/usr/libexec/tilo-staging-handoff", mode = "0755" },
+  { from = "tilo-vm-install-proof", to = "/usr/libexec/tilo-vm-install-proof", mode = "0755" },
 ]
 
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at

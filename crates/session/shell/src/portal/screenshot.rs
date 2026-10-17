@@ -4,7 +4,7 @@ use super::desktop_services::ScreenshotTarget;
 use super::desktop_services::{PortalResult, ScreenshotRequest};
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
-use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
+use super::reply::{Ended, OrFail, Reply, Results, answer};
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
 use std::collections::HashMap;
@@ -83,9 +83,9 @@ impl ScreenshotBackend {
             let request_path = handle.to_string();
             let service = self.ctx.desktop_services.screenshot.clone();
             let cleanup_path = request_path.clone();
-            let registered = self
-                .lifecycle
-                .register_request(
+            let cancel = move |_: &LifecycleEntry| service.cancel_color(&cleanup_path);
+            self.lifecycle
+                .with_request(
                     connection,
                     &request_path,
                     LifecycleEntry {
@@ -93,37 +93,33 @@ impl ScreenshotBackend {
                         app_id: auth.caller.app_id.clone(),
                         resource: LifecycleResource::Prompt,
                     },
-                    move |_| service.cancel_color(&cleanup_path),
+                    cancel,
+                    async {
+                        match self
+                            .ctx
+                            .desktop_services
+                            .screenshot
+                            .screenshot(&ScreenshotRequest {
+                                request_handle: request_path.clone(),
+                                caller: auth.caller.clone(),
+                                app_id: auth.caller.app_id,
+                                interactive: crate::portal::option(&options, "interactive")
+                                    .unwrap_or(false),
+                                target,
+                            }) {
+                            PortalResult::Success(uri) => {
+                                let mut values = Results::new();
+                                values.insert(
+                                    "uri".into(),
+                                    OwnedValue::from(zbus::zvariant::Str::from(uri)),
+                                );
+                                Ok(values)
+                            }
+                            other => other.into_result().map(|_| Results::new()),
+                        }
+                    },
                 )
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            let response =
-                match self
-                    .ctx
-                    .desktop_services
-                    .screenshot
-                    .screenshot(&ScreenshotRequest {
-                        request_handle: request_path.clone(),
-                        caller: auth.caller.clone(),
-                        app_id: auth.caller.app_id,
-                        interactive: crate::portal::option(&options, "interactive")
-                            .unwrap_or(false),
-                        target,
-                    }) {
-                    PortalResult::Success(uri) => {
-                        let mut values = Results::new();
-                        values.insert(
-                            "uri".into(),
-                            OwnedValue::from(zbus::zvariant::Str::from(uri)),
-                        );
-                        Ok(values)
-                    }
-                    other => other.into_result().map(|_| Results::new()),
-                };
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            response
+                .await
         })
         .await
     }
@@ -143,9 +139,9 @@ impl ScreenshotBackend {
             let request_path = handle.to_string();
             let service = self.ctx.desktop_services.screenshot.clone();
             let cleanup_path = request_path.clone();
-            let registered = self
-                .lifecycle
-                .register_request(
+            let cancel = move |_: &LifecycleEntry| service.cancel(&cleanup_path);
+            self.lifecycle
+                .with_request(
                     connection,
                     &request_path,
                     LifecycleEntry {
@@ -153,36 +149,33 @@ impl ScreenshotBackend {
                         app_id: auth.caller.app_id.clone(),
                         resource: LifecycleResource::Prompt,
                     },
-                    move |_| service.cancel(&cleanup_path),
+                    cancel,
+                    async {
+                        match self
+                            .ctx
+                            .desktop_services
+                            .screenshot
+                            .pick_color(&request_path, &auth.caller.app_id)
+                        {
+                            PortalResult::Success((r, g, b))
+                                if (r.is_finite()
+                                    && g.is_finite()
+                                    && b.is_finite()
+                                    && (0.0..=1.0).contains(&r)
+                                    && (0.0..=1.0).contains(&g)
+                                    && (0.0..=1.0).contains(&b)) =>
+                            {
+                                let mut values = Results::new();
+                                let color = color_value((r, g, b)).or_fail()?;
+                                values.insert("color".into(), color);
+                                Ok(values)
+                            }
+                            PortalResult::Success(_) => Err(Ended::Failed),
+                            other => other.into_result().map(|_| Results::new()),
+                        }
+                    },
                 )
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            let response = match self
-                .ctx
-                .desktop_services
-                .screenshot
-                .pick_color(&request_path, &auth.caller.app_id)
-            {
-                PortalResult::Success((r, g, b))
-                    if (r.is_finite()
-                        && g.is_finite()
-                        && b.is_finite()
-                        && (0.0..=1.0).contains(&r)
-                        && (0.0..=1.0).contains(&g)
-                        && (0.0..=1.0).contains(&b)) =>
-                {
-                    let mut values = Results::new();
-                    let color = color_value((r, g, b)).or_fail()?;
-                    values.insert("color".into(), color);
-                    Ok(values)
-                }
-                PortalResult::Success(_) => Err(Ended::Failed),
-                other => other.into_result().map(|_| Results::new()),
-            };
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            response
+                .await
         })
         .await
     }

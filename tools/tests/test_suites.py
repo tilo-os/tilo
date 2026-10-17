@@ -199,6 +199,29 @@ class AuditTests(unittest.TestCase):
             problems = self.audit({"os/tests/b.py": "import helper, unittest\nclass T(unittest.TestCase): pass\n"})
             self.assertTrue(any("unittest.main" in problem for problem in problems), problems)
 
+    def test_cargo_integration_driver_is_a_covering_gate(self):
+        manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "crates/native/tests/oracle.rs"')
+        manifest += '''
+[[cargo]]
+package = "native"
+inputs = ["os/tests/helper.py"]
+readers = ["crates/native/tests/oracle.rs"]
+'''
+        files = {
+            "crates/native/Cargo.toml": '[package]\nname = "native"\nversion = "0.1.0"\n',
+            "crates/native/tests/oracle.rs": (
+                '#[test] fn full_suite() { '
+                'include_str!("../../../os/tests/helper.py"); }'),
+        }
+        self.assertEqual(self.audit(files, manifest), [])
+        for source in ('fn main() { driver("helper.py"); }',
+                       '#[test] fn unrelated() {}'):
+            with self.subTest(source=source):
+                changed = dict(files, **{"crates/native/tests/oracle.rs": source})
+                self.assertTrue(self.audit(changed, manifest))
+        files["crates/native/Cargo.toml"] += 'autotests = false\n'
+        self.assertTrue(self.audit(files, manifest))
+
     def test_production_tree_is_fully_classified(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/suites.py"), "check"],
                                 cwd=ROOT, capture_output=True, text=True)

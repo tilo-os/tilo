@@ -11,8 +11,10 @@
 //! takes one at start ([`Relay::start`](crate::daemon::Relay::start) wires
 //! [`NeighbourPayloads`]) and hands it to the compactor and to every
 //! workspace store it opens, and the peer session asks the store of the
-//! workspace it serves. Native shell replay (`store::shell_selection`) and
-//! room governance still use the desktop's vocabulary directly.
+//! workspace it serves. The same adapter binds native shell replay
+//! ([`ShellPayloads::replay`]): the store steps the selection the bound
+//! authority hands it through the `store::shell_selection` seam. Room
+//! governance still uses the desktop's vocabulary directly.
 //! An adapter that classifies nothing makes the host keep every entry and
 //! fold none: unknown data never grants removal.
 

@@ -610,7 +610,7 @@ impl PrintBackend {
             }
 
             let available = self.ctx.print_spooler.destinations_blocking().await;
-            let requested = opt_string(&settings, "printer");
+            let requested = crate::portal::option::<String>(&settings, "printer");
             let Some(destination) = choose_destination(&available, requested.as_deref()) else {
                 // No printers, or the app named one this machine doesn't have — both "other error" rather than a silent substitution.
                 tracing::debug!(
@@ -673,7 +673,7 @@ impl PrintBackend {
 
             // A token, if present, must redeem — unknown/expired/replayed/foreign
             // is refused outright, not downgraded to "no token", since falling back to the default destination would let a replayed token still print.
-            let prepared = match opt_u32(&options, "token") {
+            let prepared = match crate::portal::option::<u32>(&options, "token") {
                 None | Some(0) => None,
                 Some(token) => {
                     if let Some(job) = self.jobs.redeem_token(token, &caller) {
@@ -891,25 +891,16 @@ fn prepare_results(
     results
 }
 
-#[cfg(any(test, target_os = "linux"))]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    let v = options.get(key)?.try_clone().ok()?;
-    String::try_from(v).ok()
-}
-
 /// Copy count out of a `GtkPrintSettings`-shaped dict; GTK stores every setting as a string (`n-copies` arrives as `"3"`), but a real `u` is accepted too.
 #[cfg(any(test, target_os = "linux"))]
 fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
-    if let Some(n) = opt_u32(settings, "n-copies") {
+    if let Some(n) = crate::portal::option::<u32>(settings, "n-copies") {
         return Some(n);
     }
-    opt_string(settings, "n-copies")?.trim().parse::<u32>().ok()
+    crate::portal::option::<String>(settings, "n-copies")?
+        .trim()
+        .parse::<u32>()
+        .ok()
 }
 
 #[cfg(test)]

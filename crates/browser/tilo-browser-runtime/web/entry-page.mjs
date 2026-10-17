@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -416,6 +416,13 @@ export async function startEntryPage({mode}) {
   const notes = {open: opening, draw: drawing};
   const arrive = step => {
     if (root.arrival === 'done' && step !== 'stopped') return;
+    // The GPU is set up once the host let the page in, while the page
+    // opens the workspace. A page that is refused (or left before it got
+    // in) compiles nothing: the browser does not cancel a torn-down page's
+    // pipeline compiles, and the next page's queue behind them on the same
+    // compile threads. Under a software rasteriser that is a minute of CPU
+    // and held the next page's first frame past 45 s.
+    if (step === 'open' && root.arrival !== 'open') prepareGpu();
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -470,6 +477,9 @@ export async function startEntryPage({mode}) {
       }
       if (!state.phase) return;
       root.phase = state.phase;
+      // What graphics start-up waits on while the first frame is late
+      // (device, pipelines, surface, first-frame), for tests and tools.
+      if (state.gpuStep) root.gpuStep = state.gpuStep;
       if (state.phase === 'presented') arrive('done');
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
@@ -604,8 +614,6 @@ export async function startEntryPage({mode}) {
     rendererCard(unavailable);
     return;
   }
-  // The GPU is set up while the page joins and opens the workspace.
-  prepareGpu();
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
@@ -706,14 +714,15 @@ export async function startEntryPage({mode}) {
   } catch (error) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     arrive('stopped');
-    document.documentElement.dataset.entry = error instanceof AdmissionError ? 'refused' : 'failed';
+    // A refusal is the host's answer, which trying again does not change.
+    document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
     status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
-    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed'].includes(error.code));
+    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed', 'removed'].includes(error.code));
     if (known && !local) {
       // A room this browser was a member of: say what is known, and stop
       // reopening it on a bare entry.

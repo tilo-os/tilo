@@ -163,8 +163,15 @@ export interface DesktopMount {
    * confirmation and `confirm` is not set. On a desktop it addresses one
    * window's app, as `actions` does. Through a certified peer the action
    * claims the mount's live presence only if it moved the mount's caret.
+   *
+   * Through a certified peer in a room, the room's own membership actions
+   * are the host's, not an app's: `remove-member`, `ban` and `unban` on the
+   * room's governance resource (`workspace.permissions:<room>`), each
+   * `{person}` (a root key, hex). They return a promise, settled once the
+   * host decided by the room's policy and rejected `code: reason` when it
+   * refused; removing and banning need `confirm`.
    */
-  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
+  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult | Promise<ActionResult>;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;

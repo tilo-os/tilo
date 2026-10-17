@@ -10,15 +10,6 @@
 //! deployed, lives in a content store doing dedup/streaming — gzip would
 //! only waste CPU.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::BTreeMap;
 use std::fs::File;

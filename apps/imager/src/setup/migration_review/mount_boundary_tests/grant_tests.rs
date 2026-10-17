@@ -1,6 +1,6 @@
 //! Actual mounted subjects through the shared host picker completion boundary.
 use super::*;
-use crate::setup::{HomeRootSet, MountedRootSelection};
+use crate::setup::migration_review::{HomeRootSet, MountedRootSelection, RootKind};
 use std::{fs::OpenOptions, io::Read, sync::mpsc};
 
 struct Picker {
@@ -55,7 +55,9 @@ impl ui::host::FilePicker for Picker {
 }
 fn root_set(locations: &Arc<MountedHomeLocations>, cancel: &AtomicBool) -> HomeRootSet {
     let refusal = locations.require_single_root(cancel).unwrap_err();
-    crate::setup::portable_home_media::HomeSource::mounted_root_set(&refusal).unwrap()
+    HomeRootSet::from_native(
+        crate::setup::portable_home_media::HomeSource::mounted_root_set(&refusal).unwrap(),
+    )
 }
 pub(super) fn pending_grant(
     locations: Arc<MountedHomeLocations>,
@@ -96,7 +98,7 @@ pub(super) fn exercise_matching_platform_grants(
         .with_roots(cancel, |granted| {
             assert_eq!(granted.len(), 2);
             assert_eq!(granted[0].placement(), Path::new(""));
-            assert_eq!(granted[0].kind(), crate::setup::RootKind::Directory);
+            assert_eq!(granted[0].kind(), RootKind::Directory);
             assert_eq!(
                 granted[0].file().metadata().unwrap().ino(),
                 std::fs::metadata(wrong).unwrap().ino()
@@ -113,13 +115,13 @@ pub(super) fn exercise_matching_platform_grants(
             );
             assert_eq!(granted[1].mount_id(), target_mount(selected));
             let data = if expected.is_file() {
-                assert_eq!(granted[1].kind(), crate::setup::RootKind::File);
+                assert_eq!(granted[1].kind(), RootKind::File);
                 let mut file = granted[1].file().try_clone().unwrap();
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes).unwrap();
                 bytes
             } else {
-                assert_eq!(granted[1].kind(), crate::setup::RootKind::Directory);
+                assert_eq!(granted[1].kind(), RootKind::Directory);
                 cap_std::fs::Dir::from_std_file(granted[1].file().try_clone().unwrap())
                     .read("private")
                     .unwrap()

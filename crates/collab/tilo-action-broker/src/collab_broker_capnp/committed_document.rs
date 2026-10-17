@@ -7,6 +7,14 @@ use runtime_collab::committed_document::{
     CreationReceipt, CreationWorkspace, MAX_DOCUMENT_BYTES, Reply, Request,
 };
 
+/// What [`NativeDocumentReads::prepare_application_elsewhere`] answers: the
+/// creation another device made for this caller, or `None` when the record
+/// was already there.
+pub type PreparedElsewhere = Result<Option<CreationWorkspace>, String>;
+/// A creation another device makes, awaited on the broker's local set.
+pub type PreparingElsewhere =
+    std::pin::Pin<Box<dyn std::future::Future<Output = PreparedElsewhere>>>;
+
 /// No public constructor. The route and original caller are retained from the
 /// admitted channel, together with live launcher/host-worker custody.
 #[derive(Clone)]
@@ -50,12 +58,19 @@ impl NativeDocumentReadContext {
     pub fn application_creation(&self) -> Option<&crate::services::ApplicationCreationEvidence> {
         self.creation.as_ref()
     }
+    /// The record this Open created for the caller, if any: decided by
+    /// `service` itself, or by the device that `prepared` the record
+    /// elsewhere before the Open ran.
     fn prepare_application(
         &self,
         service: &dyn NativeDocumentReads,
+        prepared: Option<PreparedElsewhere>,
     ) -> Result<Option<CreationWorkspace>, String> {
         if self.application_creation().is_some() {
-            let created = service.prepare_application(self)?;
+            let created = match prepared {
+                Some(prepared) => prepared?,
+                None => service.prepare_application(self)?,
+            };
             self.revalidate()?;
             return Ok(created);
         }
@@ -118,6 +133,21 @@ pub trait NativeDocumentReads: Send + Sync {
     ) -> Result<Option<CreationWorkspace>, String> {
         let _ = context;
         Ok(None)
+    }
+    /// Where another device must create a missing record (the host that
+    /// governs the room): the future that asks it on the Open's behalf and
+    /// resolves once the record is in this owner's room. It answers the
+    /// creation workspace when it created the record for this caller, which
+    /// then initializes it, and `None` when the record was already there.
+    /// The broker awaits it without blocking the channel, then answers the
+    /// Open with it in place of [`Self::prepare_application`]. `None` (no
+    /// future) when this owner decides creation itself.
+    fn prepare_application_elsewhere(
+        &self,
+        context: &NativeDocumentReadContext,
+    ) -> Option<PreparingElsewhere> {
+        let _ = context;
+        None
     }
     /// Commit bootstrap only after the broker checks the original creation receipt.
     /// # Errors
@@ -519,7 +549,37 @@ impl CapnpChannelHandle {
             .ok_or_else(|| "continuation requires a durable shell tab id".into())
     }
 
+    /// For an Open of a record another device creates (the host governing
+    /// the room), the creation to await before the Open answers: see
+    /// [`NativeDocumentReads::prepare_application_elsewhere`]. `None` for
+    /// every other request, and whenever the Open decides creation itself.
+    pub(super) fn committed_creation_elsewhere(
+        &self,
+        request: &Request,
+    ) -> Option<PreparingElsewhere> {
+        if !matches!(request, Request::Open { .. }) {
+            return None;
+        }
+        let service = self.state.services.committed_documents.clone()?;
+        if !service.requires_room(&self.route().cluster_id) {
+            return None;
+        }
+        let context = self.document_read_context().ok()?;
+        context.application_creation()?;
+        service.prepare_application_elsewhere(&context)
+    }
+
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
+        self.committed_document_dispatch_prepared(request, None)
+    }
+
+    /// [`Self::committed_document_dispatch`], with an Open's record already
+    /// `prepared` by the device that creates it.
+    pub(super) fn committed_document_dispatch_prepared(
+        &self,
+        request: &Request,
+        prepared: Option<PreparedElsewhere>,
+    ) -> Result<Reply, String> {
         let required = self
             .state
             .services
@@ -553,11 +613,11 @@ impl CapnpChannelHandle {
             }
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
             Request::Open { known_revision } => {
-                self.open_committed_document(&mut slot, *known_revision, None)
+                self.open_committed_document(&mut slot, *known_revision, None, prepared)
             }
             Request::OpenChanges { known_revision } => {
                 let held = slot.held(*known_revision);
-                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref())
+                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref(), None)
             }
             Request::Next {
                 capture,
@@ -574,6 +634,7 @@ impl CapnpChannelHandle {
         slot: &mut Slot,
         known_revision: Option<[u8; 32]>,
         held: Option<&HeldRevision>,
+        prepared: Option<PreparedElsewhere>,
     ) -> Result<Reply, String> {
         if slot.active.is_some() {
             return Err("committed read requires previous response acknowledgement".into());
@@ -586,6 +647,7 @@ impl CapnpChannelHandle {
             service,
             budget: &self.state.committed_read_budget,
             ids: &self.state.committed_read_id,
+            prepared,
         };
         let (reply, capture) = open_read(slot, reading, known_revision, held)?;
         if let Some(id) = capture {
@@ -602,6 +664,9 @@ struct Reading<'a> {
     service: Arc<dyn NativeDocumentReads>,
     budget: &'a Arc<Budget>,
     ids: &'a std::sync::atomic::AtomicU64,
+    /// The record as the device that creates it elsewhere prepared it
+    /// before this Open, if one does.
+    prepared: Option<PreparedElsewhere>,
 }
 
 /// An Open's answer for `known_revision`, and the id of the capture it
@@ -620,11 +685,12 @@ fn open_read(
         service,
         budget,
         ids,
+        prepared,
     } = reading;
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
-    let created = context.prepare_application(service.as_ref())?;
+    let created = context.prepare_application(service.as_ref(), prepared)?;
     service.authorize(&context)?;
     let reservation = budget.reserve()?;
     let read = match held {
@@ -729,10 +795,6 @@ fn captured_unchanged(
 /// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
 /// is unchanged: with `announced` false some input can change unannounced,
 /// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
-#[allow(
-    clippy::future_not_send,
-    reason = "checks a channel handle's Rc state; driven only on the broker LocalSet"
-)]
 async fn hold_until_stale(
     wake: &tokio::sync::Notify,
     mut arm: impl FnMut(),

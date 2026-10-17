@@ -455,10 +455,6 @@ impl SettingsSource for HostDocument {
         })
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "held across persist so concurrent merges apply one after another"
-    )]
     fn update_section_with(
         &self,
         name: &str,
@@ -481,10 +477,6 @@ impl SettingsSource for HostDocument {
         Ok(())
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the document lock covers comparison, persistence and revision publication"
-    )]
     fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
         let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
         if !update.matches(&doc) {

@@ -2,5 +2,4 @@ reason = "the browser gained extensions (CRX packages, an extension toolbar and 
 run = 107196
 
 [apps."so.tilo.browser"]
-x86_64 = 196608
 aarch64 = 131072

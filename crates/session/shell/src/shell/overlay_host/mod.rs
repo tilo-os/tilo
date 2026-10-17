@@ -2231,10 +2231,6 @@ impl ShellOverlayHost {
         (search_registry, room_records, qs_action_slot)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "constructor explicitly initializes the host's independent interaction surfaces"
-    )]
     pub fn new(content: Box<dyn Widget>) -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("overlay production inputs");
@@ -6070,10 +6066,6 @@ impl ShellOverlayHost {
     /// tree, the host outlives the content, and each row is only ever
     /// touched by one reconcile sweep at a time — the frame loop runs
     /// them sequentially, never re-entrantly.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "cross-strip detach dispatch keeps source draining, hover preview, and release commit in one sequential pointer-safety scope"
-    )]
     fn dispatch_cross_strip_detaches(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -7612,12 +7604,6 @@ impl ShellOverlayHost {
     /// Focuses one window by identity, then pans the strip to it (unlike a
     /// click on the window itself) since the rail addresses windows that may
     /// be off screen.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st's only use is producing tree via tree_mut(); the write-guard's \
-                  lifetime is tied to st's borrow, so it can't be dropped before tree's \
-                  last use, and the block already ends right there"
-    )]
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -14152,10 +14138,6 @@ impl ShellOverlayHost {
     /// Immutable Super-key shell chords: projection/capture actions,
     /// workspace history, and window creation. Configurable actions are
     /// resolved before this function from `ShortcutConfig`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the existing shell chord router remains one auditable precedence table"
-    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -15279,10 +15261,6 @@ impl ShellOverlayHost {
     /// row. Split out of `handle_shell_quick_settings_click`, which
     /// always treats the click as absorbed regardless of what this
     /// does.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the drill-in router keeps each mutually exclusive page next to the shared back/password precedence; splitting it would duplicate modal ordering"
-    )]
     fn handle_shell_quick_settings_drill_in_click(
         &mut self,
         p: Point,
@@ -16525,10 +16503,6 @@ impl ShellOverlayHost {
         self.qs_refresh.kick_field(field);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered root-action dispatch keeps fallback routing adjacent to each action"
-    )]
     fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
@@ -20317,7 +20291,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 13] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 14] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20393,6 +20367,7 @@ impl ShellOverlayHost {
                     .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
                     .flatten(),
             ),
+            ("shortcut-schedule", self.held_firings_wake_deadline(now)),
         ]
     }
 
@@ -23079,7 +23054,6 @@ impl ShellOverlayHost {
     /// neither its surface nor its hit regions.
     #[allow(
         clippy::too_many_lines,
-        clippy::needless_pass_by_ref_mut,
         reason = "all portal sheet variants share one chrome renderer so untrusted app data cannot select a different visual surface"
     )]
     fn draw_portal_dialog_sheet(

@@ -28,7 +28,7 @@ class ConfiguredEngine(unittest.TestCase):
             alias = Path(root)/'gpg2'
             alias.symlink_to(binary.name)
             item = subject.helper('openpgp', str(alias))
-            self.assertEqual(item['source'], str(binary))
+            self.assertEqual(item['source'], str(binary.resolve()))
             self.assertEqual(item['target'], str(alias))
             self.assertEqual(item['bundle'], 'bin/gpg')
             binary.chmod(0o777)

@@ -4,9 +4,9 @@
 //!
 //! The baselines are Mesa llvmpipe renders; other adapters rasterise
 //! antialiasing differently, so the comparison refuses to run on them.
-//! Regenerate intentional changes with the "Render visual baseline
-//! candidates" workflow (`dev-visual-baselines.yml`), which pins the
-//! builder image and llvmpipe. Review candidates, publish their immutable
+//! Regenerate intentional changes with t's `visual-baselines` check
+//! (`t outputs visual-baselines`), which renders on the builder image with
+//! llvmpipe. Review candidates, publish their immutable
 //! artifacts, and update `artifacts.json`; generated PNGs stay out of Git.
 //! Baselines resolve through `tools/test-assets.py`, which verifies their exact
 //! length and SHA-256 on every cache read. Prewarm for offline test runs with

@@ -231,10 +231,6 @@ impl<T: Model> Model for Set<T> {
 
 /// What `Set<T>`'s table reaches into one with: its elements, a map from
 /// each element's stored key.
-#[allow(
-    clippy::type_complexity,
-    reason = "each field reaches into the set one way"
-)]
 pub struct SetDesc {
     item: &'static ModelTable,
     elements: for<'a> fn(&'a dyn Any) -> Option<&'a dyn MapEntries>,

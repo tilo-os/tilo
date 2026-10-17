@@ -15,6 +15,7 @@ use std::{
 struct Custody {
     joined: Option<JoinHandle<()>>,
     child: Option<std::process::Child>,
+    native_read_key: Option<String>,
     _read_medium: Option<(std::fs::File, tempfile::TempDir)>,
     _receiver: Option<Receiver<io::Result<Delivered>>>,
     _artifact: Option<Arc<PreparedMedia>>,
@@ -22,13 +23,20 @@ struct Custody {
 }
 impl Custody {
     fn is_finished(&mut self) -> bool {
-        self.joined.as_ref().is_some_and(JoinHandle::is_finished)
+        self.native_read_key
+            .as_deref()
+            .is_some_and(imager_backend::setup::read_media::retirement_ready)
+            || self.joined.as_ref().is_some_and(JoinHandle::is_finished)
             || self
                 .child
                 .as_mut()
                 .is_some_and(|child| child.try_wait().is_ok_and(|exit| exit.is_some()))
     }
     fn wait(&mut self) -> io::Result<()> {
+        if let Some(key) = self.native_read_key.as_deref() {
+            imager_backend::setup::read_media::finish_retirement(key)?;
+            self.native_read_key = None;
+        }
         if let Some(child) = self.child.as_mut() {
             child.wait()?;
             self.child = None;
@@ -75,7 +83,7 @@ impl Retirement {
         if let Some(mut custody) = held.take() {
             drop(held);
             let result = custody.wait();
-            if custody.child.is_some() {
+            if custody.child.is_some() || custody.native_read_key.is_some() {
                 // A wait error is not evidence that the exact helper stopped.
                 *self
                     .custody
@@ -129,6 +137,7 @@ pub(super) fn retain(
         Custody {
             joined: Some(joined),
             child: None,
+            native_read_key: None,
             _read_medium: None,
             _receiver: receiver,
             _artifact: artifact,
@@ -137,6 +146,7 @@ pub(super) fn retain(
     );
 }
 
+#[cfg(test)]
 pub(super) fn retain_read_medium(
     key: String,
     child: std::process::Child,
@@ -148,7 +158,23 @@ pub(super) fn retain_read_medium(
         Custody {
             joined: None,
             child: Some(child),
+            native_read_key: None,
             _read_medium: Some((file, request)),
+            _receiver: None,
+            _artifact: None,
+            _cancel: None,
+        },
+    );
+}
+
+pub(in crate::setup) fn observe_read_medium(key: String) {
+    retain_custody(
+        Some(key.clone()),
+        Custody {
+            joined: None,
+            child: None,
+            native_read_key: Some(key),
+            _read_medium: None,
             _receiver: None,
             _artifact: None,
             _cancel: None,
@@ -183,9 +209,27 @@ fn retain_custody(key: Option<String>, custody: Custody) {
                 if let Some(mut custody) = observed.take_finished() {
                     // Both a completed writer join and already observed Child
                     // wait are nonblocking. Cleanup remains off the UI thread.
-                    let _ = custody.wait();
-                    let failed = runtime.spawn_blocking(move || drop(custody)).await.is_err();
-                    observed.finish(failed);
+                    if custody.native_read_key.is_some() {
+                        let owner = observed.clone();
+                        let failed = runtime
+                            .spawn_blocking(move || {
+                                let result = custody.wait();
+                                if result.is_err() && custody.native_read_key.is_some() {
+                                    *owner
+                                        .custody
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                        Some(custody);
+                                }
+                                result
+                            })
+                            .await;
+                        observed.finish(!matches!(failed, Ok(Ok(()))));
+                    } else {
+                        let _ = custody.wait();
+                        let failed = runtime.spawn_blocking(move || drop(custody)).await.is_err();
+                        observed.finish(failed);
+                    }
                     return;
                 }
                 ui::rt::sleep(Duration::from_millis(25)).await;
@@ -214,9 +258,10 @@ pub(super) fn pending(key: &str) -> bool {
             .cloned()
             .collect::<Vec<_>>()
     };
-    selected
-        .into_iter()
-        .any(|entry| !entry.stopped.load(Ordering::Acquire))
+    imager_backend::setup::read_media::retirement_pending(key)
+        || selected
+            .into_iter()
+            .any(|entry| !entry.stopped.load(Ordering::Acquire))
 }
 
 /// Synchronous final host teardown, never a busy check or a frame callback.
@@ -233,6 +278,9 @@ pub(super) fn finish_pending(key: &str) -> io::Result<()> {
         if let Err(error) = entry.wait_stopped() {
             failure = Some(error);
         }
+    }
+    if let Err(error) = imager_backend::setup::read_media::finish_retirement(key) {
+        failure = Some(error);
     }
     failure.map_or(Ok(()), Err)
 }

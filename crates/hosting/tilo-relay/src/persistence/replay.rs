@@ -22,6 +22,9 @@ pub(crate) struct ReplayTicket {
 }
 impl Drop for ReplayTicket {
     fn drop(&mut self) {
+        if self.authority.reserved.is_some() {
+            let _ = self.authority.released.set(std::time::Instant::now());
+        }
         self.authority.cancelled.store(true, Ordering::SeqCst);
         // The owner holding this replay's entry can reclaim it now.
         if let Some(reclaim) = self.authority.reclaim.get() {
@@ -38,8 +41,20 @@ pub(crate) struct Authority {
     /// The wake of the owner whose table took this replay's entry
     /// ([`Replays::reclaim_wake`]), set when it took it.
     reclaim: OnceLock<Arc<tokio::sync::Notify>>,
+    /// When the slot was taken and when its session let go of it, for the
+    /// capacity timings ([`crate::timing`]).
+    reserved: Option<std::time::Instant>,
+    released: OnceLock<std::time::Instant>,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
+}
+impl Drop for Authority {
+    fn drop(&mut self) {
+        // The slot is free again only now, once the owner reclaimed the
+        // entry that held this authority as well.
+        crate::timing::event("join.ticket_held", self.reserved, 0);
+        crate::timing::event("join.reclaim_lag", self.released.get().copied(), 0);
+    }
 }
 impl Authority {
     /// The bound session flag. A poisoned lock still holds a coherent
@@ -136,6 +151,8 @@ impl ReplayTicket {
                 connection,
                 session: Mutex::new(None),
                 reclaim: OnceLock::new(),
+                reserved: crate::timing::start(),
+                released: OnceLock::new(),
                 _permit: permit,
             }),
         }
@@ -196,7 +213,8 @@ impl Replays {
         self.reclaim.clone()
     }
 }
-pub(crate) fn output_budget() -> &'static ReplayBudget {
+/// The process-wide budget every replay and publication shares.
+pub fn output_budget() -> &'static ReplayBudget {
     static OUTPUT: OnceLock<ReplayBudget> = OnceLock::new();
     OUTPUT.get_or_init(|| ReplayBudget::new(DEFAULT_OUTPUT_BYTES))
 }
@@ -293,6 +311,7 @@ impl ReplayHandle {
     ) -> Result<ReplayAdvance, StoreError> {
         self.validate(authority)?;
         loop {
+            let waiting = crate::timing::start();
             let replay_permit = self
                 .replay_worker
                 .clone()
@@ -304,12 +323,16 @@ impl ReplayHandle {
             let acknowledged = written.take();
             let advance = super::blocking(self.workers.clone(), move || {
                 let _replay_permit = replay_permit;
-                detached
+                crate::timing::window("replay.worker_wait", waiting);
+                let working = crate::timing::start();
+                let advanced = detached
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_mut()
                     .ok_or_else(|| error("stale replay handle"))?
-                    .advance_slice(&authority, acknowledged, output_budget())
+                    .advance_slice(&authority, acknowledged, output_budget());
+                crate::timing::window("replay.slice", working);
+                advanced
             })
             .await??;
             match advance {

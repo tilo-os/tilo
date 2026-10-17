@@ -117,6 +117,14 @@ pub mod metrics;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod offload;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_content;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_placement;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_route;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
@@ -140,6 +148,8 @@ pub mod rooms;
 pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
+#[cfg(not(target_arch = "wasm32"))]
+mod timing;
 #[cfg(feature = "web")]
 pub mod web;
 #[cfg(not(target_arch = "wasm32"))]
@@ -183,11 +193,11 @@ pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayC
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
     ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
-    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker,
+    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, admit_compute_job,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use compute_content::{ContentFetchError, fetch_job_content};
+pub use compute_content::{ContentFetchError, content_proof, fetch_job_content, prove_job_input};
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -197,10 +207,10 @@ pub use compute_transport::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
-    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputTransfer,
-    ProductionComputeWorkerConfig, WorkerEnvironments, hydrate_job_inputs, run_compute_assignment,
-    run_production_compute_worker, serve_worker_stream, serve_worker_stream_with,
-    spawn_worker_stream,
+    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputStaging, InputTransfer,
+    ProductionComputeWorkerConfig, WorkerEnvironments, WorkerHeldContent, hydrate_job_inputs,
+    run_compute_assignment, run_production_compute_worker, serve_worker_stream,
+    serve_worker_stream_with, spawn_worker_stream,
 };
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]
@@ -212,6 +222,8 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+#[cfg(not(target_arch = "wasm32"))]
+pub use room_access::Spectators;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 

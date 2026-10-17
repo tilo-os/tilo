@@ -10,7 +10,6 @@
 //! answers failures as `{"error": "...", "code": "..."}`.
 
 use std::fmt;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -108,14 +107,14 @@ pub fn idempotency_key(parts: &[&[u8]]) -> String {
     // RFC 9562 version 8 (custom) with the RFC variant.
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let mut key = String::with_capacity(36);
-    for (at, byte) in bytes.iter().enumerate() {
-        if matches!(at, 4 | 6 | 8 | 10) {
-            key.push('-');
-        }
-        let _ = write!(key, "{byte:02x}");
-    }
-    key
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex::encode(&bytes[0..4]),
+        hex::encode(&bytes[4..6]),
+        hex::encode(&bytes[6..8]),
+        hex::encode(&bytes[8..10]),
+        hex::encode(&bytes[10..16])
+    )
 }
 
 /// The key for turn `turn` of one planning run seeded by `run`, asking with

@@ -1,10 +1,14 @@
 //! Private retained download worker. No staging, UI, or support route is enabled.
 //! Selection authority and all leased handles stay on this worker. Only bounded,
 //! owned descriptions cross the control boundary; Ready is deliberately private.
-use super::{HeldReadSeek, Session};
+use super::HeldReadSeek;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use super::Session;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use crate::setup::internal_download::PersistentOutcome;
 use crate::{
     release::InternalRelease,
-    setup::internal_download::{InternalTransport, PersistentOutcome, Progress, SelectedManifest},
+    setup::internal_download::{InternalTransport, Progress, SelectedManifest},
 };
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -156,6 +160,7 @@ impl Worker {
         + Send
         + 'static,
     ) -> Result<Self, String> {
+        imager_backend::cache::ensure_supported()?;
         Self::spawn_with(InternalTransport::new()?, consumer)
     }
     fn spawn_with(
@@ -412,10 +417,12 @@ fn worker_loop(
     }
 }
 
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
 struct Ready<'s> {
     selected: &'s SelectedManifest,
     finals: [platform::FinalHandle<'s>; 2],
 }
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
 impl Ready<'_> {
     fn consume(
         &mut self,
@@ -436,6 +443,25 @@ impl Ready<'_> {
     }
 }
 
+#[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+fn run_selected(
+    _selected: &SelectedManifest,
+    _request: &Request,
+    _transport: &InternalTransport,
+    _shared: &Shared,
+    _status: &mut Status,
+    _consumer: &mut impl FnMut(
+        &SelectedManifest,
+        &Cancellation<'_>,
+        &mut dyn HeldReadSeek,
+        &mut dyn HeldReadSeek,
+    ) -> Result<(), String>,
+) -> Result<(), String> {
+    // Fail closed even if an internal caller bypasses spawn's preflight.
+    imager_backend::cache::unsupported()
+}
+
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
 fn run_selected<'s>(
     selected: &'s SelectedManifest,
     request: &Request,
@@ -601,6 +627,7 @@ fn run_selected<'s>(
     }
     Ok(())
 }
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
 fn split(
     component: platform::Component<'_>,
 ) -> (
@@ -612,6 +639,7 @@ fn split(
         platform::Component::Final(f) => (None, Some(f)),
     }
 }
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
 fn transfer(
     transport: &InternalTransport,
     prepared: super::PreparedPrefix<'_>,
@@ -657,3 +685,14 @@ fn transfer(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests;
+
+#[cfg(all(test, not(any(target_os = "linux", windows))))]
+#[test]
+fn unsupported_host_refuses_worker_before_transport_or_consumer() {
+    let result = Worker::spawn(|_, _, _, _| panic!("unsupported cache must not invoke consumer"));
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("unsupported cache must not start a worker"),
+    };
+    assert_eq!(Err::<(), _>(error), imager_backend::cache::unsupported());
+}

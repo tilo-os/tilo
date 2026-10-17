@@ -3,12 +3,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use tilo_peer_state::join::{
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::{
     JoinBootstrap, JoinTransportRequest, JoinTransportResponse,
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint, sign_transport_hint,
     verify_transport_hint,
 };
-use tilo_user_identity::DeviceCert;
 
 /// Public Iroh ALPN for invitation redemption and membership refresh.
 pub const WORKSPACE_JOIN_ALPN: &[u8] = b"tilo-workspace-join/1";
@@ -221,7 +221,7 @@ impl IrohWorkspaceHostHintV1 {
     )]
     pub fn validate_invitation(
         &self,
-        grant: &tilo_peer_state::join::InviteGrant,
+        grant: &tilo_workspace_join::InviteGrant,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
         if grant.room != self.room
             || grant.workspace_id != self.workspace_id

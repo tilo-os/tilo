@@ -1,17 +1,14 @@
 //! Private restart pointers. These records contain no grants or password material.
-use super::super::{
-    destination_security, migration::PinnedDirectory, prepared_identity::PreparedIdentity,
-};
+use super::super::prepared_identity::PreparedIdentity;
+use imager_backend::prepared_identity::{DraftLock, RestartStorage};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
-
-const LIMIT: u64 = 32 * 1024;
+#[cfg(test)]
 const INDEX: &str = "draft.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +44,6 @@ fn default_browser_domains() -> [bool; 2] {
     [true; 2]
 }
 impl PublicChoices {
-    #[cfg(target_os = "linux")]
     pub(super) fn includes_accounts(&self) -> bool {
         self.migrate == Some(true) && self.categories[2]
     }
@@ -78,7 +74,7 @@ struct Pointer {
     device_key: Option<[u8; 32]>,
     record_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    current_device: Option<tilo_identity_host::enrolled_transport::CurrentDeviceDeclaration>,
+    current_device: Option<imager_backend::prepared_identity::CurrentDeviceDeclaration>,
 }
 impl Pointer {
     fn validate(&self) -> io::Result<()> {
@@ -130,13 +126,12 @@ struct Record {
     choices: Option<PublicChoices>,
     preparation: Option<Pointer>,
     #[serde(default)]
-    #[cfg(target_os = "linux")]
     account_checkpoint: Option<super::accounts::checkpoint::Receipt>,
 }
 #[derive(Clone)]
 pub(super) struct DraftStore {
     root: PathBuf,
-    pin: Arc<PinnedDirectory>,
+    storage: RestartStorage,
 }
 #[derive(Clone)]
 pub(super) struct PendingDraft {
@@ -147,7 +142,6 @@ pub(super) struct PendingDraft {
 #[derive(Clone)]
 pub(super) struct ReadyDraft {
     pending: PendingDraft,
-    #[cfg(target_os = "linux")]
     account_checkpoint: Option<super::accounts::checkpoint::Receipt>,
 }
 pub(super) enum DraftStatus {
@@ -169,54 +163,18 @@ impl DraftStore {
         Self::open(root)
     }
     pub(super) fn open(root: &Path) -> io::Result<Self> {
-        if !root.is_absolute() || root.file_name() != Some(OsStr::new("preparations")) {
-            return Err(invalid());
-        }
-        let pin = super::personal::ensure_private_tree(root)?;
-        destination_security::check_private_file(&pin.file)?;
-        pin.validate_destination()?;
         Ok(Self {
             root: root.to_owned(),
-            pin,
+            storage: RestartStorage::open(root)?,
         })
     }
-    fn storage(&self) -> io::Result<StorageDirectory> {
-        self.pin.validate_destination()?;
-        destination_security::check_private_file(&self.pin.file)?;
-        StorageDirectory::from_file(super::super::migration_durability::readable_directory(
-            &self.pin.file,
-        )?)
-    }
-    fn lock(&self) -> io::Result<advisory_lock::FileLock> {
-        let held = self.storage()?;
-        match held.publish(
-            OsStr::new("draft.lock"),
-            &[],
-            PublishMode::IfAbsent,
-            Privacy::OwnerOnly,
-        ) {
-            Ok(()) => {}
-            Err(error) if error.io_error().kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into_io_error()),
-        }
-        let file = held.open_append_existing(OsStr::new("draft.lock"), Privacy::OwnerOnly)?;
-        advisory_lock::FileLock::try_exclusive(file).map_err(io::Error::other)
+    fn lock(&self) -> io::Result<DraftLock> {
+        self.storage.lock()
     }
     fn read(&self) -> io::Result<Option<Record>> {
-        let held = self.storage()?;
-        let file = match held.open_read(OsStr::new(INDEX), Privacy::OwnerOnly) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(bytes) = self.storage.read()? else {
+            return Ok(None);
         };
-        if file.metadata()?.len() > LIMIT {
-            return Err(invalid());
-        }
-        let mut bytes = Vec::new();
-        file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > LIMIT {
-            return Err(invalid());
-        }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         if record.schema != 1 || record.preparation.is_some() != record.choices.is_some() {
             return Err(invalid());
@@ -227,31 +185,19 @@ impl DraftStore {
         if let Some(pointer) = &record.preparation {
             pointer.validate()?;
         }
-        #[cfg(target_os = "linux")]
         if let Some(receipt) = &record.account_checkpoint {
             receipt.validate()?;
             let pointer = record.preparation.as_ref().ok_or_else(invalid)?;
-            if receipt.binding != pointer.operation || Some(receipt.group) != pointer.root_key {
+            if receipt.binding() != pointer.operation || Some(receipt.group()) != pointer.root_key {
                 return Err(invalid());
             }
         }
-        self.pin.validate()?;
+        self.storage.validate()?;
         Ok(Some(record))
     }
     fn write(&self, record: &Record) -> io::Result<()> {
         let bytes = serde_json::to_vec(record).map_err(|_| invalid())?;
-        if bytes.len() as u64 > LIMIT {
-            return Err(invalid());
-        }
-        self.storage()?
-            .publish(
-                OsStr::new(INDEX),
-                &bytes,
-                PublishMode::Replace,
-                Privacy::OwnerOnly,
-            )
-            .map_err(tilo_files::native::atomic::PublicationError::into_io_error)?;
-        self.pin.validate()
+        self.storage.write(&bytes)
     }
     pub(super) fn review(&self) -> io::Result<DraftStatus> {
         let Some(record) = self.read()? else {
@@ -268,7 +214,6 @@ impl DraftStore {
         if pending.pointer.root_key.is_some() {
             Ok(DraftStatus::Ready(ReadyDraft {
                 pending,
-                #[cfg(target_os = "linux")]
                 account_checkpoint: record.account_checkpoint,
             }))
         } else {
@@ -298,12 +243,9 @@ impl DraftStore {
             schema: 1,
             choices: Some(choices.clone()),
             preparation: Some(pointer.clone()),
-            #[cfg(target_os = "linux")]
             account_checkpoint: None,
         })?;
-        let operation = self.pin.create_child(OsStr::new(&pointer.operation))?;
-        super::super::migration_durability::sync_directory(&operation.file)?;
-        super::super::migration_durability::sync_directory(&self.pin.file)?;
+        self.storage.create_operation(&pointer.operation)?;
         Ok(PendingDraft {
             store: self.clone(),
             pointer,
@@ -329,7 +271,6 @@ impl DraftStore {
         pointer.record_name = record_name.map(str::to_owned);
         pointer.validate()?;
         let ready = ReadyDraft {
-            #[cfg(target_os = "linux")]
             account_checkpoint: None,
             pending: PendingDraft {
                 store: self.clone(),
@@ -342,7 +283,6 @@ impl DraftStore {
             schema: 1,
             choices: current.choices,
             preparation: Some(pointer),
-            #[cfg(target_os = "linux")]
             account_checkpoint: current.account_checkpoint,
         })
     }
@@ -395,7 +335,6 @@ impl DraftStore {
             return Err(invalid());
         }
         ReadyDraft {
-            #[cfg(target_os = "linux")]
             account_checkpoint: None,
             pending: PendingDraft {
                 store: self.clone(),
@@ -408,7 +347,6 @@ impl DraftStore {
             schema: 1,
             choices: Some(choices.clone()),
             preparation: Some(pointer),
-            #[cfg(target_os = "linux")]
             account_checkpoint: current.and_then(|record| {
                 choices
                     .includes_accounts()
@@ -418,7 +356,6 @@ impl DraftStore {
         })
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn record_account_checkpoint(
         &self,
         receipt: &super::accounts::checkpoint::Receipt,
@@ -432,8 +369,8 @@ impl DraftStore {
             .choices
             .as_ref()
             .is_some_and(PublicChoices::includes_accounts)
-            || receipt.binding != pointer.operation
-            || Some(receipt.group) != pointer.root_key
+            || receipt.binding() != pointer.operation
+            || Some(receipt.group()) != pointer.root_key
         {
             return Err(invalid());
         }
@@ -471,7 +408,6 @@ impl DraftStore {
             return Err(invalid());
         }
         record.choices = Some(choices.clone());
-        #[cfg(target_os = "linux")]
         if !choices.includes_accounts() {
             record.account_checkpoint = None;
         }
@@ -485,7 +421,6 @@ impl DraftStore {
             schema: 1,
             choices: None,
             preparation: None,
-            #[cfg(target_os = "linux")]
             account_checkpoint: None,
         })
     }
@@ -514,22 +449,13 @@ impl PendingDraft {
             return Err(invalid());
         }
         let identity = self.identity_directory();
-        let pin = PinnedDirectory::open_absolute(&identity)?;
-        pin.validate_destination()?;
-        destination_security::check_private_file(&pin.file)?;
-        let metadata = runtime_identity::load_metadata_from_path(&identity.join("primary.json"))
-            .map_err(|_| invalid())?;
-        let prepared = Arc::new(PreparedIdentity::resume(
-            &identity,
-            metadata.group_public_key,
-        )?);
+        let prepared = Arc::new(PreparedIdentity::recover_created(&identity)?);
         let mut pointer = self.pointer.clone();
         pointer.root_key = Some(prepared.public_key());
         self.store.write(&Record {
             schema: 1,
             choices: current.choices,
             preparation: Some(pointer),
-            #[cfg(target_os = "linux")]
             account_checkpoint: current.account_checkpoint,
         })?;
         Ok(prepared)
@@ -543,11 +469,9 @@ impl PendingDraft {
     }
 }
 impl ReadyDraft {
-    #[cfg(target_os = "linux")]
     pub(super) fn acknowledged_public_key(&self) -> Option<[u8; 32]> {
         self.pending.pointer.root_key
     }
-    #[cfg(target_os = "linux")]
     pub(super) fn account_checkpoint(&self) -> Option<&super::accounts::checkpoint::Receipt> {
         self.choices()
             .includes_accounts()
@@ -573,9 +497,8 @@ impl ReadyDraft {
         action()
     }
     /// Retain generation custody through worker delivery and receiver acceptance.
-    pub(super) fn acquire_current(&self) -> io::Result<advisory_lock::FileLock> {
+    pub(super) fn acquire_current(&self) -> io::Result<DraftLock> {
         let guard = self.acquire_preparation_current()?;
-        #[cfg(target_os = "linux")]
         if self
             .pending
             .store
@@ -593,7 +516,7 @@ impl ReadyDraft {
     }
     /// Fence storage bound to identity preparation, not the independently saved
     /// account selection. Replacing or retiring preparation still revokes it.
-    pub(super) fn acquire_preparation_current(&self) -> io::Result<advisory_lock::FileLock> {
+    pub(super) fn acquire_preparation_current(&self) -> io::Result<DraftLock> {
         let guard = self.pending.store.lock()?;
         let current = self.pending.store.read()?.ok_or_else(invalid)?;
         if current.preparation.as_ref() != Some(&self.pending.pointer) {
@@ -605,7 +528,7 @@ impl ReadyDraft {
         Ok(guard)
     }
     fn restore_custody(&self) -> io::Result<Arc<PreparedIdentity>> {
-        self.pending.store.storage()?;
+        self.pending.store.storage.validate()?;
         let expected = self.pending.pointer.root_key.ok_or_else(invalid)?;
         if self.kind() == IdentityKind::CurrentDevice
             && self.pending.choices.destination != Some(DestinationChoice::Desktop)
@@ -632,21 +555,12 @@ impl ReadyDraft {
                         .as_ref()
                         .ok_or_else(invalid)?,
                 );
-                let now = u64::try_from(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| invalid())?
-                        .as_nanos(),
-                )
-                .map_err(|_| invalid())?;
-                let enrolled = tilo_identity_host::enrolled_transport::EnrolledDevice::review(
-                    &self.pending.operation_directory().join("future-device"),
+                PreparedIdentity::resume_enrolled(
+                    &self.pending.operation_directory(),
                     &record,
                     expected,
                     self.pending.pointer.device_key.ok_or_else(invalid)?,
-                    now,
-                )?;
-                PreparedIdentity::from_enrolled(Arc::new(enrolled))?
+                )?
             }
         };
         Ok(Arc::new(identity))

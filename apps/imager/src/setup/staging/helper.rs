@@ -22,31 +22,14 @@ use super::record::{
     RecordedComponent, ReleaseRef, Step, StepState,
 };
 
-pub const STAGING_HELPER_ARG: &str = "--tilo-staging-helper";
-pub const REQUEST_SCHEMA: u32 = 1;
-const MAX_REQUEST_BYTES: u64 = 1 << 20;
+pub use imager_backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
 const MAX_MANIFEST_BYTES: u64 = crate::setup::internal_bundle::MAX_MANIFEST_BYTES as u64;
 /// Streaming chunk for component writes and readback; a multiple of every
 /// supported sector size.
 const CHUNK: usize = 4 << 20;
 const MIB: u64 = 1 << 20;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Action {
-    Stage,
-    Arm,
-    Remove,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComponentPaths {
-    #[serde(rename = "staging-esp")]
-    pub staging_esp: String,
-    #[serde(rename = "staging-root")]
-    pub staging_root: String,
-}
+pub use imager_backend::staging::protocol::{Action, ComponentPaths};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,76 +53,7 @@ pub struct Request {
     pub prepared_setup: Option<super::prepared_setup::PreparedArtifact>,
 }
 
-/// One line of `progress.jsonl`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Progress {
-    pub step: super::record::Step,
-    pub done_bytes: u64,
-    pub total_bytes: u64,
-}
-
-/// Final line of `progress.jsonl`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Outcome {
-    pub ok: bool,
-    /// Stable refusal ID (`plan-stale`, `boot-next-busy`, `digest-mismatch`, ...).
-    pub code: Option<String>,
-    pub message: Option<String>,
-}
-
-/// Stable refusal IDs written to [`Outcome::code`].
-pub mod codes {
-    /// The request is malformed or inconsistent with itself.
-    pub const REQUEST_INVALID: &str = "request-invalid";
-    /// The release is not in this binary's catalog or its manifest differs.
-    pub const RELEASE_UNKNOWN: &str = "release-unknown";
-    pub const MANIFEST_MISMATCH: &str = "manifest-mismatch";
-    /// The host no longer matches the reviewed plan's basis; re-review.
-    pub const PLAN_STALE: &str = "plan-stale";
-    /// A component's bytes do not match the manifest.
-    pub const DIGEST_MISMATCH: &str = "digest-mismatch";
-    /// The staging ESP image lacks the handoff/record placeholders.
-    pub const ESP_PLACEHOLDER: &str = "esp-placeholder-missing";
-    /// The staging ESP image's FAT sectors are smaller than the disk's.
-    pub const SECTOR_SIZE: &str = "sector-size-unsupported";
-    /// Another operation on this disk is unfinished.
-    pub const PENDING_OPERATION: &str = "pending-operation";
-    pub const SECURE_BOOT_ON: &str = "secure-boot-on";
-    /// `BootNext` names an entry that is not ours.
-    pub const BOOT_NEXT_BUSY: &str = "boot-next-busy";
-    /// Our `Boot####` changed (or its number was taken) since we wrote it.
-    pub const BOOT_ENTRY_MODIFIED: &str = "boot-entry-modified";
-    /// A staged partition, shrink or firmware entry no longer holds.
-    pub const STAGING_CHANGED: &str = "staging-changed";
-    /// `arm` without a completed `stage`, or `remove` without a record.
-    pub const NOT_STAGED: &str = "not-staged";
-    pub const RECORD_FAILED: &str = "record-failed";
-    pub const IO_FAILED: &str = "io-failed";
-    /// The helper exited without writing an outcome.
-    pub const HELPER_EXITED: &str = "helper-exited";
-}
-
-/// Why the helper stopped.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Refusal {
-    pub code: &'static str,
-    pub message: String,
-}
-
-impl Refusal {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
+pub use imager_backend::staging::protocol::{Outcome, Progress, Refusal, codes};
 
 fn io_refusal(e: impl std::fmt::Display) -> Refusal {
     Refusal::new(codes::IO_FAILED, e.to_string())
@@ -236,7 +150,12 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     if !super::record::valid_operation_id(&request.operation_id) {
         return bad("invalid operation ID");
     }
-    if request.plan.digest() != request.plan_sha256 {
+    if request
+        .plan
+        .digest()
+        .map_err(|error| Refusal::new(codes::REQUEST_INVALID, error.to_string()))?
+        != request.plan_sha256
+    {
         return bad("the plan does not match its reviewed digest");
     }
     let hex64 = |s: &str| {
@@ -323,44 +242,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Firmware facts of the running host, as the plan's basis records them.
-pub fn read_firmware(
-    platform: &dyn Platform,
-) -> super::platform::IoResult<super::plan::FirmwareFacts> {
-    if !platform.has_uefi() {
-        return Ok(super::plan::FirmwareFacts {
-            uefi: false,
-            secure_boot: false,
-            boot_current: None,
-            boot_order: Vec::new(),
-            boot_next: None,
-        });
-    }
-    let number = |bytes: Option<Vec<u8>>| -> Result<Option<String>, String> {
-        match bytes {
-            None => Ok(None),
-            Some(b) => {
-                let list = efi::parse_u16_list(&b)?;
-                match list.as_slice() {
-                    [n] => Ok(Some(efi::format_boot_number(*n))),
-                    _ => Err("boot number variable is not one u16".into()),
-                }
-            }
-        }
-    };
-    Ok(super::plan::FirmwareFacts {
-        uefi: true,
-        secure_boot: platform
-            .get_efi_var("SecureBoot")?
-            .is_some_and(|b| b.first() == Some(&1)),
-        boot_current: number(platform.get_efi_var("BootCurrent")?)?,
-        boot_order: efi::parse_u16_list(&platform.get_efi_var("BootOrder")?.unwrap_or_default())?
-            .into_iter()
-            .map(efi::format_boot_number)
-            .collect(),
-        boot_next: number(platform.get_efi_var("BootNext")?)?,
-    })
-}
+pub use imager_backend::firmware::read_firmware;
 
 /// A fresh basis from the platform.
 pub fn read_basis(platform: &dyn Platform) -> super::platform::IoResult<Basis> {
@@ -389,33 +271,7 @@ fn overlaps(p: &Partition, first: u64, last: u64) -> bool {
     p.first_lba <= last && first <= p.last_lba
 }
 
-fn open_input(path: &str) -> Result<std::fs::File, String> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Never follow a final symlink or block on a FIFO with root authority.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-    }
-    let file = options.open(path).map_err(|e| format!("{path}: {e}"))?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err(format!("{path} is not a regular file"));
-    }
-    Ok(file)
-}
-
-fn read_input(path: &str, limit: u64) -> Result<Vec<u8>, String> {
-    let file = open_input(path)?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limit {
-        return Err(format!("{path} is unexpectedly large"));
-    }
-    Ok(bytes)
-}
+use imager_backend::staging::request_io::{open_input, read_input};
 
 /// Primary Btrfs superblock position in the filesystem.
 const BTRFS_SUPERBLOCK_OFFSET: u64 = 0x1_0000;
@@ -2392,7 +2248,8 @@ impl Engine<'_> {
                     boot_next: firmware.boot_next,
                     entries,
                 },
-            );
+            )
+            .map_err(|error| Refusal::new(codes::REQUEST_INVALID, error))?;
             record.migration.clone_from(&self.request.migration);
             record.profile.clone_from(&self.request.profile);
             record.prepared_setup = self
@@ -2539,244 +2396,18 @@ fn find_placeholders(
 
 // ----- process boundary ------------------------------------------------------
 
-/// A running elevated helper launched by the UI.
-pub struct Running {
-    pub progress_path: std::path::PathBuf,
-    child: Option<std::process::Child>,
-    /// Private job directory; removed when the helper is dropped.
-    _work: Option<tempfile::TempDir>,
-    offset: u64,
-    partial: String,
-    latest: Option<Progress>,
-    outcome: Option<Outcome>,
-}
+pub use imager_backend::staging::process::{Poll, Running, helper_executable};
 
-/// Snapshot of a running helper, read from `progress.jsonl`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Poll {
-    pub latest: Option<Progress>,
-    /// `Some` once the helper has written its final line or exited.
-    pub outcome: Option<Outcome>,
-}
-
-/// A progress-file line.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Line {
-    Outcome(Outcome),
-    Progress(Progress),
-}
-
-impl Running {
-    /// Observe a helper someone else started (tests, harnesses).
-    pub fn watch(progress_path: PathBuf, child: Option<std::process::Child>) -> Self {
-        Self {
-            progress_path,
-            child,
-            _work: None,
-            offset: 0,
-            partial: String::new(),
-            latest: None,
-            outcome: None,
-        }
-    }
-
-    pub fn poll(&mut self) -> Poll {
-        self.read_new_lines();
-        if self.outcome.is_none() {
-            let exited = match self.child.as_mut() {
-                Some(child) => child.try_wait().ok().flatten().map(|s| s.success()),
-                None => None,
-            };
-            if let Some(success) = exited {
-                // Consume bytes written between the last read and exit.
-                self.read_new_lines();
-                if self.outcome.is_none() {
-                    self.outcome = Some(Outcome {
-                        ok: false,
-                        code: Some(codes::HELPER_EXITED.into()),
-                        message: Some(if success {
-                            "The installer helper stopped without reporting a result.".into()
-                        } else {
-                            "Authorization was cancelled or the installer helper stopped.".into()
-                        }),
-                    });
-                }
-            }
-        }
-        Poll {
-            latest: self.latest.clone(),
-            outcome: self.outcome.clone(),
-        }
-    }
-
-    fn read_new_lines(&mut self) {
-        let Ok(mut file) = std::fs::File::open(&self.progress_path) else {
-            return;
-        };
-        if file.seek(SeekFrom::Start(self.offset)).is_err() {
-            return;
-        }
-        let mut bytes = Vec::new();
-        if file.take(1 << 20).read_to_end(&mut bytes).is_err() {
-            return;
-        }
-        self.offset += bytes.len() as u64;
-        self.partial.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(end) = self.partial.find('\n') {
-            let line: String = self.partial.drain(..=end).collect();
-            match serde_json::from_str::<Line>(line.trim_end()) {
-                Ok(Line::Outcome(o)) => self.outcome = Some(o),
-                Ok(Line::Progress(p)) => self.latest = Some(p),
-                Err(_) => {}
-            }
-        }
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        // Never abandon an elevated writer: wait before the job directory goes.
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.wait();
-        }
-    }
-}
-
-/// The executable the elevated helper runs (the AppImage when packaged).
-pub(super) fn helper_executable() -> std::io::Result<PathBuf> {
-    #[cfg(target_os = "linux")]
-    if let Some(appimage) = std::env::var_os("TILO_IMAGER_APPIMAGE") {
-        let path = PathBuf::from(appimage);
-        if path.is_absolute() && path.is_file() {
-            return Ok(path);
-        }
-    }
-    std::env::current_exe()
-}
-
-// `Start-Process` flattens `ArgumentList` into one command line, so each path
-// is wrapped in literal double quotes (PowerShell `'"'`) to survive spaces.
-#[cfg(any(test, windows))]
-const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList @('--tilo-staging-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"')); exit $p.ExitCode"#;
-
-fn elevated_command(
-    exe: &Path,
-    request: &Path,
-    progress: &Path,
-) -> Result<std::process::Command, String> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut command = std::process::Command::new("pkexec");
-        command
-            .arg(exe)
-            .arg(STAGING_HELPER_ARG)
-            .arg(request)
-            .arg(progress);
-        Ok(command)
-    }
-    #[cfg(windows)]
-    {
-        let mut command = std::process::Command::new("powershell.exe");
-        command
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                WINDOWS_ELEVATION_SCRIPT,
-            ])
-            .arg(exe)
-            .arg(request)
-            .arg(progress);
-        Ok(command)
-    }
-    #[cfg(not(any(target_os = "linux", windows)))]
-    {
-        let _ = (exe, request, progress);
-        Err("USB-free installation is available on Windows and Linux only".into())
-    }
-}
-
-/// Write `request` to a private temp file and launch the elevated helper
-/// (`pkexec` on Linux, `RunAs` on Windows).
+/// Validate the reviewed request before launching the native helper transport.
 pub fn launch(request: &Request) -> Result<Running, String> {
-    use std::io::Write;
     validate_request(request).map_err(|r| r.to_string())?;
-    let work = tempfile::Builder::new()
-        .prefix("tilo-imager-staging-")
-        .tempdir()
-        .map_err(|e| e.to_string())?;
-    let request_path = work.path().join("request.json");
-    let progress_path = work.path().join("progress.jsonl");
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&request_path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&bytes).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    drop(file);
-    let exe = helper_executable().map_err(|e| e.to_string())?;
-    let child = elevated_command(&exe, &request_path, &progress_path)?
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let mut running = Running::watch(progress_path, Some(child));
-    running._work = Some(work);
-    Ok(running)
+    imager_backend::staging::process::launch(&bytes)
 }
 
-/// Read the request with the caller's authority checks: a regular file, not
-/// a symlink, writable only by root or the authenticated caller, in a
-/// directory nobody else can swap it out of.
-fn read_request(path: &Path) -> Result<Vec<u8>, String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let caller = ["PKEXEC_UID", "SUDO_UID"]
-            .iter()
-            .find_map(|k| std::env::var(k).ok())
-            .map(|v| v.parse::<u32>().map_err(|_| "invalid caller UID"))
-            .transpose()?
-            .unwrap_or(0);
-        let trusted = |m: &std::fs::Metadata| m.uid() == 0 || m.uid() == caller;
-        let parent = path.parent().ok_or("request has no directory")?;
-        let dir = std::fs::symlink_metadata(parent).map_err(|e| e.to_string())?;
-        let mode = dir.permissions().mode();
-        if !dir.is_dir() || !trusted(&dir) || (mode & 0o022 != 0 && mode & 0o1000 == 0) {
-            return Err("the request directory is writable by others".into());
-        }
-        let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-        if !meta.is_file() || !trusted(&meta) || meta.permissions().mode() & 0o022 != 0 {
-            return Err("the request file is not owned safely".into());
-        }
-    }
-    read_input(&path.to_string_lossy(), MAX_REQUEST_BYTES)
-}
+use imager_backend::staging::request_io::{create_progress, read_request};
 
-fn create_progress(path: &Path) -> Result<std::fs::File, String> {
-    let mut options = std::fs::OpenOptions::new();
-    // create_new refuses a pre-planted file or symlink.
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o644);
-    }
-    options
-        .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Test-only host overrides (loop disk, fake efivarfs, record directory)
-/// for the Linux loop-device and VM harnesses. Honoured only in debug builds
-/// or builds compiled with `TILO_IMAGER_STAGING_TEST_OVERRIDES=1`.
-pub fn test_overrides_allowed() -> bool {
-    cfg!(debug_assertions) || option_env!("TILO_IMAGER_STAGING_TEST_OVERRIDES") == Some("1")
-}
+pub use imager_backend::firmware::test_overrides_allowed;
 
 fn system_store() -> Result<RecordStore, String> {
     let mut store = RecordStore::system()?;
@@ -2917,14 +2548,6 @@ mod tests {
     /// Helper elevation, mode entry and progress polling.
     #[test]
     fn staging_helper_mode_is_exact_and_polls_partial_writes() {
-        // Phase `windows_elevation_quotes_both_paths_and_runs_only_the_helper_mode`.
-        {
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("'--tilo-staging-helper'"));
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[1] + '\"')"));
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("('\"' + $args[2] + '\"')"));
-            assert!(WINDOWS_ELEVATION_SCRIPT.contains("-Verb RunAs"));
-        }
-
         // Phase `poll_reads_progress_then_outcome_across_partial_writes`.
         {
             use std::io::Write;

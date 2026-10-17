@@ -134,37 +134,38 @@ fn google_refreshes_canonical_grant_and_sends_bearer_report_and_guarded_writes()
         server_url: server.url(),
         ..Default::default()
     };
-    let credentials = credentials(&custodian, &id, &config, true).unwrap();
-    let client = tilo_dav::DavClient::new(&tilo_dav::Options {
-        redirects: tilo_dav::Redirects::Refuse,
-        ..Default::default()
-    })
-    .unwrap()
-    .with_credentials(credentials);
-    let url = url::Url::parse(&format!("{}/cal/", server.url())).unwrap();
+    let mut store = AccountStore::new();
+    store.upsert(Account::new(id.clone(), "google-drive"));
+    store.save_in(root.path()).unwrap();
+    let service = tilo_dav::oauth::Service::for_test_origin(custodian, &server.url()).unwrap();
+    let url = format!("{}/cal/", server.url());
+    let client = service
+        .authorised(Some(id.as_str()), &config.server_url, "", "", &url)
+        .unwrap();
+    let run = |future| ui::rt::block_on(future).expect("test thread may block");
+    // A single opaque capability can never be redirected to a foreign origin.
     assert_eq!(
-        client
-            .report(url.clone(), tilo_dav::Depth::One, "<report/>".into())
+        run(client.report(&url, tilo_dav::Depth::One, "<report/>".into()))
             .unwrap()
             .status()
             .as_u16(),
         207
     );
     assert_eq!(
-        client
-            .put(
-                url.clone(),
-                b"ics".to_vec(),
-                Some("text/calendar"),
-                tilo_dav::Precondition::IfMatch("\"v1\"")
-            )
-            .unwrap()
-            .status()
-            .as_u16(),
+        ui::rt::block_on(client.put(
+            &url,
+            b"ics".to_vec(),
+            Some("text/calendar"),
+            tilo_dav::Precondition::IfMatch("\"v1\"")
+        ))
+        .unwrap()
+        .unwrap()
+        .status()
+        .as_u16(),
         412
     );
-    client
-        .delete(url, tilo_dav::Precondition::IfMatch("\"v2\""))
+    ui::rt::block_on(client.delete(&url, tilo_dav::Precondition::IfMatch("\"v2\"")))
+        .unwrap()
         .unwrap();
     for (method, etag) in [
         ("REPORT", None),
@@ -219,7 +220,11 @@ fn nextcloud_discovery_uses_adopted_canonical_password_and_server_owned_paths() 
         ..Default::default()
     };
     let custodian = account_custody::Custodian::for_root(Some(root.path().to_owned()));
-    let found = discover_calendars(&custodian, &account, &config, false).unwrap();
+    let mut store = AccountStore::new();
+    store.upsert(account.clone());
+    store.save_in(root.path()).unwrap();
+    let service = tilo_dav::oauth::Service::new(custodian);
+    let found = discover_calendars(&service, &account, &config, false).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(
         found[0].id,

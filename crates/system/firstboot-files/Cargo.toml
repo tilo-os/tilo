@@ -1,0 +1,29 @@
+[package]
+name = "tilo-firstboot-files"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "First-boot account files: the durable account intent and the new home's defaults, published whole or not at all and never through a symlink."
+
+[lib]
+name = "tilo_firstboot_files"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-firstboot-files"
+path = "src/main.rs"
+
+[dependencies]
+# The temporary names' 128 random bits, from the kernel.
+getrandom.workspace = true
+# Every edge relative to a directory descriptor (openat, renameat2, fchownat,
+# symlinkat), umask and getuid, without FFI.
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
