@@ -777,12 +777,12 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             let request = local_host_request(false);
             let before = verifications();
             let pending = host.invoke(&caller, request.clone());
+            let receipt = local_host_answer(pending).await.unwrap();
             assert_eq!(
                 verifications().saturating_sub(before),
                 1,
-                "an invocation admission and its dispatch verify once"
+                "the queued invocation admission and its dispatch verify once"
             );
-            let receipt = local_host_answer(pending).await.unwrap();
             assert_eq!(receipt.invocation, request.invocation);
             let _lease = local_host_lease(&rig, &caller, request.invocation).await;
 

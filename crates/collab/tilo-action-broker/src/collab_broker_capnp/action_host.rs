@@ -1525,6 +1525,16 @@ impl CapnpBrokerState {
             return Pending::ready(self.invoke_own_device(caller, request));
         }
         if let Some(origin) = origin {
+            if let Some(job) = self.remote_job(caller, &request.invocation) {
+                let replay = self
+                    .remote_invocations
+                    .lock()
+                    .map_err(|_| ActionHostError::Unavailable {
+                        reason: "the invocation ledger is unavailable".into(),
+                    })
+                    .and_then(|mut ledger| ledger.reserve(caller, request));
+                return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
+            }
             // Admission can sign and durably record an invocation. Keep only
             // inert custody on the UI turn; the broker revalidates it at dispatch.
             let (reply, response) = pending();

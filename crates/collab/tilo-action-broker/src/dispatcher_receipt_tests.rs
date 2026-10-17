@@ -391,7 +391,23 @@ async fn dispatcher_terminal_receipts_attest_only_the_observed_outcome() {
             ] {
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
-                publish_receipt_read(&rig, &env).await;
+                if category == TerminalCategory::Cancelled {
+                    // Cancellation is a declared capability, not a valid outcome
+                    // for the ordinary noncancellable read used by other cases.
+                    let directory = DurableDirectory {
+                        state: directory_state("original-r1"),
+                    };
+                    rig.worker
+                        .handle
+                        .publish_action_directory(
+                            &env.route.app_id,
+                            capnp_rpc::new_client(directory),
+                        )
+                        .await
+                        .unwrap();
+                } else {
+                    publish_receipt_read(&rig, &env).await;
+                }
                 let (wire, admitted) = dispatch_receipt_read(&rig).await;
                 assert!(admitted.terminal.is_none(), "admission is not completion");
                 let evidence = admitted.admission.as_ref().unwrap();
@@ -423,10 +439,17 @@ async fn dispatcher_terminal_receipts_attest_only_the_observed_outcome() {
                     .await
                     .unwrap();
                 let after = receipt_barriers(&rig);
-                assert_eq!(after.writes - before.writes, 1);
+                // The cancellable effect also prepares its owner-accepted
+                // outcome before the terminal write. Signing adds no write.
+                let transitions = if category == TerminalCategory::Cancelled {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(after.writes - before.writes, transitions);
                 assert_eq!(
                     after.file - before.file,
-                    1,
+                    transitions,
                     "terminal signature shares the outcome barrier"
                 );
                 assert_eq!(after.directory, before.directory);
@@ -502,6 +525,10 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
         publish_receipt_read(&rig, &env).await;
         let (_, admitted) = dispatch_receipt_read(&rig).await;
         let evidence = admitted.admission.as_ref().unwrap();
+        // Retire the broker before disconnecting the worker: an orderly worker
+        // disconnect persists a signed uncertain outcome, whereas this case
+        // must recover an admission that never received a terminal transition.
+        rig.state.stop();
         rig.stop().await;
         let restarted = Rig::new(&env).await;
         let before = receipt_barriers(&restarted);
@@ -518,21 +545,30 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
         restarted.stop().await;
 
         // Recovery compacted the real dispatch journal into a snapshot. Change
-        // fields outside public routing facts to exercise the signed retained
-        // projection, rather than merely the public receipt's fact comparison.
+        // retained fields to exercise both the signed retained projection and
+        // the public receipt's actor fact comparison.
         let root = env.root.path().join("workspace.json.invocations");
         let path = root.join("records.json");
         let bytes = std::fs::read(&path).unwrap();
         let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         for field in ["context", "contract", "operation_kind", "actor", "resource_kind"] {
             let mut altered = snapshot.clone();
-            altered["records"][0]["intent"][field] = serde_json::json!({"substituted": field});
+            altered["records"][0]["intent"][field] = if field == "actor" {
+                serde_json::json!("substituted actor")
+            } else {
+                serde_json::json!({"substituted": field})
+            };
             std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
             let error = match InvocationJournal::open(&root) {
                 Ok(_) => panic!("tampered retained {field} was accepted"),
                 Err(error) => error,
             };
-            assert!(error.contains("retained admission intent differs"), "{field}: {error}");
+            let expected_error = if field == "actor" {
+                "admission facts do not match"
+            } else {
+                "retained admission intent differs from signed intent"
+            };
+            assert_eq!(error, expected_error, "tampered {field}");
         }
         std::fs::write(&path, bytes).unwrap();
         let restored = InvocationJournal::open(&root).unwrap();
