@@ -647,6 +647,10 @@ impl TypstApp {
                 return Err(e.to_string());
             }
         };
+        // Recovery belongs to the source being replaced, not the newly opened
+        // document. Leave it intact when reading the new file fails.
+        self.save_path = None;
+        self.save_status = ui::SaveStatusSurface::new();
         let path = path.to_string_lossy().into_owned();
         // A window edits one document: the file opened replaces the one shown.
         if let Some(id) = self.current_file().and_then(|_| self.current.clone()) {
@@ -1932,6 +1936,71 @@ mod tests {
             app.save_status.failure().is_none(),
             "a successful retry dismisses the failure card"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opening_another_document_clears_save_recovery_only_after_a_successful_read() {
+        use crate::actions::TypstEffect;
+
+        let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        let file = app.state().files.ids().next().unwrap().clone();
+        let source = Workspace::paths().files.item(&file).source;
+        app.invoke(ui::tilo_resource::Invoke::edit(&source.replace("= Document A")).unwrap())
+            .unwrap();
+        let dir = unique_dir("open-save-recovery");
+        let destination = dir.join("missing/a.typ");
+        let other = dir.join("b.typ");
+        let save = TypstEffect::Save {
+            path: Some(destination.to_string_lossy().into_owned()),
+        };
+        assert!(app.effect_confirmed(&save).is_err());
+        app.settle();
+        assert!(
+            app.effect_confirmed(&TypstEffect::OpenFile {
+                path: Some(other.to_string_lossy().into_owned()),
+            })
+            .is_err()
+        );
+        app.settle();
+        let retry = app
+            .with_surface::<TypstApp, _>(|view| {
+                assert!(view.save_status.failure().is_some());
+                assert_eq!(view.current_file().unwrap().source, "= Document A");
+                view.save_path.clone().unwrap()
+            })
+            .unwrap();
+        assert_eq!(retry, destination);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        app.effect_confirmed(&TypstEffect::Save {
+            path: Some(retry.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "= Document A"
+        );
+
+        // Fail another save of A, then load B through the same live effect path.
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::remove_dir(destination.parent().unwrap()).unwrap();
+        assert!(app.effect_confirmed(&save).is_err());
+        app.settle();
+        std::fs::write(&other, "= Document B").unwrap();
+        app.effect_confirmed(&TypstEffect::OpenFile {
+            path: Some(other.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        app.settle();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(view.current_file().unwrap().source, "= Document B");
+            assert!(view.save_path.is_none(), "B must not retry A's destination");
+            assert!(view.save_status.failure().is_none(), "no stale Retry card");
+        })
+        .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "= Document B");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
