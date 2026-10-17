@@ -61,9 +61,14 @@
 //! desktop's bar shows over the window's top edge, the window's bar stands
 //! below it (`WindowGroup::set_top_overlay_inset`), never under it.
 //!
+//! Transit, braking and heading are read from the system's one pointer
+//! predictor, [`super::aim::Trajectory`], the same reading the tab row and
+//! the desk widgets use.
+//!
 //! The state is pure: every method takes the instant it reasons about, so
 //! fast and slow pointer paths are tested against a synthetic timeline.
 
+use super::aim::{Trajectory, in_aim_hull};
 use crate::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect};
 
@@ -103,9 +108,6 @@ pub const PUSH_SPEED: f64 = 1.0;
 
 /// How far a touch that starts in the band drags down to show the bar.
 pub const TOUCH_SWIPE_PX: f64 = 24.0;
-
-/// Pointer history kept: enough to span [`PUSH_WINDOW`] at any sane rate.
-const MAX_SAMPLES: usize = 12;
 
 /// Where the bar is, as laid out now.
 #[derive(Clone, Copy, Debug)]
@@ -170,8 +172,7 @@ pub struct TopEdgeReveal {
     /// A click in the band went to the app: no reveal until the pointer
     /// leaves the band.
     suppressed: bool,
-    /// Newest last.
-    samples: Vec<(Point, Instant)>,
+    path: Trajectory,
     touch_from: Option<Point>,
     /// When `shown` last changed, for the fade.
     changed_at: Option<Instant>,
@@ -251,28 +252,26 @@ impl TopEdgeReveal {
         let mut changed = self.settle(now);
         // A repeated position (the host and the window both report the same
         // sample) says nothing new.
-        if self.samples.last().is_some_and(|(last, _)| *last == p) {
+        if self.path.last().is_some_and(|(last, _)| last == p) {
             return changed;
         }
         // Recent positions the path came from: a cone from any of them
         // toward a control counts, so neither one jittery sample nor the
         // lag of an older apex after a turn misreads the heading.
         let apexes: Vec<Point> = self
-            .samples
+            .path
+            .samples()
             .iter()
             .rev()
             .take(3)
             .map(|(point, _)| *point)
             .collect();
-        if self.samples.len() >= MAX_SAMPLES {
-            self.samples.remove(0);
-        }
-        self.samples.push((p, now));
+        self.path.push(p, now);
         let in_band = geo.in_band(p);
         if !in_band {
             self.suppressed = false;
         }
-        let transit = self.in_transit();
+        let transit = self.path.in_transit(TRANSIT_SPEED, BRAKE_RATIO);
         if self.shown {
             let on_control = geo.controls.iter().any(|r| r.contains(p));
             // On the bar the pointer may yet settle (a fast flick onto Close
@@ -293,7 +292,7 @@ impl TopEdgeReveal {
             let heading = apexes.iter().filter(|a| **a != p).any(|a| {
                 geo.controls
                     .iter()
-                    .any(|r| !r.contains(p) && super::hover_intent::in_aim_hull(p, *a, *r))
+                    .any(|r| !r.contains(p) && in_aim_hull(p, *a, *r))
             });
             if heading {
                 self.hold = Some(Hold::Aim(now + AIM_HOLD));
@@ -323,49 +322,17 @@ impl TopEdgeReveal {
         changed
     }
 
-    /// Speeds of the last segments of the path, newest last, in px per ms.
-    fn speeds(&self) -> Vec<f64> {
-        self.samples
-            .windows(2)
-            .map(|pair| {
-                let ((a, ta), (b, tb)) = (pair[0], pair[1]);
-                let ms = tb.saturating_duration_since(ta).as_secs_f64() * 1000.0;
-                (b - a).hypot() / ms.max(1.0)
-            })
-            .collect()
-    }
-
-    /// The newest segment's speed and the peak of the few before it.
-    fn speed_and_peak(&self) -> Option<(f64, f64)> {
-        let speeds = self.speeds();
-        let (&last, before) = speeds.split_last()?;
-        let peak = before.iter().rev().take(3).copied().fold(last, f64::max);
-        Some((last, peak))
-    }
-
-    /// The pointer is passing through: fast, and not braking.
-    fn in_transit(&self) -> bool {
-        self.speed_and_peak()
-            .is_some_and(|(last, peak)| last >= TRANSIT_SPEED && last > BRAKE_RATIO * peak)
-    }
-
-    /// The pointer brakes after a fast move: it is settling on something.
-    fn braking(&self) -> bool {
-        self.speed_and_peak()
-            .is_some_and(|(last, peak)| peak >= PUSH_SPEED && last <= BRAKE_RATIO * peak)
-    }
-
     /// Whether the pointer at `p` (in the band) arrived pushing up from the
     /// app's content and brakes at the edge, rather than slowing down on
     /// something in its top row or passing on into the desktop's bar.
     fn pushed_up(&self, p: Point, geo: &EdgeGeometry<'_>, now: Instant) -> bool {
-        if !self.braking() {
+        if !self.path.braking(PUSH_SPEED, BRAKE_RATIO) {
             return false;
         }
         let floor = geo.band().y1;
         // The path since the push started must stay inside the window: one
         // that came down from the desktop's bar is entering the app.
-        for (q, at) in self.samples.iter().rev().skip(1) {
+        for (q, at) in self.path.samples().iter().rev().skip(1) {
             if now.saturating_duration_since(*at) > PUSH_WINDOW {
                 break;
             }
@@ -391,7 +358,7 @@ impl TopEdgeReveal {
 
     /// The pointer left the surface: nothing to keep the bar for.
     pub fn on_leave(&mut self, now: Instant) -> bool {
-        self.samples.clear();
+        self.path.clear();
         self.suppressed = false;
         self.touch_from = None;
         if self.pinned {
@@ -449,7 +416,7 @@ impl TopEdgeReveal {
     /// Test and shot fixture: as if the person had reached for the bar.
     pub fn force_shown(&mut self, shown: bool) {
         // Time has passed, as far as the pointer's path is concerned.
-        self.samples.clear();
+        self.path.clear();
         self.pinned = false;
         self.due = None;
         self.hold = None;
@@ -466,7 +433,7 @@ impl TopEdgeReveal {
         // The pointer rested that long: its next move starts from rest, and
         // the fade (timed from a deadline that has not come yet on the real
         // clock) has run.
-        self.samples.clear();
+        self.path.clear();
         self.changed_at = None;
         self.shown
     }

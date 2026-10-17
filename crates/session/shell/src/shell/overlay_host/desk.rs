@@ -38,11 +38,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::ShellOverlayHost;
 use super::layers::LayerId;
+use crate::shell::desk_widgets::calendar::{self, Month};
 use crate::shell::desk_widgets::layout::{self, Item};
+use crate::shell::desk_widgets::system_monitor::{self, Reading};
 use crate::shell::desk_widgets::team::{self, TeamMember};
 use crate::shell::desk_widgets::{
-    Context, DeskBoard, DeskWidgetPrefs, DockEdge, FADE_IN, FADE_OUT, Form, SLIDE_PX, ShowMode,
-    Slot, WidgetId,
+    Context, DeskBoard, DeskWidgetPrefs, DockEdge, Form, ShowMode, Slot, WidgetId,
 };
 use crate::shell::input_policy::SuperGesture;
 use crate::shell::now_playing::{NowPlayingView, PlaybackStatus, PlayerSnapshot};
@@ -68,12 +69,25 @@ const GLANCE_AVATARS: usize = 5;
 const TEAM_HEADER: f64 = 36.0;
 const TEAM_ROW: f64 = 62.0;
 const TEAM_MORE: f64 = 24.0;
+/// The calendar's glance form: the weekday over the day of the month.
+const CALENDAR_GLANCE: Size = Size::new(52.0, 56.0);
+const CALENDAR_HEADER: f64 = 40.0;
+const CALENDAR_WEEKDAYS: f64 = 24.0;
+const CALENDAR_ROW: f64 = 32.0;
+/// The system monitor's glance pill.
+const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
+const MONITOR_HEADER: f64 = 36.0;
+const MONITOR_ROW: f64 = 40.0;
 /// A press that moves this far becomes a drag to another edge.
 const DRAG_SLOP: f64 = 6.0;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuperSurface {
+    /// Super held, not yet grown: the quiet first stage. The widgets' glance
+    /// forms and the time; no scrim, no field, nothing over the windows. A
+    /// chord takes it away at once.
+    Glimpse,
     /// Super held: closes when it comes up, unless the person used it.
     Peek,
     /// Super tapped (or a peek taken up): stays until Escape or a click
@@ -104,6 +118,9 @@ pub(crate) struct DeskState {
     super_surface: Option<SuperSurface>,
     /// Where the time card was last painted.
     super_header_rect: std::cell::Cell<Option<Rect>>,
+    /// The time card's own arrival, so it shows in the quiet stage before
+    /// the search field does.
+    super_header: ui::Transition,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
     press: Option<Press>,
@@ -112,6 +129,11 @@ pub(crate) struct DeskState {
     /// The theme's reduced-motion choice, as last painted: fades then
     /// complete at once.
     reduce_motion: bool,
+    /// The theme's motion durations, as last painted.
+    durations: ui::tokens::Durations,
+    /// The system monitor's readings, taken only while it shows.
+    monitor: system_monitor::Monitor,
+    monitor_source: Box<dyn system_monitor::Source>,
 }
 
 impl Default for DeskState {
@@ -126,12 +148,16 @@ impl Default for DeskState {
             opened: BTreeMap::new(),
             super_surface: None,
             super_header_rect: std::cell::Cell::new(None),
+            super_header: ui::Transition::closed(),
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
             press: None,
             team_count: 0,
             now_playing_revision: 0,
             reduce_motion: false,
+            durations: ui::tokens::Durations::default(),
+            monitor: system_monitor::Monitor::default(),
+            monitor_source: Box::new(system_monitor::Kernel),
         }
     }
 }
@@ -149,6 +175,10 @@ impl DeskState {
 
 impl ShellOverlayHost {
     /// Super alone, tapped or held.
+    ///
+    /// A hold grows in: first the quiet stage ([`SuperSurface::Glimpse`]),
+    /// then the whole surface once Super has been held longer or the
+    /// pointer moves. A chord at either stage takes it away without a fade.
     pub fn super_gesture(&mut self, gesture: SuperGesture, doc: &AutoCommit, root: &ObjId) {
         match (gesture, self.desk.super_surface) {
             // A second tap closes the surface, and closes plain search as it
@@ -160,7 +190,20 @@ impl ShellOverlayHost {
                 self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (SuperGesture::Peek, None) if !self.palette_visible => {
+                self.open_super_glimpse();
+            }
+            (SuperGesture::PeekFull, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Peek, doc, root);
+            }
+            (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
+                self.open_super_surface(SuperSurface::Pinned, doc, root);
+            }
+            (
+                SuperGesture::PeekReleased | SuperGesture::PeekCancelled,
+                Some(SuperSurface::Glimpse),
+            )
+            | (SuperGesture::PeekCancelled, Some(SuperSurface::Peek)) => {
+                self.cancel_super_surface();
             }
             (SuperGesture::PeekReleased, Some(SuperSurface::Peek)) => {
                 if self.palette.query().is_empty() {
@@ -172,10 +215,21 @@ impl ShellOverlayHost {
             (SuperGesture::PeekTaken, Some(SuperSurface::Peek)) => {
                 self.desk.super_surface = Some(SuperSurface::Pinned);
             }
-            (SuperGesture::PeekCancelled, Some(SuperSurface::Peek)) => self.close_super_surface(),
             _ => return,
         }
         self.bump_chrome();
+    }
+
+    /// The quiet first stage of a held Super: the widgets come to their
+    /// glance forms and the time card shows where it stands under the
+    /// field, so growing into the whole surface moves neither.
+    fn open_super_glimpse(&mut self) {
+        // Lay the palette out field-only, unseen, so the time card has the
+        // field's place to stand under before the field shows.
+        self.palette.set_field_only_while_empty(true);
+        self.palette_layout_dirty = true;
+        self.desk.super_surface = Some(SuperSurface::Glimpse);
+        self.open_super_header();
     }
 
     /// Open the Super surface: search with an empty field at the top, every
@@ -187,7 +241,19 @@ impl ShellOverlayHost {
         self.palette.set_field_only_while_empty(true);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
+        self.open_super_header();
         self.refresh_search_results(doc, root);
+    }
+
+    fn open_super_header(&mut self) {
+        let fade = if self.desk.reduce_motion {
+            Duration::ZERO
+        } else {
+            self.desk.durations.fast()
+        };
+        self.desk
+            .super_header
+            .set_open_at(true, fade, ui::Curve::EaseOut, Instant::now());
     }
 
     /// Close the Super surface (and the search it holds).
@@ -197,8 +263,18 @@ impl ShellOverlayHost {
         self.end_super_surface();
     }
 
+    /// The hold was a chord after all, or Super came up during the quiet
+    /// stage: everything the hold brought is gone at once, with no fade
+    /// for the eye to follow while the chord runs.
+    fn cancel_super_surface(&mut self) {
+        self.close_super_surface();
+        self.palette_was_visible = false;
+        self.palette_transition = ui::Transition::closed();
+    }
+
     fn end_super_surface(&mut self) {
         self.desk.super_surface = None;
+        self.desk.super_header = ui::Transition::closed();
         self.palette.set_field_only_while_empty(false);
         self.palette_layout_dirty = true;
     }
@@ -345,6 +421,32 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Read the system monitor from `source` instead of the kernel.
+    #[cfg(test)]
+    pub(crate) fn set_monitor_source_for_tests(&mut self, source: Box<dyn system_monitor::Source>) {
+        self.desk.monitor_source = source;
+    }
+
+    /// The clock the desk reads the date from: the top bar's, a fixture's
+    /// pinned one included.
+    fn desk_clock(&self) -> tilo_desktop::chrome::ClockSnapshot {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().hosted_inputs.fixture_clock())
+            .unwrap_or_else(crate::shell::topbar_chrome::clock_snapshot)
+    }
+
+    /// The month the calendar shows: the one today is in.
+    fn calendar_month(&self) -> Month {
+        use chrono::TimeZone as _;
+        let secs = self.desk_clock().unix_seconds;
+        let today = chrono::Local
+            .timestamp_opt(secs, 0)
+            .single()
+            .map_or_else(|| ui::clock::local_now().date_naive(), |at| at.date_naive());
+        Month::around(today)
+    }
+
     fn widget_sizes(&self, id: WidgetId, now: Instant) -> (Size, Size, bool) {
         let edge = self.desk.prefs.get(id).edge;
         match id {
@@ -367,13 +469,33 @@ impl ShellOverlayHost {
                     n > 0,
                 )
             }
+            // The date is always there to show.
+            WidgetId::Calendar => (
+                CALENDAR_GLANCE,
+                Size::new(CARD_WIDTH, calendar_card_height() + PIN_BAND),
+                true,
+            ),
+            // Read once it shows; the kernel always offers memory.
+            WidgetId::SystemMonitor => (
+                MONITOR_GLANCE,
+                Size::new(
+                    CARD_WIDTH,
+                    MONITOR_HEADER + MONITOR_ROW * 3.0 + 8.0 + PIN_BAND,
+                ),
+                true,
+            ),
         }
     }
 
     /// Lay the widgets out and decide their forms at `now`. Returns whether
     /// anything on the desk changed.
     pub(crate) fn update_desk(&mut self, now: Instant) -> bool {
-        if !self.palette_visible && self.desk.super_surface.is_some() {
+        if !self.palette_visible
+            && self
+                .desk
+                .super_surface
+                .is_some_and(|surface| surface != SuperSurface::Glimpse)
+        {
             // Closed through the palette's own paths (Escape, a click
             // outside, an activated result).
             self.end_super_surface();
@@ -392,7 +514,11 @@ impl ShellOverlayHost {
                 }
             })
             .collect();
-        let super_up = self.desk.super_surface.is_some();
+        let super_up = self
+            .desk
+            .super_surface
+            .is_some_and(|surface| surface != SuperSurface::Glimpse);
+        let super_glance = self.desk.super_surface == Some(SuperSurface::Glimpse);
         let area = self.overlay_area();
         // The strip ribbon on the right edge is where the strip switcher
         // opens: a widget waiting there would take the pointer that reaches
@@ -418,31 +544,48 @@ impl ShellOverlayHost {
             strip,
             caret: self.text_caret,
             super_surface: super_up,
+            super_glance,
             covered,
             slots: &self.desk.slots,
         };
         changed |= self.desk.board.update(&ctx);
         let reduce_motion = self.desk.reduce_motion;
+        let durations = self.desk.durations;
+        let super_asked = self.desk.super_surface.is_some();
         for slot in &self.desk.slots {
             let form = self.desk.board.form(slot.id);
             let shown = form != Form::Away;
-            let fade = if reduce_motion {
-                Duration::ZERO
-            } else if shown {
-                FADE_IN
-            } else {
-                FADE_OUT
+            let open = form == Form::Open;
+            let asked = super_asked
+                || self.desk.board.reached() == Some(slot.id)
+                || self.desk.board.opened() == Some(slot.id);
+            let fade = |arriving: bool| {
+                if reduce_motion {
+                    Duration::ZERO
+                } else {
+                    crate::shell::desk_widgets::fade(arriving, asked, durations)
+                }
             };
             self.desk
                 .shown
                 .entry(slot.id)
                 .or_insert_with(ui::Transition::closed)
-                .set_open_at(shown, fade, ui::Curve::EaseOut, now);
+                .set_open_at(shown, fade(shown), ui::Curve::EaseOut, now);
+            // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
                 .entry(slot.id)
                 .or_insert_with(ui::Transition::closed)
-                .set_open_at(form == Form::Open, fade, ui::Curve::EaseOut, now);
+                .set_open_at(open, fade(open), ui::Curve::EaseOut, now);
+        }
+        // The system monitor reads only while it shows.
+        if self.desk.board.form(WidgetId::SystemMonitor) == Form::Away {
+            self.desk.monitor.pause();
+        } else {
+            changed |= self
+                .desk
+                .monitor
+                .sample_if_due(self.desk.monitor_source.as_ref(), now);
         }
         // A track change wakes the loop through the observer; repaint once.
         let revision = crate::shell::mpris::now_playing_revision();
@@ -463,7 +606,24 @@ impl ShellOverlayHost {
             let secs = ui::clock::local_now().timestamp().rem_euclid(60);
             now + Duration::from_secs(u64::try_from(60 - secs).unwrap_or(60))
         });
-        self.desk.board.deadline(now).into_iter().chain(clock).min()
+        let showing = |id| self.desk.board.form(id) != Form::Away;
+        // A showing calendar turns the page at midnight.
+        let day = showing(WidgetId::Calendar).then(|| {
+            use chrono::Timelike as _;
+            let secs = ui::clock::local_now().num_seconds_from_midnight();
+            now + Duration::from_secs(u64::from(86_400_u32.saturating_sub(secs).max(1)))
+        });
+        let monitor = showing(WidgetId::SystemMonitor)
+            .then(|| self.desk.monitor.deadline())
+            .flatten();
+        self.desk
+            .board
+            .deadline(now)
+            .into_iter()
+            .chain(clock)
+            .chain(day)
+            .chain(monitor)
+            .min()
     }
 
     /// Whether a widget is fading or folding.
@@ -472,6 +632,7 @@ impl ShellOverlayHost {
             .shown
             .values()
             .chain(self.desk.opened.values())
+            .chain(std::iter::once(&self.desk.super_header))
             .any(|transition| transition.is_animating(now))
     }
 
@@ -632,6 +793,8 @@ impl ShellOverlayHost {
                 let name = match slot.id {
                     WidgetId::Music => "desk.music",
                     WidgetId::Team => "desk.team",
+                    WidgetId::Calendar => "desk.calendar",
+                    WidgetId::SystemMonitor => "desk.system-monitor",
                 };
                 match self.desk.board.form(slot.id) {
                     Form::Away => None,
@@ -653,6 +816,7 @@ impl ShellOverlayHost {
     ) -> Vec<Rect> {
         let now = Instant::now();
         self.desk.reduce_motion = theme.reduce_motion;
+        self.desk.durations = theme.tokens.motion.durations;
         let mut painted = Vec::new();
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
@@ -666,6 +830,8 @@ impl ShellOverlayHost {
             Vec::new()
         };
         let music = self.music_view(now);
+        let month = self.calendar_month();
+        let reading = self.desk.monitor.reading();
         let drag = self
             .desk
             .press
@@ -691,11 +857,11 @@ impl ShellOverlayHost {
                 .get(&slot.id)
                 .copied()
                 .unwrap_or_else(|| slot.id.default_edge());
-            // In from the edge as it fades in; nothing else moves.
-            let slide = layout::outward(edge) * (SLIDE_PX * f64::from(1.0 - shown));
+            // Opacity only: a widget fades in place, and only a drag moves
+            // it.
             let shift = drag
                 .filter(|(id, _)| *id == slot.id)
-                .map_or(slide, |(_, delta)| slide + delta);
+                .map_or(vello::kurbo::Vec2::ZERO, |(_, delta)| delta);
             let at = transform.pre_translate(shift);
             let glance_alpha = shown * (1.0 - open);
             if glance_alpha > f32::EPSILON {
@@ -720,6 +886,12 @@ impl ShellOverlayHost {
                         WidgetId::Team => {
                             paint_team_glance(scene, at, text, theme, slot.glance, edge, &members);
                         }
+                        WidgetId::Calendar => {
+                            paint_calendar_glance(scene, at, text, theme, slot.glance, &month);
+                        }
+                        WidgetId::SystemMonitor => {
+                            paint_monitor_glance(scene, at, text, theme, slot.glance, reading);
+                        }
                     },
                 );
                 painted.push(at.transform_rect_bbox(slot.glance.inflate(24.0, 32.0)));
@@ -729,6 +901,8 @@ impl ShellOverlayHost {
                 let content = OpenContent {
                     music: music.as_ref(),
                     members: &members,
+                    month: &month,
+                    reading,
                 };
                 self.paint_open_card(scene, (at, open_alpha), text, theme, slot, content);
                 painted.push(at.transform_rect_bbox(slot.open.inflate(24.0, 32.0)));
@@ -784,6 +958,14 @@ impl ShellOverlayHost {
                     paint_card_ground(scene, at, theme, card);
                     paint_team_card(scene, at, text, theme, card, content.members);
                 }
+                WidgetId::Calendar => {
+                    paint_card_ground(scene, at, theme, card);
+                    paint_calendar_card(scene, at, text, theme, card, content.month);
+                }
+                WidgetId::SystemMonitor => {
+                    paint_card_ground(scene, at, theme, card);
+                    paint_monitor_card(scene, at, text, theme, card, content.reading);
+                }
             }
         });
     }
@@ -823,8 +1005,11 @@ impl ShellOverlayHost {
         });
         super::overlay_part(scene, "shell.super-header", desktop, |scene| {
             // Typing lists results where the card stands: it steps away.
+            // It arrives with the quiet stage, before the field does.
             let openness = if super_up && self.palette.shows_field_only() {
-                self.palette_transition.value(palette_now)
+                self.palette_transition
+                    .value(palette_now)
+                    .max(self.desk.super_header.value(palette_now))
             } else {
                 0.0
             };
@@ -885,7 +1070,15 @@ impl ShellOverlayHost {
         // Under the field, on its left edge: the window's tab bar and
         // toolbar end above the field's row, so the card never covers
         // window chrome, and it never covers the field.
-        let field = ui::Widget::get_rect(&self.palette);
+        // Where the field stands, or will stand once the quiet stage grows:
+        // the card never moves between the two.
+        let frame = self.palette_frame(theme.text_scale);
+        let field = Rect::new(
+            frame.x0,
+            frame.y0,
+            frame.x1,
+            frame.y0 + self.palette.desired_size().1,
+        );
         let card = Rect::new(
             field.x0,
             field.y1 + SUPER_HEADER_GAP,
@@ -934,6 +1127,8 @@ impl ShellOverlayHost {
 struct OpenContent<'a> {
     music: Option<&'a NowPlayingView>,
     members: &'a [TeamMember],
+    month: &'a Month,
+    reading: Reading,
 }
 
 /// Run `paint` at `alpha`, in a layer only while it is fading.
@@ -973,6 +1168,13 @@ fn team_glance_size(edge: DockEdge, people: usize) -> Size {
             Size::new(long, AVATAR + 12.0)
         }
     }
+}
+
+fn calendar_card_height() -> f64 {
+    CALENDAR_HEADER
+        + CALENDAR_WEEKDAYS
+        + CALENDAR_ROW * ui::num::f64_of_usize(calendar::WEEKS)
+        + 8.0
 }
 
 fn team_card_height(people: usize) -> f64 {
@@ -1221,6 +1423,301 @@ fn paint_team_card(
             None,
             &caption,
         );
+    }
+}
+
+/// Draw `line` centred on `center` in `style` and `color`.
+fn draw_centered(
+    text: &mut TextRenderer,
+    scene: &mut Scene,
+    transform: Affine,
+    (line, center): (&str, Point),
+    style: &ui::text_render::TextStyle,
+    color: vello::peniko::Color,
+) {
+    let (w, h) = text.measure_style(line, None, style);
+    text.draw_style(
+        scene,
+        line,
+        color,
+        transform
+            .pre_translate((center.x - f64::from(w) / 2.0, center.y - f64::from(h) / 2.0).into()),
+        None,
+        style,
+    );
+}
+
+/// The calendar's glance: the weekday over the day of the month, on a tile.
+fn paint_calendar_glance(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    month: &Month,
+) {
+    use chrono::Datelike as _;
+    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+    let mut shadow = theme.tokens.elevation.floating;
+    shadow.color = shadow.color.with_alpha_factor(0.6);
+    ui::surface::shadow(scene, transform, rect, radius, &shadow);
+    ui::surface::card(
+        scene,
+        transform,
+        rect,
+        radius,
+        theme.tokens.colors.surfaces.overlay,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        ui::chrome::panel_border(theme),
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    let colors = &theme.tokens.colors;
+    let weekday = month.today.format("%a").to_string();
+    draw_centered(
+        text,
+        scene,
+        transform,
+        (&weekday, Point::new(rect.center().x, rect.y0 + 15.0)),
+        &theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Semibold),
+        colors.text_dim,
+    );
+    draw_centered(
+        text,
+        scene,
+        transform,
+        (
+            &month.today.day().to_string(),
+            Point::new(rect.center().x, rect.y1 - 20.0),
+        ),
+        &theme
+            .text(TextRole::Title)
+            .with_weight(TextWeight::Semibold),
+        colors.text_primary,
+    );
+}
+
+/// The calendar's open card: the month, Monday first, today marked.
+fn paint_calendar_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    month: &Month,
+) {
+    let colors = &theme.tokens.colors;
+    let heading = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
+    let title = month.first.format("%B %Y").to_string();
+    let (_, title_h) = text.measure_style(&title, None, &heading);
+    text.draw_style(
+        scene,
+        &title,
+        colors.text_primary,
+        transform.pre_translate(
+            (
+                card.x0 + 14.0,
+                card.y0 + (CALENDAR_HEADER - f64::from(title_h)) / 2.0,
+            )
+                .into(),
+        ),
+        None,
+        &heading,
+    );
+    let grid_x0 = card.x0 + 10.0;
+    let cell_w = (card.width() - 20.0) / 7.0;
+    let center_x = |col: usize| grid_x0 + cell_w * (ui::num::f64_of_usize(col) + 0.5);
+    let caption = theme.text(TextRole::Caption);
+    let weekdays_y = card.y0 + CALENDAR_HEADER + CALENDAR_WEEKDAYS / 2.0;
+    for (col, weekday) in calendar::COLUMNS.iter().enumerate() {
+        let label: String = weekday.to_string().chars().take(2).collect();
+        draw_centered(
+            text,
+            scene,
+            transform,
+            (&label, Point::new(center_x(col), weekdays_y)),
+            &caption,
+            colors.text_dim,
+        );
+    }
+    let today = month.today_cell();
+    let body = theme.text(TextRole::Body);
+    let rows_y0 = card.y0 + CALENDAR_HEADER + CALENDAR_WEEKDAYS;
+    for (row, week) in month.weeks.iter().enumerate() {
+        let cy = rows_y0 + CALENDAR_ROW * (ui::num::f64_of_usize(row) + 0.5);
+        for (col, day) in week.iter().enumerate() {
+            let Some(day) = day else {
+                continue;
+            };
+            let center = Point::new(center_x(col), cy);
+            // Today: an inverted disc, the way Tilo marks the one choice.
+            let ink = if today == Some((row, col)) {
+                let disc = Rect::from_center_size(center, (26.0, 26.0));
+                ui::surface::card(scene, transform, disc, 13.0, colors.text_primary);
+                colors.surfaces.overlay
+            } else {
+                colors.text_primary
+            };
+            draw_centered(
+                text,
+                scene,
+                transform,
+                (&day.to_string(), center),
+                &body,
+                ink,
+            );
+        }
+    }
+}
+
+/// The system monitor's glance: load and memory, labels in quiet ink.
+fn paint_monitor_glance(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    reading: Reading,
+) {
+    if reading.is_empty() {
+        return;
+    }
+    paint_pill_ground(scene, transform, theme, rect);
+    let colors = &theme.tokens.colors;
+    let label_style = theme
+        .text(TextRole::Caption)
+        .with_weight(TextWeight::Semibold);
+    let value_style = theme.text(TextRole::Caption).with_weight(TextWeight::Bold);
+    let pairs = [
+        ("desk-monitor-cpu-short", reading.cpu_percent),
+        ("desk-monitor-memory-short", reading.memory_percent),
+    ];
+    let mut x = rect.x0 + 14.0;
+    for (key, value) in pairs {
+        let Some(value) = value else {
+            continue;
+        };
+        let label = crate::shell::i18n::t(key);
+        let value = format!("{value}%");
+        for (run, style, color) in [
+            (&label, &label_style, colors.text_dim),
+            (&value, &value_style, colors.text_primary),
+        ] {
+            let (w, h) = text.measure_style(run, None, style);
+            text.draw_style(
+                scene,
+                run,
+                color,
+                transform.pre_translate((x, rect.center().y - f64::from(h) / 2.0).into()),
+                None,
+                style,
+            );
+            x += f64::from(w) + 4.0;
+        }
+        x += 10.0;
+    }
+}
+
+/// The system monitor's open card: one row per reading the machine offers,
+/// each with a quiet meter.
+fn paint_monitor_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    reading: Reading,
+) {
+    let colors = &theme.tokens.colors;
+    let caption = theme.text(TextRole::Caption);
+    let title = crate::shell::i18n::t("desk-monitor-title");
+    let (_, title_h) = text.measure_style(&title, None, &caption);
+    text.draw_style(
+        scene,
+        &title,
+        colors.text_dim,
+        transform.pre_translate(
+            (
+                card.x0 + 14.0,
+                card.y0 + (MONITOR_HEADER - f64::from(title_h)) / 2.0,
+            )
+                .into(),
+        ),
+        None,
+        &caption,
+    );
+    let rows = [
+        (
+            "desk-monitor-cpu",
+            reading
+                .cpu_percent
+                .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
+        ),
+        (
+            "desk-monitor-memory",
+            reading
+                .memory_percent
+                .map(|v| (format!("{v}%"), f64::from(v) / 100.0)),
+        ),
+        (
+            "desk-monitor-temperature",
+            reading
+                .temperature_celsius
+                .map(|c| (format!("{c}\u{b0}"), (f64::from(c) / 100.0).clamp(0.0, 1.0))),
+        ),
+    ];
+    let label_style = theme.text(TextRole::Body);
+    let value_style = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
+    let mut y = card.y0 + MONITOR_HEADER;
+    for (key, value) in rows {
+        let Some((value, share)) = value else {
+            continue;
+        };
+        let label = crate::shell::i18n::t(key);
+        let (_, h) = text.measure_style(&label, None, &label_style);
+        let line_y = y + 4.0;
+        text.draw_style(
+            scene,
+            &label,
+            colors.text_primary,
+            transform.pre_translate((card.x0 + 14.0, line_y).into()),
+            None,
+            &label_style,
+        );
+        let (vw, _) = text.measure_style(&value, None, &value_style);
+        text.draw_style(
+            scene,
+            &value,
+            colors.text_primary,
+            transform.pre_translate((card.x1 - 14.0 - f64::from(vw), line_y).into()),
+            None,
+            &value_style,
+        );
+        // Secondary ink, never a status hue: a resting readout is not news.
+        let track_y = line_y + f64::from(h) + 6.0;
+        let track = Rect::new(card.x0 + 14.0, track_y, card.x1 - 14.0, track_y + 4.0);
+        ui::surface::card(
+            scene,
+            transform,
+            track,
+            2.0,
+            colors.text_dim.with_alpha_factor(0.25),
+        );
+        let fill = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * share.clamp(0.0, 1.0),
+            track.y1,
+        );
+        if fill.width() > 0.0 {
+            ui::surface::card(scene, transform, fill, 2.0, colors.text_dim);
+        }
+        y += MONITOR_ROW;
     }
 }
 

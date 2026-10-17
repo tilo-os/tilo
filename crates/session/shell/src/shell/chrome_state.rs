@@ -921,7 +921,6 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
-    topbar_editor_requested: bool,
     /// Compositor-only remaining paints after overview / workspace switch
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
@@ -953,6 +952,7 @@ pub struct ChromeState {
     /// Someone asked to rename the focused strip without saying the name:
     /// the overlay host opens the switcher's name field for it.
     strip_rename_requested: bool,
+    strip_switcher_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
@@ -1118,6 +1118,7 @@ impl ChromeState {
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
             strip_rename_requested: false,
+            strip_switcher_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -1126,7 +1127,6 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
-            topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             device_local_windows: Vec::new(),
@@ -1177,6 +1177,18 @@ impl ChromeState {
     /// Take the request [`Self::request_strip_rename`] left.
     pub fn take_strip_rename_request(&mut self) -> bool {
         std::mem::take(&mut self.strip_rename_requested)
+    }
+
+    /// Ask for the strip switcher's card, open for choosing: a click on
+    /// the strip's name in the top bar.
+    pub fn request_strip_switcher(&mut self) {
+        self.strip_switcher_requested = true;
+        self.bump();
+    }
+
+    /// Take the request [`Self::request_strip_switcher`] left.
+    pub fn take_strip_switcher_request(&mut self) -> bool {
+        std::mem::take(&mut self.strip_switcher_requested)
     }
 
     /// Called once per layout pass by the overlay host, so the
@@ -1310,15 +1322,6 @@ impl ChromeState {
     pub fn request_fullscreen_toggle(&mut self) {
         self.fullscreen_toggle_requested = true;
         self.bump();
-    }
-
-    pub fn request_topbar_editor(&mut self) {
-        self.topbar_editor_requested = true;
-        self.bump();
-    }
-
-    pub fn take_topbar_editor_request(&mut self) -> bool {
-        std::mem::take(&mut self.topbar_editor_requested)
     }
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {

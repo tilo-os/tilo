@@ -1,7 +1,6 @@
 # Obere Leiste
 continuity-dismiss = Ausblenden
 topbar-workspace-fallback = Arbeitsbereich
-topbar-calendar-none = Kein Kalender verbunden
 topbar-sharing-agent-controls = Agent steuert: { $name }
 topbar-sharing-agent-viewing = Agent sieht zu: { $name }
 topbar-sharing-person-controls = Steuert: { $name }
@@ -29,9 +28,6 @@ topbar-watching-description = { $count } { $count ->
        *[other] Personen schauen
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
-topbar-show-clock = Uhr anzeigen
-topbar-show-system-monitor = Systemmonitor anzeigen
-topbar-show-calendar = Kalender anzeigen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
 topbar-bell = { $unread ->
     [0] Mitteilungen
@@ -54,22 +50,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
-topbar-editor-control = Bearbeitungselement der oberen Leiste
-topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
-topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
-topbar-editor-remove-calendar = Kalender aus der oberen Leiste entfernen
-topbar-editor-add-clock = Uhr zur oberen Leiste hinzufügen
-topbar-editor-add-system-monitor = Systemmonitor zur oberen Leiste hinzufügen
-topbar-editor-add-calendar = Kalender zur oberen Leiste hinzufügen
-topbar-editor-title = Obere Leiste bearbeiten
-topbar-editor-hint = Zum Anordnen ziehen · „Entfernen“ klicken
-topbar-widget-clock = Uhr
-topbar-widget-system-monitor = Systemmonitor
-topbar-widget-calendar = Kalender
-topbar-editor-remove = Entfernen
-topbar-editor-add-clock-chip = + Uhr
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Kalender
 topbar-invite = Einladen
 topbar-activity-unread = { $headline }  ·  { $count } neu
 topbar-clock-resume = Fortsetzen
@@ -96,6 +76,8 @@ topbar-strip-go = Zu { $name } wechseln, { $count ->
     [one] eine Person dort
    *[other] { $count } Personen dort
 }
+topbar-strip-name = Leisten zeigen, gerade { $strip }
+topbar-strip-add = Leiste hinzufügen
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] Eine weitere Leiste

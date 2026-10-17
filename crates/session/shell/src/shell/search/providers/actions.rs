@@ -299,7 +299,6 @@ fn dedicated_contract(id: &str) -> Option<tilo_actions::ActionContract> {
 /// Actions that only open, inspect or dismiss shell views.
 const VIEW_ACTION_IDS: &[&str] = &[
     "desktop-tour.open",
-    "topbar.editor.open",
     "settings.open",
     "settings.members.open",
     "settings.privacy.open",
@@ -1351,15 +1350,6 @@ impl Action {
             "search-action-feedback-open",
             "search-action-feedback-open-subtitle",
             |st, _| crate::shell::feedback_entry::open(st),
-        ),
-        chrome(
-            "topbar.editor.open",
-            "search-action-topbar-editor",
-            "search-action-topbar-editor-subtitle",
-            |st, _| {
-                st.request_topbar_editor();
-                Ok(())
-            },
         ),
         chrome(
             "overview.toggle",
@@ -3620,12 +3610,6 @@ impl ActionsProvider {
         ctx: SearchContext<'_>,
         invite_offered: bool,
     ) -> Option<SearchResult> {
-        if action.id == "topbar.editor.open"
-            && ctx.chrome.fullscreen_group().is_some()
-            && ctx.chrome.is_fullscreen()
-        {
-            return None;
-        }
         // A session not running peer sync has nothing to invite into.
         if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
             && !ctx.chrome.peer_sync_enabled
@@ -5355,33 +5339,6 @@ mod tests {
             before,
             "revoked authority never saves an arrangement"
         );
-    }
-
-    #[test]
-    fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {
-        let chrome = chrome_with_room();
-        let provider = ActionsProvider::new();
-        let results = action_results(&provider, &chrome);
-        let editor = results
-            .iter()
-            .find(|row| row.id == "topbar.editor.open")
-            .expect("public editor action");
-        assert_eq!(editor.operation_kind, tilo_actions::OperationKind::View);
-        assert_eq!(editor.contract, Some(tilo_actions::ActionContract::view()));
-        invoke_action(&results, "topbar.editor.open", &chrome);
-        assert!(chrome.borrow_mut().take_topbar_editor_request());
-        assert!(!chrome.borrow_mut().take_topbar_editor_request());
-        {
-            let mut state = chrome.borrow_mut();
-            state.set_fullscreen_group(Some(1));
-            state.set_fullscreen_presentation(true);
-        }
-        assert!(
-            !action_results(&provider, &chrome)
-                .iter()
-                .any(|row| row.id == "topbar.editor.open")
-        );
-        assert!(!chrome.borrow_mut().take_topbar_editor_request());
     }
 
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
@@ -7201,20 +7158,20 @@ mod tests {
         for (locale, title, subtitle) in [
             (
                 "en-US",
-                "Edit top bar",
-                "Reorder, add or remove top-bar widgets",
+                "Toggle workspace overview",
+                "Show all workspaces in the wheel view",
             ),
             (
                 "de-DE",
-                "Obere Leiste bearbeiten",
-                "Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen",
+                "Arbeitsbereichsübersicht ein- oder ausblenden",
+                "Alle Arbeitsbereiche in der Radansicht zeigen",
             ),
         ] {
             ui::i18n::I18nManager::set_locale(locale);
             let editor = Action::ALL
                 .iter()
-                .find(|action| action.id == "topbar.editor.open")
-                .expect("top-bar editor action");
+                .find(|action| action.id == "overview.toggle")
+                .expect("overview action");
             assert_eq!(t(editor.label), title);
             assert_eq!(t(editor.subtitle), subtitle);
             for action in Action::ALL {

@@ -1,7 +1,6 @@
 # Top bar
 continuity-dismiss = Dismiss
 topbar-workspace-fallback = Workspace
-topbar-calendar-none = No calendar connected
 topbar-sharing-agent-controls = Agent in control: { $name }
 topbar-sharing-agent-viewing = Agent watching: { $name }
 topbar-sharing-person-controls = In control: { $name }
@@ -17,9 +16,6 @@ topbar-watching-description = { $count } { $count ->
        *[other] people
     } watching without joining
 topbar-tilo-menu = Tilo menu
-topbar-show-clock = Show clock
-topbar-show-system-monitor = Show system monitor
-topbar-show-calendar = Show calendar
 topbar-open-quick-settings = Open quick settings
 topbar-bell = { $unread ->
     [0] Notifications
@@ -42,22 +38,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
-topbar-editor-control = Top bar editor control
-topbar-editor-remove-clock = Remove clock from top bar
-topbar-editor-remove-system-monitor = Remove system monitor from top bar
-topbar-editor-remove-calendar = Remove calendar from top bar
-topbar-editor-add-clock = Add clock to top bar
-topbar-editor-add-system-monitor = Add system monitor to top bar
-topbar-editor-add-calendar = Add calendar to top bar
-topbar-editor-title = Edit top bar
-topbar-editor-hint = Drag to reorder · click Remove
-topbar-widget-clock = Clock
-topbar-widget-system-monitor = System monitor
-topbar-widget-calendar = Calendar
-topbar-editor-remove = Remove
-topbar-editor-add-clock-chip = + Clock
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Calendar
 topbar-invite = Invite
 topbar-activity-unread = { $headline }  ·  { $count } new
 topbar-clock-resume = Resume
@@ -84,6 +64,8 @@ topbar-strip-go = Go to { $name }, { $count ->
     [one] one person there
    *[other] { $count } people there
 }
+topbar-strip-name = Show strips, now on { $strip }
+topbar-strip-add = Add a strip
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] One more strip

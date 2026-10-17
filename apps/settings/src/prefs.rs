@@ -495,6 +495,12 @@ pub struct DeskWidgetsPrefs {
     /// The people in this workspace.
     #[serde(default = "default_team_widget")]
     pub team: settings_store::desk_widgets::WidgetPrefs,
+    /// Today's date, and the month around it.
+    #[serde(default = "default_calendar_widget")]
+    pub calendar: settings_store::desk_widgets::WidgetPrefs,
+    /// Processor, memory and temperature.
+    #[serde(default = "default_system_monitor_widget")]
+    pub system_monitor: settings_store::desk_widgets::WidgetPrefs,
 }
 
 fn default_music_widget() -> settings_store::desk_widgets::WidgetPrefs {
@@ -509,11 +515,25 @@ fn default_team_widget() -> settings_store::desk_widgets::WidgetPrefs {
     )
 }
 
+fn default_calendar_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::Calendar,
+    )
+}
+
+fn default_system_monitor_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::SystemMonitor,
+    )
+}
+
 impl Default for DeskWidgetsPrefs {
     fn default() -> Self {
         Self {
             music: default_music_widget(),
             team: default_team_widget(),
+            calendar: default_calendar_widget(),
+            system_monitor: default_system_monitor_widget(),
         }
     }
 }

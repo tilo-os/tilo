@@ -102,11 +102,17 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     );
 }
 
+/// Held Super, grown into the whole surface.
+fn grown_peek(host: &mut ShellOverlayHost, doc: &AutoCommit) {
+    host.super_gesture(SuperGesture::Peek, doc, &automerge::ROOT);
+    host.super_gesture(SuperGesture::PeekFull, doc, &automerge::ROOT);
+}
+
 #[test]
 fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     let (mut host, _chrome, _) = desk();
     let doc = AutoCommit::new();
-    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    grown_peek(&mut host, &doc);
     assert_eq!(host.super_surface(), Some(SuperSurface::Peek));
     assert!(host.palette_visible);
     host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
@@ -117,7 +123,7 @@ fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     );
     assert!(!host.palette_visible);
 
-    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    grown_peek(&mut host, &doc);
     host.palette.set_query("not");
     host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
     assert_eq!(
@@ -127,7 +133,7 @@ fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     );
     host.close_super_surface();
 
-    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    grown_peek(&mut host, &doc);
     host.super_gesture(SuperGesture::PeekTaken, &doc, &automerge::ROOT);
     host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
     assert_eq!(
@@ -137,9 +143,63 @@ fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     );
     host.close_super_surface();
 
-    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    grown_peek(&mut host, &doc);
     host.super_gesture(SuperGesture::PeekCancelled, &doc, &automerge::ROOT);
     assert_eq!(host.super_surface(), None, "a chord after all");
+    assert!(!host.palette_visible);
+    assert!(
+        !host.palette_transition.is_visible(Instant::now()),
+        "a chord takes the grown surface away without a fade"
+    );
+}
+
+/// Holding Super a moment too long before a chord: the hold grows in. Its
+/// quiet first stage brings the glance forms and the time, with no search
+/// field and no scrim over the windows; a chord then takes it away at once,
+/// and the whole surface only comes when the hold goes on or the pointer
+/// moves.
+#[test]
+fn a_held_super_grows_in_and_a_chord_cancels_the_quiet_stage_without_a_fade() {
+    let (mut host, _chrome, _) = desk();
+    let doc = AutoCommit::new();
+    let t0 = Instant::now();
+    host.note_client_typing(Some(t0), t0);
+    assert_eq!(forms(&host), (Form::Away, Form::Away), "mid-typing");
+
+    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    assert_eq!(host.super_surface(), Some(SuperSurface::Glimpse));
+    assert!(!host.palette_visible, "no field yet");
+    host.update_desk(ms(t0, 10));
+    assert_eq!(
+        forms(&host),
+        (Form::Glance, Form::Glance),
+        "the quiet stage: glance forms, nothing open"
+    );
+    assert!(!host.palette_transition.is_visible(ms(t0, 10)), "no scrim");
+
+    host.super_gesture(SuperGesture::PeekCancelled, &doc, &automerge::ROOT);
+    assert_eq!(host.super_surface(), None);
+    host.update_desk(ms(t0, 20));
+    assert_eq!(forms(&host), (Form::Away, Form::Away));
+    assert!(
+        !host.desk_animating(ms(t0, 20)),
+        "gone at once: nothing fades out while the chord runs"
+    );
+
+    // Held on: it grows into the whole surface around the same time card.
+    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    host.super_gesture(SuperGesture::PeekFull, &doc, &automerge::ROOT);
+    assert_eq!(host.super_surface(), Some(SuperSurface::Peek));
+    assert!(host.palette_visible);
+    host.update_desk(ms(t0, 40));
+    assert_eq!(forms(&host), (Form::Open, Form::Open));
+    host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
+    assert_eq!(host.super_surface(), None);
+
+    // Released during the quiet stage: closed, nothing kept.
+    host.super_gesture(SuperGesture::Peek, &doc, &automerge::ROOT);
+    host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
+    assert_eq!(host.super_surface(), None);
     assert!(!host.palette_visible);
 }
 
@@ -407,4 +467,72 @@ fn widgets_stay_away_under_other_surfaces_and_beside_a_live_call() {
         "the call keeps its place: {music:?}"
     );
     assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
+}
+
+/// Counts the system monitor's reads, so a test sees when it reads at all.
+struct CountingMonitor(Rc<std::cell::Cell<usize>>);
+
+impl crate::shell::desk_widgets::system_monitor::Source for CountingMonitor {
+    fn cpu(&self) -> Option<crate::shell::desk_widgets::system_monitor::CpuTimes> {
+        self.0.set(self.0.get() + 1);
+        None
+    }
+    fn memory_percent(&self) -> Option<u8> {
+        Some(40)
+    }
+    fn temperature_celsius(&self) -> Option<i16> {
+        None
+    }
+}
+
+/// The calendar and the system monitor, once the top bar's carousel, are
+/// desk widgets: off until the person adds them, then shown like any other.
+/// The monitor reads the machine only while it shows and wakes nothing
+/// while it is away.
+#[test]
+fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown() {
+    use crate::shell::desk_widgets::system_monitor::SAMPLE_EVERY;
+    let (mut host, _chrome, _) = desk();
+    let reads = Rc::new(std::cell::Cell::new(0));
+    host.set_monitor_source_for_tests(Box::new(CountingMonitor(reads.clone())));
+    let t0 = Instant::now();
+    host.update_desk(t0);
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Away,
+        "not added yet"
+    );
+    assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Away);
+    assert_eq!(reads.get(), 0, "an absent monitor reads nothing");
+
+    let mut prefs = host.desk_widget_prefs().clone();
+    prefs.calendar.enabled = true;
+    prefs.system_monitor.enabled = true;
+    prefs.system_monitor.show = ShowMode::Pause;
+    host.set_desk_widget_prefs(prefs);
+    host.update_desk(ms(t0, 10));
+    assert_eq!(host.desk_form(WidgetId::Calendar), Form::Glance);
+    assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Glance);
+    assert_eq!(reads.get(), 1, "read as it appears");
+    assert!(
+        host.desk_wake_deadline(ms(t0, 20)) <= Some(ms(t0, 10) + SAMPLE_EVERY),
+        "the next reading is a wake, not a frame pump"
+    );
+    let names: Vec<String> = host.desk_test_rects().into_iter().map(|(n, _)| n).collect();
+    assert!(names.contains(&"desk.calendar".to_string()), "{names:?}");
+    assert!(
+        names.contains(&"desk.system-monitor".to_string()),
+        "{names:?}"
+    );
+
+    // Typing sends it away: no more reads, and nothing to wake for.
+    host.note_client_typing(Some(ms(t0, 100)), ms(t0, 100));
+    assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Away);
+    host.update_desk(ms(t0, 100) + SAMPLE_EVERY);
+    assert_eq!(reads.get(), 1, "away: not read");
+    assert_eq!(
+        host.desk_wake_deadline(ms(t0, 100) + SAMPLE_EVERY),
+        Some(ms(t0, 100) + GLANCE_AFTER_PAUSE),
+        "only the pause wakes the desk"
+    );
 }

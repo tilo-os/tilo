@@ -12458,6 +12458,24 @@ impl ShellOverlayHost {
         self.quick_settings_rect()
     }
 
+    /// Where the palette card stands on the focused display: its left and
+    /// right edges and its top (a zero-height rect; the card's height is
+    /// its own). Centred on the focused display: across two, the host's own
+    /// centre is the seam between them. Shared by the layout and by the
+    /// Super surface's quiet stage, which places the time card under the
+    /// field before the field shows.
+    pub(crate) fn palette_frame(&self, text_scale: f32) -> Rect {
+        let area = self.overlay_area();
+        // 70% of viewport clamped to [560, 640]; 560 is the minimum that
+        // still fits the filter strip's eight pills without the last one
+        // bleeding into the close glyph.
+        let width = ((area.width() * 0.7).clamp(560.0, 640.0) * f64::from(text_scale))
+            .min((area.width() - 32.0).max(320.0));
+        let x0 = (area.x0 + (area.width() - width) / 2.0).max(self.rect.x0);
+        let y0 = area.y0 + 96.0;
+        Rect::new(x0, y0, x0 + width, y0)
+    }
+
     /// The command palette's laid-out card, for integration tests.
     pub fn palette_rect_for_tests(&self) -> Rect {
         self.palette.get_rect()
@@ -12975,27 +12993,35 @@ impl ShellOverlayHost {
         self.overview_cards().iter().position(|c| c.is_current)
     }
 
-    /// How many share rows the "shared out of here" list draws — at least
-    /// one, so a room sharing nothing says so on its own line rather than
-    /// collapsing the section away.
+    /// How many share rows the "shared out of here" list draws. None when
+    /// the room shares nothing: the section is left out rather than
+    /// standing in the overview as a permanent empty row.
     fn overview_share_rows(card: &tilo_desktop::overview::RoomCard) -> usize {
         let shown = card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
         let overflow = usize::from(card.shares.len() > shown);
-        shown.saturating_add(overflow).max(1)
+        shown.saturating_add(overflow)
+    }
+
+    /// Height of the "shared out of here" section: its caption and rows,
+    /// or nothing when the room shares nothing.
+    fn overview_shares_height(&self) -> f64 {
+        let cards = self.overview_cards();
+        let rows = self
+            .overview_here_index()
+            .and_then(|i| cards.get(i))
+            .map_or(0, Self::overview_share_rows);
+        if rows == 0 {
+            return 0.0;
+        }
+        let m = self.overview_metrics;
+        m.caption_h + f64_of_usize(rows) * m.share_row_h
     }
 
     /// Height of the "you are here" block, including its share list.
     fn overview_here_block_height(&self) -> f64 {
-        let cards = self.overview_cards();
-        let rows = match self.overview_here_index().and_then(|i| cards.get(i)) {
-            Some(card) => Self::overview_share_rows(card),
-            None => 1,
-        };
-        let m = self.overview_metrics;
-        m.here_h
+        self.overview_metrics.here_h
             + self.overview_windows_row_height()
-            + m.caption_h
-            + f64_of_usize(rows) * m.share_row_h
+            + self.overview_shares_height()
     }
 
     /// The current room's windows get a row of live previews once any of
@@ -20545,12 +20571,8 @@ impl Widget for ShellOverlayHost {
         if let Ok(style) = taffy.style(palette_node) {
             let mut palette_style = style.clone();
             palette_style.position = Position::Absolute;
-            // 70% of viewport clamped to [560, 640]; 560 is the minimum
-            // that still fits the filter strip's eight pills without the
-            // last one bleeding into the close glyph.
-            let palette_target_w = ((area.width() * 0.7).clamp(560.0, 640.0)
-                * f64::from(theme.text_scale))
-            .min((area.width() - 32.0).max(320.0));
+            let frame = self.palette_frame(theme.text_scale);
+            let palette_target_w = frame.width();
             palette_style.max_size.height =
                 Dimension::length(f32_of_f64((area.height() - 112.0).max(200.0)));
             palette_style.size = Size {
@@ -20563,11 +20585,10 @@ impl Widget for ShellOverlayHost {
                 top: LengthPercentageAuto::length(0.0),
                 bottom: LengthPercentageAuto::auto(),
             };
-            let left = (area.x0 - self.rect.x0) + (area.width() - palette_target_w) / 2.0;
             palette_style.inset = TaffyRect {
-                left: LengthPercentageAuto::length(f32_of_f64(left.max(0.0))),
+                left: LengthPercentageAuto::length(f32_of_f64(frame.x0 - self.rect.x0)),
                 right: LengthPercentageAuto::auto(),
-                top: LengthPercentageAuto::length(f32_of_f64(area.y0 - self.rect.y0 + 96.0)),
+                top: LengthPercentageAuto::length(f32_of_f64(frame.y0 - self.rect.y0)),
                 bottom: LengthPercentageAuto::auto(),
             };
             let _ = taffy.set_style(palette_node, palette_style);
@@ -26083,8 +26104,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// "What leaves this room": the share list, or an honest zero-state
-    /// when nothing in the current room is shared out of it.
+    /// "What leaves this room": the share list. Nothing at all when the
+    /// room shares nothing.
     fn draw_overview_shares_section(
         &self,
         scene: &mut Scene,
@@ -26095,6 +26116,12 @@ impl ShellOverlayHost {
         here_idx: Option<usize>,
         cards: &[tilo_desktop::overview::RoomCard],
     ) {
+        let Some(here_card) = here_idx
+            .and_then(|i| cards.get(i))
+            .filter(|card| !card.shares.is_empty())
+        else {
+            return;
+        };
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let caption_style = tokens.typography.style(TextRole::Caption);
@@ -26109,84 +26136,15 @@ impl ShellOverlayHost {
             None,
             &caption_style,
         );
-        let row_h = m.share_row_h;
-        let sy = shares_top + m.caption_h;
-        let empty_card = tilo_desktop::overview::RoomCard {
-            id: crate::shell::state::WorkspaceId::default(),
-            name: String::new(),
-            is_current: false,
-            people: Vec::new(),
-            shares: Vec::new(),
-            strips: Vec::new(),
-        };
-        let here_card = here_idx.and_then(|i| cards.get(i)).unwrap_or(&empty_card);
-        if here_card.shares.is_empty() {
-            Self::draw_overview_shares_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                content,
-                sy,
-                row_h,
-            );
-        } else {
-            Self::draw_overview_share_rows(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                content,
-                here_card,
-                sy,
-                row_h,
-            );
-        }
-    }
-
-    /// An honest zero-state: "nothing" is itself the answer.
-    fn draw_overview_shares_empty(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        sy: f64,
-        row_h: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body_style = tokens.typography.style(TextRole::Body);
-        let glyph = 14.0_f64;
-        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
-        let cy = sy + row_h / 2.0;
-        let glyph_rect = Rect::new(
-            content.x0,
-            cy - glyph / 2.0,
-            content.x0 + glyph,
-            cy + glyph / 2.0,
-        );
-        ui::icons::draw_icon(
+        Self::draw_overview_share_rows(
             scene,
             transform,
-            glyph_rect,
-            ui::icons::Icon::Shield,
-            colors.text_tertiary,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("overview-nothing-shared"),
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    content.x0 + glyph + f64::from(tokens.spacing.s2),
-                    sy + (row_h - f64::from(body_h)) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            &body_style,
+            text_renderer,
+            theme,
+            content,
+            here_card,
+            shares_top + m.caption_h,
+            m.share_row_h,
         );
     }
 

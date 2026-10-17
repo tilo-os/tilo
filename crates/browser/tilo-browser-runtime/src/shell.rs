@@ -29,7 +29,6 @@ use std::sync::Arc;
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
-    TopBarWidget, TopBarWidgets,
 };
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RosterRow, RosterStatus,
@@ -165,11 +164,6 @@ impl DesktopChromeSource for PageChrome {
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
-            // The page reads no system telemetry, so the monitor would only
-            // ever show dashes.
-            topbar_widgets: Some(TopBarWidgets {
-                widgets: vec![TopBarWidget::Clock, TopBarWidget::Calendar],
-            }),
             strip_places: Some(places),
             watching: self.here.borrow().watching(),
             own: Some(self.own_chip()),
