@@ -343,20 +343,6 @@ impl PortalDialogController {
                     },
                 ));
             }
-            if let (Some(rect), Some((remember, focused))) =
-                (layout.remember, self.remember_display())
-            {
-                children.push(
-                    AccessNode::new(Role::Checkbox)
-                        .with_name(t("portal-remember-device"))
-                        .with_action_target(target(Part::Remember))
-                        .with_bounds(rect)
-                        .with_state(AccessState {
-                            checked: Some(remember),
-                            ..focusable(focused)
-                        }),
-                );
-            }
             if let Some(error) = self.entry_error() {
                 children.push(
                     AccessNode::new(Role::StaticText)
@@ -364,6 +350,23 @@ impl PortalDialogController {
                         .with_live(Politeness::Assertive),
                 );
             }
+        }
+
+        if let (Some(rect), Some((remember, focused)), Some(label)) = (
+            layout.remember,
+            self.remember_display(),
+            self.remember_label(),
+        ) {
+            children.push(
+                AccessNode::new(Role::Checkbox)
+                    .with_name(label)
+                    .with_action_target(target(Part::Remember))
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        checked: Some(remember),
+                        ..focusable(focused)
+                    }),
+            );
         }
 
         // With nothing to choose or type, Enter confirms: the reader's

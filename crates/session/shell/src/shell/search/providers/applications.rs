@@ -722,14 +722,27 @@ pub(crate) fn grant_file_manager_home(
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
 ) -> bool {
-    use crate::shell::state::{Access, Capability, FsMode, GRANT_SESSION, ResourceRef};
-
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
     }
     let Some(home) = tilo_paths::home() else {
         return false;
     };
+    grant_file_manager_path(tree, workspace, home)
+}
+
+/// Give the system file manager `path`, read-write, for this session, the
+/// way [`grant_file_manager_home`] gives it the home: through the workspace's
+/// grants, visible and revocable. Also used for a drive the person just
+/// opened ([`crate::shell::drives`]). Returns whether a grant was added.
+pub(crate) fn grant_file_manager_path(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    workspace: crate::shell::state::WorkspaceId,
+    path: std::path::PathBuf,
+) -> bool {
+    use crate::shell::state::{Access, Capability, FsMode, GRANT_SESSION, ResourceRef};
+
+    let package_id = SYSTEM_FILE_MANAGER;
     let Some(ws) = tree
         .desktop
         .workspaces
@@ -742,7 +755,7 @@ pub(crate) fn grant_file_manager_home(
     let actor = ws.actor_for_app(package_id);
     if ws.allows(
         &actor,
-        &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
+        &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
         Access::Read,
     ) {
         return false;
@@ -750,7 +763,7 @@ pub(crate) fn grant_file_manager_home(
     let ids = ws.grant_app(
         package_id,
         &Capability::Filesystem {
-            path: home,
+            path,
             mode: FsMode::ReadWrite,
             scope: GRANT_SESSION,
         },
@@ -758,7 +771,7 @@ pub(crate) fn grant_file_manager_home(
     let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
     if !remembered && tree.native_authority.requires(ws.room) {
         // Native session consent must have exact live local provenance. A
-        // missing identity or full ledger must not leave an unbound home row.
+        // missing identity or full ledger must not leave an unbound row.
         ws.sandbox
             .retain(|capability| !ids.contains(&capability.id));
         return false;

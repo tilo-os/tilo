@@ -13077,6 +13077,11 @@ impl ShellOverlayHost {
                         {
                             self.portal_dialogs.toggle_selected_usb_device();
                         }
+                        Key::Named(NamedKey::Space)
+                            if self.portal_dialogs.remember_label().is_some() =>
+                        {
+                            self.portal_dialogs.toggle_remember();
+                        }
                         _ => {
                             if !self.portal_dialogs.edit_launcher_name(logical_key) {
                                 self.portal_dialogs.key(physical_key, modifiers);
@@ -23843,14 +23848,12 @@ impl ShellOverlayHost {
             for field in self.portal_dialogs.place_fields(&layout) {
                 field.draw(scene, transform, text_renderer, theme, &presence);
             }
-            if let (Some(rect), Some((remember, focused))) =
-                (layout.remember, self.portal_dialogs.remember_display())
-            {
-                let label = format!(
-                    "[{}] {}",
-                    if remember { "✓" } else { " " },
-                    crate::shell::i18n::t("portal-remember-device")
-                );
+            if let (Some(rect), Some((remember, focused)), Some(remember_label)) = (
+                layout.remember,
+                self.portal_dialogs.remember_display(),
+                self.portal_dialogs.remember_label(),
+            ) {
+                let label = format!("[{}] {}", if remember { "✓" } else { " " }, remember_label);
                 draw_filter_chip(
                     scene,
                     transform,

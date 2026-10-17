@@ -310,3 +310,40 @@ fn portal_sheets_publish_their_parts_and_answer_through_accessibility_actions() 
     a_refused_entry_is_announced_and_marked_invalid();
     usb_devices_are_checkboxes_toggled_one_at_a_time();
 }
+
+#[test]
+fn the_drive_sheet_offers_its_remember_row_as_a_checkbox() {
+    use crate::shell::portal_dialog::{DriveConsentDecision, DriveConsentRequest};
+    let queue = PortalDialogQueue::default();
+    let answer = queue
+        .enqueue_drive_consent(DriveConsentRequest {
+            handle: "tilo-drive-1-sdb1:4".into(),
+            title: "Open Stick?".into(),
+            drive: "External drive · 64 GB".into(),
+            detail: "Choose how to open this drive.".into(),
+            choices: vec!["Open safely".into(), "Open".into()],
+            preselect: 0,
+            remember: Some("Remember this drive and suggest opening it safely".into()),
+            confirm_label: "Open drive".into(),
+            cancel_label: "Not now".into(),
+        })
+        .expect("queued");
+    let mut sheet = PortalDialogController::new(queue);
+    assert!(sheet.pump());
+    let dialog = sheet.accessibility(SCREEN).expect("a sheet is up");
+    assert_eq!(dialog.role, Role::Dialog);
+    let remember = node(&dialog, "Remember this drive and suggest opening it safely");
+    assert_eq!(remember.role, Role::Checkbox);
+    assert_eq!(remember.state.checked, Some(false));
+    let target = target_of(&dialog, "Remember this drive and suggest opening it safely");
+    assert!(sheet.perform_accessibility_action(&target, &Action::ToggleCheck));
+    let confirm = target_of(&dialog, "Open drive");
+    assert!(sheet.perform_accessibility_action(&confirm, &Action::Activate));
+    assert_eq!(
+        answer.blocking_recv(),
+        Ok(DriveConsentDecision::Chosen {
+            choice: 0,
+            remember: true
+        })
+    );
+}
