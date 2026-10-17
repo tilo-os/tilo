@@ -175,7 +175,32 @@ mod tests {
                     .is_none(),
                 "never approve a clipped review"
             );
-            assert!(sheet.confirm());
+            let laptop = vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0);
+            let narrow = vello::kurbo::Rect::new(0.0, 0.0, 400.0, 600.0);
+            let pages = sheet.review_pages().unwrap();
+            assert!(pages.len() > 1);
+            let mut disclosed = String::new();
+            while sheet.reviewing_more() {
+                let layout = sheet.layout(laptop).expect("fits a laptop");
+                assert!(laptop.contains_rect(layout.sheet));
+                assert!(narrow.contains_rect(sheet.layout(narrow).unwrap().sheet));
+                disclosed.push_str(&sheet.displayed_detail());
+                assert!(sheet.click(layout.confirm.center(), &layout));
+                assert!(matches!(
+                    answer.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+            }
+            disclosed.push_str(&sheet.displayed_detail());
+            assert_eq!(disclosed.replace('\n', ""), detail.replace('\n', ""));
+            assert!(sheet.review_back());
+            assert!(sheet.reviewing_more());
+            assert!(sheet.confirm(), "return to the final page, not approval");
+            assert!(matches!(
+                answer.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(sheet.confirm(), "separate explicit final approval");
             assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once);
         }
     }
