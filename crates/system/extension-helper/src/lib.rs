@@ -23,7 +23,12 @@
 //! image) names the parts and the hosts artifacts may come from, and where Tilo
 //! publishes the extension's manifest. The manifest pins every artifact by URL,
 //! length and SHA-256 and names the exact base it was resolved for; it is
-//! signed by Tilo's extension-manifest key, whose public half the image carries
+//! signed by Tilo's extension-manifest key. An image carrying Tilo's offline
+//! release root (/usr/share/tilo/release/root.crt) accepts a manifest only with
+//! a Rekor bundle (`manifest.json.bundle`): the signature, an operational
+//! certificate the root issued for extension manifests in the current epoch,
+//! and the transparency-log entry dating it. An image without the root checks
+//! the bare signature (`manifest.json.sig`) against the key it carries
 //! (/usr/share/tilo/extensions.pub). No other key, not even the OS update key,
 //! can sign a manifest this helper accepts. The signature is checked over the
 //! raw bytes before anything is parsed, and any mismatch refuses the whole

@@ -3,7 +3,10 @@
 //! Builds tiny RPMs shaped like the media-codecs packages, publishes a
 //! manifest pinning them, signs it with a throwaway P-256 key (openssl, as
 //! cosign's KMS signer would) and drives install, activate and remove into a
-//! temporary root: real rpm, rpm2archive and `tilo-crypto verify-p256-sha256`.
+//! temporary root: real rpm, rpm2archive and `tilo-crypto verify-p256-sha256`
+//! (or, on an image with the release root, `verify-release-bundle` over a
+//! certificate from the real ceremony script, tools/signing/release-ca.sh, and
+//! a log entry from a throwaway Rekor key).
 //! Only what cannot exist off a Tilo machine is replaced: the network is a map
 //! of URLs, the base's package list is given, connectivity is "full", and
 //! merging is left to `systemd-sysext list` (rootless) rather than done.
@@ -126,6 +129,13 @@ struct Fixture {
     public: PathBuf,
     rogue: PathBuf,
     crypto: PathBuf,
+    /// The release root and the operational certificate it issued for `key`.
+    root: PathBuf,
+    certificate: PathBuf,
+    /// A root of the same name that issued nothing here.
+    other_root: PathBuf,
+    rekor: PathBuf,
+    rekor_public: PathBuf,
 }
 
 fn build_rpm(top: &Path, package: &Package) -> PathBuf {
@@ -185,6 +195,80 @@ fn build_rpm(top: &Path, package: &Package) -> PathBuf {
         .join(format!("{name}-{version}-1.fc44.noarch.rpm"));
     assert!(built.is_file(), "{} was not built", built.display());
     built
+}
+
+/// The release root (and one that issued nothing here), the operational
+/// certificate the real ceremony script issues it for `public`, and a
+/// throwaway Rekor key, all under `scratch`.
+fn release_ceremony(scratch: &Path, public: &Path) {
+    let path = |name: &str| scratch.join(name);
+    let ceremony = repo().join("tools/signing/release-ca.sh");
+    for name in ["root", "other-root"] {
+        let key = path(&format!("{name}.key"));
+        run(
+            "openssl",
+            &[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-384",
+                "-out",
+                key.to_str().unwrap(),
+            ],
+        );
+        run(
+            ceremony.to_str().unwrap(),
+            &[
+                "init-root",
+                "--key",
+                key.to_str().unwrap(),
+                "--out",
+                path(&format!("{name}.crt")).to_str().unwrap(),
+            ],
+        );
+    }
+    run(
+        ceremony.to_str().unwrap(),
+        &[
+            "issue",
+            "--root",
+            path("root.crt").to_str().unwrap(),
+            "--key",
+            path("root.key").to_str().unwrap(),
+            "--purpose",
+            "extension-manifests",
+            "--public-key",
+            public.to_str().unwrap(),
+            "--days",
+            "30",
+            "--out",
+            path("operational.crt").to_str().unwrap(),
+        ],
+    );
+    run(
+        "openssl",
+        &[
+            "ecparam",
+            "-name",
+            "prime256v1",
+            "-genkey",
+            "-noout",
+            "-out",
+            path("rekor.key").to_str().unwrap(),
+        ],
+    );
+    run(
+        "openssl",
+        &[
+            "ec",
+            "-in",
+            path("rekor.key").to_str().unwrap(),
+            "-pubout",
+            "-out",
+            path("rekor.pub").to_str().unwrap(),
+        ],
+    );
 }
 
 /// The RPMs and keys, built once; `None` (with the reason printed) when this
@@ -261,13 +345,20 @@ fn fixture() -> Option<&'static Fixture> {
                     rogue.to_str().unwrap(),
                 ],
             );
+            let path = |name: &str| scratch.path().join(name);
+            release_ceremony(scratch.path(), &public);
             Some(Fixture {
-                _scratch: scratch,
                 rpms,
                 key,
                 public,
                 rogue,
                 crypto: crypto.unwrap(),
+                root: path("root.crt"),
+                certificate: path("operational.crt"),
+                other_root: path("other-root.crt"),
+                rekor: path("rekor.key"),
+                rekor_public: path("rekor.pub"),
+                _scratch: scratch,
             })
         })
         .as_ref()
@@ -367,6 +458,92 @@ fn publish(
     machine.host.web.borrow_mut().insert(url.clone(), data);
     tamper(machine, &url, &manifest);
     manifest
+}
+
+fn base64(data: &[u8]) -> String {
+    let mut child = Command::new("openssl")
+        .args(["base64", "-A"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), data).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// Make `machine` an image with the release root `root` and trust `trust`.
+fn certify(machine: &Machine, fixture: &Fixture, root: &Path, trust: &str) {
+    let layout = &machine.layout;
+    fs::create_dir_all(layout.release_root().parent().unwrap()).unwrap();
+    fs::copy(root, layout.release_root()).unwrap();
+    fs::copy(&fixture.rekor_public, layout.rekor_key()).unwrap();
+    fs::write(layout.release_trust(), trust).unwrap();
+}
+
+/// Enter the published manifest's signature in the throwaway log under the
+/// operational certificate, and publish the bundle
+/// tools/signing/sign-blob-certified.sh would write.
+fn publish_bundle(machine: &Machine, fixture: &Fixture) {
+    let url = machine.manifest_url(Some(&tilo_extension::base_packages_sha256(&BASE_PACKAGES)));
+    let (data, signature) = {
+        let web = machine.host.web.borrow();
+        (web[&url].clone(), web[&format!("{url}.sig")].clone())
+    };
+    let signature = String::from_utf8(signature).unwrap().trim().to_owned();
+    let certificate = base64(&fs::read(&fixture.certificate).unwrap());
+    let body = json!({
+        "apiVersion": "0.0.1", "kind": "hashedrekord",
+        "spec": {"data": {"hash": {"algorithm": "sha256", "value": sha256_hex(&data)}},
+                 "signature": {"content": signature, "publicKey": {"content": certificate}}},
+    });
+    let body = base64(&serde_json::to_vec(&body).unwrap());
+    let der = run(
+        "openssl",
+        &[
+            "pkey",
+            "-pubin",
+            "-in",
+            fixture.rekor_public.to_str().unwrap(),
+            "-outform",
+            "DER",
+        ],
+    );
+    let log_id = sha256_hex(&der);
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let canonical = format!(
+        "{{\"body\":\"{body}\",\"integratedTime\":{time},\"logID\":\"{log_id}\",\"logIndex\":1}}"
+    );
+    let timestamp =
+        String::from_utf8(sign(canonical.as_bytes(), &fixture.rekor, &machine.root)).unwrap();
+    let bundle = json!({
+        "base64Signature": signature, "cert": certificate,
+        "rekorBundle": {"SignedEntryTimestamp": timestamp,
+                        "Payload": {"body": body, "integratedTime": time, "logIndex": 1,
+                                    "logID": log_id}},
+    });
+    machine.host.web.borrow_mut().insert(
+        format!("{url}.bundle"),
+        serde_json::to_vec(&bundle).unwrap(),
+    );
+}
+
+fn trust(epoch: u32) -> String {
+    fs::read_to_string(repo().join("keys/release/trust.env"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.starts_with("TILO_RELEASE_EPOCH=") {
+                format!("TILO_RELEASE_EPOCH={epoch}\n")
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect()
 }
 
 fn install(machine: &Machine) -> (i32, Value) {
@@ -492,4 +669,48 @@ fn a_replaced_artifact_is_refused() {
             web.get_mut(url).unwrap()[last] ^= 1;
         },
     );
+}
+
+#[test]
+fn an_image_with_the_release_root_installs_a_certified_manifest() {
+    let Some(fixture) = fixture() else { return };
+    let machine = machine(fixture);
+    certify(&machine, fixture, &fixture.root, &trust(1));
+    publish(&machine, fixture, &fixture.key, |_, _, _| {});
+    publish_bundle(&machine, fixture);
+    let (code, status) = install(&machine);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(status["state"], "installed");
+    // Activation checks the kept bundle with the real verifier again.
+    fs::remove_dir_all(machine.codecs()).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
+}
+
+fn refused_certified(root: impl Fn(&Fixture) -> &Path, epoch: u32) {
+    let Some(fixture) = fixture() else { return };
+    let machine = machine(fixture);
+    certify(&machine, fixture, root(fixture), &trust(epoch));
+    publish(&machine, fixture, &fixture.key, |_, _, _| {});
+    publish_bundle(&machine, fixture);
+    let (code, status) = install(&machine);
+    assert_eq!(code, 1, "{status}");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("signature is not valid"),
+        "{status}"
+    );
+    assert!(!machine.codecs().exists());
+}
+
+#[test]
+fn a_certificate_from_another_root_is_refused() {
+    refused_certified(|f| &f.other_root, 1);
+}
+
+#[test]
+fn a_certificate_of_a_revoked_epoch_is_refused() {
+    refused_certified(|f| &f.root, 2);
 }

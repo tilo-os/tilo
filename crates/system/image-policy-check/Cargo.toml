@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Boot audit check: proves containers-policy.json makes every Tilo image scope require the pinned Cosign signature."
+description = "Boot audit check: proves containers-policy.json makes every Tilo image scope require a Rekor-logged release signature and refuses what it does not name."
 
 [lib]
 name = "tilo_image_policy_check"

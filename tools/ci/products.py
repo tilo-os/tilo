@@ -34,8 +34,13 @@ PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
 # What every build, signing and publishing check reads besides the product's own inputs.
 BUILD_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
 COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh",
-                 "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
-SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh", *COSIGN_INPUTS]
+                 "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub",
+                 "keys/release/**", "keys/operational/**"]
+SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh",
+               "tools/signing/sign-blob-certified.sh", *COSIGN_INPUTS]
+# Repositories installed systems verify (tools/signing/release_trust.py, lib.sh device_verified):
+# their releases also carry the certified signatures oci-sign.sh keeps in OUT/certified.
+DEVICE_VERIFIED = {"registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo", "registry.tilo.so/tilo/legacy-guest"}
 PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
 # Signing and publishing read only what the build produced, so they run on any architecture (as
 # micro-VM steps, since they hold credentials, booting the guest of the node they land on).
@@ -402,6 +407,8 @@ class Product:
             outputs += [f"{d}/payload.json", f"{d}/signature", f"{d}/dry-run.pub"]
             if "TILO_SIGN_TLOG" in env:
                 outputs.append(f"{d}/bundle.json")
+                if self.repository in DEVICE_VERIFIED:
+                    outputs.append(f"{d}/certified/**")
         attest = "provenance" in self.data
         lines = []
         for d, _ in signed:

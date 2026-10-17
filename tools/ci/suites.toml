@@ -82,6 +82,14 @@ inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrappe
 suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 
 [[group]]
+name = "release-trust"
+# The container policy is generated from keys/ by tools/signing/release_trust.py;
+# the image recipes install what it names, and t's signing scripts sign the
+# repositories it verifies.
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml"]
+suites = ["os/tests/test_container_signature_policy.py"]
+
+[[group]]
 name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
@@ -152,7 +160,6 @@ suites = [
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
   "os/tests/test_cache_reconstruction_approval.py",
-  "os/tests/test_container_signature_policy.py",
   "os/tests/test_complete_initramfs_rebind.py",
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
@@ -773,10 +780,18 @@ inputs = [
   "os/usr/libexec/tilo-install",
   "keys/extensions.pub",
   "keys/cosign.pub",
+  "keys/release/trust.env",
+  "tools/signing/release-ca.sh",
   "os/Containerfile",
   "os/components.toml",
 ]
 readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+
+[[cargo]]
+package = "tilo-crypto"
+# The release-bundle tests parse the shipped release trust.
+inputs = ["keys/release/trust.env"]
+readers = ["crates/system/tilo-crypto/src/release_bundle.rs"]
 
 [[cargo]]
 package = "tilo-firstboot-files"
@@ -801,9 +816,9 @@ readers = [
 
 [[cargo]]
 package = "tilo-image-policy-check"
-# The checker's tests judge the shipped container policy and check that the
-# boot audit runs it.
-inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+# The checker's tests judge the shipped container policy against the release
+# trust it is generated from, and check that the boot audit runs it.
+inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
 readers = ["crates/system/image-policy-check/tests/policy.rs"]
 
 [[cargo]]
@@ -1556,6 +1571,10 @@ reason = "needs the disposable root native container with Cosign: t's developmen
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
 reason = "needs the disposable root native container with Cosign and Podman: t's development-signing-<arch> checks run it"
+
+[[unrequired]]
+suite = "os/tests/release_trust_chain_native.py"
+reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks: t's release-trust check installs them in a micro-VM and runs it"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"

@@ -612,9 +612,10 @@ esac
 
 # Image signature enforcement (verify-before-update). Parsed, not grepped:
 # tilo-image-policy-check proves each Tilo image scope itself requires a
-# sigstore signature from the pinned key, so a signed sibling scope cannot
-# stand in for a weakened Tilo scope, and an unreadable or malformed policy
-# fails rather than passes.
+# Rekor-logged sigstore signature from the installed release trust (the pinned
+# key, or the offline root once /usr/share/tilo/release/root.crt exists), so a
+# signed sibling scope cannot stand in for a weakened Tilo scope, and an
+# unreadable or malformed policy fails rather than passes.
 policy=/etc/containers/policy.json
 image_policy_check=/usr/libexec/tilo-image-policy-check
 
@@ -640,10 +641,14 @@ done
 
 if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then
   warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
-elif [ ! -s /usr/share/tilo/cosign.pub ]; then
+elif [ ! -s /usr/share/tilo/release/rekor.pub ]; then
+  warn "Tilo image signature policy requires a transparency-log entry, but /usr/share/tilo/release/rekor.pub is missing or empty"
+elif [ -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/release/root.crt ]; then
+  warn "Tilo image signature policy chains to /usr/share/tilo/release/root.crt, but that root certificate is empty"
+elif [ ! -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/cosign.pub ]; then
   warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
 else
-  ok "container signature policy pins signed Tilo images to the installed verification key"
+  ok "container signature policy pins signed Tilo images to the installed release trust: ${policy_report#*: }"
 fi
 
 if [ -e /var/lib/tilo/image-trust/required ]; then

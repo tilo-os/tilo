@@ -1123,6 +1123,9 @@ if [ -z "$image_policy_check" ]; then
 fi
 [ -x "$image_policy_check" ] || bad "no image signature policy checker at $image_policy_check"
 image_policy="$repo/os/etc/containers/policy.json"
+# The release trust the shipped policy is generated from (keys/release); an
+# installed image carries the same files in /usr/share/tilo/release.
+release_trust="$repo/keys/release"
 grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
   && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
   && grep -Fq '[ ! -s /usr/share/tilo/cosign.pub ]' "$audit" \
@@ -1136,8 +1139,8 @@ grep -Fq -- '--bin tilo-image-policy-check' "$image_recipe" \
 
 policy_cases="$(mktemp -d)"
 trap 'rm -rf "$policy_cases"' EXIT
-# Each fixture is the shipped policy with one Tilo scope weakened while the
-# signed sibling scopes stay intact, so only a scope-aware parse can fail it.
+# Each fixture is the shipped policy with one scope weakened while the signed
+# sibling scopes stay intact, so only a scope-aware parse can fail it.
 if ! python3 - "$image_policy" "$policy_cases" <<'PY'
 import copy, json, pathlib, sys
 
@@ -1166,6 +1169,8 @@ accept = [{"type": "insecureAcceptAnything"}]
 case("tilo-scope-accepts-anything", scope(tilo, accept))
 case("code-scope-accepts-anything", scope(code, accept))
 case("tilo-scope-other-key", field(tilo, "keyPath", "/etc/pki/other.pub"))
+# Without a Rekor key the signature need not be in the transparency log.
+case("tilo-scope-without-rekor", lambda d: d[tilo][0].pop("rekorPublicKeyPath"))
 case("tilo-scope-removed", lambda d: d.pop(tilo))
 case("tilo-scope-empty", scope(tilo, []))
 case("tilo-scope-gpg-signed-by", scope(tilo, [{
@@ -1175,13 +1180,23 @@ case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
 case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
 case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
 case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
-# Removing a guarded repository's scope hands it to the permissive default.
-case("legacy-guest-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/legacy-guest"))
-case("dev-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/tilo-dev"))
-case("code-ci-scope-removed", lambda d: d.pop("code.tilo.so/tilo/tilo-ci"))
 # A namespace scope governs every Tilo repository without one of its own.
 case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
+# Only the listed public registries and local transports may accept anything,
+# and an image no scope names is refused.
+case("unlisted-registry-accepts-anything", scope("registry.example", accept))
 case("no-docker-scopes", lambda d: d.clear())
+
+
+def whole(name, mutate):
+    policy = copy.deepcopy(base)
+    mutate(policy)
+    (out / f"{name}.json").write_text(json.dumps(policy, indent=2), encoding="utf-8")
+
+
+whole("default-accepts-anything", lambda p: p.__setitem__("default", accept))
+whole("remote-transport-accepts-anything",
+      lambda p: p["transports"].__setitem__("docker-daemon", {"": accept}))
 (out / "malformed.json").write_text('{"transports": {"docker": {', encoding="utf-8")
 (out / "duplicate-scope.json").write_text(
     '{"transports": {"docker": {'
@@ -1192,22 +1207,22 @@ PY
 then
   bad 'could not build weakened image signature policy fixtures'
 fi
-if "$image_policy_check" "$image_policy" >/dev/null; then
-  ok 'shipped container policy requires the pinned Tilo image signature'
+if "$image_policy_check" "$image_policy" "$release_trust" >/dev/null; then
+  ok 'shipped container policy requires the Rekor-logged Tilo release signature'
 else
   bad 'shipped container policy fails the image signature policy check'
 fi
 weakened_policies=0
 for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
   weakened_policies=$((weakened_policies + 1))
-  if "$image_policy_check" "$weakened" >/dev/null; then
+  if "$image_policy_check" "$weakened" "$release_trust" >/dev/null; then
     bad "image signature policy check accepts weakened policy $(basename "$weakened")"
   fi
 done
-[ "$weakened_policies" -eq 18 ] \
-  || bad "expected 18 weakened image signature policies, exercised $weakened_policies"
+[ "$weakened_policies" -eq 19 ] \
+  || bad "expected 19 weakened image signature policies, exercised $weakened_policies"
 # The guarded repositories are judged by their effective rule: with no scope of
-# their own under a default reject (the development-trust shape), they pass.
+# their own, the default reject covers them.
 if ! python3 - "$image_policy" "$policy_cases/guarded-by-default-reject.policy" <<'PY'
 import json, pathlib, sys
 
@@ -1221,7 +1236,7 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf
 PY
 then
   bad 'could not build the default-reject image signature policy fixture'
-elif "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" >/dev/null; then
+elif "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" "$release_trust" >/dev/null; then
   ok 'image signature policy check judges guarded repositories by their effective rule'
 else
   bad 'image signature policy check refuses guarded repositories a default reject already covers'

@@ -8,6 +8,10 @@ use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(feature = "release-bundle")]
+mod release_bundle;
+#[cfg(feature = "release-bundle")]
+pub use release_bundle::{ReleaseTrust, VerifiedRelease, verify_release_bundle};
 #[cfg(feature = "srp")]
 pub mod srp_apple;
 #[cfg(feature = "tls-fixture")]

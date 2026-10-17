@@ -137,10 +137,14 @@ pub trait Host {
         http_open(url, offset)
     }
 
-    /// Check the manifest bytes against the image's extension-manifest key.
+    /// Check the manifest bytes against the image's trust: on an image with
+    /// the release root, `signature` is a Rekor bundle whose operational
+    /// certificate the root issued for extension manifests in the current
+    /// epoch; otherwise a bare signature by the extension-manifest key.
     ///
     /// # Errors
-    /// `Pack` when there is no key or the signature does not verify.
+    /// `Pack` when the image lacks its trust material or the signature does
+    /// not verify.
     fn verify_signature(
         &self,
         layout: &Layout,
@@ -148,26 +152,43 @@ pub trait Host {
         signature: &[u8],
         workdir: &Path,
     ) -> Result<()> {
+        let certified = layout.certified();
         let key = layout.trust_key();
-        if !key.is_file() {
+        if !certified && !key.is_file() {
             return Err(Error::pack("this image has no extension-manifest key"));
         }
         fs::create_dir_all(workdir).at(workdir)?;
         let manifest = workdir.join("manifest.json");
-        let sig = workdir.join("manifest.json.sig");
+        let sig = workdir.join(format!("manifest.json{}", layout.signature_suffix()));
         fs::write(&manifest, data).at(&manifest)?;
         fs::write(&sig, signature).at(&sig)?;
         let crypto = self.tilo_crypto();
-        let result = run(
-            &[
+        let (root, rekor, trust) = (
+            layout.release_root(),
+            layout.rekor_key(),
+            layout.release_trust(),
+        );
+        let command: Vec<&OsStr> = if certified {
+            vec![
+                crypto.as_os_str(),
+                OsStr::new("verify-release-bundle"),
+                root.as_os_str(),
+                rekor.as_os_str(),
+                trust.as_os_str(),
+                OsStr::new("extension-manifests"),
+                manifest.as_os_str(),
+                sig.as_os_str(),
+            ]
+        } else {
+            vec![
                 crypto.as_os_str(),
                 OsStr::new("verify-p256-sha256"),
                 key.as_os_str(),
                 manifest.as_os_str(),
                 sig.as_os_str(),
-            ],
-            false,
-        )?;
+            ]
+        };
+        let result = run(&command, false)?;
         if !result.success {
             // The reason goes to the journal: a sandbox refusing to open the
             // key must not look like a forged manifest to whoever reads the logs.

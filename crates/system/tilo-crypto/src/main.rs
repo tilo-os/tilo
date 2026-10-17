@@ -203,7 +203,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto verify-p256-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto verify-p256-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-release-bundle ROOT_CERT REKOR_PUBLIC_KEY TRUST_ENV PURPOSE INPUT BUNDLE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
@@ -850,6 +850,36 @@ fn verify_p256_sha256_command(
     tilo_crypto::verify_p256_sha256(&key, &message, &signature)
 }
 
+/// A blob signed under the offline release root: see `release_bundle`.
+#[cfg(feature = "release-bundle")]
+fn verify_release_bundle_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let mut next = || args.next().ok_or_else(usage);
+    let root = PathBuf::from(next()?);
+    let rekor = PathBuf::from(next()?);
+    let trust = PathBuf::from(next()?);
+    let purpose = next()?.into_string().map_err(|_| usage())?;
+    let input = PathBuf::from(next()?);
+    let bundle = PathBuf::from(next()?);
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let root = read_bounded(&root, MAX_CERTIFICATE_BYTES, "root certificate")?;
+    let rekor = read_text_bounded(&rekor, MAX_CERTIFICATE_BYTES, "Rekor public key")?;
+    let trust = read_text_bounded(&trust, MAX_CERTIFICATE_BYTES, "release trust")?;
+    let trust = tilo_crypto::ReleaseTrust::parse(&trust)?;
+    let message = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "signed input")?;
+    let bundle = read_bounded(&bundle, MAX_SIGNATURE_BYTES, "bundle")?;
+    let verified =
+        tilo_crypto::verify_release_bundle(&root, &rekor, &trust, &purpose, &message, &bundle)?;
+    println!(
+        "verified: logged at {} as entry {}",
+        verified.integrated_time, verified.log_index
+    );
+    Ok(())
+}
+
 fn efi_signature_count_command(
     mut args: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), String> {
@@ -886,6 +916,8 @@ fn run() -> Result<(), String> {
         Some("verify-rsa-sha256") => verify_rsa_sha256_command(args, false),
         Some("verify-rsa-sha256-efi") => verify_rsa_sha256_command(args, true),
         Some("verify-p256-sha256") => verify_p256_sha256_command(args),
+        #[cfg(feature = "release-bundle")]
+        Some("verify-release-bundle") => verify_release_bundle_command(args),
         Some("sign-module") => sign_module_command(args),
         Some("verify-module") => verify_module_command(args),
         Some("sign-efi") => sign_efi_command(args),

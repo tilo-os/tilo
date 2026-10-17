@@ -15,6 +15,9 @@ const FINGERPRINT_DOMAIN: &[u8] = b"tilo.base-packages.v1\n";
 
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_SIGNATURE_BYTES: usize = 4096;
+/// A Rekor bundle carries the signature, the certificate and the log entry,
+/// which holds the certificate again.
+pub const MAX_BUNDLE_BYTES: usize = 64 * 1024;
 pub const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 /// A prebuilt sysext image (format "sysext-raw") is one artifact, and large:
 /// the Windows compatibility runtime is a few GiB.

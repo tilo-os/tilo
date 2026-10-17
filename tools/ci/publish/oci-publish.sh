@@ -173,6 +173,22 @@ elif [[ -s $out/signature ]]; then
     cosign attach signature --payload "$out/payload.json" --signature "$out/signature" \
       --rekor-response "$out/bundle.json" "$repository@$digest"
     cosign verify --key "$verify_key" "$repository@$digest" >/dev/null
+    # The certified signatures oci-sign.sh made for a repository installed systems verify
+    # (lib.sh device_verified): each verified as their container policy does, through the
+    # certificate to the release root, for the purpose and epoch it was issued for.
+    if [[ -d $out/certified ]]; then
+      . "$repo_root/keys/release/trust.env"
+      for sig in "$out"/certified/*.sig; do
+        n=${sig%.sig}
+        cosign attach signature --payload "$out/payload.json" --signature "$sig" \
+          --certificate "$n.crt" --certificate-chain "$repo_root/keys/release/root.crt" \
+          --rekor-response "$n.bundle" "$repository@$digest"
+        cosign verify --certificate-chain "$repo_root/keys/release/root.crt" \
+          --certificate-identity "os-images@$TILO_RELEASE_IDENTITY_DOMAIN" \
+          --certificate-oidc-issuer "$TILO_RELEASE_ISSUER_PREFIX$(cat "$n.epoch")" \
+          --insecure-ignore-sct "$repository@$digest" >/dev/null
+      done
+    fi
   else
     cosign attach signature --payload "$out/payload.json" --signature "$out/signature" "$repository@$digest"
     cosign verify --insecure-ignore-tlog=true --key "$verify_key" "$repository@$digest" >/dev/null

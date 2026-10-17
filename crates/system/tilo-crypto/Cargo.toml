@@ -15,8 +15,11 @@ name = "tilo-crypto"
 path = "src/main.rs"
 
 [features]
-default = ["tls-fixture"]
+default = ["tls-fixture", "release-bundle"]
 tls-fixture = []
+# Release-root bundle verification (`verify-release-bundle`). Off in the
+# kernel recipe, which builds only the module and EFI signers.
+release-bundle = ["dep:p384", "dep:serde_json"]
 # Apple's SRP-6a sign-in client (`srp_apple`), for the iCloud sign-in in
 # account-custody. Consumers take it with `default-features = false`.
 srp = ["dep:crypto-bigint", "dep:pbkdf2"]
@@ -44,6 +47,8 @@ hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
 p256 = { version = "0.14", features = ["pem"] }
+# Tilo's offline release root is a P-384 key (tools/signing/release-ca.sh).
+p384 = { version = "0.14", optional = true }
 # Apple's SRP password stretching (`srp_apple`), fixed by the protocol.
 pbkdf2 = { workspace = true, optional = true }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
@@ -52,6 +57,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 ring = "0.17"
 rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
 sha-crypt = { version = "0.6", features = ["getrandom"] }
+serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 spki = "0.7"
 time = { version = "0.3", features = ["formatting", "macros"] }
