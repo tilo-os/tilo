@@ -322,7 +322,7 @@ fn unpack(device: &Path, root: &Path) -> Result<(BTreeMap<String, String>, Optio
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let mut manifest = None;
     let mut total = 0u64;
-    let mut archive = tar::Archive::new(fs::File::open(&device)?);
+    let mut archive = tar::Archive::new(fs::File::open(device)?);
     for member in archive.entries()? {
         let mut member = member?;
         let regular = matches!(

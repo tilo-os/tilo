@@ -126,8 +126,8 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
     assert_eq!(peer.pid(), child.id());
     assert_ne!(peer.pid(), std::process::id());
     assert!(peer.current());
-    assert_eq!(peer.uid(), unsafe { libc::geteuid() });
-    assert_eq!(peer.gid(), unsafe { libc::getegid() });
+    assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
     assert_eq!(
         peer.start_time().unwrap(),
         process_stat(child.id()).unwrap().1
@@ -255,9 +255,9 @@ fn root_only_unclassified_authentication_never_admits_the_calling_process() {
     arm(&host).unwrap();
     let (_owned, proof) = UnixStream::pair().unwrap();
     send_answer(&app, &nonce, &proof).unwrap();
-    let peer = receive(&host, &nonce, unsafe { libc::geteuid() }).unwrap();
-    assert_eq!(peer.uid(), unsafe { libc::geteuid() });
-    assert_eq!(peer.gid(), unsafe { libc::getegid() });
+    let peer = receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
+    assert_eq!(peer.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(peer.gid(), rustix::process::getegid().as_raw());
     assert_eq!(peer.start_time().unwrap(), start());
     peer.matches_transferred_pidfd(peer.as_fd()).unwrap();
 }
