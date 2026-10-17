@@ -7,6 +7,7 @@ keeps writing `vello::…`. Upstream: https://github.com/linebender/vello
 
 What differs from the upstream release is listed in the Tilo repository's
 `vendor/PATCHES.md` ("Vello changes"): scratch buffers are sized from what a
-frame measurably uses instead of fixed worst-case constants. The changes are
+frame measurably uses instead of fixed worst-case constants, and `skrifa` is
+0.44, the version the rest of Tilo's font stack uses. The buffer changes are
 proposed upstream as linebender/vello#1861, #1862 and #1863; when a vello
 release carries them, the Tilo SDK moves back to `vello` and this fork ends.

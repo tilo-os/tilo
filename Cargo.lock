@@ -19632,7 +19632,7 @@ dependencies = [
  "log",
  "peniko",
  "png",
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "smallvec",
  "static_assertions",
  "thiserror 2.0.21",
@@ -19648,7 +19648,7 @@ dependencies = [
  "bytemuck",
  "guillotiere",
  "peniko",
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "smallvec",
 ]
 
@@ -23486,7 +23486,6 @@ dependencies = [
  "simd-adler32",
  "simdutf8",
  "siphasher",
- "skrifa 0.42.1",
  "skrifa 0.44.0",
  "slab",
  "slotmap",
