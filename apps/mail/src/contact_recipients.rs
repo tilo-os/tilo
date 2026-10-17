@@ -644,14 +644,10 @@ mod chrome_tests {
             mail.harness().set_theme(theme);
             mail.harness().resize((1280, 800)).unwrap();
             mail.harness().relayout();
-            assert!(
-                mail.harness()
-                    .a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| node.label()
-                        == Some(crate::i18n::t("mail-contact-recipients").as_str()))
-            );
-            mail.harness().click_named("mail-list-action-4").unwrap();
+            assert!(mail.harness().a11y_nodes().iter().any(
+                |(_, node)| node.label() == Some(crate::i18n::t("mail-contact-write").as_str())
+            ));
+            mail.harness().click_named("mail-list-action-3").unwrap();
             mail.settle();
             let inspection = mail.harness().inspection_json().unwrap();
             assert!(
@@ -659,7 +655,7 @@ mod chrome_tests {
                 "{inspection}"
             );
             assert!(
-                inspection.contains("Only Contacts recipients"),
+                inspection.contains("Only Contacts"),
                 "the native picker must retain its contact scope: {inspection}"
             );
         }

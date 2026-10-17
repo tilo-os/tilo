@@ -100,6 +100,12 @@ pub(crate) struct SetupFields {
     /// address, so they stay out of the way until they need attention.
     advanced: LocalState<bool>,
     provider_status: LocalState<ProviderStatus>,
+    /// What the server said is wrong, on the field it is about: the field's
+    /// validation key, the message, and the field's text when it was said.
+    /// It goes once the person changes that field.
+    trouble: LocalState<Option<(&'static str, String, String)>>,
+    /// Whether the browser sign-in finished for the address shown.
+    authorized: LocalState<bool>,
 }
 
 impl SetupFields {
@@ -130,7 +136,59 @@ impl SetupFields {
             field_errors: LocalState::new(Vec::new()),
             advanced: LocalState::new(false),
             provider_status: LocalState::new(ProviderStatus::Idle),
+            trouble: LocalState::new(None),
+            authorized: LocalState::new(false),
         }
+    }
+
+    /// The field index a validation key names.
+    fn index_of(key: &str) -> Option<usize> {
+        Some(match key {
+            "display_name" => DISPLAY_NAME,
+            "email" => EMAIL,
+            "username" => USERNAME,
+            "password" => PASSWORD,
+            "imap_host" => IMAP_HOST,
+            "imap_port" => IMAP_PORT,
+            "smtp_host" => SMTP_HOST,
+            "smtp_port" => SMTP_PORT,
+            _ => return None,
+        })
+    }
+
+    /// Say what the server found wrong on the field `key` names. A server
+    /// field shows the server rows.
+    pub(crate) fn set_trouble(&self, key: &'static str, message: String) {
+        if key.starts_with("imap") || key.starts_with("smtp") || key == "username" {
+            self.set_advanced(true);
+        }
+        let value = Self::index_of(key)
+            .map(|index| self.value(index))
+            .unwrap_or_default();
+        self.trouble.set(Some((key, message, value)));
+    }
+
+    /// The server's word on a field, while the field still says what it
+    /// said then.
+    pub(crate) fn trouble(&self) -> Option<(&'static str, String)> {
+        self.trouble.with(|trouble| {
+            trouble.as_ref().and_then(|(key, message, value)| {
+                let index = Self::index_of(key)?;
+                (self.value(index) == *value).then(|| (*key, message.clone()))
+            })
+        })
+    }
+
+    /// Forget a server complaint about a field the person has changed since.
+    pub(crate) fn settle_trouble(&self) {
+        let stale = self.trouble.with(Option::is_some) && self.trouble().is_none();
+        if stale {
+            self.trouble.set(None);
+        }
+    }
+
+    pub(crate) fn authorized(&self) -> bool {
+        self.authorized.with(|authorized| *authorized)
     }
 
     pub(crate) fn provider_status(&self) -> ProviderStatus {
@@ -210,10 +268,6 @@ impl SetupFields {
     }
 
     pub(crate) fn set_error(&self, error: Option<String>) {
-        // A failure is where the servers may need correcting by hand.
-        if error.is_some() {
-            self.set_advanced(true);
-        }
         if self.error.with(|current| *current != error) {
             self.error.set(error);
         }
@@ -275,6 +329,7 @@ impl SetupFields {
         if matches {
             self.import_pending.set(false);
             self.oauth_source.set(None);
+            self.authorized.set(true);
         }
     }
 
@@ -300,6 +355,7 @@ struct Shape {
     field_errors: Vec<(&'static str, String)>,
     advanced: bool,
     provider_status: ProviderStatus,
+    trouble: Option<(&'static str, String)>,
 }
 
 impl Shape {
@@ -311,14 +367,17 @@ impl Shape {
             field_errors: fields.field_errors(),
             advanced: fields.advanced(),
             provider_status: fields.provider_status(),
+            trouble: fields.trouble(),
         }
     }
 
-    /// The messages for the validation keys `keys`, joined.
+    /// The messages for the validation keys `keys`, joined: what the form
+    /// lacks, then what the server said.
     fn error_for(&self, keys: &[&str]) -> Option<String> {
         let messages: Vec<&str> = self
             .field_errors
             .iter()
+            .chain(self.trouble.iter())
             .filter(|(key, _)| keys.contains(key))
             .map(|(_, message)| message.as_str())
             .collect();
@@ -460,9 +519,10 @@ fn status_line(message: &str) -> Element {
 fn address_input(fields: &SetupFields, status: &ProviderStatus) -> Element {
     let address =
         input(fields, EMAIL).with_accessible_name(crate::i18n::t("mail-setup-label-email"));
+    // The provider, once known, confirms the address; looking it up is the
+    // app's business and says nothing.
     let note = match status {
-        ProviderStatus::Idle => return Box::new(address),
-        ProviderStatus::Finding => crate::i18n::t("mail-setup-finding-provider"),
+        ProviderStatus::Idle | ProviderStatus::Finding => return Box::new(address),
         ProviderStatus::Found { name } => name.clone(),
     };
     Box::new(
@@ -504,12 +564,25 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
         label("mail-setup-label-email"),
         address_input(fields, &shape.provider_status),
     );
-    let mut account = FormSection::untitled().field(with_error(email, shape.error_for(&["email"])));
+    // The name recipients see comes first: an address alone would make it
+    // the address's local part.
+    let mut account = FormSection::untitled()
+        .field(with_error(
+            Field::new(
+                label("mail-setup-label-display-name"),
+                input(fields, DISPLAY_NAME),
+            ),
+            shape.error_for(&["display_name"]),
+        ))
+        .field(with_error(email, shape.error_for(&["email"])));
+    // A browser sign-in is the sheet's primary action itself, so it adds
+    // no field; one the provider does not offer here says so.
     account = match shape.auth {
-        AuthMethod::Password => account.field(Field::new(
-            label("mail-setup-label-password"),
-            input(fields, PASSWORD),
+        AuthMethod::Password => account.field(with_error(
+            Field::new(label("mail-setup-label-password"), input(fields, PASSWORD)),
+            shape.error_for(&["password"]),
         )),
+        AuthMethod::OAuth if fields.provider().is_some_and(OAuthProvider::is_configured) => account,
         AuthMethod::OAuth => account.field(Field::custom(
             label("mail-setup-label-account"),
             browser_sign_in(fields, requests),
@@ -517,10 +590,6 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
     };
     account = account.control_row(advanced_switch(fields, shape.advanced));
     let servers = FormSection::untitled()
-        .field(Field::new(
-            label("mail-setup-label-display-name"),
-            input(fields, DISPLAY_NAME),
-        ))
         .field(with_error(
             Field::new(label("mail-setup-label-username"), input(fields, USERNAME)),
             shape.error_for(&["username"]),
@@ -686,8 +755,9 @@ impl SetupSheet {
     /// The sheet for `cfg`, open. `editing` shows the way to remove it.
     pub(crate) fn open(cfg: &AccountConfig, editing: bool, max_width: f64) -> Self {
         let fields = SetupFields::of(cfg);
-        // Changing an account starts from the servers it has.
-        fields.set_advanced(editing);
+        // The servers are found from the address; they stay folded away
+        // until the person or a server problem needs them.
+        fields.set_advanced(false);
         let requests = Requests::default();
         let save = Rc::clone(&requests);
         let cancel = Rc::clone(&requests);

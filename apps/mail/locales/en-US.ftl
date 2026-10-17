@@ -23,8 +23,9 @@ mail-setup-oauth-note-unavailable = Browser sign-in unavailable
 mail-setup-tls = TLS
 mail-setup-advanced = Advanced
 mail-setup-save = Save
-mail-setup-verifying = Checking…
-mail-setup-finding-provider = Finding servers…
+mail-setup-saving = Saving…
+mail-setup-sign-in = Sign in
+mail-setup-signing-in = Signing in…
 mail-setup-cancel = Cancel
 mail-setup-remove = Remove account
 
@@ -44,7 +45,8 @@ mail-compose-prompt-add = Add link
 mail-compose-prompt-cancel = Cancel
 
 # Shared address-book choices. Hints are selected explicitly, never identity proof.
-mail-contact-recipients = Contacts recipients
+mail-contact-recipients = Contacts
+mail-contact-write = Write to a contact
 mail-contact-draft-choice = Draft to { $person } ({ $id }) at { $email } from { $sender } ({ $sender_account })
 mail-contact-draft-prepared = Draft ready
 mail-contact-sender-changed = Sending account changed

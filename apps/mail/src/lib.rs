@@ -74,6 +74,8 @@ mod setup_sheet;
 pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod state;
+pub(crate) mod store;
+pub mod sync;
 pub mod transport;
 pub mod util;
 pub mod validate;
