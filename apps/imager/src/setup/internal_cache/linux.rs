@@ -40,7 +40,6 @@ mod native {
     };
     use super::{effective_mode_allowed, raw_components};
     use crate::setup::internal_download::SelectedManifest;
-    use advisory_lock::FileLock;
     use sha2::{Digest, Sha256};
     use std::{
         ffi::{CStr, CString},
@@ -56,6 +55,7 @@ mod native {
             atomic::{AtomicBool, Ordering},
         },
     };
+    use tilo_files::native::lock::FileLock;
 
     type Result<T> = std::result::Result<T, String>;
     fn io(e: std::io::Error) -> String {
