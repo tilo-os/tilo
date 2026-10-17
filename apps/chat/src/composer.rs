@@ -13,12 +13,11 @@ use std::collections::HashMap;
 
 use automerge::AutoCommit;
 use tilo_actions::ActionError;
-use tilo_document::{RichText, RichTextAction, RichTextState};
+use tilo_document::{RichTextAction, RichTextState};
 use tilo_rich_text::{
-    Draft, FieldOutcome, RichTextComposer, RichTextField, RichTextSource, RichTextSurface,
-    SubmitKey,
+    Draft, FieldOutcome, PersonField, RichTextComposer, RichTextSource, RichTextSurface, SubmitKey,
 };
-use ui::framework::Dispatcher;
+use ui::framework::PersonRecord;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::EditOp;
@@ -28,81 +27,99 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::resource::Chat;
+use crate::drafts::ChatDrafts;
 
-/// The id the dispatcher addresses the draft stored under `key` by.
-pub fn draft_id(key: &str) -> String {
-    format!(
-        "{}/drafts/{key}",
-        <Chat as ui::tilo_resource::Resource>::KIND
-    )
-}
-
-/// The draft a channel or thread composer edits: the rich-text child of the
-/// chat record stored under its key, edited through the chat's dispatcher.
+/// The draft a channel or thread composer edits: the rich text kept under
+/// its key in the person's own drafts record ([`ChatDrafts`]), never in the
+/// room's chat record.
 pub struct DraftField {
     key: String,
-    dispatch: Option<Dispatcher<Chat>>,
+    record: Option<PersonRecord<ChatDrafts>>,
     read_only: bool,
-    field: RichTextField,
+    field: Option<PersonField<ChatDrafts>>,
 }
 
 impl DraftField {
     fn new() -> Self {
         Self {
             key: String::new(),
-            dispatch: None,
+            record: None,
             read_only: false,
-            field: Self::field("", None),
+            field: None,
         }
     }
 
-    fn field(key: &str, dispatch: Option<&Dispatcher<Chat>>) -> RichTextField {
+    fn field(key: &str, record: &PersonRecord<ChatDrafts>) -> PersonField<ChatDrafts> {
         let located = key.to_owned();
-        let locate = move |doc: &AutoCommit| crate::projection::draft(doc, &located);
-        match dispatch {
-            Some(dispatch) => {
-                let key = key.to_owned();
-                // Each edit of the draft is a field edit at its path.
-                let child = dispatch.child::<RichText>(&draft_id(&key), move |edit| {
-                    let edit = Chat::paths().drafts.key(key.clone()).edit(EditOp::Rich {
-                        rich: serde_json::to_value(&edit).unwrap_or_default(),
-                    });
-                    ui::tilo_resource::Stamped {
-                        operation: crate::record::ChatAction::FieldEdit(edit),
-                        now_ms: 0,
-                    }
-                });
-                RichTextField::new(child, locate)
-            }
-            None => RichTextField::view_only(locate),
-        }
+        let edited = key.to_owned();
+        let started = key.to_owned();
+        PersonField::new(
+            record.clone(),
+            move |doc: &AutoCommit| crate::projection::draft(doc, &located),
+            move |edit| ui::tilo_resource::Stamped {
+                operation: crate::drafts::ChatDraftsAction::FieldEdit(
+                    ChatDrafts::paths()
+                        .drafts
+                        .key(edited.clone())
+                        .edit(EditOp::Rich {
+                            rich: serde_json::to_value(edit).unwrap_or_default(),
+                        }),
+                ),
+                now_ms: ui::tilo_resource::origin_now_ms(),
+            },
+        )
+        .with_start(move || {
+            ChatDrafts::START_DRAFT.with(crate::drafts::drafts::StartDraft {
+                key: started.clone(),
+            })
+        })
     }
 
     fn retarget(&mut self) {
-        self.field = Self::field(&self.key, self.dispatch.as_ref());
+        self.field = self
+            .record
+            .as_ref()
+            .filter(|_| !self.key.is_empty())
+            .map(|record| Self::field(&self.key, record));
+    }
+
+    fn ensure(&mut self) {
+        if let Some(field) = &mut self.field {
+            // A record that refuses the start leaves the composer read-only.
+            drop(field.ensure());
+        }
+    }
+
+    /// Whether drafts are kept in the person's record (else in memory on
+    /// this device, for a window that knows no person).
+    fn kept(&self) -> bool {
+        self.record.is_some()
     }
 }
 
 impl RichTextSource for DraftField {
     fn read_only(&self) -> bool {
-        self.read_only || self.field.read_only()
+        self.read_only || self.field.as_ref().is_none_or(RichTextSource::read_only)
     }
 
     fn sync(&mut self, doc: &AutoCommit) {
-        self.field.sync(doc);
+        if let Some(field) = &mut self.field {
+            field.sync(doc);
+        }
     }
 
     fn revision(&self) -> Option<u64> {
-        self.field.revision()
+        self.field.as_ref().and_then(RichTextSource::revision)
     }
 
     fn read_from(&mut self, doc: &AutoCommit) -> bool {
-        self.field.read_from(doc)
+        self.field
+            .as_mut()
+            .is_some_and(|field| field.read_from(doc))
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        self.field.with_state(read)
+        self.field.as_ref().and_then(|field| field.with_state(read))
     }
 
     fn apply(
@@ -115,7 +132,10 @@ impl RichTextSource for DraftField {
                 "this conversation is open to view only".into(),
             ));
         }
-        self.field.apply(edits, edit)
+        match &mut self.field {
+            Some(field) => field.apply(edits, edit),
+            None => Err(ActionError::Refused("the draft is not attached".into())),
+        }
     }
 }
 
@@ -317,15 +337,21 @@ impl DraftComposer {
         }
     }
 
-    /// Edit through `dispatcher` from now on.
-    pub fn attach(&mut self, dispatcher: Dispatcher<Chat>) {
+    /// Keep drafts in the person's own `record` from now on.
+    pub fn attach_drafts(&mut self, record: PersonRecord<ChatDrafts>) {
         let source = self.host.widget_mut().source_mut();
-        source.shared.dispatch = Some(dispatcher);
+        source.shared.record = Some(record);
         source.shared.retarget();
     }
 
-    /// Edit the draft stored under `key` (a channel, or a thread).
+    /// Edit the draft of `key` (a channel, or a thread): the person's own,
+    /// in their drafts record, or kept on this device when the window knows
+    /// no person.
     pub fn set_key(&mut self, key: &str) {
+        if !self.host.widget().source().shared.kept() {
+            self.set_private_draft(key.to_owned());
+            return;
+        }
         self.remember_private_selection();
         let source = self.host.widget_mut().source_mut();
         source.use_shared();
@@ -335,6 +361,35 @@ impl DraftComposer {
         }
     }
 
+    /// Make the draft shown exist before its first keystroke.
+    pub fn ensure_draft(&mut self, doc: &AutoCommit) {
+        let source = self.host.widget_mut().source_mut();
+        if source.private_key.is_none() {
+            source.shared.ensure();
+        }
+        self.sync(doc);
+    }
+
+    /// Empty the draft shown, once what it held was sent: an edit of the
+    /// draft like any other.
+    pub fn clear(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let empty = RichTextAction::ReplaceBody {
+            markdown: String::new(),
+        };
+        let surface = self.host.widget_mut();
+        // A draft that cannot be emptied keeps its text, to send again.
+        drop(surface.source_mut().apply(doc, &empty));
+        surface.present_now();
+    }
+
+    /// What the draft holds, as an action carries paragraphs.
+    pub fn clips(&self) -> Vec<tilo_document::ClipBlock> {
+        self.blocks()
+            .iter()
+            .map(tilo_rich_text::clip_of_content)
+            .collect()
+    }
+
     /// Whether the participant may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.host.widget_mut().source_mut().read_only = read_only;
@@ -342,7 +397,11 @@ impl DraftComposer {
 
     /// Edit the private draft for one authenticated direct-Agent route.
     pub fn set_agent_draft(&mut self, workspace: &str, agent: &str) {
-        let key = agent_draft_key(workspace, agent);
+        self.set_private_draft(agent_draft_key(workspace, agent));
+    }
+
+    /// Edit the draft kept in memory on this device under `key`.
+    fn set_private_draft(&mut self, key: String) {
         if self.host.widget().source().private_key.as_ref() == Some(&key) {
             return;
         }

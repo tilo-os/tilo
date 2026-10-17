@@ -2677,7 +2677,54 @@ impl ChatApp {
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
         let key = ChatApp::draft_presence_key(&self.active_channel);
-        Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
+        if let Some(reason) = &self.not_sent {
+            Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
+        } else {
+            Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
+        }
+    }
+
+    /// Under the composer, while a message was refused: that it was not
+    /// sent, why, and a Retry that sends the kept text again.
+    fn draw_not_sent(paint: PaintCtx<'_>, field: Rect, reason: &str, hits: &mut Vec<(Rect, Hit)>) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let style = theme.text(TextRole::Caption);
+        let y = field.y1 + f64::from(theme.tokens.spacing.s2);
+        let retry = "Retry";
+        let strong = style.clone().strong();
+        let retry_w = width_of(tr, retry, &strong);
+        let line = elide(
+            tr,
+            &format!("Not sent: {reason}"),
+            &style,
+            (field.width() - retry_w - f64::from(theme.tokens.spacing.s3)).max(0.0),
+        );
+        let line_w = width_of(tr, &line, &style);
+        let danger = theme.tokens.colors.semantic.danger;
+        tr.draw_style(
+            scene,
+            &line,
+            danger,
+            tf.pre_translate(vello::kurbo::Vec2::new(field.x0, y)),
+            None,
+            &style,
+        );
+        let x = field.x0 + line_w + f64::from(theme.tokens.spacing.s3);
+        let h = line_of(tr, &style);
+        tr.draw_style(
+            scene,
+            retry,
+            theme.text_primary,
+            tf.pre_translate(vello::kurbo::Vec2::new(x, y)),
+            None,
+            &strong,
+        );
+        ChatApp::push_hit(hits, Rect::new(x, y, x + retry_w, y + h), Hit::Send);
     }
 
     fn draw_agent_task_controls(
@@ -3010,8 +3057,8 @@ impl ChatApp {
         }
     }
 
-    /// Collaborators' carets and selections in a shared draft, drawn with the
-    /// composer's own caret/selection geometry (pixel-identical, recoloured).
+    /// Who else is writing in this composer's channel or thread, under the
+    /// composer: "Ada is typing…". What they write stays theirs.
     fn draw_draft_presence(
         composer: &crate::composer::DraftComposer,
         key: &ui::presence::PresenceKey,
@@ -3021,24 +3068,23 @@ impl ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let len = composer.value().len();
-        if let Some(list) = presence.selections.get(key) {
-            for (user, range) in list {
-                let (start, end) = (range.start.min(len), range.end.min(len));
-                for rect in composer.selection_rects(theme, start, end) {
-                    presence.draw_peer_selection(scene, theme, tf, user, rect);
-                }
-            }
-        }
-        if let Some(list) = presence.carets.get(key) {
-            for (user, caret) in list {
-                let Some(rect) = composer.caret_rect(theme, (*caret).min(len)) else {
-                    continue;
-                };
-                let name = presence.display_name(user);
-                presence.draw_peer_caret_labeled(scene, theme, tr, tf, user, &name, rect);
-            }
-        }
+        let Some(line) = typing_line(presence, key) else {
+            return;
+        };
+        let field = composer.rect();
+        let style = theme.text(TextRole::Caption);
+        let shown = elide(tr, &line, &style, field.width());
+        tr.draw_style(
+            scene,
+            &shown,
+            theme.text_dim,
+            tf.pre_translate(vello::kurbo::Vec2::new(
+                field.x0,
+                field.y1 + f64::from(theme.tokens.spacing.s2),
+            )),
+            None,
+            &style,
+        );
     }
 
     /// A viewer must never be handed an editable-looking field that silently
@@ -3870,6 +3916,39 @@ fn paint_field(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, focused
     ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.surfaces.raised);
     if focused {
         ui::widget::paint_focus_ring(scene, tf, rect, radius, theme);
+    }
+}
+
+/// Who else is writing in the composer scoped by `key`, as a line: "Ada is
+/// typing…"; `None` when nobody is.
+pub(crate) fn typing_line(
+    presence: &PresenceCtx,
+    key: &ui::presence::PresenceKey,
+) -> Option<String> {
+    let mut writers: Vec<String> = presence
+        .carets
+        .get(key)
+        .into_iter()
+        .flatten()
+        .map(|(user, _)| user)
+        .chain(
+            presence
+                .selections
+                .get(key)
+                .into_iter()
+                .flatten()
+                .map(|(user, _)| user),
+        )
+        .filter(|user| !presence.is_own_identity(&user.0))
+        .map(|user| presence.display_name(user))
+        .collect();
+    writers.sort();
+    writers.dedup();
+    match writers.as_slice() {
+        [] => None,
+        [one] => Some(format!("{one} is typing…")),
+        [one, two] => Some(format!("{one} and {two} are typing…")),
+        _ => Some("Several people are typing…".to_owned()),
     }
 }
 
