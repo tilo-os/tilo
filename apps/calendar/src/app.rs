@@ -1663,28 +1663,52 @@ impl CalendarApp {
         id: Id,
         day: NaiveDate,
         start_min: i64,
-        dur_min: i64,
+        _dur_min: i64,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        let start = day.and_time(min_to_time(start_min));
-        let end = start + Duration::minutes(dur_min.max(TIMELINE_SNAP_MIN));
-        let moved = match self.model.event_mut(id) {
-            // An all-day event has no place on the timed grid; leave it alone.
-            Some(e) if !e.all_day && (e.start != start || e.end != end) => {
-                e.start = start;
-                e.end = end;
-                true
-            }
-            _ => false,
+        let Some(before) = self.model.event(id).filter(|e| !e.all_day).cloned() else {
+            return;
         };
-        if moved {
-            self.submit(
-                doc,
-                Calendar::RESCHEDULE.with((crate::model::key(id), start, end)),
-            );
-            self.status = Some("Event rescheduled".into());
-            self.dirty = true;
+        let mut after = before.clone();
+        after.start = day.and_time(min_to_time(start_min));
+        let duration = before.elapsed_duration();
+        after.end = after.start + duration;
+        after.end_later_fold = false;
+        if let Some((instant, _)) = crate::timezone::wall_to_utc(&after.timezone, after.start)
+            && let Ok(zone) = after.timezone.parse::<chrono_tz::Tz>()
+            && let Some(end) = instant.checked_add_signed(duration)
+        {
+            after.end = end.with_timezone(&zone).naive_local();
+            after.end_later_fold = crate::timezone::endpoint_utc(&after.timezone, after.end, false)
+                .is_some_and(|earlier| earlier != end);
         }
+        if after == before {
+            return;
+        }
+        // Reschedule changes both wall endpoints together. For a reversed
+        // fold interval, first use a non-reversed bridge, then select its
+        // later endpoint before writing the final wall end. Every published
+        // edit remains valid, without replacing unrelated collaborative fields.
+        let bridge_end = after.end.max(after.start);
+        if let Err(error) = self.try_submit(
+            doc,
+            Calendar::RESCHEDULE.with((crate::model::key(id), after.start, bridge_end)),
+        ) {
+            self.status = Some(format!("Could not reschedule event: {error}"));
+            return;
+        }
+        let fields = Calendar::paths().events.item(&crate::model::key(id));
+        if after.end_later_fold {
+            self.submit(doc, fields.end_later_fold.set(true));
+        }
+        if after.end != bridge_end {
+            self.submit(doc, fields.end.set(after.end));
+        }
+        if let Some(event) = self.model.event_mut(id) {
+            *event = after;
+        }
+        self.status = Some("Event rescheduled".into());
+        self.dirty = true;
     }
 
     // --- week/day timeline + agenda: scroll & drag input -----------------
@@ -2421,6 +2445,11 @@ impl CalendarApp {
         {
             let before = e.clone();
             f(e);
+            if (e.start, e.end, e.all_day, &e.timezone)
+                != (before.start, before.end, before.all_day, &before.timezone)
+            {
+                e.end_later_fold = false;
+            }
             let after = e.clone();
             if self.submit_event_change(doc, &before, &after) {
                 self.dirty = true;
@@ -2527,8 +2556,12 @@ impl CalendarApp {
     /// model; it never claims that a remote participant is available.
     fn local_schedule_conflicts(&self, edited: &Event) -> Vec<String> {
         let (start, end) = Self::event_interval(edited, edited.start.date());
-        let window_start = start.date() - Duration::days(1);
-        let window_end = end.date();
+        // Named zones can put the same instant on different calendar dates.
+        // Two days covers the full IANA offset spread without moving any
+        // recurrence anchor into a different timezone.
+        let window_start = start.date() - Duration::days(2);
+        let window_end = end.date().max(start.date()) + Duration::days(2);
+        let resolved = Self::resolved_event_interval(edited, edited.start.date());
         let mut conflicts = Vec::new();
 
         for candidate in &self.model.events {
@@ -2556,7 +2589,14 @@ impl CalendarApp {
                     .into_iter()
                     .any(|date| {
                         let (other_start, other_end) = Self::event_interval(candidate, date);
-                        start < other_end && other_start < end
+                        resolved
+                            .zip(Self::resolved_event_interval(candidate, date))
+                            .map_or_else(
+                                || start < other_end && other_start < end,
+                                |((start, end), (other_start, other_end))| {
+                                    start < other_end && other_start < end
+                                },
+                            )
                     })
             };
             if overlaps {
@@ -2585,12 +2625,49 @@ impl CalendarApp {
         let start = override_for_date
             .and_then(|override_| override_.start)
             .unwrap_or_else(|| occurrence_date.and_time(event.start.time()));
-        let duration = (event.end - event.start).max(Duration::minutes(1));
         let end = override_for_date
             .and_then(|override_| override_.end)
-            .unwrap_or(start + duration)
-            .max(start + Duration::minutes(1));
+            .unwrap_or_else(|| event.occurrence_end(start));
         (start, end)
+    }
+
+    /// Resolve the same occurrence used by painting, retaining the authored
+    /// wall endpoints separately. Floating and date-only ranges have no instant.
+    fn resolved_event_interval(
+        event: &Event,
+        date: NaiveDate,
+    ) -> Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
+        if event.all_day {
+            return None;
+        }
+        let (start, end) = Self::event_interval(event, date);
+        let (start, _) = crate::timezone::wall_to_utc(&event.timezone, start)?;
+        let override_ = event.occurrence_overrides.iter().find(|edit| {
+            edit.original_date == date || edit.start.is_some_and(|start| start.date() == date)
+        });
+        let end = if let Some(edit) = override_.filter(|edit| edit.end.is_some()) {
+            crate::timezone::endpoint_utc(&event.timezone, end, edit.end_later_fold)?
+        } else if event.end_later_fold {
+            start.checked_add_signed(event.elapsed_duration())?
+        } else {
+            crate::timezone::endpoint_utc(&event.timezone, end, false)?
+        };
+        Some((start, end))
+    }
+
+    /// A repeated wall hour has no second grid slot. Project elapsed minutes
+    /// forward for geometry, but keep the authored endpoint for the time label.
+    fn timeline_interval(event: &Event, date: NaiveDate) -> (i64, i64, i64) {
+        let (start, end) = Self::event_interval(event, date);
+        let duration = Self::resolved_event_interval(event, date)
+            .map_or(end - start, |(start, end)| end - start);
+        let start_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
+        let clock_end_min = i64::from(end.hour()) * 60 + i64::from(end.minute());
+        (
+            start_min,
+            start_min + duration.num_minutes().max(TIMELINE_SNAP_MIN),
+            clock_end_min,
+        )
     }
 
     /// Complete schedule-conflict statement for assistive technology. The
@@ -3200,10 +3277,7 @@ impl CalendarApp {
                 if event.all_day {
                     continue;
                 }
-                let start_min =
-                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
-                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
-                    .max(start_min + TIMELINE_SNAP_MIN);
+                let (start_min, end_min, _) = Self::timeline_interval(event, *day);
                 spans.push(TimelineSpan {
                     id: event.id,
                     day: *day,
@@ -3222,14 +3296,12 @@ impl CalendarApp {
         let mut events = Vec::new();
         for day in days {
             for event in self.visible_events_on(*day) {
-                let start_min =
-                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
-                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
-                    .max(start_min + TIMELINE_SNAP_MIN);
+                let (start_min, end_min, clock_end_min) = Self::timeline_interval(event, *day);
                 events.push(TimelineRenderEvent {
                     id: event.id,
                     day: *day,
                     title: event.display_title(),
+                    clock_end_min,
                     location: &event.location,
                     color: event.color,
                     start_min,

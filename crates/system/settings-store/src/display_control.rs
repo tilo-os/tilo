@@ -645,21 +645,26 @@ mod compare_tests {
         let paths = SessionPaths::beside(directory.path().join("settings.json"));
         let session = SessionSettings::open(paths.clone()).unwrap();
         let before = session.load();
-        std::fs::remove_file(&paths.copy).unwrap();
-        std::fs::create_dir(&paths.copy).unwrap();
-        session
-            .compare_display_transaction(
-                before.get("display_transaction"),
-                json!({"id":7,"state":"requested"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
+        let copy = std::fs::read(&paths.copy).unwrap();
+        // Save the device record, then fail publication of the readable copy.
+        tilo_files::native::atomic::test_support::with_failure_on_nth(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
+            2,
+            || {
+                session.compare_display_transaction(
+                    before.get("display_transaction"),
+                    json!({"id":7,"state":"requested"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&paths.copy).unwrap(), copy);
         let durable = crate::load_at(&paths.device);
         assert_eq!(durable["display_transaction"]["id"], 7);
         assert_eq!(durable["display_transaction"]["state"], "requested");
-        std::fs::remove_dir(&paths.copy).unwrap();
         assert_eq!(session.load(), durable);
         assert_eq!(crate::load_at(&paths.copy), durable);
     }

@@ -122,6 +122,39 @@ fn any_action_is_drafted_from_its_parameters() {
 }
 
 #[test]
+fn password_fields_in_object_parameters_are_withheld() {
+    let action = descriptor(
+        "Connect",
+        vec![
+            ActionParam::required("account", ParamType::Object, "Account").with_schema(json!({
+                "type": "object",
+                "properties": {"token": {"type": "string", "format": "password"}}
+            })),
+        ],
+    );
+    let arguments = args(json!({"account": {"token": "private-token"}}));
+    let draft = Draft::render(&action, &arguments);
+    assert_eq!(draft.fields[0].value, DraftValue::Withheld);
+    assert!(!draft.fields[0].editable);
+    assert!(
+        !serde_json::to_string(&draft)
+            .unwrap()
+            .contains("private-token")
+    );
+    assert!(
+        draft
+            .apply_edits(
+                &arguments,
+                &[DraftEdit {
+                    path: vec!["account".into(), "token".into()],
+                    text: "replacement".into(),
+                }]
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn edits_change_only_editable_fields_and_keep_their_types() {
     let arguments = mail_arguments();
     let draft = Draft::render(&send(), &arguments);

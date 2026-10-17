@@ -243,8 +243,8 @@ pub fn plan_edit(
     let Some(target) = target(guild, &message) else {
         return Vec::new();
     };
-    let (text, _) = body(guild, &message, context);
-    if text.is_empty() {
+    let (text, attachments) = body(guild, &message, context);
+    if text.is_empty() && attachments.is_empty() {
         return Vec::new();
     }
     let thread = message

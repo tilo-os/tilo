@@ -65,6 +65,45 @@ fn slide_ops_update_the_deck_and_the_current_slide() {
     assert_eq!(bench.deck().slides.len(), n0 + 2);
 }
 
+/// Inserting or navigating away must not redirect a live notes caret into
+/// the next slide's notes. Notes can be reopened explicitly on that slide.
+#[test]
+fn changing_slides_ends_notes_editing() {
+    let changes: [fn(&mut SlidesApp); 4] = [
+        |app| app.apply_hit(Hit::NewSlide),
+        |app: &mut SlidesApp| app.apply_hit(Hit::DuplicateSlide),
+        |app: &mut SlidesApp| app.next_slide(1),
+        |app: &mut SlidesApp| app.goto_slide(1),
+    ];
+    for change in changes {
+        let mut first = Slide::new(Layout::Blank);
+        first.notes = "First speaker's notes".into();
+        let mut second = Slide::new(Layout::Blank);
+        second.notes = "Second speaker's notes".into();
+        let mut bench = Bench::open(&deck_of(vec![first, second]), super::bench::WINDOW);
+        bench.focus();
+        bench.with(SlidesApp::begin_notes_edit);
+        bench.frame();
+        assert!(bench.read(|app| app.editing_notes));
+        bench.with(change);
+        let before_typing = bench.deck();
+        assert!(!bench.read(|app| app.editing_notes));
+        bench.type_text("!");
+        assert_eq!(bench.deck(), before_typing);
+
+        bench.with(SlidesApp::begin_notes_edit);
+        bench.frame();
+        bench.type_text("!");
+        let deck = bench.deck();
+        assert_eq!(deck.slides[0].notes, "First speaker's notes");
+        let current = bench.read(|app| app.cur_slide);
+        assert_eq!(
+            deck.slides[current].notes,
+            format!("{}!", before_typing.slides[current].notes)
+        );
+    }
+}
+
 /// The last slide stays.
 #[test]
 fn the_last_slide_cannot_be_deleted() {

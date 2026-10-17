@@ -37,6 +37,83 @@ fn through_the_chooser(
 
 const OPEN: SlidesEffect = SlidesEffect::OpenPresentation { path: None };
 
+/// Foreign producers may wrap words in CDATA instead of escaping them.
+/// Opening those packages must keep the words and their surrounding marks.
+#[test]
+fn opening_presentations_preserves_cdata_text() {
+    use std::io::{Cursor, Read, Write};
+
+    const WORDS: &str = "Before <draft> &amp; café after";
+    for extension in ["odp", "pptx"] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(format!("cdata.{extension}"));
+        let mut slide = Slide::new(Layout::Blank);
+        slide.add(
+            Element::text("Before CDATA_WORDS after", 20.0, 30.0, 600.0, 100.0, 32.0).with(
+                |element| {
+                    element.bold = true;
+                    element.italic = true;
+                },
+            ),
+        );
+        slide.notes = "Before CDATA_NOTES after".into();
+        let mut original = deck_of(vec![slide]);
+        original.title = "Before CDATA_TITLE after".into();
+        write_deck(&path, &original);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let mut source = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..source.len() {
+            let mut entry = source.by_index(index).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            if entry.name().ends_with(".xml") {
+                let xml = String::from_utf8(bytes).unwrap();
+                // The exact sentinel is text content, never an attribute.
+                bytes = xml
+                    .replace(
+                        ">Before CDATA_WORDS after<",
+                        ">Before <![CDATA[<draft> &amp; café]]> after<",
+                    )
+                    .replace(
+                        ">Before CDATA_NOTES after<",
+                        ">Before <![CDATA[<draft> &amp; café]]> after<",
+                    )
+                    .replace(
+                        ">Before CDATA_TITLE after<",
+                        ">Before <![CDATA[<draft> &amp; café]]> after<",
+                    )
+                    .into_bytes();
+            }
+            output
+                .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&bytes).unwrap();
+        }
+        std::fs::write(&path, output.finish().unwrap().into_inner()).unwrap();
+
+        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
+        through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN)
+            .1
+            .expect("the presentation opens");
+        let opened = bench.deck();
+        let element = &opened.slides[0].elements[0];
+        assert_eq!(
+            element.text, WORDS,
+            "{extension} keeps literal CDATA, not decoded entities"
+        );
+        let blocks = element.rich_blocks();
+        let runs = crate::model::runs_of(&blocks[0]);
+        assert!(!runs.is_empty(), "the imported text has styled runs");
+        assert!(runs.iter().all(|(_, bold, italic)| *bold && *italic));
+        if extension == "pptx" {
+            assert_eq!(opened.title, WORDS);
+            assert_eq!(opened.slides[0].notes, WORDS);
+        }
+    }
+}
+
 /// ODP and `PowerPoint` files open through the chooser as one undoable
 /// change; failures change nothing and are said.
 #[test]

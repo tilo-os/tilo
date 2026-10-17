@@ -111,7 +111,7 @@ impl Priority {
 }
 
 /// One flattened journal record.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LogEntry {
     /// `__REALTIME_TIMESTAMP` — microseconds since the Unix epoch (UTC).
     pub realtime_us: u64,

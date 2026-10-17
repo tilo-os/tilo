@@ -57,10 +57,27 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
         .collect();
     let url = if query.is_empty() {
         base
-    } else if base.contains('?') {
-        format!("{base}&{}", query.join("&"))
     } else {
-        format!("{base}?{}", query.join("&"))
+        // Fragments are not sent to the server; params must precede them.
+        let (target, fragment) = base
+            .split_once('#')
+            .map_or((base.as_str(), None), |(target, fragment)| {
+                (target, Some(fragment))
+            });
+        let separator = if target.ends_with('?') || (target.contains('?') && target.ends_with('&'))
+        {
+            ""
+        } else if target.contains('?') {
+            "&"
+        } else {
+            "?"
+        };
+        let mut url = format!("{target}{separator}{}", query.join("&"));
+        if let Some(fragment) = fragment {
+            url.push('#');
+            url.push_str(fragment);
+        }
+        url
     };
 
     // Headers from the request, then auth-derived headers.
@@ -254,6 +271,41 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn query_params_precede_fragments_and_reuse_query_separators() {
+        for (base, expected) in [
+            (
+                "/search#section?ignored",
+                "/search?q=rust%20lang#section?ignored",
+            ),
+            ("/search?sort=id#top", "/search?sort=id&q=rust%20lang#top"),
+            ("/search?#", "/search?q=rust%20lang#"),
+            ("/search?sort=id&", "/search?sort=id&q=rust%20lang"),
+        ] {
+            let mut req = Request::new("r");
+            req.url = "{{base}}".into();
+            req.params = vec![KeyValue::new("q", "rust lang")];
+            let out = build_outgoing(&req, &env(&[("base", base)]));
+            assert_eq!(out.url, expected, "base: {base}");
+
+            req.params.clear();
+            assert_eq!(build_outgoing(&req, &env(&[("base", base)])).url, base);
+        }
+    }
+
+    #[test]
+    fn trailing_path_ampersand_does_not_start_a_query() {
+        for suffix in ["", "#section?ignored"] {
+            let mut req = Request::new("r");
+            req.url = format!("https://example.com/items&{suffix}");
+            req.params = vec![KeyValue::new("q", "test")];
+            assert_eq!(
+                build_outgoing(&req, &HashMap::new()).url,
+                format!("https://example.com/items&?q=test{suffix}")
+            );
+        }
     }
 
     /// `build_outgoing` turns a saved request plus environment into the wire

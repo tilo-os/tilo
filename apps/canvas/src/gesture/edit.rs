@@ -311,7 +311,19 @@ pub fn place(
         let to = Affine::translate(offset);
         match mark.transform {
             Some(transform) => mark.transform = Some((to * Affine::new(transform)).as_coeffs()),
-            None => mark.shape = mark.shape.translated(offset.x, offset.y),
+            None => {
+                mark.shape = mark.shape.translated(offset.x, offset.y);
+                // Like the geometry, an untransformed gradient is in artwork units.
+                if let Some(gradient) = &mut mark.gradient {
+                    for point in [&mut gradient.from, &mut gradient.to]
+                        .into_iter()
+                        .chain(gradient.focal.iter_mut())
+                    {
+                        point[0] += offset.x;
+                        point[1] += offset.y;
+                    }
+                }
+            }
         }
         placed.extend(mark.id.clone());
         match draws.last_mut() {
@@ -460,6 +472,68 @@ mod tests {
             panic!("an edit")
         };
         assert!(edit.transform.is_some());
+    }
+
+    #[test]
+    fn copied_gradients_travel_with_their_geometry() {
+        use ui::prelude::Replica;
+
+        for (transformed, clipboard, focal) in [false, true]
+            .into_iter()
+            .flat_map(|transformed| [false, true].map(|clipboard| (transformed, clipboard)))
+            .flat_map(|(transformed, clipboard)| {
+                [None, Some([2.0, 3.0])].map(|focal| (transformed, clipboard, focal))
+            })
+        {
+            let mut art = Replica::<Artwork>::new();
+            art.apply(Artwork::DRAW.with(Draw {
+                layer: None,
+                marks: vec![NewMark {
+                    id: Some("card".into()),
+                    gradient: Some(crate::model::Gradient {
+                        kind: if focal.is_some() { "radial" } else { "linear" }.into(),
+                        from: [0.0, 0.0],
+                        to: [10.0, 10.0],
+                        stops: vec![(0.0, "#112233".into()), (1.0, "#aabbcc".into())],
+                        focal,
+                    }),
+                    transform: transformed.then(|| Affine::scale(2.0).as_coeffs()),
+                    ..NewMark::new(Shape::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0,
+                        radius: 0.0,
+                    })
+                }],
+            }))
+            .unwrap();
+            let before = art.state().unwrap();
+            let original = before.mark("card").unwrap();
+            let offset = Vec2::new(30.0, -15.0);
+            let selected = vec!["card".into()];
+            let (actions, ids) = if clipboard {
+                paste(&before, &copy(&before, &selected).unwrap(), offset, None).unwrap()
+            } else {
+                duplicate(&before, &selected, offset)
+            };
+            for action in actions {
+                art.apply(action).unwrap();
+            }
+            let after = art.state().unwrap();
+            let copied = after.mark(&ids[0]).unwrap();
+            let expected = original.moved(offset.x, offset.y);
+            assert_eq!(copied.shape, expected.shape);
+            assert_eq!(copied.transform, expected.transform);
+            let mut expected_gradient = original.style.gradient.clone().unwrap();
+            if !transformed {
+                expected_gradient.from = [30.0, -15.0];
+                expected_gradient.to = [40.0, -5.0];
+                expected_gradient.focal = focal.map(|_| [32.0, -12.0]);
+            }
+            assert_eq!(copied.style.gradient, Some(expected_gradient));
+            assert_eq!(after.mark("card"), Some(original));
+        }
     }
 
     #[test]

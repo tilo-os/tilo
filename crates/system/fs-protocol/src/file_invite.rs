@@ -69,10 +69,19 @@ pub struct FileInviteSpec {
 
 /// Secret-bearing value suitable for encoding into a copied link. Keep this
 /// out of logs and persistent grant listings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BearerFileInvite {
     pub token: FileInviteV1,
     pub secret: [u8; 32],
+}
+
+impl std::fmt::Debug for BearerFileInvite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BearerFileInvite")
+            .field("token", &self.token)
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Serialize)]
@@ -237,6 +246,28 @@ mod tests {
             permission: FilePermission::View,
             expires_at_ms: Some(2_000),
             max_redemptions: None,
+        }
+    }
+
+    #[test]
+    fn bearer_debug_does_not_disclose_the_redemption_secret() {
+        let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let invite = mint_bearer_file_invite(
+            spec(FileInviteSubject::Person(Ed25519PublicKey::from_bytes(
+                [1; 32],
+            ))),
+            &issuer,
+            &mut UnwrapErr(SysRng),
+        )
+        .unwrap();
+        invite
+            .token
+            .verify_bearer_at(&invite.secret, 1_000)
+            .unwrap();
+        for debug in [format!("{invite:?}"), format!("{invite:#?}")] {
+            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains(&format!("{:?}", invite.secret)));
+            assert!(!debug.contains(&format!("{:#?}", invite.secret)));
         }
     }
 

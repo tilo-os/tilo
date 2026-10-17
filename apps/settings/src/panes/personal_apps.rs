@@ -103,16 +103,13 @@ pub(crate) fn answer(
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
     let area = app.default_apps();
     let resolver = DefaultAppResolver::new(area.candidates());
-    let mut defaults = area.prefs.borrow().get().personal();
-    defaults
-        .set(resource, package, &resolver)
+    PersonalDefaults::default()
+        .set(resource, package.clone(), &resolver)
         .map_err(|error| error.to_string())?;
     app.host().update(|stored: &mut DefaultApps| {
-        stored.handlers = defaults
-            .handlers
-            .into_iter()
-            .map(|(kind, app)| (kind.as_str().to_owned(), app))
-            .collect();
+        // Change only the chosen kind in the latest settings, not a cached
+        // resolver snapshot that may omit newer or unrecognized handlers.
+        stored.handlers.insert(kind, package);
     })
 }
 
@@ -577,6 +574,43 @@ mod tests {
         assert!(
             surface.contains("settings.default-app:scheme:https"),
             "{surface}"
+        );
+    }
+
+    #[test]
+    fn choosing_a_default_preserves_other_saved_handlers() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let settings = app.settings::<DefaultApps>();
+        // Open the area's cached snapshot before another writer changes it.
+        let _ = app.agent_surface();
+        settings
+            .update(|stored| {
+                stored
+                    .handlers
+                    .insert("ext:txt".into(), "so.tilo.notes".into());
+                // A newer reader may understand kinds this version cannot parse.
+                stored
+                    .handlers
+                    .insert("future:document".into(), "so.tilo.future".into());
+            })
+            .unwrap();
+        app.effect(&SettingsEffect::from(DefaultAppsEffect::SetDefaultApp {
+            kind: "ext:pdf".into(),
+            app: "so.tilo.pdf".into(),
+        }))
+        .expect("choose the PDF handler");
+        let handlers = settings.get().handlers;
+        assert_eq!(
+            handlers.get("ext:pdf").map(String::as_str),
+            Some("so.tilo.pdf")
+        );
+        assert_eq!(
+            handlers.get("ext:txt").map(String::as_str),
+            Some("so.tilo.notes")
+        );
+        assert_eq!(
+            handlers.get("future:document").map(String::as_str),
+            Some("so.tilo.future")
         );
     }
 

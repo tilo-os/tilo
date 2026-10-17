@@ -301,8 +301,13 @@ fn rebuild_in(
         return (Manifest::new(tier, chunks), stats);
     };
     let reusable = previous.filter(|p| p.tier() == tier);
-    let mut changed: Vec<Range<u64>> = changed.to_vec();
-    changed.sort_by_key(|r| r.start);
+    // The overlap lookup binary-searches range ends, so sorting starts alone
+    // is insufficient when dirty ranges overlap or nest.
+    let mut dirty = crate::ranges::RangeSet::new();
+    for range in changed {
+        dirty.insert(range.clone());
+    }
+    let changed: Vec<Range<u64>> = dirty.iter().cloned().collect();
     let mut pieces = Vec::new();
     let mut spans = Vec::new();
     let mut pos = 0_usize;
@@ -371,7 +376,9 @@ fn reusable_chunk(
         .get(first..)
         .unwrap_or_default()
         .iter()
-        .take_while(|r| r.start < range.end)
+        // FastCDC tests the byte at the cut offset before returning that
+        // offset, so the first byte of the next chunk can move this cut.
+        .take_while(|r| r.start <= range.end)
         .any(|r| !r.is_empty() && r.end > range.start);
     let chunk = *previous.chunks().get(index)?;
     (!touched).then(|| {
@@ -415,7 +422,10 @@ pub fn build_reader(
     let mut chunks = Vec::new();
     loop {
         while !eof && filled < capacity {
-            let n = reader.read(buf.get_mut(filled..).unwrap_or_default())?;
+            let n = match reader.read(buf.get_mut(filled..).unwrap_or_default()) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
             if n == 0 {
                 eof = true;
             }
@@ -495,6 +505,64 @@ mod tests {
                 x.to_le_bytes()[0]
             })
             .collect()
+    }
+
+    #[test]
+    fn rebuild_rehashes_nested_dirty_ranges() {
+        let mut data = pseudo_random(512 * 1024, 7);
+        let (previous, _) = build(&data, None);
+        let offset = previous.chunk_range(2).unwrap().start as usize;
+        data[offset] ^= 1;
+        let changed = vec![0..data.len() as u64, 1..2];
+        let (rebuilt, _) = rebuild(Some(&previous), &data, &changed, None);
+        let (fresh, _) = build(&data, None);
+        assert_eq!(rebuilt, fresh);
+        assert!(rebuilt.verify(&data));
+    }
+
+    #[test]
+    fn edits_at_chunk_boundaries_recompute_the_preceding_cut() {
+        let mut data = pseudo_random(512 * 1024, 7);
+        let (previous, _) = build(&data, None);
+        let offset = previous.chunk_range(2).unwrap().start as usize;
+        data[offset] ^= 1;
+        let (rebuilt, _) = rebuild(
+            Some(&previous),
+            &data,
+            &[offset as u64..offset as u64 + 1],
+            None,
+        );
+        let (fresh, _) = build(&data, None);
+        assert!(rebuilt.verify(&data));
+        assert_eq!(rebuilt, fresh);
+    }
+
+    #[test]
+    fn streamed_chunking_retries_interrupted_reads() {
+        struct InterruptedReader<'a> {
+            remaining: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for InterruptedReader<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let limit = buf.len().min(4096);
+                self.remaining.read(&mut buf[..limit])
+            }
+        }
+
+        let data = pseudo_random(512 * 1024, 9);
+        let reader = InterruptedReader {
+            remaining: &data,
+            interrupt: false,
+        };
+        let (streamed, _) = build_reader(reader, data.len() as u64, None).unwrap();
+        let (fresh, _) = build(&data, None);
+        assert_eq!(streamed, fresh);
+        assert!(streamed.verify(&data));
     }
 
     #[test]

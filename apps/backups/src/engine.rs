@@ -557,13 +557,12 @@ fn restore_into_stage(
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let temporary = to.with_extension(format!("tilo-restore-{}", std::process::id()));
-                let (size, digest) = copy_and_hash(&from, &temporary)?;
+                // The entire tree is staged until verification succeeds. A
+                // per-file temporary name could collide with another entry.
+                let (size, digest) = copy_and_hash(&from, &to)?;
                 if size != entry.size || Some(digest) != entry.sha256 {
-                    let _ = fs::remove_file(&temporary);
                     return integrity(&entry.path, "stored file failed verification");
                 }
-                fs::rename(&temporary, &to)?;
                 progress.files = progress.files.saturating_add(1);
                 progress.bytes = progress.bytes.saturating_add(size);
                 progress.current.clone_from(&entry.path);
@@ -915,6 +914,29 @@ mod tests {
         assert_eq!(left, ["200"]);
         assert!(!root.join("100").exists() && !root.join(".pruning-100").exists());
         assert!(prune_snapshots(&destination, &keep_one).unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_preserves_names_that_match_old_temporary_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        let restored = temp.path().join("restored");
+        fs::create_dir(&source).unwrap();
+        let collision = format!("report.tilo-restore-{}", std::process::id());
+        fs::write(source.join(&collision), b"first file").unwrap();
+        fs::write(source.join("report.txt"), b"second file").unwrap();
+        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+
+        let result =
+            restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).unwrap();
+
+        assert_eq!(result.files, 2);
+        assert_eq!(fs::read(restored.join(collision)).unwrap(), b"first file");
+        assert_eq!(
+            fs::read(restored.join("report.txt")).unwrap(),
+            b"second file"
+        );
     }
 
     #[test]

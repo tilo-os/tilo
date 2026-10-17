@@ -522,11 +522,13 @@ impl Widget for DatePicker {
                 let pt = self.last_cursor;
                 if self.prev_button_rect.contains(pt) {
                     self.retreat_month();
+                    *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     return;
                 }
                 if self.next_button_rect.contains(pt) {
                     self.advance_month();
+                    *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     return;
                 }
@@ -540,6 +542,7 @@ impl Widget for DatePicker {
                     // Slides the visible month on a spill-in/out click,
                     // matching every common picker UX.
                     self.commit_user_date(date);
+                    *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 }
             }
@@ -817,6 +820,32 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
+
+    #[test]
+    fn clicking_a_date_focuses_the_grid_for_keyboard_navigation() {
+        let initial = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+        let state = crate::LocalState::new(initial);
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            DatePicker::from_state(&state),
+            (400, 400),
+            Theme::dark(),
+        );
+        let target = NaiveDate::from_ymd_opt(2024, 6, 7).unwrap();
+        let point = host
+            .root::<DatePicker>()
+            .day_rects
+            .iter()
+            .find(|(date, _)| *date == target)
+            .unwrap()
+            .1
+            .center();
+        host.click_at(point.x, point.y);
+        assert!(host.root::<DatePicker>().is_focused());
+        assert_eq!(state.get(), target);
+        host.key("Right");
+        assert_eq!(state.get(), target.succ_opt().unwrap());
+    }
 
     #[test]
     fn date_picker_month_navigation_and_selection() {

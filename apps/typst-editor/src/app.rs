@@ -562,8 +562,10 @@ impl TypstApp {
         let Some(file) = self.current_file().cloned() else {
             return Err("there is no file to save".into());
         };
+        self.save_path = Some(path.to_path_buf());
         match save_file(path, file.source.as_bytes()) {
             Ok(()) => {
+                self.save_status.set(ui::SaveState::Saved, ui::time::now());
                 self.set_flash(format!("Saved {}", path.display()));
                 let path = path.to_string_lossy().into_owned();
                 if file.path.as_ref().map(|at| at.0.as_str()) != Some(path.as_str())
@@ -602,7 +604,10 @@ impl TypstApp {
     /// Compile the source shown to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
     fn export_pdf_to_path(&self, path: &std::path::Path) -> Result<(), String> {
-        let bytes = compile::compile_pdf(&self.parts, &self.source_cache).map_err(|diags| {
+        // File effects run before the editor pulls the latest document in
+        // sync. Export the live resource, not the previous frame's cache.
+        let file = self.current_file().ok_or("there is no file to export")?;
+        let bytes = compile::compile_pdf(&self.parts, &file.source).map_err(|diags| {
             let errs = diags
                 .iter()
                 .filter(|d| d.kind == compile::DiagKind::Error)
@@ -642,6 +647,10 @@ impl TypstApp {
                 return Err(e.to_string());
             }
         };
+        // Recovery belongs to the source being replaced, not the newly opened
+        // document. Leave it intact when reading the new file fails.
+        self.save_path = None;
+        self.save_status = ui::SaveStatusSurface::new();
         let path = path.to_string_lossy().into_owned();
         // A window edits one document: the file opened replaces the one shown.
         if let Some(id) = self.current_file().and_then(|_| self.current.clone()) {
@@ -1903,6 +1912,135 @@ mod tests {
             assert!(app.io.is_none());
             assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
         }
+    }
+
+    #[test]
+    fn failed_save_keeps_its_retry_destination_and_success_clears_the_failure() {
+        let (mut app, _) = fresh();
+        let dir = unique_dir("save-recovery");
+        let path = dir.join("report.typ");
+        // The missing directory makes the actual save fail, without relying
+        // on permissions (which differ when the tests run as root).
+        assert!(app.save_typ_to(&path).is_err());
+        assert_eq!(app.save_path.as_deref(), Some(path.as_path()));
+        assert!(app.save_status.failure().is_some());
+
+        std::fs::create_dir_all(&dir).unwrap();
+        let retry = app.save_path.clone().unwrap();
+        app.save_typ_to(&retry).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            app.current_file().unwrap().source
+        );
+        assert!(
+            app.save_status.failure().is_none(),
+            "a successful retry dismisses the failure card"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opening_another_document_clears_save_recovery_only_after_a_successful_read() {
+        use crate::actions::TypstEffect;
+
+        let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        let file = app.state().files.ids().next().unwrap().clone();
+        let source = Workspace::paths().files.item(&file).source;
+        app.invoke(ui::tilo_resource::Invoke::edit(&source.replace("= Document A")).unwrap())
+            .unwrap();
+        let dir = unique_dir("open-save-recovery");
+        let destination = dir.join("missing/a.typ");
+        let other = dir.join("b.typ");
+        let save = TypstEffect::Save {
+            path: Some(destination.to_string_lossy().into_owned()),
+        };
+        assert!(app.effect_confirmed(&save).is_err());
+        app.settle();
+        assert!(
+            app.effect_confirmed(&TypstEffect::OpenFile {
+                path: Some(other.to_string_lossy().into_owned()),
+            })
+            .is_err()
+        );
+        app.settle();
+        let retry = app
+            .with_surface::<TypstApp, _>(|view| {
+                assert!(view.save_status.failure().is_some());
+                assert_eq!(view.current_file().unwrap().source, "= Document A");
+                view.save_path.clone().unwrap()
+            })
+            .unwrap();
+        assert_eq!(retry, destination);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        app.effect_confirmed(&TypstEffect::Save {
+            path: Some(retry.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "= Document A"
+        );
+
+        // Fail another save of A, then load B through the same live effect path.
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::remove_dir(destination.parent().unwrap()).unwrap();
+        assert!(app.effect_confirmed(&save).is_err());
+        app.settle();
+        std::fs::write(&other, "= Document B").unwrap();
+        app.effect_confirmed(&TypstEffect::OpenFile {
+            path: Some(other.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        app.settle();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(view.current_file().unwrap().source, "= Document B");
+            assert!(view.save_path.is_none(), "B must not retry A's destination");
+            assert!(view.save_status.failure().is_none(), "no stale Retry card");
+        })
+        .unwrap();
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "= Document B");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pdf_export_uses_the_live_source_before_the_editor_pulls_it() {
+        let mut replica = Replica::<Workspace>::new();
+        replica
+            .apply(crate::resource::new_file(
+                "report.typ",
+                None,
+                "= Previous draft",
+            ))
+            .unwrap();
+        let mut app = TypstApp::new();
+        let mut doc = AutoCommit::load(&replica.save()).unwrap();
+        present(&mut app, &doc);
+        app.sync(&doc, &ROOT);
+        assert_eq!(app.source_cache, "= Previous draft");
+
+        let id = app.current.clone().unwrap();
+        let source = Workspace::paths().files.item(&id).source;
+        replica
+            .apply(ui::tilo_resource::Invoke::edit(&source.replace("#let broken = (")).unwrap())
+            .unwrap();
+        doc = AutoCommit::load(&replica.save()).unwrap();
+        present(&mut app, &doc);
+        // As on the real effect path, the resource is presented but the
+        // editor's per-frame source cache has not been pulled yet.
+        let dir = unique_dir("export-live-source");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.pdf");
+        std::fs::write(&path, b"previous export").unwrap();
+        app.pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
+        app.sync(&doc, &ROOT);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"previous export",
+            "the invalid live source must fail instead of exporting the older draft"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn cursor(p: Point) -> WindowEvent {

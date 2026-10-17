@@ -461,6 +461,12 @@ fn value_field(
         .map_or_else(|| humanize(name), str::to_owned);
     let mut made = field(path, name, DraftValue::Withheld);
     made.label = label;
+    if schema
+        .and_then(|schema| schema.get("format"))
+        .is_some_and(|format| format == "password")
+    {
+        return Some(made);
+    }
     match value {
         Value::Null => return None,
         Value::String(text) if text.trim().is_empty() => return None,
@@ -470,10 +476,7 @@ fn value_field(
             made.multiline = text.contains('\n')
                 || text.chars().count() > 120
                 || made.role == Some(MessageRole::Body);
-            made.editable = !long
-                && schema
-                    .and_then(|schema| schema.get("format"))
-                    .is_none_or(|format| format != "password");
+            made.editable = !long;
             made.value = DraftValue::Text { text: shown };
         }
         Value::Number(number) => {

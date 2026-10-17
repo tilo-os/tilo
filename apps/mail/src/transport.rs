@@ -43,26 +43,16 @@ use crate::model::{Addr, Attachment, Draft, Folder, Message};
 /// compose header fields) into a list of addresses. Tolerates `Name <addr>`
 /// and bare `addr` forms.
 pub fn parse_addr_list(s: &str) -> Vec<Addr> {
-    s.split([',', ';'])
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(parse_single_addr)
-        .collect()
-}
-
-fn parse_single_addr(s: &str) -> Addr {
-    // Walk from the '<' rather than mixing absolute and relative byte offsets:
-    // the two are only interchangeable while the delimiters stay ASCII, and
-    // slicing a str at a stale offset panics.
-    if let Some(open) = s.find('<')
-        && let Some(name) = s.get(..open)
-        && let Some(rest) = s.get(open + 1..)
-        && let Some(close) = rest.find('>')
-        && let Some(email) = rest.get(..close)
-    {
-        return Addr::new(name.trim().trim_matches('"'), email.trim());
-    }
-    Addr::bare(s.to_string())
+    // Use the same mailbox grammar as incoming headers: punctuation inside
+    // a quoted display name is not a recipient separator.
+    // The header parser flushes the final token at a line ending, not EOF.
+    // Compose fields have no line ending, so supply it for a final bare address.
+    let header = format!("{s}\r\n");
+    mail_parser::parsers::MessageStream::new(header.as_bytes())
+        .parse_address()
+        .as_address()
+        .map(|addresses| addresses.iter().map(addr_from_parsed).collect())
+        .unwrap_or_default()
 }
 
 /// Build a real RFC 5322 / MIME message from a draft, via `mail-builder`.
@@ -81,7 +71,6 @@ pub fn build_mime(
 ) -> Result<Vec<u8>, String> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
-    let bcc = parse_addr_list(&draft.bcc);
 
     let mut builder = MessageBuilder::new()
         .from((from.display(), from.email.clone()))
@@ -103,9 +92,8 @@ pub fn build_mime(
     if !cc.is_empty() {
         builder = builder.cc(addr_tuples(&cc));
     }
-    if !bcc.is_empty() {
-        builder = builder.bcc(addr_tuples(&bcc));
-    }
+    // Blind recipients belong only in the SMTP envelope. A Bcc header here
+    // would disclose them to every recipient of these shared wire bytes.
 
     for attachment in &draft.attachments {
         let bytes = crate::attachment_store::materialize(content, attachment)?;
@@ -306,6 +294,34 @@ pub fn mime_from_filename(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_mime_does_not_disclose_blind_recipients() {
+        let draft = Draft {
+            to: "visible@example.test".into(),
+            cc: "copy@example.test".into(),
+            bcc: "Hidden Person <hidden@example.test>".into(),
+            body: "Private recipient list".into(),
+            ..Default::default()
+        };
+        let bytes = build_mime(
+            &tilo_content::ContentStore::memory(),
+            &Addr::bare("sender@example.test"),
+            &draft,
+        )
+        .unwrap();
+        let parsed = MessageParser::default().parse(&bytes).unwrap();
+        assert!(parsed.bcc().is_none());
+        assert!(!String::from_utf8_lossy(&bytes).contains("hidden@example.test"));
+        assert_eq!(
+            parsed.to().unwrap().first().unwrap().address(),
+            Some("visible@example.test")
+        );
+        assert_eq!(
+            parsed.cc().unwrap().first().unwrap().address(),
+            Some("copy@example.test")
+        );
+    }
 
     #[test]
     fn mime_build_parses_addresses_and_embeds_verified_attachments() {

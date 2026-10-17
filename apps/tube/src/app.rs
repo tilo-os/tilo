@@ -1273,8 +1273,9 @@ impl TubeApp {
                         .is_some_and(|q| self.model.settings.preferred_quality != *q) =>
             {
                 if let Some(q) = QUALITIES.get(index) {
-                    self.model.settings.preferred_quality = (*q).to_string();
-                    self.structure_dirty = true;
+                    self.change_preferences(|settings| {
+                        settings.preferred_quality = (*q).to_string();
+                    });
                 }
             }
             E::Activated { id } if id == screens::SKIP_SETTING => {
@@ -2354,6 +2355,33 @@ mod tests {
             .borrow_mut()
             .set_engine(media::MediaEngine::new_synthesized());
         (app, doc)
+    }
+
+    #[test]
+    fn player_quality_choice_survives_settings_refresh_and_reopen() {
+        use crate::model::Settings;
+        use crate::resource::TubeShell;
+        use ui::framework::testing::TestApp;
+        use ui::widget::video_player::PlayerSettingEvent;
+
+        let mut app = TestApp::<TubeShell>::capture(Some("watch")).unwrap();
+        let preferences = app.settings::<Settings>();
+        let index = QUALITIES
+            .iter()
+            .position(|quality| *quality != preferences.get().preferred_quality)
+            .unwrap();
+        let quality = QUALITIES[index];
+        app.surface_mut::<TubeApp>()
+            .apply_player_setting_event(PlayerSettingEvent::Chose {
+                id: "resolution".into(),
+                index,
+            });
+        assert_eq!(preferences.get().preferred_quality, quality);
+        let surface = app.surface_mut::<TubeApp>();
+        surface.refresh_preferences();
+        assert_eq!(surface.model.settings.preferred_quality, quality);
+        let app = app.reopen().unwrap();
+        assert_eq!(app.settings::<Settings>().get().preferred_quality, quality);
     }
 
     #[test]

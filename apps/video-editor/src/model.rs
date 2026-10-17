@@ -2679,9 +2679,10 @@ impl Project {
     }
 
     /// Drag the left (in) handle by `delta` seconds. Positive `delta`
-    /// trims later into the source (clip shrinks from the left and its
-    /// timeline start moves right); negative reveals earlier source.
-    /// Clamped so `in_point >= 0` and the clip keeps at least `MIN_CLIP`.
+    /// removes source from the playback head (clip shrinks from the left
+    /// and its timeline start moves right); negative reveals more source.
+    /// Reversed playback removes the source's out-point, not its in-point.
+    /// Clamped to the source bounds while keeping at least `MIN_CLIP`.
     ///
     /// Returns the delta it *actually* applied after clamping, in source
     /// seconds. A caller trimming several clips at once (the halves of a
@@ -2690,13 +2691,25 @@ impl Project {
     /// by exactly the difference — which is the desync a link exists to
     /// prevent.
     pub fn trim_in(&mut self, id: ClipId, delta: f64) -> f64 {
+        let media_dur = self
+            .clip(id)
+            .and_then(|c| self.media(c.media))
+            .map_or(0.0, |m| m.duration);
         let mut applied = 0.0;
         if let Some(c) = self.clip_mut(id) {
             let max_delta = (c.out_point - c.in_point) - MIN_CLIP; // can't cross out
-            let min_delta = -c.in_point; // can't go before source 0
+            let min_delta = if c.speed.reverse {
+                c.out_point - media_dur.max(c.out_point)
+            } else {
+                -c.in_point
+            };
             let d = delta.clamp(min_delta, max_delta);
             applied = d;
-            c.in_point += d;
+            if c.speed.reverse {
+                c.out_point -= d;
+            } else {
+                c.in_point += d;
+            }
             // `d` is source seconds; the timeline start moves by however
             // long those seconds take to play, which the rate decides.
             let on_timeline = d / c.speed.rate();
@@ -2725,11 +2738,17 @@ impl Project {
             .and_then(|c| self.media(c.media))
             .map(|m| m.duration);
         if let (Some(c), Some(media_dur)) = (self.clip_mut(id), media_dur) {
-            let max_out = media_dur;
-            let min_out = c.in_point + MIN_CLIP;
-            let before = c.out_point;
-            c.out_point = (c.out_point + delta).clamp(min_out, max_out);
-            c.out_point - before
+            if c.speed.reverse {
+                let applied = delta.clamp(MIN_CLIP - (c.out_point - c.in_point), c.in_point);
+                c.in_point -= applied;
+                applied
+            } else {
+                let max_out = media_dur;
+                let min_out = c.in_point + MIN_CLIP;
+                let before = c.out_point;
+                c.out_point = (c.out_point + delta).clamp(min_out, max_out);
+                c.out_point - before
+            }
         } else {
             0.0
         }

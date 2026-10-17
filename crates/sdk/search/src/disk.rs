@@ -86,7 +86,13 @@ impl DiskIndex {
     pub fn open_or_create(dir: &Path) -> tantivy::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let (schema, fields) = schema();
-        let index = Index::open_in_dir(dir).or_else(|_| Index::create_in_dir(dir, schema))?;
+        let index =
+            Index::open_in_dir(dir).or_else(|_| Index::create_in_dir(dir, schema.clone()))?;
+        if index.schema() != schema {
+            return Err(tantivy::TantivyError::SchemaError(
+                "the search index has an incompatible schema".into(),
+            ));
+        }
         index.tokenizers().register(WORDS, WordTokenizer::default());
         let reader = index
             .reader_builder()
@@ -278,6 +284,26 @@ impl DiskWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_incompatible_index_is_refused_without_changing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = Schema::builder();
+        builder.add_text_field("body", STRING | STORED);
+        let schema = builder.build();
+        Index::create_in_dir(dir.path(), schema.clone()).unwrap();
+        let metadata = std::fs::read(dir.path().join("meta.json")).unwrap();
+
+        assert!(matches!(
+            DiskIndex::open_or_create(dir.path()),
+            Err(tantivy::TantivyError::SchemaError(_))
+        ));
+        assert_eq!(Index::open_in_dir(dir.path()).unwrap().schema(), schema);
+        assert_eq!(
+            std::fs::read(dir.path().join("meta.json")).unwrap(),
+            metadata
+        );
+    }
 
     #[test]
     fn documents_persist_version_and_rank_by_bm25() {

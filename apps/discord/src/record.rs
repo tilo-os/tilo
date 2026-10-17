@@ -580,7 +580,9 @@ impl Guild {
         guard::bot(cx)?;
         self.known(&op.channel)?;
         self.webhook(&op.webhook)?;
-        content_fits(&op.content, false)?;
+        // Editing content leaves Discord's existing attachments in place;
+        // an empty caption is valid even though an empty new post is not.
+        content_fits(&op.content, true)?;
         queue(cx, outbox, self.admit(DiscordOp::Edit(op))?);
         Ok(())
     }

@@ -150,6 +150,37 @@ fn every_edit_is_an_action_stamped_with_its_own_time() {
 }
 
 #[test]
+fn adding_a_minute_preserves_a_paused_timer() {
+    let mut device = replica();
+    device
+        .apply(Clocks::ADD_TIMER.with(("Tea".into(), 300)))
+        .unwrap();
+    let id = only_id(&device.state().unwrap().timers);
+    device.set_now_ms(T0 + 100_000);
+    device.apply(Clocks::PAUSE_TIMER.with(id.clone())).unwrap();
+    device.set_now_ms(T0 + 500_000);
+    device.apply(Clocks::ADD_MINUTE.with(id.clone())).unwrap();
+
+    let timer = device.state().unwrap().timers.get(&id).cloned().unwrap();
+    assert_eq!(
+        timer.ends_at_ms, None,
+        "adding time must not resume the timer"
+    );
+    assert_eq!(timer.paused_remaining_ms, Some(260_000));
+    assert_eq!(
+        timer.remaining(crate::model::instant(T0 + 600_000)),
+        Duration::from_secs(260)
+    );
+
+    device.set_now_ms(T0 + 700_000);
+    device.apply(Clocks::RESUME_TIMER.with(id.clone())).unwrap();
+    assert_eq!(
+        device.state().unwrap().timers.get(&id).unwrap().ends_at_ms,
+        Some(T0 + 960_000)
+    );
+}
+
+#[test]
 fn edits_that_make_no_sense_are_refused() {
     let mut device = replica();
     for (case, result) in [

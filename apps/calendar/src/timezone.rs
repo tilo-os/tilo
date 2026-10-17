@@ -3,8 +3,10 @@
 //! Events retain their authored wall time plus TZID.  Whenever an absolute
 //! instant is needed (interop, reminders, ordering across zones), this module
 //! resolves it with one cross-device rule: choose the earlier instant in a DST
-//! fold, and advance through a DST gap to the first valid wall minute.  That
-//! makes ambiguous/nonexistent local inputs total without consulting host state.
+//! fold, and advance through a DST gap to the first valid wall minute. An
+//! elapsed duration may explicitly select the later fold for its end, through
+//! [`endpoint_utc`], without changing the authored timezone or recurrence anchor.
+//! Neither rule consults host state.
 
 use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -65,6 +67,27 @@ pub fn wall_to_utc(zone: &str, wall: NaiveDateTime) -> Option<(DateTime<Utc>, Re
             None
         }
     }
+}
+
+/// Resolve an endpoint whose persisted fold choice may select the later instant.
+/// Ordinary authored times still use the earlier-fold/gap policy.
+pub fn endpoint_utc(zone: &str, wall: NaiveDateTime, later: bool) -> Option<DateTime<Utc>> {
+    if later
+        && let LocalResult::Ambiguous(a, b) = zone.parse::<Tz>().ok()?.from_local_datetime(&wall)
+    {
+        return Some(a.max(b).with_timezone(&Utc));
+    }
+    Some(wall_to_utc(zone, wall)?.0)
+}
+
+/// Compare endpoints in their authored zone, not by ambiguous wall ordering.
+pub fn valid_span(zone: &str, start: NaiveDateTime, end: NaiveDateTime, later: bool) -> bool {
+    if zone == "floating" {
+        return !later && end >= start;
+    }
+    wall_to_utc(zone, start)
+        .zip(endpoint_utc(zone, end, later))
+        .is_some_and(|((start, _), end)| end >= start)
 }
 
 /// Return the canonical wall time after applying the deterministic gap rule.
