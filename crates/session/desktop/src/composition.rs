@@ -724,6 +724,7 @@ impl DesktopSurface {
                 }
             }
         }
+        let mut revealed = Vec::new();
         for strip in &workspace.strips {
             let Some(row) = self.row_mut(strip.id) else {
                 continue;
@@ -760,17 +761,23 @@ impl DesktopSurface {
                 })
                 .map(|(index, group)| (index, group.id))
                 .collect();
+            // Windows opened since the last pass, as opposed to ones restored
+            // with the workspace (built, not reconciled) or brought back by an
+            // undo while their close still fades out.
+            let mut opened = Vec::new();
             // The row lays groups out display by display; on one display
             // that is the strip's own order.
             for (index, group) in display_ordered(&tree.outputs, strip)
                 .into_iter()
                 .enumerate()
             {
+                let mut revived = false;
                 if let Some(dying) = row
                     .groups
                     .iter_mut()
                     .find(|candidate| candidate.id == group.id && candidate.is_closing())
                 {
+                    revived = true;
                     // Undo may restore the canonical identity during the fade. Its dying
                     // host is not a live application; resolve the restored window afresh.
                     reports.extend(ui::component_lifecycle::close_components(dying));
@@ -787,14 +794,20 @@ impl DesktopSurface {
                     .with_maximized(group.maximized);
                     fresh.start_spawn_animation();
                     row.insert_group(fresh, index);
+                    if !revived {
+                        opened.push(group.id);
+                    }
                 }
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
                 // Width is a local intent committed on release. An unrelated
                 // snapshot revision must not reset a captured edge to its saved
-                // width or re-arm the width spring underneath the pointer.
-                if !live.edge_resize_in_flight() || live.maximized != group.maximized {
+                // width or re-arm the width spring underneath the pointer, nor
+                // undo a width the host has yet to persist.
+                if !(live.edge_resize_in_flight() || live.has_pending_width_change())
+                    || live.maximized != group.maximized
+                {
                     changed |= live.width() != ui_width(group.width);
                     live.set_width(ui_width(group.width));
                 }
@@ -965,6 +978,12 @@ impl DesktopSurface {
             for (index, id) in visual_order.into_iter().enumerate() {
                 changed |= row.reorder_group_by_id(id, index);
             }
+            // A window that opens is placed whole on screen beside the one
+            // it opened next to, sharing the display with it if need be.
+            for group in opened {
+                changed |= row.share_with_neighbour(group);
+                revealed.push((strip.id, group));
+            }
         }
         for (_, (_, mut host)) in moved {
             reports.extend(ui::component_lifecycle::close_components(&mut host));
@@ -979,6 +998,9 @@ impl DesktopSurface {
             .collect();
         self.failures.extend(failures);
         self.close_reports.extend(reports);
+        for (strip, group) in revealed {
+            self.navigation.reveal_opened(strip, group);
+        }
         self.sync_navigation(tree);
         self.restyle_work_area();
         if changed {
