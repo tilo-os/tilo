@@ -705,6 +705,7 @@ mod tests {
             Some(SessionDevice {
                 public_key: session,
                 cert_out: cert_out.clone(),
+                user_key_out: None,
             }),
         )
         .unwrap();

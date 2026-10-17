@@ -2524,6 +2524,10 @@ mod tests {
     /// is told once, durably, the worker is not handed those jobs, and an
     /// ended job is left as it was. Coming back again tells no one twice.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one crash and two restarts, each job's end checked in order"
+    )]
     fn a_restarted_relay_ends_every_unfinished_job_once() {
         let root = tempfile::tempdir().unwrap();
         let (mut state, store) = admitted(root.path());
