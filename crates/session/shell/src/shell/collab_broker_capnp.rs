@@ -140,6 +140,40 @@ pub mod tests {
         fixture(membership, None)
     }
     fn fixture(membership: WorkspaceTreeHandle, peer: Option<u64>) -> LocalDirectoryFixture {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let root = SigningKey::from_bytes(&[211; 32]);
+        let device = SigningKey::from_bytes(&[212; 32]);
+        let person = principal_id_for_root(root.verifying_key().to_bytes());
+        let workspace_id = {
+            let mut tree = membership.write();
+            let workspace = tree.active_workspace_mut().expect("fixture active room");
+            // The publisher is an ordinary editor, not the room's owner.
+            workspace.admit(person, crate::shell::state::CapRole::Editor);
+            workspace.room.to_string()
+        };
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Directory fixture device".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).expect("signed device");
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace_id.clone(),
+            device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace_id,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .expect("certified publisher presentation");
         let authority = Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
             membership.clone(),
         ));
@@ -147,8 +181,22 @@ pub mod tests {
             legacy_workspace: Some(authority.clone()),
             ..Default::default()
         };
+        let mut inner =
+            tilo_action_broker::collab_broker_capnp::tests::local_directory_fixture_with_authority(
+                authority,
+                services,
+                peer,
+                Some(Arc::new(vec![device.verifying_key().to_bytes()])),
+            );
+        assert_eq!(
+            inner
+                .authenticate_source(&presentation)
+                .expect("admitted certified publisher"),
+            crate::shell::state::CapRole::Editor,
+            "production admission retains the publisher's actual room role"
+        );
         LocalDirectoryFixture {
-            inner: tilo_action_broker::collab_broker_capnp::tests::local_directory_fixture_with_authority(authority, services, peer, None),
+            inner,
             chrome: crate::shell::chrome_state::ChromeState::new_with_handle(membership),
         }
     }

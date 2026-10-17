@@ -17,7 +17,7 @@ use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, FEATURE_RESUME, LiveGrant,
-    MAX_POLL_MS, MAX_REQUEST_BYTES, SessionChallenge, SessionFinish, decode_grant,
+    MAX_POLL_MS, MAX_REQUEST_BYTES, SessionChallenge, SessionFinish, SessionRefusal, decode_grant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -43,10 +43,19 @@ pub enum LinkError {
     /// The host was not reached, or answered with a server error.
     #[error("host unavailable: {0}")]
     Unavailable(String),
-    /// The host refused this device (revoked, unknown, not admitted).
+    /// The host refused this device, giving no reason the device can act
+    /// on (a route's `401`/`403` text).
     #[error("host refused: {0}")]
     Refused(String),
-    /// A body did not decode.
+    /// The host turned the session handshake away, for this reason.
+    #[error("host refused the session: {0:?}")]
+    Denied(SessionRefusal),
+    /// Another host answers here than the one this device pinned: the
+    /// host was set up again.
+    #[error("host is not the pinned device")]
+    HostChanged,
+    /// A body did not decode: something between here and the host (a
+    /// proxy's error page), or a host speaking another version, answered.
     #[error("malformed answer: {0}")]
     Malformed(String),
     /// The signer failed.
@@ -83,6 +92,31 @@ async fn call_raw(
         401 | 403 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),
+        _ => Err(LinkError::Unavailable(format!("status {status}"))),
+    }
+}
+
+/// A handshake route: its `403` carries the host's [`SessionRefusal`]. Any
+/// other refusal, or one whose body is no refusal, came from something in
+/// front of the host (a proxy, a captive portal), which says nothing about
+/// this device: that is reachability.
+async fn handshake_raw(
+    client: &dyn HttpClient,
+    route: &str,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, LinkError> {
+    let (status, bytes) = client
+        .post(&path(route), None, body)
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        200 => Ok(bytes),
+        403 => match postcard::from_bytes::<SessionRefusal>(&bytes) {
+            Ok(refusal) => Err(LinkError::Denied(refusal)),
+            Err(_) => Err(LinkError::Unavailable(
+                "status 403 with no reason from the host".into(),
+            )),
+        },
         _ => Err(LinkError::Unavailable(format!("status {status}"))),
     }
 }
@@ -357,16 +391,18 @@ impl HttpsLink {
         signer: &dyn DeviceSigner,
     ) -> Result<Self, LinkError> {
         let client_nonce: [u8; 32] = rand::random();
-        let challenge: SessionChallenge = call(
-            client.as_ref(),
-            "/session",
-            None,
-            encode(&Hello {
-                cert: cert.clone(),
-                client_nonce,
-            })?,
+        let challenge: SessionChallenge = postcard::from_bytes(
+            &handshake_raw(
+                client.as_ref(),
+                "/session",
+                encode(&Hello {
+                    cert: cert.clone(),
+                    client_nonce,
+                })?,
+            )
+            .await?,
         )
-        .await?;
+        .map_err(|error| LinkError::Malformed(error.to_string()))?;
         // The host device is pinned, so it may be another person's: the
         // host of a room this device was invited to.
         auth::verify_pinned_host_ack(
@@ -377,17 +413,16 @@ impl HttpsLink {
         )
         .map_err(|error: AuthError| LinkError::Refused(error.to_string()))?;
         if challenge.ack.cert.device_public_key != host_device {
-            return Err(LinkError::Refused("host is not the pinned device".into()));
+            return Err(LinkError::HostChanged);
         }
         let sig_over_server_nonce = signer
             .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
         let (grant, features) = decode_grant(
-            &call_raw(
+            &handshake_raw(
                 client.as_ref(),
                 "/session/finish",
-                None,
                 encode(&SessionFinish {
                     handshake: challenge.handshake,
                     ack2: HelloAck2 {

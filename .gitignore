@@ -88,10 +88,6 @@ vendor/*/Cargo.lock
 __pycache__/
 *.pyc
 
-# Generated audit output; keep written design and review explanations.
-/docs/superpowers/audits/**/*.log
-/docs/superpowers/audits/**/*.json
-
 # Android acceptance receipts, logs and captures are PR/CI artifacts.
 /docs/verification/android-arity/
 /docs/verification/android-mediation/

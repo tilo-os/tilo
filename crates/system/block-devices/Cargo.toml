@@ -23,6 +23,7 @@ zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"]
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 
 [lints]

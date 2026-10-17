@@ -223,6 +223,7 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
         source_peer,
         encoded_h264: payload.encode().unwrap(),
         ts,
+        seq: ts,
     };
     publish(&native, author, &frame(&Payload::Key(first.clone()), 2));
     publish(

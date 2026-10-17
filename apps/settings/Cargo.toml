@@ -121,6 +121,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
+# Exercise the published Files surface against the production cloud service.
+file-explorer = { path = "../file-explorer" }
+zip.workspace = true
 # The platform adapter the native runner feeds, for the live-bus benchmark.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

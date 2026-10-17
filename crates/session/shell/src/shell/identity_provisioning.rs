@@ -758,6 +758,18 @@ fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<P
 
 /// A free function, not a method on the store, so the boot path can
 /// call it without owning the store first.
+/// Whether this session's identity tree holds a device the person enrolled
+/// without their root (a node's session, certified when its node was
+/// installed): it has an identity, so there is no first login to hold for.
+#[must_use]
+pub fn enrolled_device_ready() -> bool {
+    tilo_user_identity::persist::joined_device_is_ready(
+        &crate::firstboot::collaboration_identity_paths(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap_or(false)
+}
+
 pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
     match store.load() {
         Ok(None) => true,

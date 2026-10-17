@@ -1043,6 +1043,7 @@ mod unavailable_provider_tests {
             package_id: "so.tilo.pdf-viewer".into(),
             display_name: "PDF Viewer".into(),
             resources: [ResourceKind::mime("application/pdf").unwrap()].into(),
+            secondary: false,
         });
         let published = crate::shell::launcher::resolved_host_defaults(
             &candidates,

@@ -48,6 +48,12 @@ pub enum Op {
         tree: usize,
         dst: CString,
     },
+    /// Create a file in the staging root with `contents`, root's where the
+    /// job's namespace maps root, mode 0644.
+    Write {
+        path: CString,
+        contents: Vec<u8>,
+    },
 }
 
 impl Op {
@@ -55,7 +61,11 @@ impl Op {
     pub fn fatal(&self) -> bool {
         matches!(
             self,
-            Op::Mount { .. } | Op::SetAttr { .. } | Op::Symlink { .. } | Op::Attach { .. }
+            Op::Mount { .. }
+                | Op::SetAttr { .. }
+                | Op::Symlink { .. }
+                | Op::Attach { .. }
+                | Op::Write { .. }
         )
     }
 
@@ -78,6 +88,7 @@ impl Op {
             },
             Op::SetAttr { path, .. } => format!("making {} read-only", inside(path)),
             Op::Attach { dst, .. } => format!("binding {} (idmapped)", inside(dst)),
+            Op::Write { path, .. } => format!("writing {}", inside(path)),
         }
     }
 }
@@ -184,6 +195,17 @@ enum Idmap {
     IfPossible,
 }
 
+/// Whose files an idmapped bind shows as whose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owners {
+    /// The worker's files are the job's own: what it works on.
+    Job,
+    /// Every id keeps its number: the job's system files (its image, the
+    /// host's `/usr`), whose root-owned files stay root's, as programs that
+    /// trust only root's files (a loader, a setuid helper) check.
+    System,
+}
+
 struct Builder {
     ops: Vec<Op>,
     /// Paths made so far, so ancestors aren't made twice.
@@ -195,6 +217,8 @@ struct Builder {
     /// With a block of host ids: the user namespace binds are idmapped
     /// with, and the trees made so far.
     userns: Option<OwnedFd>,
+    /// With a block: the user namespace of [`Owners::System`] binds.
+    system_userns: Option<OwnedFd>,
     /// The job's own host uid and gid, with a block.
     job_ids: Option<(u32, u32)>,
     unmapped: Vec<PathBuf>,
@@ -237,10 +261,11 @@ impl Builder {
         inside: &Path,
         file: bool,
         idmap: Idmap,
+        owners: Owners,
     ) -> Result<(), SpawnError> {
         self.point(inside, file)?;
         let dst = under(NEW, inside)?;
-        self.bind_at(real, dst, libc::MS_BIND | libc::MS_REC, idmap)
+        self.bind_at(real, dst, libc::MS_BIND | libc::MS_REC, idmap, owners)
     }
 
     /// Bind the host path `real` at `dst` (a path in the staging root):
@@ -251,12 +276,17 @@ impl Builder {
         dst: CString,
         flags: libc::c_ulong,
         idmap: Idmap,
+        owners: Owners,
     ) -> Result<(), SpawnError> {
         let socket = std::fs::metadata(real).is_ok_and(|m| {
             use std::os::unix::fs::FileTypeExt as _;
             m.file_type().is_socket()
         });
-        if let (Some(userns), Some((uid, gid))) = (&self.userns, self.job_ids) {
+        let userns = match owners {
+            Owners::Job => &self.userns,
+            Owners::System => &self.system_userns,
+        };
+        if let (Some(userns), Some((uid, gid))) = (userns, self.job_ids) {
             if socket {
                 // A socket the caller made for this job (a VM step's passt): it becomes the
                 // job's, which connecting to it takes, wherever it lives. Never idmapped: it
@@ -348,6 +378,7 @@ impl Builder {
                     under(NEW, new)?,
                     libc::MS_BIND | libc::MS_REC,
                     Idmap::IfPossible,
+                    Owners::System,
                 )?;
                 // Read-only before anything is mounted on it: the job never
                 // writes into a shared image, not even a mount point.
@@ -363,7 +394,13 @@ impl Builder {
                 });
                 for top in ["/usr", "/etc"] {
                     let (src, _) = source(Path::new(top))?;
-                    self.bind(&src, Path::new(top), false, Idmap::IfPossible)?;
+                    self.bind(
+                        &src,
+                        Path::new(top),
+                        false,
+                        Idmap::IfPossible,
+                        Owners::System,
+                    )?;
                     self.attr(Path::new(top), RO, true)?;
                 }
                 for name in HOST_LINKS {
@@ -372,10 +409,51 @@ impl Builder {
                 for p in extra {
                     let inside = normal(p, "extra root path")?;
                     let (src, meta) = source(p)?;
-                    self.bind(&src, &inside, !meta.is_dir(), Idmap::IfPossible)?;
+                    self.bind(
+                        &src,
+                        &inside,
+                        !meta.is_dir(),
+                        Idmap::IfPossible,
+                        Owners::System,
+                    )?;
                     self.attr(&inside, RO, true)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A passwd entry (and a group entry) for the job's own ids where the
+    /// root it runs in has none, as for a nested job running as
+    /// [`crate::job::NESTING_ID`] in an image that only knows root: programs
+    /// that look themselves up (a login shell, `id -un`, ssh, ush) would
+    /// otherwise refuse. The image's files with the line added are written
+    /// to the staging root and bound read-only over its own; a root without
+    /// these files, or with links where they are, is left as it is.
+    fn account(&mut self, root: &Path, uid: u32, gid: u32) -> Result<(), SpawnError> {
+        let Some(passwd) = system_file(root, "etc/passwd") else {
+            return Ok(());
+        };
+        let group = system_file(root, "etc/group");
+        let Some((passwd, group)) = account_files(&passwd, group.as_deref(), uid, gid) else {
+            return Ok(());
+        };
+        let files = std::iter::once(("passwd", passwd)).chain(group.map(|g| ("group", g)));
+        for (name, contents) in files {
+            let staged = cstr(format!("/{name}").as_bytes(), name)?;
+            let inside = Path::new("/etc").join(name);
+            self.ops.push(Op::Write {
+                path: staged.clone(),
+                contents,
+            });
+            self.ops.push(Op::Mount {
+                src: Some(staged),
+                dst: under(NEW, &inside)?,
+                fstype: None,
+                flags: libc::MS_BIND,
+                data: None,
+            });
+            self.attr(&inside, RO, false)?;
         }
         Ok(())
     }
@@ -395,7 +473,7 @@ impl Builder {
             }
             Ok(m) if m.is_dir() => {
                 let (src, _) = source(&host)?;
-                self.bind(&src, &host, false, Idmap::IfPossible)?;
+                self.bind(&src, &host, false, Idmap::IfPossible, Owners::System)?;
                 self.attr(&host, RO, true)?;
             }
             _ => {}
@@ -432,7 +510,7 @@ impl Builder {
             // tmpfs /dev does, devtmpfs doesn't): its owner's access then
             // stays the job's, as for a device of mode 0660.
             let dst = under(NEW, &inside)?;
-            self.bind_at(&d, dst, libc::MS_BIND, Idmap::IfPossible)?;
+            self.bind_at(&d, dst, libc::MS_BIND, Idmap::IfPossible, Owners::Job)?;
         }
         for (link, target) in [
             ("fd", "/proc/self/fd"),
@@ -473,7 +551,7 @@ impl Builder {
             )?,
             Tmp::Dir(dir) => {
                 let (src, _) = source(dir)?;
-                self.bind(&src, tmp, false, Idmap::Required)?;
+                self.bind(&src, tmp, false, Idmap::Required, Owners::Job)?;
                 self.attr(tmp, RW, true)?;
             }
         }
@@ -506,12 +584,18 @@ impl Builder {
         match &m.kind {
             MountKind::ReadOnly(p) => {
                 let (src, meta) = source(p)?;
-                self.bind(&src, &inside, !meta.is_dir(), Idmap::IfPossible)?;
+                self.bind(
+                    &src,
+                    &inside,
+                    !meta.is_dir(),
+                    Idmap::IfPossible,
+                    Owners::Job,
+                )?;
                 self.attr(&inside, RO, true)?;
             }
             MountKind::ReadWrite(p) => {
                 let (src, meta) = source(p)?;
-                self.bind(&src, &inside, !meta.is_dir(), Idmap::Required)?;
+                self.bind(&src, &inside, !meta.is_dir(), Idmap::Required, Owners::Job)?;
                 self.attr(&inside, RW, true)?;
                 self.writable(&inside, meta.is_dir())?;
             }
@@ -524,12 +608,12 @@ impl Builder {
                 )?;
                 self.writable(&inside, true)?;
             }
-            MountKind::Overlay { lower, upper, work } => {
-                let opts = if self.userns.is_some() {
-                    self.idmapped_layers(lower, upper, work)?
-                } else {
-                    overlay_options(lower, upper, work)?
-                };
+            MountKind::Overlay {
+                lowers,
+                upper,
+                work,
+            } => {
+                let opts = self.overlay_options(lowers, Some((upper, work)))?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -538,29 +622,136 @@ impl Builder {
                 )?;
                 self.writable(&inside, true)?;
             }
+            MountKind::Layers { lowers } => {
+                if lowers.len() < 2 {
+                    return Err(SpawnError::Invalid(format!(
+                        "read-only layers at {} need at least two; one is a read-only bind",
+                        inside.display()
+                    )));
+                }
+                let opts = self.overlay_options(lowers, None)?;
+                self.fs(
+                    "overlay",
+                    &inside,
+                    libc::MS_NOSUID | libc::MS_NODEV | libc::MS_RDONLY,
+                    Some(&opts),
+                )?;
+            }
         }
         Ok(())
     }
 }
 
+/// An overlay's upper and work directories, for one the job writes to.
+type Writes<'a> = Option<(&'a PathBuf, &'a PathBuf)>;
+
+/// An overlay's layers as its options name them: the lowers, and the upper
+/// and work directories.
+type Named = (Vec<PathBuf>, Option<(PathBuf, PathBuf)>);
+
 impl Builder {
-    /// An overlay's layers as idmapped mounts in the staging root, and its
-    /// `-o` options naming them: overlayfs creates what the job writes with
-    /// the job's ids, which only an idmapped upper layer stores as the
-    /// owner's. The upper and work directories must share a mount, so their
-    /// common parent is the one idmapped.
-    fn idmapped_layers(
+    /// overlayfs `-o` options for `lowers` (the first on top) and, unless
+    /// read-only, the upper and work directories `writes` names.
+    ///
+    /// With a block of ids each layer is an idmapped mount in the staging
+    /// root, which the options name: overlayfs creates what the job writes
+    /// with the job's ids, which only an idmapped upper layer stores as the
+    /// owner's. Without a block the options name the layers through the old
+    /// root.
+    ///
+    /// `volatile`: what a job writes to an overlay is disposable, so
+    /// overlayfs never syncs the upper layer's filesystem, which it otherwise
+    /// does when the job's mount namespace goes and which waits for
+    /// everything dirty on that volume (gigabytes from the jobs' builds
+    /// beside it).
+    fn overlay_options(
         &mut self,
-        lower: &Path,
-        upper: &Path,
-        work: &Path,
+        lowers: &[PathBuf],
+        writes: Writes<'_>,
     ) -> Result<String, SpawnError> {
         use std::fmt::Write as _;
+        if lowers.is_empty() {
+            return Err(SpawnError::Invalid(
+                "an overlay without a lower layer".into(),
+            ));
+        }
         let real = |p: &Path| {
             std::fs::canonicalize(p)
                 .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))
         };
-        let (lower, upper, work) = (real(lower)?, real(upper)?, real(work)?);
+        let lowers = lowers
+            .iter()
+            .map(|l| real(l))
+            .collect::<Result<Vec<_>, _>>()?;
+        let writes = match writes {
+            Some((upper, work)) => Some((real(upper)?, real(work)?)),
+            None => None,
+        };
+        let (lowers, writes) = if self.userns.is_some() {
+            self.idmapped_layers(&lowers, writes)?
+        } else {
+            let old = |p: &Path| PathBuf::from(format!("{OLD}{}", p.display()));
+            (
+                lowers.iter().map(|l| old(l)).collect(),
+                writes.map(|(u, w)| (old(&u), old(&w))),
+            )
+        };
+        let shown = |p: &Path| {
+            let shown = p.display().to_string();
+            if shown.contains([',', ':', '\\']) {
+                return Err(SpawnError::Invalid(format!(
+                    "overlay path {shown} contains a comma, colon or backslash"
+                )));
+            }
+            Ok(shown)
+        };
+        let lowerdir = lowers
+            .iter()
+            .map(|l| shown(l))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(":");
+        let mut opts = String::from("userxattr");
+        if let Some((upper, work)) = writes {
+            let _ = write!(
+                opts,
+                ",volatile,upperdir={},workdir={}",
+                shown(&upper)?,
+                shown(&work)?
+            );
+        }
+        let _ = write!(opts, ",lowerdir={lowerdir}");
+        Ok(opts)
+    }
+
+    /// The layers bound idmapped under `/layers/<n>` in the staging root,
+    /// named as the overlay sees them there. The upper and work directories
+    /// must share a mount, so their common parent is the one idmapped.
+    fn idmapped_layers(
+        &mut self,
+        lowers: &[PathBuf],
+        writes: Option<(PathBuf, PathBuf)>,
+    ) -> Result<Named, SpawnError> {
+        let at = PathBuf::from(format!("/layers/{}", self.overlays));
+        self.overlays = self.overlays.saturating_add(1);
+        for dir in [Path::new("/layers"), &at] {
+            self.ops.push(Op::Mkdir(path_c(dir)?));
+        }
+        let mut named = Vec::with_capacity(lowers.len());
+        for (i, lower) in lowers.iter().enumerate() {
+            let lower_at = at.join(format!("lower{i}"));
+            self.ops.push(Op::Mkdir(path_c(&lower_at)?));
+            self.bind_at(
+                lower,
+                path_c(&lower_at)?,
+                libc::MS_BIND | libc::MS_REC,
+                Idmap::Required,
+                Owners::Job,
+            )?;
+            named.push(lower_at);
+        }
+        let Some((upper, work)) = writes else {
+            return Ok((named, None));
+        };
         let mut common = upper.clone();
         while !work.starts_with(&common) {
             if !common.pop() {
@@ -572,63 +763,107 @@ impl Builder {
                 .map(Path::to_path_buf)
                 .unwrap_or_default()
         };
-        let at = PathBuf::from(format!("/layers/{}", self.overlays));
-        self.overlays = self.overlays.saturating_add(1);
-        let (lower_at, upper_at) = (at.join("lower"), at.join("upper"));
-        for dir in [Path::new("/layers"), &at, &lower_at, &upper_at] {
-            self.ops.push(Op::Mkdir(path_c(dir)?));
-        }
-        self.bind_at(
-            &lower,
-            path_c(&lower_at)?,
-            libc::MS_BIND | libc::MS_REC,
-            Idmap::Required,
-        )?;
+        let upper_at = at.join("upper");
+        self.ops.push(Op::Mkdir(path_c(&upper_at)?));
         self.bind_at(
             &common,
             path_c(&upper_at)?,
             libc::MS_BIND | libc::MS_REC,
             Idmap::Required,
+            Owners::Job,
         )?;
-        let mut opts = String::from("userxattr");
-        for (key, p) in [
-            ("lowerdir", lower_at),
-            ("upperdir", upper_at.join(beneath(&upper))),
-            ("workdir", upper_at.join(beneath(&work))),
-        ] {
-            let shown = p.display().to_string();
-            if shown.contains([',', ':', '\\']) {
-                return Err(SpawnError::Invalid(format!(
-                    "overlay path {shown} contains a comma, colon or backslash"
-                )));
-            }
-            let _ = write!(opts, ",{key}={shown}");
-        }
-        Ok(opts)
+        let (upper, work) = (
+            upper_at.join(beneath(&upper)),
+            upper_at.join(beneath(&work)),
+        );
+        Ok((named, Some((upper, work))))
     }
 }
 
-/// overlayfs `-o` options, with the old root's prefix on each path.
-///
-/// `volatile`: what a job writes to an overlay is disposable, so overlayfs never syncs the upper
-/// layer's filesystem, which it otherwise does when the job's mount namespace goes and which waits
-/// for everything dirty on that volume (gigabytes from the jobs' builds beside it).
-fn overlay_options(lower: &Path, upper: &Path, work: &Path) -> Result<String, SpawnError> {
-    use std::fmt::Write as _;
-    let mut opts = String::from("userxattr,volatile");
-    for (key, p) in [("lowerdir", lower), ("upperdir", upper), ("workdir", work)] {
-        let real = std::fs::canonicalize(p)
-            .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;
-        let shown = format!("{OLD}{}", real.display());
-        if shown.contains([',', ':', '\\']) {
-            return Err(SpawnError::Invalid(format!(
-                "overlay path {} contains a comma, colon or backslash",
-                p.display()
-            )));
-        }
-        let _ = write!(opts, ",{key}={shown}");
+/// The largest passwd or group file [`Builder::account`] copies: the
+/// staging tmpfs holds both.
+const ACCOUNT_FILE_MAX: u64 = 512 * 1024;
+
+/// A regular file beneath `root`, read without following any link (an
+/// image's link would name a host path to the worker), or `None`.
+fn system_file(root: &Path, rel: &str) -> Option<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags, ResolveFlags};
+    use std::io::Read as _;
+    let dir = std::fs::File::open(root).ok()?;
+    let fd = rustix::fs::openat2(
+        &dir,
+        rel,
+        // Non-blocking: a FIFO in its place must not hold the worker up.
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .ok()?;
+    let file = std::fs::File::from(fd);
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > ACCOUNT_FILE_MAX {
+        return None;
     }
-    Ok(opts)
+    let mut bytes = Vec::new();
+    file.take(ACCOUNT_FILE_MAX).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// `passwd` with an entry for `uid` added, and `group` with one for `gid`
+/// where it has none; `None` when `passwd` has `uid` already. The entry is
+/// `job` (or `job<uid>` where the image has a `job`), at home in `/tmp`
+/// (the job's `HOME`) with root's shell.
+fn account_files(
+    passwd: &[u8],
+    group: Option<&[u8]>,
+    uid: u32,
+    gid: u32,
+) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+    let entries = |file: &[u8]| -> Vec<Vec<Vec<u8>>> {
+        file.split(|b| *b == b'\n')
+            .map(|line| line.split(|b| *b == b':').map(<[u8]>::to_vec).collect())
+            .collect()
+    };
+    let id_is =
+        |e: &Vec<Vec<u8>>, id: u32| e.get(2).is_some_and(|f| *f == id.to_string().as_bytes());
+    let users = entries(passwd);
+    if users.iter().any(|e| id_is(e, uid)) {
+        return None;
+    }
+    let groups = group.map(entries).unwrap_or_default();
+    let taken = |name: &[u8]| {
+        users
+            .iter()
+            .chain(groups.iter())
+            .any(|e| e.first().is_some_and(|n| n == name))
+    };
+    let name = if taken(b"job") {
+        format!("job{uid}")
+    } else {
+        "job".to_owned()
+    };
+    let shell = users
+        .iter()
+        .find(|e| id_is(e, 0))
+        .and_then(|e| e.get(6))
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| b"/bin/sh".to_vec(), Clone::clone);
+    let append = |file: &[u8], line: &[u8]| {
+        let mut out = file.to_vec();
+        if !out.is_empty() && !out.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(line);
+        out.push(b'\n');
+        out
+    };
+    let mut line = format!("{name}:x:{uid}:{gid}:job:/tmp:").into_bytes();
+    line.extend_from_slice(&shell);
+    let passwd = append(passwd, &line);
+    let group = group
+        .filter(|_| !groups.iter().any(|e| id_is(e, gid)))
+        .map(|g| append(g, format!("{name}:x:{gid}:").as_bytes()));
+    Some((passwd, group))
 }
 
 const RO: u64 = sys::MOUNT_ATTR_RDONLY | sys::MOUNT_ATTR_NOSUID | sys::MOUNT_ATTR_NODEV;
@@ -669,6 +904,14 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
         })?),
         None => None,
     };
+    let system_userns = match spec.ids.block {
+        Some(_) => Some(super::idmap::system_namespace(&spec.ids).map_err(|e| {
+            SpawnError::Setup(format!(
+                "a user namespace showing the job's system files as they are: {e}"
+            ))
+        })?),
+        None => None,
+    };
     let mut b = Builder {
         ops: Vec::new(),
         made: Vec::new(),
@@ -678,6 +921,7 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
             access: sys::LL_READ,
         }],
         userns,
+        system_userns,
         job_ids: spec.ids.block.and_then(|b| {
             Some((
                 b.uid.checked_add(spec.ids.inside_uid)?,
@@ -689,6 +933,11 @@ fn filesystem(spec: &JobSpec) -> Result<Filesystem, SpawnError> {
         overlays: 0,
     };
     b.root(&spec.root)?;
+    let root_dir = match &spec.root {
+        Root::Image(dir) => dir.as_path(),
+        Root::Host { .. } => Path::new("/"),
+    };
+    b.account(root_dir, spec.ids.inside_uid, spec.ids.inside_gid)?;
     b.proc_and_dev(spec)?;
     b.tmp_and_sys(spec)?;
     let mut mounts: Vec<_> = spec.mounts.iter().collect();
@@ -867,5 +1116,44 @@ impl Plan {
             env_area,
             arg_area,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account_files;
+
+    const PASSWD: &[u8] = b"root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin:/sbin/nologin\n";
+    const GROUP: &[u8] = b"root:x:0:\nbin:x:1:\n";
+
+    fn text(b: &[u8]) -> &str {
+        std::str::from_utf8(b).unwrap()
+    }
+
+    #[test]
+    fn a_job_without_an_entry_gets_one_with_roots_shell_and_its_group() {
+        let (passwd, group) = account_files(PASSWD, Some(GROUP), 1000, 1000).unwrap();
+        assert_eq!(
+            text(&passwd).lines().last(),
+            Some("job:x:1000:1000:job:/tmp:/bin/bash")
+        );
+        assert_eq!(text(&group.unwrap()).lines().last(), Some("job:x:1000:"));
+    }
+
+    #[test]
+    fn a_job_with_an_entry_keeps_the_files() {
+        assert!(account_files(PASSWD, Some(GROUP), 1, 1).is_none());
+    }
+
+    #[test]
+    fn an_existing_group_and_name_are_kept_apart() {
+        let passwd = b"root:x:0:0::/root:\njob:x:5:5::/:/bin/sh";
+        let (passwd, group) = account_files(passwd, Some(b"users:x:1000:"), 1000, 1000).unwrap();
+        // No newline at the end of the image's file, an empty root shell.
+        assert_eq!(
+            text(&passwd),
+            "root:x:0:0::/root:\njob:x:5:5::/:/bin/sh\njob1000:x:1000:1000:job:/tmp:/bin/sh\n"
+        );
+        assert!(group.is_none(), "the group 1000 exists");
     }
 }

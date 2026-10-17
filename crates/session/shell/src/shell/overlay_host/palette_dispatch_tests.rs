@@ -27,7 +27,10 @@ fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::
 
 #[test]
 fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
-    let enabled = settings_store::hardware::DesktopControlsConfig { vim_mode: true };
+    let enabled = settings_store::hardware::DesktopControlsConfig {
+        vim_mode: true,
+        ..Default::default()
+    };
     let (mut persisted, _chrome) = host_with_launch_polling();
     persisted.set_desktop_controls_config(enabled);
     assert!(persisted.desktop_controls.config().vim_mode);
@@ -1683,7 +1686,9 @@ const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
 #[test]
 #[serial_test::serial(clipboard)]
 fn invite_tokens_travel_through_the_clipboard_exactly() {
-    fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
+    use crate::compositor::selection;
+
+    fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard(store: &selection::SharedSelection) {
         let (mut h, _) = host_with_chrome();
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
@@ -1710,6 +1715,17 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 .to_lowercase()
                 .contains("copied"),
             "a copy the user cannot see happen is a copy they will do twice"
+        );
+        assert!(
+            selection::mirror_mime_types(store, selection::Target::Clipboard)
+                .iter()
+                .any(|mime| mime == selection::SECRET_MIME),
+            "a token admits whoever pastes it: it is copied as a secret"
+        );
+        assert!(
+            selection::clipboard_history(store).is_empty()
+                && selection::shareable_clipboard_history(store).is_empty(),
+            "so it stays out of clipboard history and device sync"
         );
     }
 
@@ -1877,7 +1893,11 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         assert_eq!(h.peer_sync_snapshot().connect_input.as_deref(), Some("abc"));
     }
 
-    ctrl_c_puts_the_minted_invite_token_on_the_clipboard();
+    // The compositor's own clipboard, which in-process chrome copies through.
+    let store: selection::SharedSelection = std::sync::Arc::default();
+    let _host = ui::host::enter(&selection::host_services(store.clone()));
+
+    ctrl_c_puts_the_minted_invite_token_on_the_clipboard(&store);
     the_composer_mints_for_the_name_it_was_given_and_copies();
     ctrl_v_fills_the_connect_prompt_from_the_clipboard();
     a_pasted_token_is_stripped_of_the_whitespace_it_travelled_with();

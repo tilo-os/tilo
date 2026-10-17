@@ -620,6 +620,100 @@ fn mail_and_drive_share_the_google_registration_with_their_own_scopes() {
     ));
 }
 
+fn google_services_custodian(files: bool, mail: bool) -> Custodian {
+    let mut table = crate::ClientTable::default();
+    table.google.client_id = "google-services-client".into();
+    if files {
+        table.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
+    }
+    if mail {
+        table.google.scopes.mail = vec!["https://mail.google.com/".into()];
+    }
+    Custodian::for_root(None).with_client_table(table)
+}
+
+#[test]
+fn google_services_sign_in_requests_only_selected_scopes() {
+    let server = FakeAuthorizationServer::start();
+    for (files, mail, expected) in [
+        (true, false, "https://www.googleapis.com/auth/drive"),
+        (false, true, "https://mail.google.com/"),
+        (
+            true,
+            true,
+            "https://www.googleapis.com/auth/drive https://mail.google.com/",
+        ),
+    ] {
+        let custodian = google_services_custodian(files, mail)
+            .with_issuer_endpoints(crate::OAuthIssuer::Google, server.provider());
+        let authorization = custodian
+            .begin_google_services_sign_in(files, mail)
+            .unwrap();
+        let url = url::Url::parse(authorization.url()).unwrap();
+        let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["scope"], expected);
+        assert_eq!(query["code_challenge_method"], "S256");
+        assert_eq!(url.origin().ascii_serialization(), server.url());
+        if files {
+            let compatible = custodian.begin_google_sign_in(mail).unwrap();
+            let url = url::Url::parse(compatible.url()).unwrap();
+            let query: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(query["scope"], expected);
+        }
+    }
+}
+
+#[test]
+fn google_services_sign_in_refuses_empty_or_unconfigured_selection() {
+    assert!(matches!(
+        google_services_custodian(true, true).begin_google_services_sign_in(false, false),
+        Err(CustodyError::SignIn(_))
+    ));
+    for (files, mail) in [(true, false), (false, true)] {
+        let custodian = google_services_custodian(files, mail);
+        assert!(matches!(
+            custodian.begin_google_services_sign_in(true, true),
+            Err(CustodyError::NotConfigured { .. })
+        ));
+        assert!(matches!(
+            custodian.begin_google_services_sign_in(!files, !mail),
+            Err(CustodyError::NotConfigured { .. })
+        ));
+    }
+}
+
+#[test]
+fn google_services_denied_permissions_are_rejected_before_api_requests() {
+    // An unreachable origin proves a denied scope is rejected before contacting
+    // the service, rather than relying on the service to reject the token.
+    let custodian = google_services_custodian(true, true)
+        .with_gmail_profile_endpoint("http://127.0.0.1:1/profile".into());
+    for granted in ["", "https://www.googleapis.com/auth/drive"] {
+        let tokens = tilo_oauth::TokenSet {
+            scope: Some(granted.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            custodian.gmail_identity(&tokens),
+            Err(CustodyError::SignIn(
+                "Gmail permission was not granted".into()
+            ))
+        );
+    }
+    for granted in ["", "https://mail.google.com/"] {
+        let tokens = tilo_oauth::TokenSet {
+            scope: Some(granted.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            custodian.resolve_storage(OAuthCloud::GoogleDrive, &tokens),
+            Err(CustodyError::SignIn(
+                "Google Drive permission was not granted".into()
+            ))
+        );
+    }
+}
+
 #[test]
 fn scoped_sign_in_preserves_registration_and_refuses_extra_permissions() {
     let server = FakeAuthorizationServer::start();

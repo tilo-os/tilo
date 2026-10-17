@@ -152,13 +152,22 @@ mod tests {
         }
     }
 
-    /// A clipboard the test reads back.
+    /// A clipboard the test reads back, and whether it holds a secret.
     #[derive(Default)]
-    struct Clipboard(std::sync::Mutex<Option<String>>);
+    struct Clipboard(
+        std::sync::Mutex<Option<String>>,
+        std::sync::atomic::AtomicBool,
+    );
 
     impl ui::clipboard::ClipboardBackend for Clipboard {
         fn set_text(&self, _target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
             *self.0.lock().unwrap() = Some(text.into());
+            self.1.store(false, std::sync::atomic::Ordering::Release);
+            true
+        }
+        fn set_secret_text(&self, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.into());
+            self.1.store(true, std::sync::atomic::Ordering::Release);
             true
         }
         fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
@@ -258,6 +267,10 @@ mod tests {
         assert_eq!(
             clipboard.0.lock().unwrap().as_deref(),
             Some("not-public-7A")
+        );
+        assert!(
+            clipboard.1.load(std::sync::atomic::Ordering::Acquire),
+            "a password is copied as a secret, out of history and device sync"
         );
 
         // Filtering and opening are this window's own view: nothing in the

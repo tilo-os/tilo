@@ -714,13 +714,19 @@ fn governance_is_never_relaxed_by_a_later_binding() {
 }
 
 #[test]
-fn only_owner_and_editor_roles_write() {
+fn owners_moderators_and_editors_write() {
     use collab_types::Role;
-    let writers: Vec<Role> = [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer]
-        .into_iter()
-        .filter(|role| role_writes(*role))
-        .collect();
-    assert_eq!(writers, vec![Role::Owner, Role::Editor]);
+    let writers: Vec<Role> = [
+        Role::Owner,
+        Role::Moderator,
+        Role::Editor,
+        Role::Commenter,
+        Role::Viewer,
+    ]
+    .into_iter()
+    .filter(|role| role_writes(*role))
+    .collect();
+    assert_eq!(writers, vec![Role::Owner, Role::Moderator, Role::Editor]);
 }
 
 /// A device with an unsigned certificate for planes that read admission

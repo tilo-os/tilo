@@ -1090,9 +1090,13 @@ const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
 // refusal known not to have processed work, before any output has escaped.
 const RETRY_ATTEMPTS: u32 = 4;
 /// Bound retries of requests the provider provably did not take.
-const PLAN_ATTEMPTS: u32 = 3;
+const PLAN_ATTEMPTS: u32 = 5;
 const FIRST_RETRY_WAIT: Duration = Duration::from_millis(500);
 const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(4);
+/// Shared hosted quotas can remain busy for tens of seconds. Plan retries
+/// use a longer backoff, bounded by the caller's remaining answer budget.
+const FIRST_PLAN_WAIT: Duration = Duration::from_secs(1);
+const LONGEST_PLAN_WAIT: Duration = Duration::from_secs(8);
 const ROOM_TO_ANSWER: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1313,13 +1317,9 @@ impl ProfileSources {
     /// nothing is kept.
     fn current() -> Option<Self> {
         let root = accounts::config_root()?;
-        // As `settings_store::settings_path`: the session document a sandbox
-        // names, else the one under the same config root as the vault.
-        let settings = std::env::var_os("TILO_SESSION_SETTINGS")
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| root.join("settings.json"), PathBuf::from);
+        // The session document a sandbox names, else the shared config root.
         Some(Self {
-            settings,
+            settings: settings_store::settings_path()?,
             vault: accounts::vault_dir_in(&root).join("vault.enc"),
         })
     }
@@ -2658,6 +2658,20 @@ fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
         .min(LONGEST_RETRY_WAIT)
 }
 
+/// Plan-level backoff honors provider Retry-After without truncation.
+fn plan_retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
+    if let Some(wait) = asked_for {
+        return wait;
+    }
+    let doubling = 1u32
+        .checked_shl(retry.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    FIRST_PLAN_WAIT
+        .checked_mul(doubling)
+        .unwrap_or(LONGEST_PLAN_WAIT)
+        .min(LONGEST_PLAN_WAIT)
+}
+
 async fn while_busy<L, W, WF, A, AF>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
 where
     L: Fn() -> Option<Duration>,
@@ -2745,7 +2759,7 @@ where
             Ok(answer) => return Ok(answer),
             Err(failure) => failure,
         };
-        let waiting = retry_wait(
+        let waiting = plan_retry_wait(
             made,
             match failure.again {
                 Again::Soon(asked_for) => asked_for,

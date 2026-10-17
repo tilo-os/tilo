@@ -560,9 +560,9 @@ impl PeerGovernanceMut<'_> {
             return Ok(false);
         };
         let room = self.peer.core.room.as_str();
-        let rewritten = doc
-            .policy()
-            .grants
+        let policy = doc.policy();
+        let grants = &policy.grants;
+        let mut rewritten = grants
             .iter()
             .filter(|grant| tilo_action_policy::roles::is_legacy_administrator_grant(room, grant))
             .filter_map(|grant| match &grant.subject {
@@ -574,6 +574,23 @@ impl PeerGovernanceMut<'_> {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        // Every administrator moderates the room too.
+        for grant in grants {
+            if let Subject::Person(person) = &grant.subject
+                && grant.id == tilo_action_policy::roles::administrator_grant_id(person)
+                && grant.answer == tilo_action_policy::Answer::Allow
+            {
+                let moderation_id =
+                    tilo_action_policy::roles::administrator_moderation_grant_id(person);
+                if !grants.iter().any(|held| held.id == moderation_id) {
+                    rewritten.push(tilo_action_policy::roles::administrator_moderation_grant(
+                        room,
+                        person,
+                        grant.granted_by.clone(),
+                    ));
+                }
+            }
+        }
         if rewritten.is_empty() {
             return Ok(false);
         }

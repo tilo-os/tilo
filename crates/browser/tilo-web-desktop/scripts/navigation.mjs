@@ -89,13 +89,29 @@ const settles = async (what, read, expected, tries) => polls(what, async () => r
 // frame's.
 const bounds = (name, described = '') => evaluate(`(async()=>{tiloMount.requestSemantics();
   await new Promise(done => setTimeout(done, 0));
-  const walk=n=>{if(!n||typeof n!=='object')return null;
+  const state=tiloMount.state(),canvas=tiloMount.canvas;
+  if(state.phase!=='presented'||!state.frames||canvas.closest('[inert]'))return null;
+  const walk=n=>{if(!n||typeof n!=='object'||n.state?.hidden||n.state?.disabled)return null;
   if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
   for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
-  return walk(tiloMount.state().semantics)})()`);
+  const b=walk(state.semantics);
+  return b&&b.x1>b.x0&&b.y1>b.y0?b:null})()`);
 // The frames the page has presented.
 const presented = () => evaluate('(({frames, phase}) => ({frames, phase}))(tiloMount.state())').catch(String);
 let lastClick;
+// Semantics use logical canvas coordinates; CDP takes viewport CSS pixels.
+// The backing store already accounts for DPR, so do not multiply by it.
+const centre = b => evaluate(`(()=>{
+  const state=tiloMount.state(),canvas=tiloMount.canvas;
+  if(state.phase!=='presented'||!state.frames||canvas.closest('[inert]'))return null;
+  const b=${JSON.stringify(b)},size=state.logicalSize,r=canvas.getBoundingClientRect();
+  if(!size||!(size[0]>0)||!(size[1]>0)||!r.width||!r.height)return null;
+  const x=r.left+(b.x0+b.x1)/2*r.width/size[0];
+  const y=r.top+(b.y0+b.y1)/2*r.height/size[1];
+  if(!Number.isFinite(x)||!Number.isFinite(y)||x<r.left||x>=r.right||y<r.top||y>=r.bottom
+    ||document.elementFromPoint(x,y)!==canvas)return null;
+  return [x,y];
+})()`);
 // Where to press a control the desktop shows, as a person does: point at it
 // and press once it is still under the pointer. A frame lays out where the
 // control is at that moment, and windows ease into place over several
@@ -104,18 +120,20 @@ let lastClick;
 // pointer makes the page draw again, and a control that sits in the same
 // place across a presented frame has come to rest.
 async function named(name, described = '') {
-  let found, at;
-  for (let i = 0; i < 150 && !found; i++) {
+  let found, at, point;
+  for (let i = 0; i < 150 && !point; i++) {
     if (i) await sleep(100);
     at = await presented();
     found = await bounds(name, described);
+    point = found && await centre(found);
   }
-  assert.ok(found, `the desktop shows "${name}"`);
-  const centre = b => [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
+  assert.ok(point, `the desktop presents an interactive "${name}"`);
   for (const deadline = Date.now() + STALLED_MS; ;) {
     progress = `pointing at "${name}"`;
     // Two moves, so the pointer moves even if it was already there.
-    const [x, y] = centre(found);
+    point = await centre(found);
+    assert.ok(point, `the desktop presents an interactive "${name}"`);
+    const [x, y] = point;
     await mouse('mouseMoved', x - 1, y);
     await mouse('mouseMoved', x, y);
     let now;
@@ -130,7 +148,9 @@ async function named(name, described = '') {
     [found, at] = [again, now];
   }
   lastClick = {name, described, bounds: found, presented: at};
-  return centre(found);
+  point = await centre(found);
+  assert.ok(point, `the desktop presents an interactive "${name}"`);
+  return point;
 }
 const mouse = (type, x, y, extra = {}) => tab.send('Input.dispatchMouseEvent', {type, x, y, ...extra});
 async function click(x, y) {
@@ -148,7 +168,10 @@ async function key(name, modifiers = 0) {
 }
 // The desktop's stand-in chord off a Mac: Alt+Shift.
 const chord = name => key(name, 1 | 8);
-const typing = what => polls(`the note holds the keyboard${what}`, () => evaluate('document.activeElement?.tagName'), 'TEXTAREA');
+const typing = what => polls(`the note holds the keyboard${what}`, () => evaluate(`({
+  element:document.activeElement?.tagName,
+  editor:tiloMount.state().semantics?.keyboard_focus_owner?.endsWith('/BlockEditor[0]')??false,
+})`), {element:'TEXTAREA',editor:true});
 
 const apps = (await snapshot()).applications.map(a => a.id);
 for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
@@ -266,8 +289,13 @@ await settles('Notes is active', label, 'Notes');
 await sleep(1000);
 // The empty notebook's own button, which opens the note in its editor.
 await click(...await named('New note', 'Create the first note'));
-await sleep(1500);
 await typing('');
+await polls('one pointer activation creates exactly one note', () => evaluate(`(()=>{
+  const walk=n=>{if(!n)return null;if(n.test_id==='page_tree')return n;
+    for(const c of n.children??[]){const found=walk(c);if(found)return found}return null};
+  const tree=walk(tiloMount.state().semantics?.root);
+  return tree?.semantics?.children?.filter(n=>n.role==='TreeItem').length??null;
+})()`), 1);
 await chord('PageDown');
 await settles('Alt+Shift+PageDown from a text field goes to the next workspace', workspace, 1);
 await chord('PageUp');

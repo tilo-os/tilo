@@ -341,6 +341,45 @@ struct Desktop {
     here: tilo_desktop::here::Here,
     /// Who this page writes as, to find their own steps.
     author: String,
+    /// The name and colour each person who opened a window here had when
+    /// last seen, by user root: their windows still name them once they
+    /// left.
+    people: RefCell<HashMap<String, (String, (u8, u8, u8))>>,
+}
+
+impl Desktop {
+    /// Tell the surface who holds each window this page's person may not
+    /// close or move, on a desktop shared through a room. Whether that
+    /// changed anything.
+    fn refresh_holders(&self, in_room: bool) -> bool {
+        let holders = if in_room {
+            let here = self.here.borrow();
+            let mut people = self.people.borrow_mut();
+            let mut person = |user: &str| match here.person(user) {
+                Some(seen) => {
+                    people.insert(user.to_owned(), seen.clone());
+                    seen
+                }
+                None => people.get(user).cloned().unwrap_or_else(|| {
+                    (
+                        tilo_desktop::here::guest_label(),
+                        ui::presence::user_color(user),
+                    )
+                }),
+            };
+            self.handle.read(|tree| {
+                let room = tree
+                    .workspaces
+                    .first()
+                    .map(|workspace| workspace.name.clone())
+                    .unwrap_or_default();
+                self.shared.holders(tree, &self.author, &room, &mut person)
+            })
+        } else {
+            HashMap::new()
+        };
+        self.handle.set_holders(holders)
+    }
 }
 
 impl Mount {
@@ -1101,6 +1140,7 @@ fn present_desktop(
             requests,
             here,
             author: config.author(),
+            people: RefCell::default(),
         }),
     })
 }
@@ -1983,16 +2023,17 @@ impl Mount {
             self.window.request_redraw();
             return Ok(());
         };
-        if let Some(desktop) = &self.desktop {
+        let held = self.desktop.as_ref().is_some_and(|desktop| {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
-        }
+            desktop.refresh_holders(self.peer.is_some())
+        });
         // Desktop commands and peer changes need an update even when the
         // harness itself is idle. Let a scheduled poll consume them first:
         // eagerly relayouting here and then polling animated widgets runs
         // the same frame pipeline twice before one presentation.
-        let mut host_changed = false;
+        let mut host_changed = held;
         if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
             let wakers = desktop.shared.take_wakers();
             if let Some(reasons) = &mut reasons {

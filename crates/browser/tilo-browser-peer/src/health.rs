@@ -294,9 +294,13 @@ fn session_failure(failure: &Failure) -> SessionFailure {
 
 fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest>) {
     match code {
-        "certificate-expired" | "certificate-rejected" | "identity-revoked" => {
+        "certificate-expired" | "certificate-rejected" => {
             ("identity", "error", vec![RecoveryRequest::Reauthenticate])
         }
+        // The host no longer admits this person, or another host answers
+        // now: the page joins again through the room's door, which no
+        // request to this session can do. A revoked device never comes back.
+        "not-admitted" | "host-changed" | "device-revoked" => ("identity", "error", Vec::new()),
         "storage-transaction-failed" => ("record", "error", vec![RecoveryRequest::RetrySaving]),
         "permission-required" => ("permission", "error", Vec::new()),
         "protocol-rejected" | "signature-rejected" => ("record", "error", Vec::new()),
@@ -448,6 +452,7 @@ mod tests {
         let health = snapshot(vec![
             failure("transport-ended", FailureSubject::Session),
             failure("certificate-rejected", FailureSubject::Session),
+            failure("not-admitted", FailureSubject::Session),
             failure("storage-transaction-failed", FailureSubject::Storage),
             failure("admission-timeout", FailureSubject::Admission),
             failure(
@@ -487,6 +492,11 @@ mod tests {
                     serde_json::json!([{"kind": "reauthenticate"}])
                 ),
                 (
+                    serde_json::json!("not-admitted-5"),
+                    serde_json::json!("identity"),
+                    serde_json::json!([])
+                ),
+                (
                     serde_json::json!("storage"),
                     serde_json::json!("storage"),
                     serde_json::json!([{"kind": "retry-saving"}])
@@ -508,8 +518,8 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(failures[4]["surfaceId"], "tilo-desktop-1");
-        assert_eq!(failures[5]["assetId"], "font:Noto.ttf");
+        assert_eq!(failures[5]["surfaceId"], "tilo-desktop-1");
+        assert_eq!(failures[6]["assetId"], "font:Noto.ttf");
         assert!(failures[0].get("surfaceId").is_none());
         assert_eq!(health["capabilities"]["retrySaving"], true);
         assert_eq!(health["capabilities"]["recoverRenderer"], true);

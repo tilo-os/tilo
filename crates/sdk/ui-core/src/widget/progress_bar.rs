@@ -197,6 +197,13 @@ pub struct ProgressBar {
 }
 
 impl ProgressBar {
+    /// Box this widget in the SDK so thin apps reuse its shared implementation.
+    /// This keeps the widget's vtable instantiation out of the app.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     /// Construct a determinate progress bar. `progress` is clamped to
     /// `[0.0, 1.0]` on construction; callers don't have to sanitise their
     /// input.

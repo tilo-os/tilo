@@ -931,12 +931,16 @@ impl App {
             resource
                 .actions
                 .iter()
-                .find(|action| match explicit {
+                .filter(|action| match explicit {
                     Some(address) => {
                         address.resource == resource.id.as_str() && address.action == action.id
                     }
                     None => action.kind == tilo_actions::OperationKind::View,
                 })
+                // A document read discloses the resource without borrowing
+                // the publisher's private render, focus or navigation state.
+                // An explicit disclosure action still takes precedence.
+                .min_by_key(|action| !action.contract.reads_document())
                 .map(|action| App::directory_descriptor(resource, action))
                 .or_else(|| {
                     resource
@@ -963,6 +967,7 @@ impl App {
             visibility: Some(tilo_actions::remote::RowVisibility {
                 action: visibility.address.action,
                 contract: visibility.contract,
+                governing_kind: Some(visibility.kind),
             }),
         })
     }
@@ -987,6 +992,7 @@ impl App {
             visibility: Some(tilo_actions::remote::RowVisibility {
                 action: action_id.to_owned(),
                 contract: exported.contract.clone(),
+                governing_kind: Some(exported.operation_kind),
             }),
             descriptor: Some(exported),
             has_children: false,
@@ -2697,7 +2703,12 @@ impl App {
             .tags
             .iter()
             .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-            && actor != self.collaboration.local_author.0
+            && !crate::bound_dispatch::runs_device_only(
+                actor,
+                &self.collaboration.local_author.0,
+                broker_admitted,
+                ambient_context,
+            )
         {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "local_device_only".into(),
@@ -2782,7 +2793,7 @@ impl App {
             if !self.collaboration.manager.is_connected() {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
-                    reason: "Opening staged media requires the workspace action broker".into(),
+                    reason: "Opening an application requires the workspace action broker".into(),
                 });
             }
             let Some(room) = self
@@ -2793,7 +2804,7 @@ impl App {
             else {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
-                    reason: "Opening staged media requires an admitted workspace route".into(),
+                    reason: "Opening an application requires an admitted workspace route".into(),
                 });
             };
             let request_id = self.take_broker_request_id()?;
@@ -2806,7 +2817,7 @@ impl App {
             let request = tilo_actions::remote::InvokeRequest {
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::application_open_target(&room, &launch.app_id),
+                target: launch.target(&room),
                 argument: launch.argument(),
                 context: None,
                 confirmation: None,

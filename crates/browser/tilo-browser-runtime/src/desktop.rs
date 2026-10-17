@@ -105,7 +105,8 @@ pub(crate) struct Inputs {
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
-/// with the desktop so whoever wants to know can ask; it grants nothing.
+/// with the desktop: who may close, move or rename each one
+/// ([`tilo_desktop_model::ownership`]).
 pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
 
 /// State the mount and the tile source share.
@@ -135,6 +136,9 @@ pub(crate) struct Shared {
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,
+    /// Whether the room lets this desktop's person close and move what
+    /// others made, as it last answered ([`crate::replication`] asks).
+    pub moderates: Arc<AtomicBool>,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -389,6 +393,40 @@ impl Shared {
     }
 
     /// Forget the legacy window `tab` showed.
+    /// Who holds each window of `tree` this desktop's person `me` may not
+    /// close or move, named as `person` (by user root) names people here:
+    /// everyone's but their own, unless they moderate the room. Another
+    /// member's legacy windows, which only this page shows, are its own to
+    /// close. A window nobody opened is the room's, named `room`.
+    pub fn holders(
+        &self,
+        tree: &DesktopTree,
+        me: &str,
+        room: &str,
+        person: &mut dyn FnMut(&str) -> (String, (u8, u8, u8)),
+    ) -> HashMap<TabId, ui::widget::TabHolder> {
+        if self.moderates.load(Ordering::Relaxed) {
+            return HashMap::new();
+        }
+        let authors = self.authors.borrow();
+        let local = self.peer_windows.borrow();
+        tree.workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| &s.window_groups)
+            .flat_map(|g| &g.tabs)
+            .filter(|tab| !local.contains_key(&tab.id))
+            .filter(|tab| !tilo_desktop_model::ownership::made_by(&authors, tab.id, me))
+            .map(|tab| {
+                let (name, rgb) = match authors.get(&tab.id) {
+                    Some(author) => person(author),
+                    None => (room.to_owned(), ui::presence::user_color(room)),
+                };
+                (tab.id, ui::widget::TabHolder { name, rgb })
+            })
+            .collect()
+    }
+
     pub fn closed_peer_window(&self, tab: TabId) {
         self.peer_windows.borrow_mut().remove(&tab);
     }
@@ -1025,6 +1063,42 @@ pub(crate) fn apply_shared(
     handle.replace_shared_tree(desktop.tree, &local_tabs);
     shared.wake();
     Ok(())
+}
+
+/// Put the room's desktop `value` back over a local change its person may
+/// not make, attribution included: what the room says made each strip and
+/// window is what this desktop says too.
+///
+/// # Errors
+/// As [`apply_shared`].
+pub(crate) fn return_to(
+    handle: &DesktopHandle,
+    shared: &Shared,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let desktop: StoredDesktop =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    {
+        let mut authors = shared.authors.borrow_mut();
+        let live: std::collections::HashSet<u64> = desktop
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| {
+                std::iter::once(s.id.0).chain(
+                    s.window_groups
+                        .iter()
+                        .flat_map(|g| g.tabs.iter().map(|t| t.id)),
+                )
+            })
+            .collect();
+        authors.retain(|id, _| !live.contains(id) || desktop.authors.contains_key(id));
+        for (id, author) in &desktop.authors {
+            authors.insert(*id, author.clone());
+        }
+    }
+    apply_shared(handle, shared, value)
 }
 
 fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDesktop> {

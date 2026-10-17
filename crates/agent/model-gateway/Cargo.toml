@@ -39,6 +39,7 @@ server = [
     "dep:tilo-clock",
     "dep:accounts",
     "dep:account-custody",
+    "dep:settings-store",
     "dep:reqwest",
     "dep:hyper",
     "dep:hyper-util",
@@ -83,6 +84,7 @@ tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 accounts = { path = "../../system/accounts", optional = true }
 # Custody refreshes the Google grant sealed by Settings; no API key is stored.
 account-custody = { path = "../../system/account-custody", optional = true }
+settings-store = { path = "../../system/settings-store", optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 hyper = { optional = true, version = "1", features = ["server", "http1"] }
 hyper-util = { optional = true, version = "0.1", features = ["tokio"] }

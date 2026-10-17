@@ -853,6 +853,14 @@ pub struct NavList {
 type NavSource = Box<dyn FnMut() -> Option<(Vec<NavSection>, Option<String>)>>;
 
 impl NavList {
+    /// Erase the widget type in the SDK, keeping the navigation tree's widget
+    /// implementation in the shared runtime rather than in each thin app.
+    /// The boxed widget still downcasts to `NavList`.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     #[must_use]
     pub fn new(sections: Vec<NavSection>) -> Self {
         let mut keys = NavKeys::default();

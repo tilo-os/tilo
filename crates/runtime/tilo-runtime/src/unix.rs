@@ -80,6 +80,17 @@ pub(crate) struct ServiceConnections {
     blobs: Option<UnixStream>,
 }
 
+/// The surface file this process was started with ([`ui::app_surface::SURFACE_FILE_ENV`]),
+/// when it hashes to [`ui::app_surface::SURFACE_HASH_ENV`]: what `tilo-app dev`
+/// names for an app under development.
+fn started_surface() -> Option<String> {
+    let path = std::env::var_os(ui::app_surface::SURFACE_FILE_ENV)?;
+    let hash = std::env::var(ui::app_surface::SURFACE_HASH_ENV).ok()?;
+    let expected = ui::app_surface::parse_hash(&hash)?;
+    let surface = std::fs::read_to_string(path).ok()?;
+    (*blake3::hash(surface.as_bytes()).as_bytes() == expected).then_some(surface)
+}
+
 impl ServiceConnections {
     /// # Errors
     /// Rejects an empty identity and returns connect or handshake errors.
@@ -100,6 +111,7 @@ impl ServiceConnections {
         let handshake = serde_json::to_vec(&runtime_identity::wire::Handshake {
             workspace_id: room.into(),
             app_id: app_id.into(),
+            surface: started_surface(),
         })?;
         runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;

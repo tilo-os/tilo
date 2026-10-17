@@ -924,6 +924,10 @@ pub struct State {
     /// tells keys only a client took, which change no shell pixels, from keys
     /// the shell kept by how far this moves while it dispatches them.
     pub client_keys_delivered: u64,
+    /// When the person last typed into the focused window: a non-modifier
+    /// key press the seat delivered to it. Desk widgets go away while this
+    /// is recent, and only banners addressed to the person surface.
+    pub last_client_typing_at: Option<std::time::Instant>,
     pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
 
     /// `xdg_wm_base` global state — toplevels and popups.
@@ -2036,6 +2040,7 @@ impl State {
             presentation_state,
             physical_key_input_time_ns: None,
             client_keys_delivered: 0,
+            last_client_typing_at: None,
             presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,

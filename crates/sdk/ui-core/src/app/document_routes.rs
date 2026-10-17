@@ -182,8 +182,17 @@ impl App {
             return Some(Cow::Borrowed(reported));
         }
         let key = if self.document_routes.witness.is_none() {
-            (self.native_document_chrome && self.collaboration.manager.sync_lost())
-                .then_some("history-sync-offline")
+            let manager = &self.collaboration.manager;
+            // A change the workspace refused stops sync just as a lost
+            // connection does, but reconnecting will not resume it, and the
+            // person is not offline: say which one happened.
+            (self.native_document_chrome && manager.sync_lost()).then_some(
+                if manager.document_change_refused() {
+                    "history-sync-refused"
+                } else {
+                    "history-sync-offline"
+                },
+            )
         } else if !self.document_routes.primary.is_empty()
             || self
                 .document_routes

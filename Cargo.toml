@@ -270,6 +270,7 @@ members = [
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
+    "crates/platform/tilo-cloud-files",
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
@@ -378,6 +379,7 @@ members = [
     "crates/system/secret-service",
     "crates/system/secret-vault",
     "crates/system/settings-store",
+    "crates/system/ssh-agent-client",
     "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",
@@ -654,6 +656,9 @@ rquickjs = "0.9"
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
+# Miracast (Wi-Fi Display) source for tilo-projector, a standalone crate in
+# its own repository until it is published.
+miracast = { git = "https://code.tilo.so/tilo/miracast.git", rev = "c37c8cdfcdf7959a1daa38925f0e13d217c083c0", default-features = false }
 # FFT for acoustic calibration: deconvolving a recorded sweep into the
 # speaker's impulse response and reading its magnitude response.
 rustfft = "6.2"

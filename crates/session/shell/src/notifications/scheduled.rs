@@ -452,6 +452,7 @@ impl ScheduleStore {
                     contact_endpoint: None,
                     sender_name: None,
                     sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
+                    incoming_call: false,
                 },
                 target,
             ));

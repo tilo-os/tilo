@@ -29,9 +29,9 @@ def call(sock_path: str, payload: dict, timeout: float = 5.0) -> dict:
     """
     wait_s = payload.get("wait_ms", 0) / 1000.0
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout + wait_s)
-    s.connect(sock_path)
     try:
+        s.settimeout(timeout + wait_s)
+        s.connect(sock_path)
         return _send_recv(s, payload)
     finally:
         s.close()

@@ -356,6 +356,11 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
         .clone()
         .zip(inc.contact_endpoint.clone())
         .map(|(name, identity)| NotificationPerson { name, identity });
+    // A call rings for the person it is from; a category alone is only the
+    // app's word, so it counts only beside a verified sender.
+    if inc.incoming_call && notification.from.is_some() {
+        notification.addressed = Some(tilo_desktop::notifications::Addressed::IncomingCall);
+    }
     notification.actions = inc.actions;
     // Never from the wire: an app that could ask to pierce Do-Not-Disturb
     // would ask every time.
@@ -855,6 +860,7 @@ mod tests {
             contact_endpoint: None,
             sender_name: None,
             sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
+            incoming_call: false,
         }
     }
 

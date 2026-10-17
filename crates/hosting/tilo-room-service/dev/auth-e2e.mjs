@@ -13,7 +13,9 @@
 // the context, their tabs its pages):
 //   first-use      a fresh profile opens the bare entry: one POST /join at the
 //                  host's door, the desktop presents, and the browser keeps
-//                  the membership (host, room, person) and the room's link
+//                  the membership (host, room, person) and the room's link;
+//                  it never asks to keep the site's storage (Firefox's
+//                  prompt, stubbed as one nobody answers)
 //   reload         the same tab reloaded: the desktop presents again as the
 //                  same person in the same room, with no new join
 //   second-tab     a second tab of that profile while the first holds its
@@ -29,17 +31,12 @@
 //   bound-invite   the same with an invitation the door issued for someone
 //                  else who has not used it yet: refused when redeemed,
 //                  nothing kept
-//   stale-link     the host is set up again (run.py --fresh: a new root, relay
-//                  and room) while the first person's browser keeps what it
-//                  had for the old one; the old room's link is refused without
-//                  a join and without offering to join again (that room is
-//                  gone), never opened as another room, the membership kept
-//   host-declined  the bare entry offers to join the new host again; "Not now"
-//                  is refused, saying the host was set up again, without a
-//                  join, and the kept membership and person stay
-//   host-reset     the same offer accepted ("Join again"): one join at the
-//                  door, the desktop presents, and the membership names the
-//                  new room as the same person
+//   host-reset     the host is set up again (run.py --fresh: a new root,
+//                  relay and room) while the first person's browser keeps
+//                  what it had for the old one; the bare entry joins the new
+//                  host without asking: one join at the door, the desktop
+//                  presents, and the membership names the new room as the
+//                  same person
 //   host-reload    that tab reloaded: presents again with no new join
 //   kept-apart     what the browser kept for the old host is untouched (every
 //                  row of its namespace as before the reset), and the new
@@ -186,7 +183,7 @@ const bindable = port => new Promise(done => {
  * it), below every system's ephemeral range: run.py probes its listeners
  * while they start, and a connection to an unbound ephemeral port can meet
  * itself (TCP simultaneous open) and read its own request back. */
-async function freePort(taken, span = 0) {
+export async function freePort(taken, span = 0) {
   for (;;) {
     const port = 20000 + Math.floor(Math.random() * (32000 - 20000 - span));
     if (taken.has(port) || taken.has(port + span)) continue;
@@ -198,7 +195,7 @@ async function freePort(taken, span = 0) {
 }
 
 /** run.py with `ports`, until its banner; resolves to `{room, stop}`. */
-async function startStack(options, ports, {fresh, env = {}}) {
+export async function startStack(options, ports, {fresh, env = {}}) {
   const args = [RUN_PY, '--scratch', options.scratch, '--bundle', options.bundle,
     '--relay-bin', options.relayBin, '--room-service-bin', options.roomServiceBin, '--name', 'auth',
     '--web-port', String(ports.web), '--api-port', String(ports.api), '--port-base', String(ports.base),
@@ -232,6 +229,12 @@ async function startStack(options, ports, {fresh, env = {}}) {
 // (which outlives reloads), with the body of the door's answers. DevTools'
 // own network domain held up later pages of the run.
 const FETCHES = `(() => {
+  // Firefox answers navigator.storage.persist() only once the person
+  // dismisses its permission prompt; Chrome answers at once. Here it is a
+  // prompt nobody answers, counted: getting in must neither ask nor wait.
+  globalThis.__authE2ePersistAsked = 0;
+  const storage = globalThis.navigator?.storage;
+  if (storage) storage.persist = () => { globalThis.__authE2ePersistAsked += 1; return new Promise(() => {}); };
   const original = globalThis.fetch;
   const tell = entry => { try { globalThis.__authE2eFetch(JSON.stringify(entry)); } catch {} };
   globalThis.fetch = async function (input, init) {
@@ -251,7 +254,7 @@ const FETCHES = `(() => {
 })();`;
 
 /** A page of `browser` in `context`, with the fetches it makes recorded. */
-async function page(browser, context) {
+export async function page(browser, context) {
   const tab = await browser.tab({context});
   const requests = [];
   const off = browser.on(message => {
@@ -286,6 +289,7 @@ async function settle(tab, {relay, timeout}) {
     status: document.getElementById('status')?.textContent ?? '',
     hash: location.hash,
     desktop: Boolean(globalThis.tiloMount),
+    persistAsked: globalThis.__authE2ePersistAsked ?? 0,
     membership: (${membershipFor})(localStorage.getItem(${JSON.stringify(MEMBERSHIPS)}), ${JSON.stringify(relay)}),
     // Where a page that never settled stood: still loading its modules, or past them.
     loading: document.documentElement.dataset.entry ? undefined : {readyState: document.readyState,
@@ -385,13 +389,13 @@ const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entr
 const leaving = tab => tab.evaluate('globalThis.__authE2eLeft = true').catch(() => {});
 
 /** Navigate `tab` to `url` (a fresh tab) and settle. */
-async function open(tab, url, settleOptions) {
+export async function open(tab, url, settleOptions) {
   await tab.navigate(url);
   return settle(tab, settleOptions);
 }
 
 /** Reload `tab` and settle. */
-async function reload(tab, settleOptions) {
+export async function reload(tab, settleOptions) {
   await leaving(tab);
   await tab.reload();
   return settle(tab, settleOptions);
@@ -459,9 +463,10 @@ async function main() {
     const joins = joinsTo(first.requests, api);
     const me = opened.membership?.userPublicKey ?? null;
     check('first-use', opened.entry === 'open' && opened.arrival === 'done' && joins.length === 1 && joins[0].status === 200
-      && opened.membership?.room === firstRoom && /^[0-9a-f]{64}$/.test(me ?? '') && opened.hash.includes(`/w/${firstRoom}`),
+      && opened.membership?.room === firstRoom && /^[0-9a-f]{64}$/.test(me ?? '') && opened.hash.includes(`/w/${firstRoom}`)
+      && opened.persistAsked === 0,
     {entry: opened.entry, arrival: opened.arrival, joins: joins.map(j => j.status), membership: opened.membership, hash: opened.hash,
-      status: opened.status, loading: opened.loading});
+      status: opened.status, loading: opened.loading, persistAsked: opened.persistAsked});
     if (opened.entry !== 'open') await shoot('first-use', first);
     const offer = joins[0]?.status === 200 && joins[0].body ? JSON.parse(joins[0].body) : null;
 
@@ -545,43 +550,14 @@ async function main() {
     // A new root, relay and room behind the same origin.
     await stack.stop();
     stack = await startStack(options, ports, {fresh: true});
-    const changed = /set up again/;
-
-    // stale-link: the old room's link after the reset.
-    const stale = await page(browser, person);
-    const staleOpened = await open(stale, roomLink(firstRoom), settleOptions);
-    const staleOffered = await offering(stale);
-    keepLog('stale-link', stale);
-    check('stale-link', stack.room !== firstRoom && staleOpened.entry === 'refused' && !staleOffered
-      && joinsTo(stale.requests, api).length === 0
-      && staleOpened.membership?.userPublicKey === me && staleOpened.membership?.room === firstRoom,
-    {entry: staleOpened.entry, offered: staleOffered, joins: joinsTo(stale.requests, api).length, status: staleOpened.status,
-      membership: staleOpened.membership, room: stack.room});
-    if (staleOpened.entry !== 'refused') await shoot('stale-link', stale);
-    await stale.close();
-
-    // host-declined: the bare entry offers to join the new host; not now.
-    const declining = await page(browser, person);
-    await declining.navigate(`${web}/`);
-    const declineOffered = await press(declining, 'Not now', timeout).catch(() => false);
-    const declined = await settle(declining, settleOptions);
-    keepLog('host-declined', declining);
-    check('host-declined', declineOffered && declined.entry === 'refused' && changed.test(declined.status)
-      && joinsTo(declining.requests, api).length === 0 && declined.membership?.userPublicKey === me
-      && declined.membership?.room === firstRoom,
-    {offered: declineOffered, entry: declined.entry, joins: joinsTo(declining.requests, api).length,
-      membership: declined.membership, status: declined.status, loading: declined.loading});
-    if (declined.entry !== 'refused') await shoot('host-declined', declining);
-    await declining.close();
-
-    // host-reset: the same offer, accepted.
+    // host-reset: the bare entry joins the new host, asking nothing.
     const reset = await page(browser, person);
     await reset.navigate(`${web}/`);
-    const resetOffered = await press(reset, 'Join again', timeout).catch(() => false);
     const rejoined = await settle(reset, settleOptions);
+    const resetOffered = await offering(reset);
     keepLog('host-reset', reset);
     const resetJoins = joinsTo(reset.requests, api);
-    check('host-reset', resetOffered && rejoined.entry === 'open' && rejoined.arrival === 'done'
+    check('host-reset', !resetOffered && rejoined.entry === 'open' && rejoined.arrival === 'done'
       && resetJoins.length === 1 && resetJoins[0].status === 200
       && rejoined.membership?.userPublicKey === me && rejoined.membership?.room === stack.room
       && rejoined.hash.includes(`/w/${stack.room}`),

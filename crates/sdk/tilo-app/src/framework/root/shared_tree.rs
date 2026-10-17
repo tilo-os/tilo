@@ -14,7 +14,9 @@ use ui_core::published::{SharedChildren, SharedResource};
 
 use super::super::rows::outside_document;
 use super::typed::ResourceType;
-use super::{Decoration, ResourceRoot, mark_document_jobs, offer_item_open, open_spec};
+use super::{
+    Decoration, ResourceRoot, mark_document_jobs, offer_document_reads, offer_item_open, open_spec,
+};
 
 /// The document-owned tree at one live revision, locale and
 /// [`Resource::publication_cache_epoch`].
@@ -99,7 +101,7 @@ impl ResourceRoot {
     fn build_document_tree(&self, state: &dyn Any, live: bool) -> SharedResource {
         let _profile = tilo_resource::profiling::Phase::start("framework.resource_tree");
         let parts = self.typed.children_parts(state);
-        let items = self.item_children(parts.items, &parts.item_actions, live);
+        let items = self.item_children(parts.items, &parts.item_actions, live, state);
         let children = if parts.others.is_empty() {
             items
         } else {
@@ -107,7 +109,14 @@ impl ResourceRoot {
                 parts
                     .others
                     .into_iter()
-                    .map(SharedResource::from_resource)
+                    .map(|mut child| {
+                        if self.resource.readable {
+                            offer_document_reads(&mut child, &|id| {
+                                self.typed.document_child(state, id)
+                            });
+                        }
+                        SharedResource::from_resource(child)
+                    })
                     .chain(items.iter().cloned())
                     .collect(),
             )
@@ -128,6 +137,7 @@ impl ResourceRoot {
         collections: Vec<ItemCollection>,
         actions: &[ItemAction],
         keep: bool,
+        state: &dyn Any,
     ) -> SharedChildren {
         let i18n = ui_core::i18n::I18nManager::revision();
         let mut memo = self.item_children.borrow_mut();
@@ -137,7 +147,13 @@ impl ResourceRoot {
         if let Some(last) = memo.as_ref().filter(|last| last.collections == collections) {
             return last.children.clone();
         }
-        let children = build_items(&self.resource, memo.as_ref(), &collections, actions);
+        let children = build_items(
+            &self.resource,
+            memo.as_ref(),
+            &collections,
+            actions,
+            &|id| self.typed.document_child(state, id),
+        );
         if keep {
             *memo = Some(ItemChildren {
                 i18n,
@@ -388,6 +404,7 @@ fn build_items(
     last: Option<&ItemChildren>,
     collections: &[ItemCollection],
     actions: &[ItemAction],
+    eligible: &dyn Fn(&str) -> bool,
 ) -> SharedChildren {
     let last_children = last.map_or(&[][..], |last| last.children.as_slice());
     let in_place = last.is_some_and(|last| same_members(&last.collections, collections));
@@ -411,7 +428,13 @@ fn build_items(
         children.push(
             kept.filter(|child| child.head().label == label)
                 .cloned()
-                .unwrap_or_else(|| SharedResource::from_resource(build())),
+                .unwrap_or_else(|| {
+                    let mut child = build();
+                    if resource.readable {
+                        offer_document_reads(&mut child, eligible);
+                    }
+                    SharedResource::from_resource(child)
+                }),
         );
     });
     SharedChildren::new(children)

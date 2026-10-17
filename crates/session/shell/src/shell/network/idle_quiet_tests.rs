@@ -97,10 +97,11 @@ pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// 0.0 % (under one 10 ms tick in the window).
 pub(super) const LONE_CPU_BUDGET: f64 = 0.5;
 
-/// Set once the test runs inside a network namespace of its own. The
-/// private-network rerun serves only the Linux lone-desktop test below.
+/// Set in the process a wakeup gate reruns itself in: `1` inside a network
+/// namespace of its own, `host` on the host's network where the machine
+/// allows no user namespaces.
 #[cfg(target_os = "linux")]
-const PRIVATE_NETWORK: &str = "TILO_IDLE_PRIVATE_NETWORK";
+const OWN_PROCESS: &str = "TILO_IDLE_OWN_PROCESS";
 
 /// `program` run by `unshare` in a user and network namespace of its own.
 #[cfg(target_os = "linux")]
@@ -113,50 +114,80 @@ fn unshare(program: &str, args: &[&str]) -> std::process::Command {
     command
 }
 
-/// Run `test` again with only a loopback interface, and report that it did.
+/// Run `test` (its path, `module_path!()` and name) again, alone in a
+/// process of its own with only a loopback interface, and report that it
+/// did.
 ///
-/// A wakeup budget measures what Tilo does while idle, and a host's network
-/// is not Tilo. The kernel tells every netlink subscriber, which is how
-/// iroh's network monitor learns of changes, about each address refresh on
-/// the host: a router that advertises its prefix every 3 s on a wifi
+/// A wakeup gate counts every thread of its process, and `cargo test` runs
+/// a binary's tests as threads of one process: in a parallel run the gate
+/// counted the threads of whichever tests ran beside it (a converged pair
+/// measured 19.6 wakeups a second, most of them test threads), so it ran
+/// alone by luck only. In a process of its own the gate's threads are the
+/// desktops'.
+///
+/// A wakeup budget also measures what Tilo does while idle, and a host's
+/// network is not Tilo. The kernel tells every netlink subscriber, which is
+/// how iroh's network monitor learns of changes, about each address refresh
+/// on the host: a router that advertises its prefix every 3 s on a wifi
 /// network wakes the monitor 0.3 times a second by itself (0.70 to 0.75/s
 /// measured on the Yoga against 0.40 to 0.45/s with nothing else on the
 /// link). So the gate runs in a user and network namespace whose only link
-/// is loopback, which is also all the test uses.
+/// is loopback, which is also all the test uses; where the machine allows
+/// no user namespaces, alone on the host's network as it is.
 ///
 /// Returns `true` when the child ran and passed (the caller is done) and
-/// `false` when the caller is the child, or when the machine does not allow
-/// user namespaces, in which case it measures the host network as it is.
+/// `false` when the caller is the child.
 #[cfg(target_os = "linux")]
-fn in_private_network(test: &str) -> bool {
-    if std::env::var_os(PRIVATE_NETWORK).is_some() {
-        bring_loopback_up();
-        return false;
-    }
-    if !unshare("true", &[]).status().is_ok_and(|s| s.success()) {
-        eprintln!("no user namespaces here: measuring on the host's network");
+pub(super) fn in_a_process_of_its_own(test: &str) -> bool {
+    if let Some(network) = std::env::var_os(OWN_PROCESS) {
+        if network == "1" {
+            bring_loopback_up();
+        }
         return false;
     }
     let exe = std::env::current_exe().expect("this test binary's path");
+    let exe = exe.to_str().expect("a UTF-8 path");
     let name = test_name(test);
-    let status = unshare(
-        exe.to_str().expect("a UTF-8 path"),
-        &["--exact", &name, "--nocapture", "--test-threads=1"],
-    )
-    .env(PRIVATE_NETWORK, "1")
-    .status()
-    .expect("start the test in a private network");
-    assert!(status.success(), "{name} failed in its private network");
+    let args = ["--exact", name.as_str(), "--nocapture", "--test-threads=1"];
+    let mut command = if unshare("true", &[]).status().is_ok_and(|s| s.success()) {
+        let mut command = unshare(exe, &args);
+        command.env(OWN_PROCESS, "1");
+        command
+    } else {
+        eprintln!("no user namespaces here: measuring on the host's network");
+        let mut command = std::process::Command::new(exe);
+        command.args(args).env(OWN_PROCESS, "host");
+        command
+    };
+    let output = command
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .expect("start the test in a process of its own");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{name} failed in its own process: {}\n{stdout}",
+        output.status
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "{name} ran no test in its own process:\n{stdout}"
+    );
     true
 }
 
-/// libtest's name of `test`, a function of this module: its path without
+/// Whether this process is the rerun in a network namespace of its own.
+#[cfg(target_os = "linux")]
+fn in_private_network() -> bool {
+    std::env::var_os(OWN_PROCESS).is_some_and(|network| network == "1")
+}
+
+/// libtest's name of `test`, a path from `module_path!()`: the path without
 /// the crate's name.
 #[cfg(target_os = "linux")]
 fn test_name(test: &str) -> String {
-    let module = module_path!();
-    let (_, in_crate) = module.split_once("::").unwrap_or(("", module));
-    format!("{in_crate}::{test}")
+    let (_, in_crate) = test.split_once("::").unwrap_or(("", test));
+    in_crate.to_owned()
 }
 
 /// Bring the namespace's `lo` up (a new network namespace starts with it
@@ -461,6 +492,13 @@ fn newest_room_changes(tree: &WorkspaceTreeHandle, room: RoomId, before: usize) 
 #[test]
 #[serial_test::serial]
 fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute() {
+    #[cfg(target_os = "linux")]
+    if in_a_process_of_its_own(concat!(
+        module_path!(),
+        "::a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute"
+    )) {
+        return;
+    }
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[43; 32]);
@@ -627,11 +665,14 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 #[test]
 #[serial_test::serial]
 fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
-    if in_private_network("a_lone_idle_desktop_keeps_its_network_runtime_asleep") {
+    if in_a_process_of_its_own(concat!(
+        module_path!(),
+        "::a_lone_idle_desktop_keeps_its_network_runtime_asleep"
+    )) {
         return;
     }
     // The address exists before the desktop does, as a router's does.
-    let refresher = std::env::var_os(PRIVATE_NETWORK).map(|_| {
+    let refresher = in_private_network().then(|| {
         let mut refresher = AddressRefresher::new();
         refresher.refresh();
         refresher

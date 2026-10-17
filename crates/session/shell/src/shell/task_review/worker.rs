@@ -15,6 +15,8 @@ pub(super) struct Worker {
     pub(super) state: Arc<Mutex<State>>,
     owner: NativeWorkspaceOwner,
     commit: Arc<dyn OwnerCommitService>,
+    /// Workspace governance, for the grant "Always allow this" gives.
+    memberships: Arc<dyn tilo_action_broker::services::WorkspaceMemberships>,
     certificate: Certificate,
 }
 
@@ -46,10 +48,14 @@ pub(super) fn refuse(state: &Mutex<State>, receiver: &mpsc::Receiver<Job>, error
 }
 
 impl Worker {
-    pub(super) fn new(owner: NativeWorkspaceOwner, commit: Arc<dyn OwnerCommitService>) -> Self {
+    pub(super) fn new(
+        owner: NativeWorkspaceOwner,
+        commit: Arc<crate::shell::broker_services::NativeOwnerCommitService>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             owner,
+            memberships: commit.clone(),
             commit,
             certificate: Arc::new(|room| {
                 tilo_identity_host::broker::trusted_current_device(room)
@@ -62,6 +68,15 @@ impl Worker {
     #[cfg(test)]
     pub(super) fn with_certificate(mut self, certificate: tilo_user_identity::DeviceCert) -> Self {
         self.certificate = Arc::new(move |_| Ok(certificate.clone()));
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_memberships(
+        mut self,
+        memberships: Arc<dyn tilo_action_broker::services::WorkspaceMemberships>,
+    ) -> Self {
+        self.memberships = memberships;
         self
     }
 
@@ -201,7 +216,39 @@ impl Worker {
         if snapshot.actor != request.observed_actor {
             return Err("selected person changed; review before changing this task".into());
         }
-        let command = match &request.command {
+        let command = self.owner_command(runtime, request, &snapshot, &caller)?;
+        let bound = OwnerCommitRequest {
+            room: request.room.clone(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: request.invocation,
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command,
+            },
+        };
+        let receipt = runtime.block_on(self.commit.commit(bound.clone()))?;
+        receipt.validate_for(&bound)?;
+        let room = crate::shell::state::RoomId::parse(&request.room).ok_or("invalid task room")?;
+        self.owner
+            .workspace_task_result(
+                room,
+                WorkspaceTaskCommandId {
+                    device,
+                    invocation: request.invocation,
+                },
+            )?
+            .ok_or("task commit has no retained owner result")?;
+        Ok(())
+    }
+
+    /// The owner command a person's review request asks for.
+    fn owner_command(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        request: &TaskReviewRequest,
+        snapshot: &TaskReviewSnapshot,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<WorkspaceTaskCommand, String> {
+        Ok(match &request.command {
             TaskReviewCommand::Approve {
                 task_id,
                 agent_id,
@@ -240,27 +287,92 @@ impl Worker {
                 task_id: task_id.clone(),
                 run_epoch: *run_epoch,
             },
+            TaskReviewCommand::AnswerConfirmation {
+                task_id,
+                run_epoch,
+                confirmation_id,
+                answer,
+            } => WorkspaceTaskCommand::AnswerConfirmation {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                confirmation_id: confirmation_id.clone(),
+                answer: answer.clone(),
+            },
+            TaskReviewCommand::AlwaysAllow {
+                task_id,
+                run_epoch,
+                confirmation_id,
+                edits,
+            } => {
+                self.always_allow(runtime, request, snapshot, caller)?;
+                WorkspaceTaskCommand::AnswerConfirmation {
+                    task_id: task_id.clone(),
+                    run_epoch: *run_epoch,
+                    confirmation_id: confirmation_id.clone(),
+                    answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer::Confirm {
+                        edits: edits.clone(),
+                    },
+                }
+            }
+        })
+    }
+
+    /// Let the run's agent take the action its paused confirmation names
+    /// without asking from now on: the person's Allow for that one action,
+    /// given through the workspace's governance as they hold it. What the
+    /// action is comes from the owner's record, never from the request.
+    fn always_allow(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        request: &TaskReviewRequest,
+        snapshot: &TaskReviewSnapshot,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let TaskReviewCommand::AlwaysAllow {
+            task_id,
+            run_epoch,
+            confirmation_id,
+            ..
+        } = &request.command
+        else {
+            return Err("not an always-allow request".into());
         };
+        let confirmation = snapshot
+            .controls
+            .get(task_id)
+            .and_then(|control| control.confirmation.as_ref())
+            .filter(|held| {
+                &held.id == confirmation_id && held.run_epoch == *run_epoch && held.is_waiting()
+            })
+            .ok_or("the paused action changed; review it again")?;
+        let scope = tilo_action_policy::agent_answers::AnswerScope::action(
+            &confirmation.app,
+            &confirmation.resource_kind,
+            &confirmation.action,
+        );
+        let grant = tilo_action_policy::agent_answers::grant(
+            &request.room,
+            &confirmation.agent_id,
+            (&scope, confirmation.kind),
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::Person(snapshot.actor.clone()),
+        );
+        let digest = blake3::Hasher::new_derive_key("Tilo task always-allow grant v1")
+            .update(request.invocation.as_bytes())
+            .finalize();
+        let mut id = [0_u8; 16];
+        id.copy_from_slice(digest.as_bytes().get(..16).ok_or("invalid grant digest")?);
         let bound = OwnerCommitRequest {
             room: request.room.clone(),
-            operation: CommitOperation::WorkspaceTaskCommand {
-                invocation: request.invocation,
-                authority: WorkspaceTaskAuthority::Person { caller },
-                command,
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::from_bytes(id),
+                caller: caller.clone(),
+                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+                    grant,
+                },
             },
         };
-        let receipt = runtime.block_on(self.commit.commit(bound.clone()))?;
-        receipt.validate_for(&bound)?;
-        let room = crate::shell::state::RoomId::parse(&request.room).ok_or("invalid task room")?;
-        self.owner
-            .workspace_task_result(
-                room,
-                WorkspaceTaskCommandId {
-                    device,
-                    invocation: request.invocation,
-                },
-            )?
-            .ok_or("task commit has no retained owner result")?;
-        Ok(())
+        let receipt = runtime.block_on(self.memberships.execute(bound.clone()))?;
+        receipt.validate_for(&bound)
     }
 }

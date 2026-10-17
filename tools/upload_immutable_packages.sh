@@ -17,7 +17,7 @@ temp_root=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 }
 
 declare -a files=() urls=()
-while IFS=$'\t' read -r file url extra; do
+while IFS=$'\t' read -r file url extra || [[ -n $file || -n $url || -n ${extra:-} ]]; do
   [[ -n $file && -n $url && -z ${extra:-} ]] || {
     printf 'invalid immutable-upload manifest row\n' >&2
     exit 2
@@ -66,10 +66,14 @@ upload_one() {
       printf 'published %s\n' "${file##*/}" > "$state/$index.out"
       ;;
     409)
-      if ! curl --fail --silent --show-error --retry 3 --retry-all-errors \
+      if ! status=$(curl --fail --silent --show-error --retry 3 --retry-all-errors \
         --header "Authorization: Bearer $TILO_PACKAGE_TOKEN" \
-        "$url" --output "$remote" 2>>"$errors"; then
+        "$url" --output "$remote" --write-out '%{http_code}' 2>>"$errors"); then
         printf 'immutable conflict verification failed: %s\n' "$url" >> "$errors"
+        return 1
+      fi
+      if [[ $status != 200 ]]; then
+        printf 'immutable conflict verification returned HTTP %s: %s\n' "$status" "$url" >> "$errors"
         return 1
       fi
       if ! cmp --silent "$file" "$remote"; then

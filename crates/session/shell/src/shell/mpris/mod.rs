@@ -890,6 +890,33 @@ pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
 /// Most players the now-playing card lists.
 const MAX_NOW_PLAYING_PLAYERS: usize = 16;
 
+/// Wakes the compositor's loop when the players change, so a desk widget
+/// showing what plays follows a track change without polling.
+static NOW_PLAYING_WAKE: Mutex<Option<crate::session_runtime::Wake>> = Mutex::new(None);
+/// Grows whenever the observed players change.
+static NOW_PLAYING_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Wake the loop through `wake` whenever the players change.
+pub fn set_now_playing_wake(wake: crate::session_runtime::Wake) {
+    if let Ok(mut slot) = NOW_PLAYING_WAKE.lock() {
+        *slot = Some(wake);
+    }
+}
+
+/// Grows whenever the observed players change; a reader that remembers it
+/// knows whether to look again.
+pub fn now_playing_revision() -> u64 {
+    NOW_PLAYING_REVISION.load(AtomicOrdering::Acquire)
+}
+
+fn now_playing_changed() {
+    NOW_PLAYING_REVISION.fetch_add(1, AtomicOrdering::AcqRel);
+    let wake = NOW_PLAYING_WAKE.lock().ok().and_then(|slot| slot.clone());
+    if let Some(wake) = wake {
+        wake();
+    }
+}
+
 /// The players last observed. Empty until the observer has listed the bus.
 pub fn now_playing_players() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
     observer::OBSERVER
@@ -929,6 +956,8 @@ pub fn control(bus_name: &str, command: crate::shell::now_playing::PlayerCommand
         } else {
             PlaybackStatus::Playing
         };
+        drop(state);
+        now_playing_changed();
     }
     let owned = bus_name.to_string();
     spawn_on_session(async move {

@@ -413,6 +413,7 @@ portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
 portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
 portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
+portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
 portal-launcher-icon-compass = Tilo-Webkompass
 portal-background-title = Hintergrundaktivität erlauben?
 portal-background-resource = Die App kann weiterarbeiten, nachdem ihr Fenster geschlossen wurde.
@@ -910,6 +911,7 @@ osd-keyboard-backlight-off = Tastaturbeleuchtung aus
 osd-keyboard-backlight = Tastaturbeleuchtung { $percent } %
 osd-no-backlight = Kein regelbarer Bildschirm
 osd-no-agent = Hier ist kein Agent verfügbar
+osd-starting-agent = Agent wird gestartet …
 osd-airplane-mode-on = Flugmodus an
 osd-airplane-mode-off = Flugmodus aus
 osd-touchpad-on = Touchpad an
@@ -1085,6 +1087,10 @@ bluetooth-prompt-a11y-code = Code { $code }
 # Portal-Voreinstellungen: Dateiauswahl-Schaltflächen, Standardaktion von Benachrichtigungen, unbenannte Apps, Aufnahmequellen
 portal-file-save = Speichern
 portal-file-choose-folder = Ordner auswählen
+portal-file-grant-write-folder = Dieser App Lesen und Schreiben im ausgewählten Ordner und seinem Inhalt erlauben
+portal-file-existing-write-folder = Bereits für diese App beschreibbaren Ordner auswählen
+portal-file-allow-write-folder = Lesen und Schreiben erlauben
+portal-file-use-write-folder = Beschreibbaren Ordner verwenden
 portal-file-open = Öffnen
 portal-notification-open = Öffnen
 portal-inhibit-unnamed-app = Eine App
@@ -1465,6 +1471,7 @@ search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
 search-action-enrollment-copied = Geräte-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
 search-action-home-server-copied = Heimserver-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
+search-action-enrollment-copy-failed = Der Einrichtungscode konnte nicht in die Zwischenablage kopiert werden
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
@@ -1825,6 +1832,7 @@ peer-sync-name-required = Gib an, für wen diese Einladung ist
 peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-copied = Kopiert
+peer-sync-copy-failed = Konnte nicht in die Zwischenablage kopiert werden
 peer-sync-joining = Beitreten…
 peer-sync-pasted = Eingefügt
 peer-sync-clipboard-empty = Die Zwischenablage ist leer
@@ -2820,3 +2828,10 @@ storage-low-title = Der Speicher ist fast voll
 storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
+
+## Desk widgets
+
+desk-team-title = In diesem Arbeitsbereich
+# Where a person is: their strip, then the window they are on.
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } weitere

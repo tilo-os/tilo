@@ -86,6 +86,20 @@ impl std::fmt::Debug for RichTextOffer {
     }
 }
 
+/// Marks a Tilo copy as a secret: the compositor keeps it out of clipboard
+/// history and never syncs it to the person's other devices. Its bytes are
+/// [`SECRET_MARKER`].
+pub const SECRET_MIME: &str = "application/x-tilo-secret";
+
+/// The password-manager convention other Linux clipboard managers honour
+/// (KDE Klipper, `cliphist`, `CopyQ`): an offer carrying it is kept out of
+/// their histories. Its bytes are [`SECRET_MARKER`].
+pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
+
+/// What a secret copy answers for [`SECRET_MIME`] and
+/// [`PASSWORD_MANAGER_HINT_MIME`].
+pub const SECRET_MARKER: &[u8] = b"secret";
+
 /// Largest PNG a clipboard image may encode to.
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -196,6 +210,20 @@ pub trait ClipboardBackend: Send + Sync {
         self.set_text(target, text)
     }
 
+    /// Offer `text` on the Ctrl+V clipboard marked as a secret: a password,
+    /// a one-time code, an enrolment token. Other apps can still paste it as
+    /// plain text, but clipboard managers and Tilo's own history and device
+    /// sync are told not to keep it ([`SECRET_MIME`],
+    /// [`PASSWORD_MANAGER_HINT_MIME`]).
+    ///
+    /// Returns `false` rather than keeping the secret in a buffer private to
+    /// this process, so it is never reported as copied when it was not. The
+    /// default refuses: a backend must opt in to carrying secrets.
+    fn set_secret_text(&self, text: &str) -> bool {
+        let _ = text;
+        false
+    }
+
     /// Short name for diagnostics, e.g. `"compositor-mirror"`.
     fn name(&self) -> &'static str;
 }
@@ -250,7 +278,7 @@ fn attach(_handle: &impl raw_window_handle::HasDisplayHandle) -> bool {
 ///
 /// Keeps copy → paste round-tripping inside the process so editors stay usable
 /// and the caret/clipboard core stays testable headlessly. It refuses
-/// [`ClipboardBackend::set_shared_text`] and images.
+/// [`ClipboardBackend::set_shared_text`], secrets and images.
 #[derive(Debug, Default)]
 pub struct InProcessClipboard {
     clipboard: Mutex<Option<String>>,

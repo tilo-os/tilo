@@ -14,7 +14,8 @@ use tilo_joined_room::testing as internals;
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 
-fn edit(
+/// A signed document edit in `room`, as the owner commits a local change.
+pub(crate) fn edit(
     owner: &NativeWorkspaceOwner,
     room: RoomId,
     key: &SigningKey,

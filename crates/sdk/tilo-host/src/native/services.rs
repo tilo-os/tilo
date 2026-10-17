@@ -5,8 +5,9 @@
 //!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
 //!   on macOS, the Common Item Dialogs on Windows), or with
 //!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
-//!   handed the session shell's chooser connection (a session with no
-//!   portal), `tilo_dialogs::inherited_shell_picker` in front of either;
+//!   handed the session shell's chooser connection,
+//!   `tilo_dialogs::inherited_shell_picker` in front of either and
+//!   `tilo_dialogs::inherited_shell_opener` in front of the opener;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -54,8 +55,14 @@ pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
     let files = tilo_dialogs::inherited_shell_picker(unattended.clone())
         .or(unattended)
         .unwrap_or_else(|| services.files.clone());
+    // A link with a scheme a Tilo app claims (`settings://updates`) opens in
+    // that app through the shell, as its search opens it; the desktop's
+    // opener has no handler registered for such schemes.
+    let opener = tilo_dialogs::inherited_shell_opener(services.opener.clone())
+        .unwrap_or_else(|| services.opener.clone());
     HostServices {
         files,
+        opener,
         speech: Arc::new(SystemSpeech),
         media_session: Arc::new(super::mpris::DesktopMediaSessions),
         screen_capture: Arc::new(super::capture::DesktopScreenCapture),

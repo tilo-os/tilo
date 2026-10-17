@@ -136,16 +136,22 @@ pub enum MountKind {
     ReadWrite(PathBuf),
     /// A tmpfs of at most `size` bytes (the job's cgroup pays for it).
     Tmpfs { size: Option<u64> },
-    /// `lower`, read-only, with what the job writes going to `upper`
+    /// `lowers`, read-only and stacked (the first on top, as overlayfs's
+    /// `lowerdir` lists them), with what the job writes going to `upper`
     /// (`work` is overlayfs's scratch, on the same filesystem as `upper`).
-    /// Mounted `volatile`, never synced: `upper` and `work` serve one job,
-    /// and are thrown away after it (overlayfs refuses to mount a `work`
-    /// a volatile mount used again).
+    /// Mounted `volatile`, never synced: `upper` and `work` serve one job
+    /// (overlayfs refuses to mount a `work` a volatile mount used again).
+    /// A caller keeping `upper` after the job makes it durable itself.
     Overlay {
-        lower: PathBuf,
+        lowers: Vec<PathBuf>,
         upper: PathBuf,
         work: PathBuf,
     },
+    /// `lowers` stacked as in [`MountKind::Overlay`], read-only: what one
+    /// layer holds hides the same path in the layers below it, and its
+    /// whiteouts and opaque directories hide theirs. At least two; one alone
+    /// is a [`MountKind::ReadOnly`] bind.
+    Layers { lowers: Vec<PathBuf> },
 }
 
 impl Mount {
@@ -170,16 +176,36 @@ impl Mount {
         }
     }
 
+    /// `lowers` stacked (the first on top) at `dst`, what the job writes
+    /// going to `upper`; see [`MountKind::Overlay`].
+    pub fn overlay(
+        lowers: Vec<PathBuf>,
+        upper: impl Into<PathBuf>,
+        work: impl Into<PathBuf>,
+        dst: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            dst: dst.into(),
+            kind: MountKind::Overlay {
+                lowers,
+                upper: upper.into(),
+                work: work.into(),
+            },
+        }
+    }
+
     /// Whether the job may write beneath the destination.
     pub fn writable(&self) -> bool {
-        !matches!(self.kind, MountKind::ReadOnly(_))
+        !matches!(self.kind, MountKind::ReadOnly(_) | MountKind::Layers { .. })
     }
 
     /// The host path the mount shows, if it shows one.
     pub fn source(&self) -> Option<&std::path::Path> {
         match &self.kind {
             MountKind::ReadOnly(p) | MountKind::ReadWrite(p) => Some(p),
-            MountKind::Overlay { lower, .. } => Some(lower),
+            MountKind::Overlay { lowers, .. } | MountKind::Layers { lowers } => {
+                lowers.first().map(PathBuf::as_path)
+            }
             MountKind::Tmpfs { .. } => None,
         }
     }
@@ -239,18 +265,26 @@ impl IdMap {
 /// idmapped mount on which the files of `outside_uid`/`outside_gid` show as
 /// the job's own (`inside_uid`/`inside_gid`) and what the job creates is
 /// owned by `outside_uid`/`outside_gid` on the host, so the next job, with
-/// another block, finds them as its own too. Other owners read as `nobody`,
-/// as without a block. A path whose filesystem can't be idmapped is bound as
+/// another block, finds them as its own too. Every other id below `count`
+/// keeps its number on those mounts (the id `inside_uid` on disk takes the
+/// owner's place), so the job may name any of its users in an ACL entry,
+/// or find files a job made through one, under any path it is given; ids
+/// beyond read as `nobody`. Owning a file by another id still takes
+/// `CAP_CHOWN`, which no job holds. A path whose filesystem can't be idmapped is bound as
 /// it is, its owners reading as `nobody`; a writable one is named by
 /// `Job::unmapped`. A socket is never idmapped: it becomes the job's user's
 /// (the caller makes it for this job), as connecting to it takes.
+///
+/// The job's system files (the [`Root`]) are no work of the caller's: on
+/// their idmapped mounts every id keeps its number, so root's files stay
+/// root's whatever the job's own id is.
 ///
 /// Needs `CAP_SETUID`, `CAP_SETGID` and `CAP_SYS_ADMIN` in the initial user
 /// namespace (a root worker) and Linux 5.12 (`mount_setattr` with
 /// `MOUNT_ATTR_IDMAP`); overlays need 5.19, for idmapped layers. `count`
 /// must exceed `inside_uid` and `inside_gid`. Blocks of jobs that run at
 /// the same time must not overlap; the caller hands them out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IdBlock {
     pub uid: u32,
     pub gid: u32,

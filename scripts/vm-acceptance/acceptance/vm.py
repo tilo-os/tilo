@@ -39,8 +39,19 @@ def first_json(text: str):
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if line.lstrip().startswith(("{", "[")):
-            # CLI receipts can surround a complete, pretty-printed JSON document.
-            return json.JSONDecoder().raw_decode("\n".join(lines[index:]).lstrip())[0]
+            # CLI receipts and bracket-prefixed progress lines can surround a
+            # complete, pretty-printed JSON document. A log line is not a response.
+            try:
+                return json.JSONDecoder().raw_decode("\n".join(lines[index:]).lstrip())[0]
+            except json.JSONDecodeError:
+                # Only a complete bracketed progress line may be skipped. Once a
+                # document begins, never mistake one of its nested values for it.
+                stripped = line.strip()
+                if (stripped.startswith("[") and stripped.endswith("]")
+                        and stripped[1:2].isalpha()
+                        and not any(char in stripped[1:-1] for char in '[]{}"')):
+                    continue
+                break
     raise VmError(f"no JSON in output: {text[:400]!r}")
 
 
@@ -82,6 +93,9 @@ class TiloVm:
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
+        except OSError as exc:
+            self._log(cmd, None, time.monotonic() - started, "", str(exc))
+            raise VmError(f"could not run {shlex.join(cmd)}: {exc}") from exc
         self._log(cmd, proc.returncode, time.monotonic() - started,
                   proc.stdout, proc.stderr)
         if check and proc.returncode != 0:
@@ -120,6 +134,7 @@ class TiloVm:
         open (A15). A listing that changes while paged is read again from its start."""
         for _ in range(LISTING_ATTEMPTS):
             rows, cursor = [], None
+            seen = set()
             while True:
                 args = ["actions", "list", *([query] if query else []),
                         *(["--programmatic"] if programmatic else []), "--json",
@@ -136,6 +151,9 @@ class TiloVm:
                 cursor = page.get("next_cursor")
                 if not cursor:
                     raise VmError("the action listing is truncated but names no next page")
+                if cursor in seen:
+                    raise VmError("the action listing repeated a pagination cursor")
+                seen.add(cursor)
         raise VmError(f"the action listing changed on each of {LISTING_ATTEMPTS} reads while it was paged")
 
     def invoke(self, provider: str, action_id: str, args: dict | None = None) -> dict:

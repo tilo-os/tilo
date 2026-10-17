@@ -50,8 +50,18 @@ export RUNNER_TEMP=${RUNNER_TEMP:-$(mktemp -d "${TMPDIR:-/tmp}/package-lane.XXXX
 export GITHUB_PATH=${GITHUB_PATH:-$RUNNER_TEMP/path}
 bash dist/ci/fetch-package-env-runtime.sh
 export TILO_ENABLE_REMOTE_CACHE=0 TILO_CARGO_JOBS=${TILO_CARGO_JOBS:-6}
-while IFS='|' read -r distro image revision; do
+# The target list arrives on its own descriptor and each job reads no stdin: a container
+# engine attached to the job reads whatever stdin holds, so the first target used to swallow
+# the rest of the list and the lane ended green after one userspace.
+# A broken userspace does not hide the others' results: every target builds, and the lane
+# fails at the end naming each one that failed.
+failed=()
+while IFS='|' read -r -u 3 distro image revision; do
   [[ -n $distro ]] || continue
   printf '==> %s / %s\n' "$distro" "$arch"
-  dist/ci/run-package-job.sh "$distro" "$image" "$arch" "$revision"
-done < <(dist/ci/package-targets.sh "$arch")
+  dist/ci/run-package-job.sh "$distro" "$image" "$arch" "$revision" </dev/null || failed+=("$distro")
+done 3< <(dist/ci/package-targets.sh "$arch")
+if ((${#failed[@]})); then
+  printf 'package lane %s: failed userspaces: %s\n' "$arch" "${failed[*]}" >&2
+  exit 1
+fi

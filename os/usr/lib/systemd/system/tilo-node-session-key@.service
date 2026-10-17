@@ -1,0 +1,18 @@
+# A node session's device key for account %i, created by that account before
+# the node is installed: the relay names it to the installing page
+# (--session-device), and the page's root certifies it as one of the
+# person's devices. The relay never reads the private half.
+[Unit]
+Description=Device key of %i's Tilo node session
+ConditionPathExists=/etc/tilo/node/install-token
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=%i
+StateDirectory=tilo-node/%i
+StateDirectoryMode=0755
+ExecStart=/usr/bin/tilo-device-key-init --root /var/lib/tilo-node/%i/session --public-env-out /var/lib/tilo-node/%i/session.env
+# Install writes the session's certificate and the person's user key (public
+# halves only) here, as the relay's group.
+ExecStartPost=+/usr/bin/install -d -o %i -g tilo-relay -m 2775 /var/lib/tilo-node/%i/session/device /var/lib/tilo-node/%i/session/user-identity

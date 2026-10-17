@@ -709,6 +709,13 @@ fn forget_document(record: &RecordId) {
     lock_open_documents(&launcher::LaunchSession::current()).retain(|d| &d.record != record);
 }
 
+/// A launch of `package_id` ended, or ran out of time, without a window: the
+/// documents it was opening are not open, so opening one again launches
+/// again instead of waiting on a window that will never come.
+pub(crate) fn forget_unpresented_documents(session: &launcher::LaunchSession, package_id: &str) {
+    lock_open_documents(session).retain(|d| d.surface.is_some() || d.package_id != package_id);
+}
+
 pub fn clear_open_documents() {
     lock_open_documents(&launcher::LaunchSession::current()).clear();
 }
@@ -991,6 +998,9 @@ mod tests {
     fn chrome_with_workspace() -> Chrome {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
+        // Match session startup: launch gates wait for the tree's accepted
+        // policy revision before judging a document's newly granted read.
+        launcher::action_authority::follow_tree(&handle);
         ChromeState::new_with_handle(handle)
     }
 
@@ -1969,6 +1979,130 @@ mod tests {
                 && route.candidates(&doc).apps[0].id == "so.tilo.zine"
         );
         assert!(route.set_default(&doc, "so.tilo.text-editor").is_err());
+        clear_launch_env();
+    }
+
+    /// Installs `app`'s own `apps/<app>/tilo-app.toml`, as an image does.
+    fn install_shipped(dir: &Path, package_id: &str, app: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../apps")
+                .join(app)
+                .join("tilo-app.toml"),
+            &manifest_path,
+        )
+        .unwrap();
+        let registry = dir.join("registry.toml");
+        let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
+        write!(
+            existing,
+            "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.display().to_string(),
+            manifest_path.display().to_string()
+        )
+        .unwrap();
+        std::fs::write(&registry, existing).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn a_video_opens_in_the_player_with_the_editor_offered_under_open_with() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        install_shipped(&apps, "so.tilo.video-editor", "video-editor");
+        install_shipped(&apps, "so.tilo.video-player", "video-player");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        without_host_apps(tmp.path(), &mut env);
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        reset_session_state();
+        let clip = tmp.path().join("Holiday.mp4");
+        std::fs::write(&clip, b"x").unwrap();
+        let chrome = chrome_with_workspace();
+
+        let opened = open_in_workspace(&clip, &chrome).unwrap();
+        assert_eq!(
+            opened.app().map(|app| app.package_id.as_str()),
+            Some("so.tilo.video-player")
+        );
+        let commands = launched_commands(&log, 1);
+        assert!(
+            commands[0].contains("--app-id so.tilo.video-player")
+                && commands[0].contains(&format!("--open {}", clip.display())),
+            "the player is launched on the clip: {}",
+            commands[0]
+        );
+        let choices: Vec<(String, bool)> = open_with_choices(&clip, "", None)
+            .into_iter()
+            .map(|choice| (choice.id, choice.is_default))
+            .collect();
+        assert_eq!(
+            choices,
+            [
+                ("so.tilo.video-player".to_string(), true),
+                ("so.tilo.video-editor".to_string(), false),
+            ],
+            "the editor stays one pick away"
+        );
+        clear_launch_env();
+    }
+
+    /// An app that exits before showing a window (here: refusing its
+    /// arguments) leaves nothing open, so the next open launches it again.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn a_launch_that_fails_before_its_window_does_not_block_the_next_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "so.tilo.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        let launcher_bin = tmp.path().join("tilo-launcher");
+        std::fs::write(
+            &launcher_bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+                 echo 'error: unknown argument' >&2\nexit 2\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        reset_session_state();
+        let doc = tmp.path().join("report.odt");
+        std::fs::write(&doc, b"x").unwrap();
+        let chrome = chrome_with_workspace();
+
+        assert!(open_in_workspace(&doc, &chrome).unwrap().launched());
+        launched_commands(&log, 1);
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while !launcher::drain_events().iter().any(|event| {
+            event.package_id == "so.tilo.word-processor"
+                && matches!(event.kind, launcher::LaunchEventKind::Failed { .. })
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the failed launch was never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let again = open_in_workspace(&doc, &chrome).unwrap();
+        assert!(
+            again.launched(),
+            "the document is not open anywhere, so it launches again: {again:?}"
+        );
+        assert_eq!(launched_commands(&log, 2).len(), 2);
         clear_launch_env();
     }
 }

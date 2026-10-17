@@ -12,6 +12,7 @@ from typing import NamedTuple
 
 
 ZERO_SHA = "0" * 40
+ATTRIBUTE_START = re.compile(r"#!?\[")
 ALLOW = re.compile(r"\ballow\s*\(")
 REASON = re.compile(r"\breason\s*=")
 
@@ -23,12 +24,13 @@ class Attribute(NamedTuple):
 
 
 def rust_attributes(source: str) -> list[Attribute]:
-    """Return balanced outer attributes, including multiline attributes."""
+    """Return balanced inner and outer attributes, including multiline attributes."""
     attributes: list[Attribute] = []
     offset = 0
-    while (start := source.find("#[", offset)) >= 0:
+    while match := ATTRIBUTE_START.search(source, offset):
+        start = match.start()
         depth = 1
-        cursor = start + 2
+        cursor = match.end()
         quote: str | None = None
         escaped = False
         while cursor < len(source) and depth:

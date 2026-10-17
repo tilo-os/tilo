@@ -66,6 +66,10 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
+# The surface an app under development names (`app_surface`), and the
+# runtime's own words (consent prompt, device grants), from Fluent. The
+# broker links it on every platform already.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The one per-user index the host's own search reads.
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
@@ -106,8 +110,6 @@ launcher-macos = { path = "../../packaging/launcher-macos" }
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The device grants, as actions on the runtime's console socket.
 console-control = { path = "../../session/console-control" }
-# The runtime's own words (consent prompt, device grants), from Fluent.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The camera and microphone a confined app asks this runtime to capture.
 tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
 # The login Keychain keeps the channel-state key.
@@ -127,8 +129,6 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
-# An ordinary SDK app, to prove the standalone session admits and publishes it.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true

@@ -19,7 +19,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance import gpu  # noqa: E402
-from acceptance.checks import apps  # noqa: E402
+from acceptance.vm import VmError  # noqa: E402
+from acceptance.checks import apps, daily_apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
                                     first_textured, lingering, parse_procs)
 from acceptance.checks.startup import (ATSPI_PROBE, first_frame_budget, judge_listing,  # noqa: E402
@@ -70,6 +71,41 @@ WINE = BEFORE + [
 
 def procs(rows):
     return parse_procs("\n".join(rows))
+
+
+class ChromiumPlatformTests(unittest.TestCase):
+    def probe(self, commands, flag):
+        output = "\n".join(row(5000 + i, 1000, 5000 + i, cmd)
+                           for i, cmd in enumerate(commands))
+        ctx = SimpleNamespace(vm=SimpleNamespace(exec=lambda script: output))
+        res = SimpleNamespace(metrics={})
+        daily_apps._ozone_flag(ctx, res, flag)
+        return res.metrics[f"ozone_{flag}_pids"]
+
+    def test_probe_shell_and_unrelated_flags_cannot_pass_as_chromium(self):
+        for cmd in (
+            "sh -c pgrep -f -- '--ozone-platform=wayland' | head -3; true",
+            "/usr/bin/not-a-browser --ozone-platform=wayland",
+            "/usr/bin/chromium-browser --ozone-platform=x11",
+            "/usr/bin/chromium-browser --ozone-platform=wayland-extra",
+        ):
+            with self.subTest(cmd=cmd), self.assertRaises(apps.CheckFailed):
+                self.probe([cmd], "wayland")
+
+    def test_browser_argv_reports_the_requested_platform(self):
+        for flag in ("wayland", "x11"):
+            with self.subTest(flag=flag):
+                self.assertEqual(self.probe([
+                    f"/usr/lib64/chromium-browser/chromium-browser --ozone-platform={flag}",
+                ], flag), ["5000"])
+
+    def test_process_query_failure_preserves_cause(self):
+        def unavailable(script):
+            raise VmError("slot exec unavailable")
+
+        ctx = SimpleNamespace(vm=SimpleNamespace(exec=unavailable))
+        with self.assertRaisesRegex(VmError, "slot exec unavailable"):
+            daily_apps._ozone_flag(ctx, SimpleNamespace(metrics={}), "wayland")
 
 
 class ParseProcsTests(unittest.TestCase):

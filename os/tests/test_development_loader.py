@@ -2,6 +2,8 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+from unittest.mock import patch
 import unittest
 
 SPEC = importlib.util.spec_from_file_location(
@@ -29,6 +31,14 @@ class SnapshotTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / 'source'
         self.destination = self.root / 'snapshot'
+
+    def test_crypto_timeout_is_a_controlled_verification_error(self):
+        def timed_out(arguments, **kwargs):
+            self.assertEqual(kwargs.get('timeout'), 120)
+            raise subprocess.TimeoutExpired(arguments, 120)
+        with patch.object(loader.subprocess, 'run', side_effect=timed_out):
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                loader.command(['/usr/local/bin/tilo-crypto', 'verify-efi'])
 
     def test_snapshot_rejects_unstable_inputs(self):
         with self.subTest(phase="snapshot_retains_bytes_when_source_is_replaced"):

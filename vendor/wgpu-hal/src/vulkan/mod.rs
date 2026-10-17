@@ -535,6 +535,27 @@ struct DeviceShared {
     drop_guard: Option<crate::DropGuard>,
 }
 
+/// Tilo: orders the Vulkan loader's device lookups against every change to
+/// its instance, driver and device lists in this process.
+///
+/// The loader (1.4.341, Fedora 44) finds the driver behind a `VkDevice`, for
+/// `vkSetDebugUtilsObjectNameEXT`, `vkCreateSwapchainKHR` and
+/// `vkGetDeviceProcAddr`, by walking every instance's drivers and their
+/// devices under one mutex (`loader_get_icd_and_device`), while other calls
+/// free nodes of those lists under another or under none:
+/// `vkDestroyDevice` frees the device's node, and `vkCreateInstance` and
+/// `vkEnumeratePhysicalDevices` free the drivers of an instance already in
+/// the list that fail to create one or have no physical device (most of
+/// Mesa's drivers on any one machine). Naming an object on one device while
+/// another thread did any of these read a freed node and crashed the
+/// process (SIGSEGV in `loader_get_icd_and_device`, seen in the shell's
+/// parallel GPU tests). So the lookups, instance and device creation and
+/// destruction and physical device enumeration each hold this mutex.
+/// Re-entrant, because a device that fails to open after it was created is
+/// destroyed while its creator still holds it.
+pub(super) static LOADER_DEVICE_LISTS: parking_lot::ReentrantMutex<()> =
+    parking_lot::const_reentrant_mutex(());
+
 impl Drop for DeviceShared {
     fn drop(&mut self) {
         for &raw in self.render_passes.lock().values() {
@@ -545,6 +566,7 @@ impl Drop for DeviceShared {
                 .destroy_descriptor_set_layout(self.empty_descriptor_set_layout, None)
         };
         if self.drop_guard.is_none() {
+            let _lists = LOADER_DEVICE_LISTS.lock();
             unsafe { self.raw.destroy_device(None) };
         }
     }

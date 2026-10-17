@@ -30,6 +30,7 @@ import dataclasses
 import datetime
 import functools
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -668,13 +669,23 @@ def probe_base(image: str, os_id: str) -> Base:
     arch = os.uname().machine
     if arch not in ARCHITECTURES:
         raise ResolveError(f"unsupported architecture {arch}")
-    fingerprint = base_packages_sha256(base_package_lines(run(["rpm", "-qa", "--qf", RPM_FINGERPRINT_QUERY]).stdout))
+    lines = base_package_lines(run(["rpm", "-qa", "--qf", RPM_FINGERPRINT_QUERY]).stdout)
+    if not lines or any(not re.fullmatch(r"\S+ [0-9]+:\S+\n", line) for line in lines):
+        raise ResolveError("rpm returned an empty or malformed base package fingerprint")
+    fingerprint = base_packages_sha256(lines)
     output = run(["rpm", "-qa", "--qf", "%{NAME} %{EPOCHNUM} %{VERSION} %{RELEASE} %{ARCH} base\n"]).stdout
     installed = {}
     for line in output.splitlines():
         nevra = parse_nevra_line(line)
-        if nevra is not None and nevra.name not in FINGERPRINT_EXCLUDED:
-            installed[nevra.name] = nevra
+        if nevra is not None and nevra.name in FINGERPRINT_EXCLUDED:
+            continue
+        if nevra is None or not line.split()[1].isdigit():
+            raise ResolveError(f"rpm returned a malformed installed package: {line!r}")
+        installed[nevra.name] = nevra
+    if not installed:
+        raise ResolveError("rpm returned no installed base packages")
+    if {line.split()[0] for line in lines} != set(installed):
+        raise ResolveError("rpm base package queries disagree")
     return Base(os_id, version_id, arch, installed, fingerprint, image)
 
 
@@ -805,7 +816,7 @@ def live_urls(urls: list[str], size: int, sha256: str,
         for _attempt in range(3):
             try:
                 got_size, got_sha, final = fetch(url)
-            except (urllib.error.URLError, OSError, ValueError) as error:
+            except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as error:
                 reason = str(error)
                 continue
             if (got_size, got_sha) == (size, sha256):
@@ -827,12 +838,19 @@ def resolve_part_artifacts(recipe: Recipe, base: Base, dnf, keyring, specs: list
     if not rpms:
         raise ResolveError(f"downloading {' '.join(specs)} produced nothing")
     headers = {path: rpm_header(path) for path in rpms}
+    downloaded = {
+        Nevra(h["name"], int(h["epoch"]), h["version"], h["release"], h["arch"]).spec
+        for h in headers.values()
+    }
+    missing = set(specs) - downloaded
+    if missing:
+        raise ResolveError(f"download omitted selected packages: {', '.join(sorted(missing))}")
     offered = dnf.candidates(sorted({h["name"] for h in headers.values()}))
     artifacts = []
     for path, header in headers.items():
         if header["name"] in base.installed:
             raise ResolveError(f"{header['nvra']} would replace a base package")
-        offers = [n for n in offered.get(header["name"], []) if n.nvra == header["nvra"]]
+        offers = [n for n in offered.get(header["name"], []) if n.nvra == header["nvra"] and n.epoch == int(header["epoch"])]
         repos = sorted({n.repo for n in offers})
         if not repos or not set(repos) <= set(recipe.repos):
             raise ResolveError(f"{header['nvra']} comes from no repository of the recipe ({repos})")

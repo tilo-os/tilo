@@ -99,6 +99,7 @@ impl ApiKey {
 pub struct CompletionClient {
     runtime: Option<tokio::runtime::Runtime>,
     http: reqwest::Client,
+    request_hints: serde_json::Value,
 }
 
 impl CompletionClient {
@@ -115,7 +116,28 @@ impl CompletionClient {
         Ok(Self {
             runtime: Some(runtime),
             http,
+            request_hints: serde_json::json!({}),
         })
+    }
+
+    /// Set trusted-host provider preferences. Only service tier and reasoning
+    /// effort are accepted; these never alter the neutral protocol or authority.
+    #[must_use]
+    pub fn with_request_hints(mut self, hints: serde_json::Value) -> Self {
+        for (name, allowed) in [
+            ("service_tier", &["auto", "default", "flex", "priority"][..]),
+            (
+                "reasoning_effort",
+                &["none", "minimal", "low", "medium", "high", "xhigh"][..],
+            ),
+        ] {
+            if let Some(value) = hints.get(name).and_then(serde_json::Value::as_str)
+                && allowed.contains(&value)
+            {
+                self.request_hints[name] = value.into();
+            }
+        }
+        self
     }
 
     /// Complete one neutral turn with the same custody and bounded retry policy
@@ -144,7 +166,7 @@ impl CompletionClient {
                         endpoint,
                         source,
                         target,
-                        (model, request),
+                        (model, request, &self.request_hints),
                         key,
                         deadline,
                         &ServiceCredentials::open(),
@@ -191,7 +213,7 @@ async fn complete_async(
         endpoint,
         source,
         target,
-        turn,
+        (turn.0, turn.1, &serde_json::json!({})),
         key,
         deadline,
         credentials,
@@ -204,13 +226,14 @@ async fn complete_with_http(
     endpoint: &str,
     source: &ApiKey,
     target: Target,
-    turn: (&str, &neutral::ModelRequest),
+    turn: (&str, &neutral::ModelRequest, &serde_json::Value),
     key: &str,
     deadline: Instant,
     credentials: &ServiceCredentials,
     pooled: &reqwest::Client,
 ) -> Result<neutral::ModelResponse, neutral::ModelError> {
-    let request = rig_adapter::neutral_request(turn.1.clone())?;
+    let mut request = rig_adapter::neutral_request(turn.1.clone())?;
+    request.additional_params = Some(turn.2.clone());
     let mut headers = reqwest::header::HeaderMap::new();
     if target.needs_idempotency_key() {
         if key.is_empty() {

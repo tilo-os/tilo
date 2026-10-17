@@ -185,8 +185,9 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
         "fixed-add-tab",
         "fixed-duplicate-tab",
         ShortcutAction::Search.id(),
-        // A lone Super tap searches too; the keyboard map lists every
-        // alias, the guide keeps one row per action.
+        // A lone Super tap opens the Super surface, whose field is this
+        // search; the keyboard map lists every alias, the guide keeps one
+        // row per action.
         ShortcutAction::EmojiPicker.id(),
         ShortcutAction::WorkspaceOverview.id(),
         ShortcutAction::QuickSettings.id(),

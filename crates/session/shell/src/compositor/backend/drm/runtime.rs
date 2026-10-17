@@ -56,6 +56,7 @@ use super::scanout::{
     physical_card_identity, resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
+use super::topology;
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
@@ -222,6 +223,9 @@ pub struct DrmDispatchState {
     /// from `live`: a disabled dock connector still needs a fresh Settings
     /// capability snapshot when it is plugged or removed.
     capability_topology: BTreeSet<DrmOutputKey>,
+    /// The topology line last journaled, so a relayout that changes nothing
+    /// the line reports writes nothing.
+    journaled_topology: String,
     /// Every card's connectors as the last forced probe (startup or a udev
     /// hotplug) found them, before display intent is applied. A settings
     /// change and capability publication re-apply intent to these rather
@@ -1164,6 +1168,7 @@ impl DrmDispatchState {
             color_profiles: BTreeMap::new(),
             live: Vec::new(),
             capability_topology: BTreeSet::new(),
+            journaled_topology: String::new(),
             connector_probes: BTreeMap::new(),
             #[cfg(test)]
             forced_probes: 0,
@@ -1407,7 +1412,23 @@ impl DrmDispatchState {
     ///
     /// Every udev edge lands here, including no-op ones — a `Changed` event
     /// fires on every DPMS transition and EDID re-read, and re-modesetting on those would flash the panel for nothing. [`hotplug::plan`] tells the two apart.
+    ///
+    /// While another session owns the seat this card set holds no DRM
+    /// master, so a modeset would fail and leave a display plugged in
+    /// meanwhile dark. The edge is dropped instead: re-activation rescans
+    /// every card (`SessionAction::ResetOutputs`).
     pub fn rescan_outputs(&mut self, reason: &str) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.is_active())
+        {
+            tracing::debug!(
+                reason,
+                "DRM hotplug: session inactive; rescanning on activation"
+            );
+            return;
+        }
         self.rescan_outputs_with_removal_ack(reason, None, ConnectorProbe::Force);
     }
 
@@ -1539,6 +1560,9 @@ impl DrmDispatchState {
                 // it appears or disappears so it can be re-enabled.
                 self.publish_display_snapshot();
             }
+            // A card can come or go without lighting anything (a
+            // connectorless discrete GPU, a dock with nothing plugged in).
+            self.journal_topology();
             tracing::debug!(
                 reason,
                 live_config_changed,
@@ -1597,7 +1621,7 @@ impl DrmDispatchState {
                 continue;
             };
             let used_on_card = used.entry(want.key.device).or_default();
-            if let Some(build) = card.bring_up(snapshot, used_on_card) {
+            if let Some(build) = bring_up_journaled(card, snapshot, used_on_card) {
                 used_on_card.push(build.crtc);
                 builds.push(build);
             }
@@ -1797,6 +1821,23 @@ impl DrmDispatchState {
         self.rebuild_cursor_routing();
         self.reconcile_adaptive_sync();
         self.reconcile_hdr();
+        self.journal_topology();
+    }
+
+    /// Journal the driven topology when it differs from the last line
+    /// written: after startup, every hotplug, card add or removal, and any
+    /// layout change.
+    fn journal_topology(&mut self) {
+        let cards = self
+            .cards
+            .iter()
+            .map(|(&device, card)| (device, card.path().to_path_buf()))
+            .collect();
+        let line = topology::topology_line(&cards, &self.live);
+        if line != self.journaled_topology {
+            eprintln!("{line}");
+            self.journaled_topology = line;
+        }
     }
 
     /// Tell the scanout owner about every output whose HDR request changed.
@@ -2129,6 +2170,11 @@ impl DrmDispatchState {
                     .as_ref()
                     .is_none_or(super::session::SessionState::dpms_on);
                 self.command(ScanoutCommand::Resume { dpms_on });
+                // A display plugged into or pulled from any card while the
+                // session was away (another VT, asleep) raised edges nobody
+                // could act on; ask every card again, after the re-modeset
+                // so the presenter applies the two in order.
+                self.rescan_outputs("session activated");
             }
             SessionAction::RestoreDpms | SessionAction::ResumeScanout => {}
             SessionAction::FullDamage => {
@@ -2870,6 +2916,10 @@ impl DrmDispatchState {
             tracing::debug!(device = %path.display(), "DRM: no seat clone for newly added card");
             return;
         };
+        eprintln!(
+            "tilo compositor: trying hot-plugged KMS scanout device {}",
+            path.display()
+        );
         match CardHandle::open(&mut seat, path) {
             Ok(card) => {
                 let device_id = card.device_id();
@@ -2908,6 +2958,10 @@ impl DrmDispatchState {
                 tracing::info!(device = %path.display(), device_id, "DRM: retained newly added KMS card");
             }
             Err(error) => {
+                eprintln!(
+                    "tilo compositor: cannot use DRM output on {}: {error}",
+                    path.display()
+                );
                 tracing::warn!(device = %path.display(), %error, "DRM: cannot open added KMS card");
             }
         }
@@ -3999,13 +4053,20 @@ fn bring_up_all_devices(session: &LibSeatSession, kms_gpus: &[PathBuf]) -> Start
         };
         let mut used = Vec::new();
         let mut builds = Vec::new();
-        for snapshot in snapshots
-            .get(&device_id)
-            .into_iter()
-            .flatten()
-            .filter(|snapshot| snapshot.enabled)
-        {
-            if let Some(build) = card.bring_up(snapshot, &used) {
+        for snapshot in snapshots.get(&device_id).into_iter().flatten() {
+            if !snapshot.enabled {
+                eprintln!(
+                    "{}",
+                    topology::connector_attempt_line(
+                        &path,
+                        &snapshot.connector_name,
+                        snapshot.mode.size(),
+                        topology::ConnectorAttempt::Disabled,
+                    )
+                );
+                continue;
+            }
+            if let Some(build) = bring_up_journaled(card, snapshot, &used) {
                 used.push(build.crtc);
                 builds.push(build);
             }
@@ -4027,6 +4088,29 @@ fn bring_up_all_devices(session: &LibSeatSession, kms_gpus: &[PathBuf]) -> Start
         display_set,
         connector_probes,
     }
+}
+
+/// Bring up one connector on `card`, journaling the attempt and its outcome.
+fn bring_up_journaled(
+    card: &CardHandle,
+    snapshot: &ConnectorSnapshot,
+    used: &[smithay::reexports::drm::control::crtc::Handle],
+) -> Option<ScanoutBuild> {
+    let result = card.bring_up(snapshot, used);
+    let attempt = match &result {
+        Ok(_) => topology::ConnectorAttempt::Lit,
+        Err(reason) => topology::ConnectorAttempt::Failed(reason),
+    };
+    eprintln!(
+        "{}",
+        topology::connector_attempt_line(
+            card.path(),
+            &snapshot.connector_name,
+            snapshot.mode.size(),
+            attempt,
+        )
+    );
+    result.ok()
 }
 
 /// What [`bring_up_all_devices`] found and lit.
@@ -5703,7 +5787,7 @@ mod libinput_drain_tests {
     clippy::float_cmp,
     reason = "deterministic output geometry fixtures use exactly representable values"
 )]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn test_keyboard_settings() -> KeyboardSettings {
@@ -6418,7 +6502,7 @@ mod tests {
     /// Fake one modeset output without a real card.  Giving the fixture a
     /// device id lets topology tests cover the exact identity boundary where
     /// DRM connector and CRTC handles restart on a second GPU.
-    pub(super) fn entry_on_device(
+    pub(in super::super) fn entry_on_device(
         device: u64,
         id: u32,
         connector: u32,
@@ -7018,6 +7102,168 @@ mod tests {
         }
     }
 
+    /// The integrated GPU's `dev_t` in the hybrid fixtures below.
+    const IGPU: u64 = 0xe201;
+    /// The discrete GPU's. Card ranking puts it first whenever it has more
+    /// connected outputs, so its outputs are adopted (and numbered) first.
+    const DGPU: u64 = 0xe200;
+
+    /// Adopt one output the way `adopt_builds` does: the id is interned
+    /// from its card-scoped key, so a replug gets its old id back.
+    fn adopt_on(
+        state: &mut DrmDispatchState,
+        device: u64,
+        connector: u32,
+        name: &str,
+        size: (u32, u32),
+        mm: (u32, u32),
+    ) -> OutputId {
+        let id = state.outputs.intern(DrmOutputKey { device, connector });
+        state.live.push(named(
+            entry_on_device(device, id.0, connector, size, Some(mm)),
+            name,
+        ));
+        id
+    }
+
+    fn by_name<'a>(state: &'a DrmDispatchState, name: &str) -> &'a LiveEntry {
+        state
+            .live
+            .iter()
+            .find(|entry| entry.connector_name == name)
+            .unwrap_or_else(|| panic!("{name} is not live"))
+    }
+
+    #[test]
+    fn a_hybrid_laptop_lays_out_its_integrated_panel_and_discrete_outputs_as_one_desktop() {
+        // The panel on the integrated GPU, a 1440p monitor on HDMI and a 4K
+        // one on DisplayPort, both wired to the discrete GPU. Connector ids
+        // collide across the cards on purpose.
+        let (mut state, _rx) = dispatch_with_channel();
+        let hdmi = adopt_on(&mut state, DGPU, 10, "HDMI-A-1", (2560, 1440), (597, 336));
+        let dp = adopt_on(&mut state, DGPU, 11, "DP-1", (3840, 2160), (600, 340));
+        let panel = adopt_on(&mut state, IGPU, 10, "eDP-1", (2880, 1800), (302, 189));
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+
+        // Every output of both cards is published, the panel first: the
+        // discrete card being adopted first must not make an external
+        // monitor the primary.
+        let table: Vec<OutputId> = state.output_table().iter().map(|o| o.id).collect();
+        assert_eq!(table, [panel, hdmi, dp]);
+        assert_eq!(by_name(&state, "eDP-1").key.device, IGPU);
+        assert_eq!(by_name(&state, "HDMI-A-1").key.device, DGPU);
+
+        // One logical row, panel at the origin, externals to its right,
+        // with no gap or overlap at either seam.
+        let panel_entry = by_name(&state, "eDP-1");
+        let hdmi_entry = by_name(&state, "HDMI-A-1");
+        let dp_entry = by_name(&state, "DP-1");
+        assert_eq!(panel_entry.logical_position, (0, 0));
+        let panel_width =
+            layout::logical_extent(panel_entry.size, panel_entry.scale, panel_entry.transform).0;
+        assert_eq!(
+            hdmi_entry.logical_position.0,
+            i32::try_from(panel_width).unwrap()
+        );
+        let hdmi_width =
+            layout::logical_extent(hdmi_entry.size, hdmi_entry.scale, hdmi_entry.transform).0;
+        assert_eq!(
+            dp_entry.logical_position.0,
+            hdmi_entry.logical_position.0 + i32::try_from(hdmi_width).unwrap()
+        );
+        assert_eq!(state.output_size, (2880 + 2560 + 3840, 2160));
+
+        // The pointer crosses from the integrated GPU's panel onto the
+        // discrete GPU's monitor like any seam.
+        state.set_pointer_logical((f64::from(panel_width) - 1.0, 100.0));
+        state.move_pointer_by((10.0, 0.0));
+        let (x, y) = state.logical_pointer;
+        let on = state
+            .live
+            .iter()
+            .find(|entry| {
+                let (px, py) = entry.logical_position;
+                let (w, h) = layout::logical_extent(entry.size, entry.scale, entry.transform);
+                x >= f64::from(px)
+                    && x < f64::from(px) + f64::from(w)
+                    && y >= f64::from(py)
+                    && y < f64::from(py) + f64::from(h)
+            })
+            .map(|entry| entry.id);
+        assert_eq!(on, Some(hdmi));
+
+        // The journal names each output's card.
+        let cards = BTreeMap::from([
+            (DGPU, PathBuf::from("/dev/dri/card0")),
+            (IGPU, PathBuf::from("/dev/dri/card1")),
+        ]);
+        let line = topology::topology_line(&cards, &state.live);
+        assert!(
+            line.starts_with(
+                "tilo compositor: DRM topology cards=2 driven_cards=2 outputs=3\
+                 ; card /dev/dri/card0 outputs=2; card /dev/dri/card1 outputs=1\
+                 ; output 2 eDP-1 on /dev/dri/card1 "
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_connectorless_discrete_gpu_leaves_the_panel_alone_until_a_monitor_appears_on_it() {
+        // The hybrid laptop that once came up grey: card0 is a discrete GPU
+        // with nothing connected, card1 the integrated GPU with the panel.
+        let (mut state, _rx) = dispatch_with_channel();
+        let panel = adopt_on(&mut state, IGPU, 77, "eDP-1", (1920, 1200), (302, 189));
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        let cards = BTreeMap::from([
+            (DGPU, PathBuf::from("/dev/dri/card0")),
+            (IGPU, PathBuf::from("/dev/dri/card1")),
+        ]);
+        assert!(topology::topology_line(&cards, &state.live).starts_with(
+            "tilo compositor: DRM topology cards=2 driven_cards=1 outputs=1\
+                 ; card /dev/dri/card0 outputs=0; card /dev/dri/card1 outputs=1"
+        ));
+
+        // A monitor plugged into the discrete GPU joins to the right; the
+        // panel stays primary and where it was.
+        let hdmi = adopt_on(&mut state, DGPU, 77, "HDMI-A-1", (1920, 1080), (527, 296));
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        let table: Vec<OutputId> = state.output_table().iter().map(|o| o.id).collect();
+        assert_eq!(table, [panel, hdmi]);
+        assert_eq!(by_name(&state, "eDP-1").logical_position, (0, 0));
+        assert!(by_name(&state, "HDMI-A-1").logical_position.0 > 0);
+
+        // Pulled and plugged back: the same output id, the same place.
+        let before = by_name(&state, "HDMI-A-1").logical_position;
+        state.live.retain(|entry| entry.key.device != DGPU);
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        assert_eq!(state.output_table().len(), 1);
+        let again = adopt_on(&mut state, DGPU, 77, "HDMI-A-1", (1920, 1080), (527, 296));
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        assert_eq!(again, hdmi);
+        assert_eq!(by_name(&state, "HDMI-A-1").logical_position, before);
+    }
+
+    #[test]
+    fn hotplug_edges_while_the_session_is_away_are_probed_on_its_return() {
+        // While another VT owns the seat no card holds DRM master, so a
+        // modeset for a monitor plugged in meanwhile would fail and leave
+        // it dark. The edge is left for activation, which asks every card.
+        let (mut state, _rx) = dispatch_with_channel();
+        let session = SessionState::new_active();
+        state.session = Some(session.clone());
+        state.perform_all(session.apply_with_actions(SeatTick::Pause));
+        state.rescan_outputs("udev device changed");
+        assert_eq!(state.forced_probes, 0, "no modeset without DRM master");
+
+        state.perform_all(session.apply_with_actions(SeatTick::Activate));
+        assert_eq!(state.forced_probes, 1, "activation probes every card");
+
+        // Waking from sleep does the same: the lid may have closed on a dock.
+        state.perform_all(session.resume_actions());
+        assert_eq!(state.forced_probes, 2);
+    }
+
     /// A 13.3" 2560x1600 panel (scale 2) docked beside a 24" 1080p monitor.
     fn docked_hidpi_laptop() -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
@@ -7162,7 +7408,7 @@ mod tests {
         assert_eq!(table[1].position, (1920, 0));
     }
 
-    pub(super) fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
+    pub(in super::super) fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
         entry.connector_name = connector.into();
         entry.config_key = connector.into();
         entry

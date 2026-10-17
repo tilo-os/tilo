@@ -68,6 +68,9 @@ impl ui::clipboard::ClipboardBackend for TestClipboard {
         *self.text.lock().unwrap() = Some(text.into());
         true
     }
+    fn set_secret_text(&self, text: &str) -> bool {
+        self.set_text(ui::clipboard::ClipboardTarget::Clipboard, text)
+    }
     fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
         self.text.lock().unwrap().clone()
     }

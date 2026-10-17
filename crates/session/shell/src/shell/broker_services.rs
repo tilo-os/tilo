@@ -1,4 +1,7 @@
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "the Cap'n Proto server impls return the concrete `Promise` where the generated traits declare `impl Future`"
+)]
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
@@ -2416,6 +2419,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
             offers: Vec::new(),
         };
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {

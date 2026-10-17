@@ -10,6 +10,11 @@
 //! connection, never a directory grant or a replayable host path. When nobody is at the
 //! computer it answers [`Reply::Nobody`] and the app falls back to the
 //! unattended picker ([`crate::unattended_picker`]).
+//!
+//! Links go the same way ([`ShellLink::opener`]): the shell opens a link in
+//! the app that claims its scheme, as its own search does, and answers
+//! [`Reply::Unclaimed`] for one no app it knows opens, which the app then
+//! hands to its desktop's opener.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -39,6 +44,10 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
 const CLOSED: &str = "the session's file chooser is gone";
+const UNREACHABLE: &str = "could not reach the session's file chooser";
+/// How long a link waits for the shell, which answers once its compositor
+/// has dispatched the link (a frame, unless the session is wedged).
+const LINK_ANSWER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The launcher's first frame on a new connection: who the app is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +64,9 @@ pub struct Handshake {
 pub enum PickMode {
     Open,
     Directory,
+    /// A destination directory; older services reject this unknown mode rather
+    /// than silently answering a read-only request.
+    WritableDirectory,
     Save,
 }
 
@@ -126,6 +138,12 @@ pub enum Request {
         id: u64,
         path: PathBuf,
     },
+    /// Open `uri` in the app that claims its scheme; answered by
+    /// [`Reply::Opened`], [`Reply::Unclaimed`] or [`Reply::Failed`].
+    OpenUri {
+        id: u64,
+        uri: String,
+    },
 }
 
 /// Shell → app. Every reply names the request it answers.
@@ -158,6 +176,10 @@ pub enum Reply {
     Opened {
         id: u64,
     },
+    /// No app this session knows opens the link; the app's own opener may.
+    Unclaimed {
+        id: u64,
+    },
     Failed {
         id: u64,
         reason: String,
@@ -175,6 +197,7 @@ impl Reply {
             | Reply::Cancelled { id }
             | Reply::Nobody { id }
             | Reply::Opened { id }
+            | Reply::Unclaimed { id }
             | Reply::Failed { id, .. } => *id,
         }
     }
@@ -236,7 +259,7 @@ impl Connection {
         {
             answer(Reply::Failed {
                 id,
-                reason: format!("could not reach the session's file chooser: {error}"),
+                reason: format!("{UNREACHABLE}: {error}"),
             });
         }
     }
@@ -280,51 +303,111 @@ fn read_replies(connection: &Connection, stream: UnixStream) {
     connection.close();
 }
 
-/// The shell's choosers over `stream`, a connection the launcher opened and
-/// named. When the shell answers that nobody is at the computer, `unattended`
-/// answers instead (a Save into the save directory); without one, the
-/// request fails.
+/// One connection to the session shell, which its choosers and its link
+/// opener share. The connection closes when the last of them is dropped.
+#[derive(Clone)]
+pub struct ShellLink(Arc<LinkInner>);
+
+struct LinkInner {
+    connection: Arc<Connection>,
+}
+
+impl Drop for LinkInner {
+    fn drop(&mut self) {
+        if let Ok(writer) = self.connection.writer.lock() {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        self.connection.close();
+    }
+}
+
+impl ShellLink {
+    /// Talk to the shell over `stream`, a connection the launcher opened and
+    /// named.
+    ///
+    /// # Errors
+    /// The connection cannot be duplicated for its reader thread, or the
+    /// thread cannot start.
+    pub fn connect(stream: UnixStream) -> std::io::Result<Self> {
+        let reader = stream.try_clone()?;
+        let connection = Arc::new(Connection {
+            writer: Mutex::new(stream),
+            pending: Mutex::new(Some(HashMap::new())),
+            next_id: AtomicU64::new(1),
+        });
+        let reading = Arc::clone(&connection);
+        std::thread::Builder::new()
+            .name("tilo-shell-chooser".into())
+            .spawn(move || read_replies(&reading, reader))?;
+        Ok(Self(Arc::new(LinkInner { connection })))
+    }
+
+    /// The shell's choosers. When the shell answers that nobody is at the
+    /// computer, `unattended` answers instead (a Save into the save
+    /// directory); without one, the request fails.
+    #[must_use]
+    pub fn picker(&self, unattended: Option<Arc<dyn FilePicker>>) -> Arc<dyn FilePicker> {
+        Arc::new(ShellChooser {
+            link: self.clone(),
+            unattended,
+        })
+    }
+
+    /// Links opened by the shell, in the app that claims their scheme;
+    /// `elsewhere` opens the ones it answers no app claims, and every link
+    /// once the shell is gone.
+    #[must_use]
+    pub fn opener(&self, elsewhere: Arc<dyn crate::UriOpener>) -> Arc<dyn crate::UriOpener> {
+        Arc::new(ShellOpener {
+            link: self.clone(),
+            elsewhere,
+        })
+    }
+
+    fn connection(&self) -> &Connection {
+        &self.0.connection
+    }
+
+    /// The connection the launcher handed this process at [`FD_ENV`], or
+    /// `None` when it was handed none (the app runs outside Tilo, or the
+    /// session's shell serves no choosers). The descriptor is adopted once.
+    pub fn inherited() -> Option<Self> {
+        static INHERITED: OnceLock<Option<ShellLink>> = OnceLock::new();
+        INHERITED
+            .get_or_init(|| {
+                let fd = std::env::var(FD_ENV).ok()?.parse::<RawFd>().ok()?;
+                let stream = adopt_socket(fd)?;
+                Self::connect(stream)
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "the session's file chooser is unusable"),
+                    )
+                    .ok()
+            })
+            .clone()
+    }
+}
+
+/// [`ShellLink::picker`] over a new connection on `stream`.
 ///
 /// # Errors
-/// The connection cannot be duplicated for its reader thread, or the thread
-/// cannot start.
+/// As [`ShellLink::connect`].
 pub fn picker(
     stream: UnixStream,
     unattended: Option<Arc<dyn FilePicker>>,
 ) -> std::io::Result<Arc<dyn FilePicker>> {
-    let reader = stream.try_clone()?;
-    let connection = Arc::new(Connection {
-        writer: Mutex::new(stream),
-        pending: Mutex::new(Some(HashMap::new())),
-        next_id: AtomicU64::new(1),
-    });
-    let reading = Arc::clone(&connection);
-    std::thread::Builder::new()
-        .name("tilo-shell-chooser".into())
-        .spawn(move || read_replies(&reading, reader))?;
-    Ok(Arc::new(ShellChooser {
-        connection,
-        unattended,
-    }))
+    Ok(ShellLink::connect(stream)?.picker(unattended))
 }
 
-/// [`picker`] over the connection the launcher handed this process at
-/// [`FD_ENV`], or `None` when it was handed none (the session has a desktop
-/// portal, or the app runs outside Tilo). The descriptor is adopted once;
-/// later calls return the same picker.
+/// [`ShellLink::picker`] over the [inherited](ShellLink::inherited)
+/// connection.
 pub fn inherited_picker(unattended: Option<Arc<dyn FilePicker>>) -> Option<Arc<dyn FilePicker>> {
-    static INHERITED: OnceLock<Option<Arc<dyn FilePicker>>> = OnceLock::new();
-    INHERITED
-        .get_or_init(|| {
-            let fd = std::env::var(FD_ENV).ok()?.parse::<RawFd>().ok()?;
-            let stream = adopt_socket(fd)?;
-            picker(stream, unattended)
-                .inspect_err(
-                    |error| tracing::warn!(%error, "the session's file chooser is unusable"),
-                )
-                .ok()
-        })
-        .clone()
+    ShellLink::inherited().map(|link| link.picker(unattended))
+}
+
+/// [`ShellLink::opener`] over the [inherited](ShellLink::inherited)
+/// connection.
+pub fn inherited_opener(elsewhere: Arc<dyn crate::UriOpener>) -> Option<Arc<dyn crate::UriOpener>> {
+    ShellLink::inherited().map(|link| link.opener(elsewhere))
 }
 
 /// Take ownership of `fd` if it is an open socket. A stale variable naming
@@ -353,8 +436,49 @@ fn adopt_socket(fd: RawFd) -> Option<UnixStream> {
 }
 
 struct ShellChooser {
-    connection: Arc<Connection>,
+    link: ShellLink,
     unattended: Option<Arc<dyn FilePicker>>,
+}
+
+struct ShellOpener {
+    link: ShellLink,
+    elsewhere: Arc<dyn crate::UriOpener>,
+}
+
+impl crate::UriOpener for ShellOpener {
+    fn open(&self, uri: &str) -> std::io::Result<()> {
+        if let Err(error) = url::Url::parse(uri) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("bad URI: {error}"),
+            ));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asked = uri.to_owned();
+        self.link.connection().ask(
+            move |id| Request::OpenUri { id, uri: asked },
+            Box::new(move |reply| {
+                let _ = tx.send(reply);
+            }),
+        );
+        match rx.recv_timeout(LINK_ANSWER) {
+            Ok(Reply::Opened { .. }) => Ok(()),
+            Ok(Reply::Unclaimed { .. }) => self.elsewhere.open(uri),
+            Ok(Reply::Failed { reason, .. })
+                if reason == CLOSED || reason.starts_with(UNREACHABLE) =>
+            {
+                self.elsewhere.open(uri)
+            }
+            Ok(Reply::Failed { reason, .. }) => Err(std::io::Error::other(reason)),
+            Ok(_) => Err(std::io::Error::other(
+                "the session's shell answered out of turn",
+            )),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the session's shell did not open the link",
+            )),
+        }
+    }
 }
 
 /// A channel whose one outcome wakes the event loop that asked.
@@ -369,9 +493,45 @@ fn channel<T: Send + 'static>() -> (impl FnOnce(T) + Send, std::sync::mpsc::Rece
     (deliver, rx)
 }
 
+#[cfg(test)]
+mod directory_contract_tests {
+    use super::*;
+
+    #[test]
+    fn writable_directory_survives_wire_encoding_without_upgrading_read_picks() {
+        for (request, expected) in [
+            (
+                PickRequest::directory("Read folder", "Choose"),
+                PickMode::Directory,
+            ),
+            (
+                PickRequest::writable_directory("Import into folder", "Import here"),
+                PickMode::WritableDirectory,
+            ),
+        ] {
+            let frame = serde_json::to_vec(&pick_request(&request)(7)).unwrap();
+            let Request::Pick {
+                mode,
+                multiple,
+                suggested_name,
+                ..
+            } = serde_json::from_slice::<Request>(&frame).unwrap()
+            else {
+                panic!("not a pick")
+            };
+            assert_eq!(mode, expected);
+            assert!(!multiple);
+            assert_eq!(suggested_name, None);
+        }
+    }
+}
+
 fn pick_request(request: &PickRequest) -> impl FnOnce(u64) -> Request + use<> {
     let (mode, multiple, suggested_name) = match &request.kind {
         PickKind::Open { multiple } => (PickMode::Open, *multiple, None),
+        PickKind::Directory if request.is_writable_directory() => {
+            (PickMode::WritableDirectory, false, None)
+        }
         PickKind::Directory => (PickMode::Directory, false, None),
         PickKind::Save { suggested_name } => (PickMode::Save, false, Some(suggested_name.clone())),
     };
@@ -403,7 +563,7 @@ impl ShellChooser {
     ) {
         let fallback = self.unattended.clone();
         let build = pick_request(&request);
-        self.connection.ask(
+        self.link.connection().ask(
             build,
             Box::new(move |reply| {
                 deliver(match reply {
@@ -423,15 +583,6 @@ impl ShellChooser {
 
 fn closed_recv<T>(rx: &std::sync::mpsc::Receiver<T>, closed: T) -> T {
     rx.recv().unwrap_or(closed)
-}
-
-impl Drop for ShellChooser {
-    fn drop(&mut self) {
-        if let Ok(writer) = self.connection.writer.lock() {
-            let _ = writer.shutdown(std::net::Shutdown::Both);
-        }
-        self.connection.close();
-    }
 }
 
 fn read_contents(connection: &Connection, grants: Vec<FilePortalGrant>) -> ContentsOutcome {
@@ -511,13 +662,13 @@ impl FilePicker for ShellChooser {
             ));
         }
         let (deliver, rx) = channel();
-        let connection = Arc::clone(&self.connection);
+        let link = self.link.clone();
         let fallback = self.unattended.clone();
         let title = request.title.clone();
         let accept_label = request.accept_label.clone();
         let multiple = request.is_multiple();
         let filters = request.filters.iter().map(Filter::from_portal).collect();
-        self.connection.ask(
+        self.link.connection().ask(
             move |id| Request::PickContents {
                 id,
                 multiple,
@@ -531,7 +682,7 @@ impl FilePicker for ShellChooser {
                     move || {
                         let outcome = match reply {
                             Reply::ContentsGranted { grants, .. } => {
-                                read_contents(&connection, grants)
+                                read_contents(link.connection(), grants)
                             }
                             Reply::Cancelled { .. } => ContentsOutcome::Cancelled,
                             Reply::Nobody { .. } => fallback.map_or_else(
@@ -647,7 +798,7 @@ impl FilePicker for ShellChooser {
         }
         let (deliver, rx) = channel();
         let path = request.path;
-        self.connection.ask(
+        self.link.connection().ask(
             move |id| Request::Open { id, path },
             Box::new(move |reply| {
                 deliver(match reply {
@@ -694,6 +845,7 @@ mod tests {
         match request {
             Request::Pick { id, .. }
             | Request::Open { id, .. }
+            | Request::OpenUri { id, .. }
             | Request::PickContents { id, .. }
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. } => *id,
@@ -853,6 +1005,56 @@ mod tests {
                 .recv_timeout(ANSWER)
                 .unwrap(),
             LaunchOutcome::Failed("not granted".into())
+        );
+    }
+
+    #[derive(Default)]
+    struct Elsewhere(Mutex<Vec<String>>);
+
+    impl crate::UriOpener for Elsewhere {
+        fn open(&self, uri: &str) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(uri.to_owned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_link_opens_through_the_shell_and_only_what_it_leaves_goes_elsewhere() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        let opener = ShellLink::connect(shell(|request| match request {
+            Request::OpenUri { id, uri } if uri.starts_with("settings:") => Reply::Opened { id },
+            Request::OpenUri { id, uri } if uri.starts_with("mailto:") => Reply::Unclaimed { id },
+            other => Reply::Failed {
+                id: id_of(&other),
+                reason: "the app could not start".into(),
+            },
+        }))
+        .unwrap()
+        .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+        crate::conformance::check_opener_contract(&*opener);
+
+        opener.open("settings://updates").unwrap();
+        assert!(elsewhere.0.lock().unwrap().is_empty());
+        opener.open("mailto:ada@example.test").unwrap();
+        assert_eq!(*elsewhere.0.lock().unwrap(), ["mailto:ada@example.test"]);
+        let refused = opener.open("web+notes:today").unwrap_err();
+        assert_eq!(refused.to_string(), "the app could not start");
+        assert_eq!(
+            elsewhere.0.lock().unwrap().len(),
+            1,
+            "a refusal is reported, not rerouted"
+        );
+
+        let (app, gone) = UnixStream::pair().unwrap();
+        drop(gone);
+        let alone = ShellLink::connect(app)
+            .unwrap()
+            .opener(Arc::clone(&elsewhere) as Arc<dyn crate::UriOpener>);
+        alone.open("https://example.test/").unwrap();
+        assert_eq!(
+            elsewhere.0.lock().unwrap().last().map(String::as_str),
+            Some("https://example.test/"),
+            "without its shell an app's links still open"
         );
     }
 

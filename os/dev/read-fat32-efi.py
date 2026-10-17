@@ -31,8 +31,11 @@ class Fat32:
                 and reserved >= 1 and fats in (1, 2) and fat_sectors > 0
                 and total > reserved + fats * fat_sectors and total * sector <= size,
                 "unsupported or malformed FAT32 geometry")
+        flags = struct.unpack_from("<H", boot, 40)[0]
+        active_fat = flags & 0x0f if flags & 0x80 else 0
+        require(active_fat < fats, "FAT32 active FAT index is outside the allocation tables")
         self.cluster_bytes = sector * spc
-        self.fat_offset = reserved * sector
+        self.fat_offset = (reserved + active_fat * fat_sectors) * sector
         self.data_offset = (reserved + fats * fat_sectors) * sector
         self.max_cluster = 2 + (total * sector - self.data_offset) // self.cluster_bytes
         require(2 <= self.root < self.max_cluster

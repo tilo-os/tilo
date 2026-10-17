@@ -211,6 +211,12 @@ ext  = ["md", "markdown"]
 schemes = ["web+notes"]
 ```
 
+`secondary = true` marks an app someone picks for these resources rather than
+the one they open by default, such as an editor that imports video. It is
+offered under Open with, and without a personal or workspace choice another
+app claiming the same resource opens it; it stays the default for a resource
+nothing else claims.
+
 #### `[target]` — written by the packer
 
 Authors never write this block. `tilo-app-package pack-desktop --platform

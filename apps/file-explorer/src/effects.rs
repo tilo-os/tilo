@@ -218,10 +218,43 @@ pub enum FilesEffect {
         #[param("Always open files of this type with it")]
         always: Option<bool>,
     },
+    /// Browse a provider folder without mounting it.
+    #[effect(view)]
+    BrowseCloud {
+        account: String,
+        folder: Option<String>,
+    },
+    /// Load the next page of cloud entries.
+    #[effect(view)]
+    MoreCloud,
+    /// Toggle a cloud entry in the selection.
+    #[effect(view)]
+    SelectCloud { entry: String },
+    /// Import selected files and folders to an explicit folder, or choose one.
+    #[effect(view)]
+    ImportCloud { folder: Option<String> },
+    /// Observe enumeration, export and copy progress.
+    #[effect(kind = "read", returns)]
+    CloudProgress,
+    /// Cancel the current transfer, retaining completed independent copies.
+    #[effect(view)]
+    CancelCloud,
+    /// Retry only unsuccessful top-level entries.
+    #[effect(view)]
+    RetryCloud,
+    /// Show the destination folder.
+    #[effect(view)]
+    RevealCloud,
+    /// Create an independent editable copy of a converted native document.
+    #[effect(row)]
+    ImportConverted {
+        #[param("The converted entry's published row id")]
+        entry: String,
+    },
     /// Import once from cloud…
     ///
-    /// Copies the mounted entry's bytes into a local folder. Native Drive
-    /// documents retain their link representation, not a fabricated file.
+    /// Copies the mounted entry's bytes into a local folder. Supported native
+    /// documents are converted; the copy has no sync relationship.
     #[effect(row)]
     ImportOnce {
         #[param("The cloud entry's published row id")]

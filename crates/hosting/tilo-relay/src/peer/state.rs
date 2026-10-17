@@ -650,6 +650,13 @@ pub(super) async fn handle_delta(
         tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
         return Ok(None);
     }
+    if desktop_refusal(&ws, peer.device_public_key, &env)
+        .await
+        .is_some()
+    {
+        // Neither kept nor forwarded, as above.
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(compactor)) => compactor.observe(delta),
         _ => None,
@@ -695,6 +702,28 @@ pub(super) async fn tell_governor(
     if tap.send((author, body)).await.is_err() {
         tracing::debug!("the room's governor no longer follows it");
     }
+}
+
+/// Why the room refuses `env`, `author`'s change, when it writes the room's
+/// shared desktop ([`crate::rooms::Rooms::decide_desktop_write`]); `None` for
+/// any other change, and in a room this relay does not govern.
+pub(super) async fn desktop_refusal(
+    ws: &SharedWorkspace,
+    author: [u8; 32],
+    env: &Envelope,
+) -> Option<String> {
+    let body = governor_notice(env)?;
+    if !crate::rooms::writes_desktop(&body) {
+        return None;
+    }
+    let authority = ws.lock().await.room_authority.clone()?;
+    let reason = authority
+        .rooms()?
+        .decide_desktop_write(authority.room(), author, &body)
+        .await
+        .err()?;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
+    Some(reason)
 }
 
 /// What the room's governor follows of `env`, a member's state change: its
@@ -761,6 +790,15 @@ pub(super) async fn handle_delta_prefix(
     };
     for envelope in &envelopes {
         trace_native_publication("server_authorized", envelope, None);
+    }
+    for envelope in &envelopes {
+        if desktop_refusal(&workspace, peer.device_public_key, envelope)
+            .await
+            .is_some()
+        {
+            // The prefix is kept whole or not at all.
+            return Ok(None);
+        }
     }
     let (governed_source, governor_tap) = {
         let runtime = workspace.lock().await;

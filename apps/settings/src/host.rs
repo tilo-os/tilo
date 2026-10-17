@@ -73,6 +73,7 @@ fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn 
     held::<crate::prefs::InputPrefs>(cx, &mut sections);
     held::<ui::text_assistance::TextAssistancePrefs>(cx, &mut sections);
     held::<crate::prefs::PowerPrefs>(cx, &mut sections);
+    held::<crate::prefs::DeskWidgetsPrefs>(cx, &mut sections);
     held::<crate::prefs::UpdatePrefs>(cx, &mut sections);
     held::<crate::prefs::NotificationPrefs>(cx, &mut sections);
     held::<crate::prefs::AudioPrefs>(cx, &mut sections);

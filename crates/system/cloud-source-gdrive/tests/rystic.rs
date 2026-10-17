@@ -16,7 +16,8 @@ use cloud_source_gdrive::{DriveConfig, GDrive, Url};
 use serde_json::json;
 use zeroize::Zeroizing;
 
-const TOKEN: &str = "tilo-rystic-gdrive";
+// The twin validates Google's token prefix; this is deliberately not a credential.
+const TOKEN: &str = "ya29.tilo-rystic-gdrive";
 
 struct Fixture {
     source: GDrive,
@@ -90,8 +91,8 @@ fn fixture() -> (Fixture, ItemId) {
 
     // Fixture construction uses the twin's seed surface, not a second
     // provider implementation. The production adapter performs all reads,
-    // listing, metadata updates and deletes below. Resumable uploads are not
-    // served by this twin and must not be replaced with a simulator fallback.
+    // listing, metadata updates and deletes below. Mutations under proof must
+    // use the provider API, never seed-state edits or an HTTP fallback.
     let prefix = uuid::Uuid::new_v4().to_string();
     let mut files = serde_json::Map::new();
     let mut revisions = serde_json::Map::new();
@@ -185,8 +186,62 @@ fn imports_and_mutations_through_the_production_adapter() {
     assert_eq!(quota.used, 10_010);
 
     // No export-validity claim: the twin serves placeholders, not Office/PDF
-    // renderings. Sync/upload contracts are separate tests, never assertions
+    // renderings. Strict export/sync/upload contracts are separate tests, never assertions
     // that a missing vendor endpoint is correct behavior.
+}
+
+#[cfg(feature = "rystic-contract-tests")]
+#[test]
+fn native_document_exports_a_genuine_docx_package() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let (fixture, _) = fixture();
+    let item = fixture
+        .source
+        .create_native_document(
+            &fixture.folder,
+            "Office export contract",
+            "application/vnd.google-apps.document",
+        )
+        .unwrap();
+    let ItemKind::Native(native) = &item.kind else {
+        panic!("created entry is not a native Google document")
+    };
+    let docx = native
+        .exports
+        .iter()
+        .find(|format| {
+            format.extension == "docx"
+                && format.mime
+                    == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
+        .expect("native Google document must advertise the DOCX export format");
+    let download = fixture.source.export(&item.id, docx).unwrap();
+    let mut body = Vec::new();
+    download
+        .body
+        .take(10 * 1024 * 1024 + 1)
+        .read_to_end(&mut body)
+        .unwrap();
+    assert!(body.len() <= 10 * 1024 * 1024, "DOCX export too large");
+
+    // Parse the ZIP directory, CRCs and required Office XML parts, not merely
+    // a non-JSON response or a PK signature. Python avoids adding a production
+    // dependency for an explicitly opted-in external simulator contract.
+    let mut validator = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/validate_docx.py"
+        ))
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("the strict Office export contract requires Python 3");
+    validator.stdin.take().unwrap().write_all(&body).unwrap();
+    assert!(
+        validator.wait().unwrap().success(),
+        "native DOCX export must be a genuine ZIP Office Open XML package; see validator diagnostic"
+    );
 }
 
 #[cfg(feature = "rystic-contract-tests")]
@@ -195,10 +250,112 @@ fn initial_sync_obtains_a_change_cursor() {
     let (fixture, _) = fixture();
     let mut page = fixture.source.changes(None).unwrap();
     assert!(page.reset);
-    while page.has_more {
+    let mut snapshot = std::collections::HashSet::new();
+    for _ in 0..100 {
+        for change in &page.changes {
+            if let cloud_source::Change::Upsert(item) = change {
+                assert!(snapshot.insert(item.id.clone()), "duplicate snapshot item");
+            }
+        }
+        if !page.has_more {
+            break;
+        }
         page = fixture.source.changes(Some(&page.cursor)).unwrap();
+        assert!(!page.reset);
     }
+    assert!(!page.has_more, "initial pagination must terminate");
+    assert_eq!(snapshot.len(), 1002, "folder and every seeded file");
     assert!(!page.cursor.0.is_empty());
+    let idle = fixture.source.changes(Some(&page.cursor)).unwrap();
+    assert!(!idle.reset && !idle.has_more && idle.changes.is_empty());
+    assert_eq!(
+        idle.cursor, page.cursor,
+        "idle terminal cursor stays stable"
+    );
+}
+
+#[cfg(feature = "rystic-contract-tests")]
+#[test]
+fn changes_after_cursor_paginate_and_resume_without_loss() {
+    use cloud_source::{Change, Cursor};
+    use std::collections::HashMap;
+
+    let (fixture, _) = fixture();
+    let source = &fixture.source;
+    let destination = source
+        .create_folder(&fixture.folder, "destination")
+        .unwrap();
+    let mut page = source.changes(None).unwrap();
+    for _ in 0..100 {
+        if !page.has_more {
+            break;
+        }
+        page = source.changes(Some(&page.cursor)).unwrap();
+    }
+    assert!(!page.has_more, "initial snapshot must terminate");
+    let saved = page.cursor.0;
+    let items: Vec<_> = source
+        .list(&fixture.folder)
+        .unwrap()
+        .into_iter()
+        .filter(|item| item.id != destination.id)
+        .collect();
+    let mut expected = HashMap::new();
+    // More than Drive's 1000-change page size, with exactly one mutation per
+    // id so duplicate events cannot hide a missing item in a set comparison.
+    for (n, item) in items.iter().enumerate() {
+        if n == 0 {
+            source.delete(&item.id, None).unwrap();
+            expected.insert(item.id.clone(), None);
+        } else {
+            let parent = if n == 1 {
+                &destination.id
+            } else {
+                &fixture.folder
+            };
+            let moved = source
+                .move_item(&item.id, parent, &format!("changed-{n}"), None)
+                .unwrap();
+            expected.insert(item.id.clone(), Some(moved));
+        }
+    }
+    // A fresh adapter has no in-memory folder cache or cursor state.
+    let restarted = GDrive::new(
+        DriveConfig {
+            trash: false,
+            ..DriveConfig::my_drive().with_api(std::env::var("TILO_RYSTIC_GDRIVE_URL").unwrap())
+        },
+        Arc::new(StaticCredential(Credential::Bearer {
+            token: Zeroizing::new(TOKEN.to_owned()),
+            expires: None,
+        })),
+    )
+    .unwrap();
+    let mut cursor = Cursor(saved);
+    let mut observed = HashMap::new();
+    let mut pages = 0;
+    loop {
+        let delta = restarted.changes(Some(&cursor)).unwrap();
+        assert!(!delta.reset, "resume must not enumerate a full snapshot");
+        for change in delta.changes {
+            let (id, value) = match change {
+                Change::Upsert(item) => (item.id.clone(), Some(item)),
+                Change::Remove(id) => (id, None),
+            };
+            assert!(observed.insert(id, value).is_none(), "duplicate delta id");
+        }
+        cursor = delta.cursor;
+        pages += 1;
+        assert!(pages < 100, "delta pagination must terminate");
+        if !delta.has_more {
+            break;
+        }
+    }
+    assert!(pages >= 2, "must exercise changes pagination");
+    assert_eq!(observed, expected, "exact metadata and tombstones, no loss");
+    let idle = restarted.changes(Some(&cursor)).unwrap();
+    assert!(!idle.reset && !idle.has_more && idle.changes.is_empty());
+    assert_eq!(idle.cursor, cursor, "stable terminal cursor");
 }
 
 #[cfg(feature = "rystic-contract-tests")]

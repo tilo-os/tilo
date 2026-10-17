@@ -88,6 +88,35 @@ impl GovernedRoom {
         }))
     }
 
+    /// The plaintext of `op`, a member's sealed write of `record` of `app`,
+    /// opened with its channel's keys: `None` when this relay does not
+    /// steward the room's channels or holds no keys for this one yet.
+    ///
+    /// # Errors
+    ///
+    /// The keys cannot be read, or the write does not open with them.
+    pub(super) async fn open_write(
+        &self,
+        app: &str,
+        record: &str,
+        op: &SignedOp,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(steward) = self.stewardship.as_ref() else {
+            return Ok(None);
+        };
+        let room = self.room();
+        let channel = collab_types::document_channel_id(app, room, record);
+        let Ok(keys) = steward.channels.lock().await.existing_keys(channel) else {
+            return Ok(None);
+        };
+        let keys = RecordKeys {
+            keys,
+            artifact: collab_types::document_artifact_id(app, room, record),
+        };
+        let mut open = keys.open();
+        open(op).map(Some)
+    }
+
     /// `record` of `app` as the governor reads it, saved: the record itself,
     /// or for a sealed one its history opened with the channel's keys.
     ///

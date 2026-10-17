@@ -1281,6 +1281,7 @@ dependencies = [
  "bounded-command",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
  "zbus",
 ]
@@ -4481,6 +4482,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-copy-lint",
  "tilo-files",
  "tilo-fs",
@@ -5326,6 +5328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "ssh-agent-client",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -9214,6 +9217,17 @@ dependencies = [
  "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "miracast"
+version = "0.1.0"
+source = "git+https://code.tilo.so/tilo/miracast.git?rev=c37c8cdfcdf7959a1daa38925f0e13d217c083c0#c37c8cdfcdf7959a1daa38925f0e13d217c083c0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]
@@ -13353,6 +13367,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-lock",
  "tilo-paths",
@@ -14242,6 +14257,7 @@ dependencies = [
  "cloud-source-onedrive",
  "collab-types",
  "desktop-policy",
+ "file-explorer",
  "hex",
  "launcher",
  "os-actions",
@@ -14288,6 +14304,7 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -15110,6 +15127,14 @@ name = "sponge-cursor"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
+
+[[package]]
+name = "ssh-agent-client"
+version = "0.1.0"
+dependencies = [
+ "russh",
+ "workspace-hack",
+]
 
 [[package]]
 name = "ssh-cipher"
@@ -16789,6 +16814,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-cloud-files"
+version = "0.1.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-std",
+ "chrono",
+ "host-fs",
+ "runtime-fs",
+ "serde",
+ "serde_json",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-connector"
 version = "0.1.0"
 dependencies = [
@@ -17391,6 +17431,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
@@ -17828,6 +17869,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
@@ -18271,6 +18313,7 @@ dependencies = [
 name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
  "bounded-command",
  "fcast-sender-sdk",
  "futures-util",
@@ -18278,6 +18321,7 @@ dependencies = [
  "google-cast-protocol",
  "hex",
  "mdns-sd",
+ "miracast",
  "postcard",
  "prost",
  "rand 0.10.1",
@@ -18289,6 +18333,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-callstream",
  "tilo-files",
@@ -22956,6 +23001,7 @@ dependencies = [
 name = "word-processor"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "regex",
  "runtime-dylib",
  "serde",
@@ -22982,6 +23028,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
@@ -22993,7 +23040,6 @@ dependencies = [
  "aead 0.6.1",
  "aes 0.9.3",
  "aes-gcm 0.10.3",
- "aes-gcm 0.11.1",
  "aho-corasick",
  "anstream",
  "anyhow",
@@ -23082,6 +23128,7 @@ dependencies = [
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
+ "hex",
  "hickory-proto",
  "hmac 0.12.1",
  "hpke-rs",
@@ -23164,6 +23211,7 @@ dependencies = [
  "resvg",
  "ring",
  "rqrr",
+ "russh",
  "rustc-hash 1.1.0",
  "rustix 0.38.44",
  "rustix 1.1.4",

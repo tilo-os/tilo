@@ -430,8 +430,11 @@ mod tests {
 
     /// The app on a fresh profile whose secrets live in `backend`.
     fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::host::HostScope) {
+        // A clipboard that carries secrets, as a desktop's does.
+        let (recording, _) = ui::host::HostServices::recording();
         let services = ui::host::HostServices {
             secrets: Arc::new(Store(backend)),
+            clipboard: recording.clipboard,
             ..ui::host::HostServices::null()
         };
         let scope = ui::host::enter(&services);

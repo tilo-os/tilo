@@ -394,8 +394,32 @@ impl Custodian {
     /// # Errors
     /// Unconfigured capability or a loopback failure.
     pub fn begin_google_sign_in(&self, mail: bool) -> Result<Authorization, CustodyError> {
-        let (mut provider, registration) = self.oauth_config(OAuthCloud::GoogleDrive)?;
-        if mail {
+        self.begin_google_services_sign_in(true, mail)
+    }
+
+    /// Start Google sign-in for files, mail, or both. Only selected services'
+    /// configured scopes are requested; an unselected service need not be configured.
+    /// Complete with [`Self::finish_sign_in`], then validate each selected service
+    /// with [`Self::resolve_storage`] or [`Self::gmail_identity`] before saving it.
+    ///
+    /// # Errors
+    /// No selected service, an unconfigured selected service, or a loopback failure.
+    pub fn begin_google_services_sign_in(
+        &self,
+        files: bool,
+        mail: bool,
+    ) -> Result<Authorization, CustodyError> {
+        let first = match (files, mail) {
+            (true, _) => OAuthCloud::GoogleDrive.oauth_use(),
+            (false, true) => OAuthUse::mail(OAuthIssuer::Google),
+            (false, false) => {
+                return Err(CustodyError::SignIn(
+                    "select at least one Google service".into(),
+                ));
+            }
+        };
+        let (mut provider, registration) = self.use_config(first)?;
+        if files && mail {
             let (gmail, _) = self.use_config(OAuthUse::mail(OAuthIssuer::Google))?;
             for scope in gmail.scopes {
                 if !provider.scopes.contains(&scope) {

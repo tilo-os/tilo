@@ -68,9 +68,78 @@ impl RichClipboard {
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 
+/// How long a copy waits for the compositor. A copy is two compositor
+/// roundtrips (the focus check, then the selection's confirmation), and each
+/// waits for an iteration of the compositor's loop, which also paints; the
+/// compositor itself only calls an iteration slow beyond 100 ms. The copy
+/// blocks the app's UI thread this long only while the compositor is that
+/// slow.
+const PUBLICATION_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
+
 fn publication_deadline() -> tilo_clock::Instant {
     let now = tilo_clock::now();
-    now.checked_add(CLIPBOARD_READ_BUDGET).unwrap_or(now)
+    now.checked_add(PUBLICATION_BUDGET).unwrap_or(now)
+}
+
+/// What a copy publishes.
+enum PublicationPayload {
+    Text(Vec<u8>),
+    SecretText(Vec<u8>),
+    Image(Vec<u8>),
+}
+
+/// A queued copy and the decision on it, which the worker and the waiting
+/// caller race to make exactly once.
+struct Publication {
+    payload: PublicationPayload,
+    reply: std::sync::mpsc::Sender<bool>,
+    deadline: tilo_clock::Instant,
+    claim: Arc<PublicationClaim>,
+}
+
+impl Publication {
+    fn new(
+        payload: PublicationPayload,
+        reply: std::sync::mpsc::Sender<bool>,
+        deadline: tilo_clock::Instant,
+    ) -> Self {
+        Self {
+            payload,
+            reply,
+            deadline,
+            claim: Arc::default(),
+        }
+    }
+}
+
+/// Whether the worker took a copy (and set the selection) or its caller gave
+/// up on it first. Whichever comes first decides: a copy the compositor got
+/// is never reported as failed, and one reported as failed never becomes the
+/// selection later.
+#[derive(Default)]
+struct PublicationClaim(std::sync::atomic::AtomicU8);
+
+impl PublicationClaim {
+    const PENDING: u8 = 0;
+    const TAKEN: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    fn decide(&self, outcome: u8) -> bool {
+        use std::sync::atomic::Ordering;
+        self.0
+            .compare_exchange(Self::PENDING, outcome, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// The worker publishes, unless the caller already gave up.
+    fn take(&self) -> bool {
+        self.decide(Self::TAKEN)
+    }
+
+    /// The caller gives up, unless the worker already published.
+    fn abandon(&self) -> bool {
+        self.decide(Self::ABANDONED)
+    }
 }
 
 fn recv_bounded<T>(
@@ -137,8 +206,7 @@ impl PublicationClipboard {
 }
 
 enum ClipboardCommand {
-    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
-    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
+    Publish(Publication),
     Exit,
     Fence(std::sync::mpsc::Sender<()>),
     ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
@@ -346,7 +414,10 @@ mod image_worker_impl {
     use sctk::{delegate_pointer, delegate_registry, delegate_seat, delegate_touch};
     use smithay_client_toolkit as sctk;
 
-    use super::{ClipboardCommand, PastedImage, RichClipboard};
+    use super::{
+        ClipboardCommand, PastedImage, Publication, PublicationClaim, PublicationPayload,
+        RichClipboard,
+    };
 
     #[derive(Debug, Default)]
     struct SeatData {
@@ -371,6 +442,9 @@ mod image_worker_impl {
         data_sources: Vec<sctk::data_device_manager::data_source::CopyPasteSource>,
         source_payloads: HashMap<ObjectId, SourcePayload>,
         text_contents: Option<Arc<[u8]>>,
+        /// Whether `text_contents` is a secret, offered with the markers that
+        /// keep it out of clipboard histories and device sync.
+        text_secret: bool,
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
@@ -390,6 +464,7 @@ mod image_worker_impl {
     pub(super) struct SourcePayload {
         pub(super) image: Option<Arc<[u8]>>,
         pub(super) text: Option<Arc<[u8]>>,
+        pub(super) secret: bool,
     }
 
     impl SourcePayload {
@@ -398,6 +473,9 @@ mod image_worker_impl {
                 "image/png" => self.image.clone(),
                 "text/plain;charset=utf-8" | "text/plain" | "UTF8_STRING" | "STRING" | "TEXT" => {
                     self.text.clone()
+                }
+                crate::SECRET_MIME | crate::PASSWORD_MANAGER_HINT_MIME if self.secret => {
+                    Some(Arc::from(crate::SECRET_MARKER))
                 }
                 _ => None,
             }
@@ -449,6 +527,7 @@ mod image_worker_impl {
             data_sources: Vec::new(),
             source_payloads: HashMap::new(),
             text_contents: None,
+            text_secret: false,
             pending_image: None,
             inflight_transfers: 0,
             inflight_bytes: 0,
@@ -466,26 +545,10 @@ mod image_worker_impl {
         let _ = loop_handle.insert_source(commands, move |event, (), state| {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
-                    ClipboardCommand::SetText(text, reply, deadline) => {
-                        fence_connection.display().sync(
-                            &state.queue_handle,
-                            PendingPublication::new(
-                                PublicationPayload::Text(text),
-                                reply,
-                                deadline,
-                            ),
-                        );
-                        let _ = fence_connection.flush();
-                    }
-                    ClipboardCommand::SetImage(png, reply, deadline) => {
-                        fence_connection.display().sync(
-                            &state.queue_handle,
-                            PendingPublication::new(
-                                PublicationPayload::Image(png),
-                                reply,
-                                deadline,
-                            ),
-                        );
+                    ClipboardCommand::Publish(publication) => {
+                        fence_connection
+                            .display()
+                            .sync(&state.queue_handle, PendingPublication::new(publication));
                         let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
@@ -515,15 +578,11 @@ mod image_worker_impl {
         state.invalidate_rich();
     }
 
-    enum PublicationPayload {
-        Text(Vec<u8>),
-        Image(Vec<u8>),
-    }
-
     struct PendingPublication {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
         reply: std::sync::mpsc::Sender<bool>,
         deadline: tilo_clock::Instant,
+        claim: Arc<PublicationClaim>,
     }
 
     struct PublishedSelection {
@@ -561,15 +620,12 @@ mod image_worker_impl {
     }
 
     impl PendingPublication {
-        fn new(
-            payload: PublicationPayload,
-            reply: std::sync::mpsc::Sender<bool>,
-            deadline: tilo_clock::Instant,
-        ) -> Self {
+        fn new(publication: Publication) -> Self {
             Self {
-                payload: std::sync::Mutex::new(Some(payload)),
-                reply,
-                deadline,
+                payload: std::sync::Mutex::new(Some(publication.payload)),
+                reply: publication.reply,
+                deadline: publication.deadline,
+                claim: publication.claim,
             }
         }
     }
@@ -593,10 +649,17 @@ mod image_worker_impl {
                 .lock()
                 .ok()
                 .and_then(|mut payload| payload.take());
-            let ok = if tilo_clock::now() < pending.deadline && state.can_publish() {
+            let ok = if tilo_clock::now() < pending.deadline
+                && state.can_publish()
+                && pending.claim.take()
+            {
                 match payload {
                     Some(PublicationPayload::Text(text)) => {
-                        state.store_text(text);
+                        state.store_text(text, false);
+                        state.publish_current()
+                    }
+                    Some(PublicationPayload::SecretText(text)) => {
+                        state.store_text(text, true);
                         state.publish_current()
                     }
                     Some(PublicationPayload::Image(png)) => {
@@ -649,12 +712,21 @@ mod image_worker_impl {
                 .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
         }
 
-        fn store_text(&mut self, text: Vec<u8>) {
+        fn store_text(&mut self, text: Vec<u8>, secret: bool) {
             self.text_contents = Some(Arc::from(text));
+            self.text_secret = secret;
             self.pending_image = None;
         }
 
         fn store_image(&mut self, contents: Vec<u8>) {
+            // An image keeps an earlier caption, but never a secret: the
+            // image would ride along under the secret's markers, and the
+            // secret would stay offered after the person copied something
+            // else.
+            if self.text_secret {
+                self.text_contents = None;
+                self.text_secret = false;
+            }
             self.pending_image = Some(Arc::from(contents));
         }
 
@@ -685,6 +757,9 @@ mod image_worker_impl {
                     "STRING",
                     "TEXT",
                 ]);
+                if self.text_secret {
+                    mime_types.extend([crate::SECRET_MIME, crate::PASSWORD_MANAGER_HINT_MIME]);
+                }
             }
             if mime_types.is_empty() {
                 return false;
@@ -698,6 +773,7 @@ mod image_worker_impl {
                 SourcePayload {
                     image,
                     text: self.text_contents.clone(),
+                    secret: self.text_secret,
                 },
             );
             let Some(seat_data) = self.seats.get(&seat) else {
@@ -1764,17 +1840,11 @@ impl ClipboardBackend for WaylandClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {
-                let deadline = publication_deadline();
-                let (reply, result) = std::sync::mpsc::channel();
-                let ok = self.send_publication(ClipboardCommand::SetText(
-                    text.as_bytes().to_vec(),
-                    reply,
-                    deadline,
-                ));
+                let ok = self.publish(PublicationPayload::Text(text.as_bytes().to_vec()));
                 if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
                     *cache = Some(text.to_owned());
                 }
-                ok && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+                ok
             }
             ClipboardTarget::Primary => {
                 let Some(inner) = self.write_inner.as_ref() else {
@@ -1792,6 +1862,14 @@ impl ClipboardBackend for WaylandClipboard {
         }
     }
 
+    fn set_secret_text(&self, text: &str) -> bool {
+        let ok = self.publish(PublicationPayload::SecretText(text.as_bytes().to_vec()));
+        if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
+            *cache = None;
+        }
+        ok
+    }
+
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         // An explicit paste must never substitute an older cached selection.
         // The protocol read runs on its worker; this call waits only for the
@@ -1803,10 +1881,7 @@ impl ClipboardBackend for WaylandClipboard {
         let Some(png) = encode_png(width, height, rgba) else {
             return false;
         };
-        let deadline = publication_deadline();
-        let (reply, result) = std::sync::mpsc::channel();
-        self.send_publication(ClipboardCommand::SetImage(png, reply, deadline))
-            && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+        self.publish(PublicationPayload::Image(png))
     }
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
@@ -1899,6 +1974,29 @@ impl WaylandClipboard {
             return None;
         }
         recv_bounded(&immediate_rx, CLIPBOARD_READ_BUDGET)
+    }
+
+    /// Queue a copy and wait for its outcome: refused, or published and
+    /// confirmed by the compositor.
+    fn publish(&self, payload: PublicationPayload) -> bool {
+        let (reply, result) = std::sync::mpsc::channel();
+        let publication = Publication::new(payload, reply, publication_deadline());
+        let (deadline, claim) = (publication.deadline, Arc::clone(&publication.claim));
+        if !self.send_publication(ClipboardCommand::Publish(publication)) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(tilo_clock::now());
+        if let Some(published) = recv_bounded(&result, remaining) {
+            return published;
+        }
+        if claim.abandon() {
+            // The worker refuses it when it gets there.
+            return false;
+        }
+        // The worker took the copy and set the selection; only the
+        // compositor's confirmation is late. Give it one more budget to
+        // arrive, and report the copy either way.
+        recv_bounded(&result, PUBLICATION_BUDGET).unwrap_or(true)
     }
 
     fn send_publication(&self, command: ClipboardCommand) -> bool {
@@ -2056,6 +2154,7 @@ mod tests {
             let payload = SourcePayload {
                 image: Some(Arc::from([1u8, 2, 3].as_slice())),
                 text: Some(Arc::from(b"caption".as_slice())),
+                secret: false,
             };
             assert_eq!(
                 payload.bytes_for_mime("image/png").as_deref(),
@@ -2066,6 +2165,10 @@ mod tests {
                 Some(&b"caption"[..])
             );
             assert!(payload.bytes_for_mime("application/octet-stream").is_none());
+            assert!(
+                payload.bytes_for_mime(crate::SECRET_MIME).is_none(),
+                "only a secret copy answers for the secret markers"
+            );
         }
     }
 

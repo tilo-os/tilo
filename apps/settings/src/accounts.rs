@@ -984,7 +984,7 @@ fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
         .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
         .filter_map(|a| {
             // The opaque config is Mail's own `AccountConfig`.
-            let mut config: AccountConfig = serde_json::from_value(a.config.clone()).ok()?;
+            let mut config = AccountConfig::from_value(a.config.clone()).ok()?;
             config.import_pending |= a.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
             Some(MailAccount {
                 id: a.id.to_string(),

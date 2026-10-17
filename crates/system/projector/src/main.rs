@@ -9,8 +9,8 @@
 //!
 //! [`cli`] parses the command line; [`service`] serves the control socket and
 //! supervises one [`session`] at a time (Cast and `FCast` in `session::cast`,
-//! `AirPlay` and Miracast through an external sender in `session::external`),
-//! which serves the compositor's video over [`http`]; [`discovery`] finds
+//! `AirPlay` through an external sender in `session::external`, Miracast in
+//! `session::miracast`), which serves the compositor's video over [`http`]; [`discovery`] finds
 //! receivers.
 
 mod cli;

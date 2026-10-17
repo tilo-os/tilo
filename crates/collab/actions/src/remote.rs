@@ -746,15 +746,20 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
 /// player with a recorded clip. An app offers it as an action on its own
 /// resources ([`ApplicationLaunch::spec`]); the host routes the admitted
 /// invocation through the workspace broker, which stages the bytes and owns
-/// the launched process. The source app never hands over a local path.
+/// the launched process. It can instead deliver a published resource action
+/// after launch ([`ApplicationLaunch::with_action`]). The source app never
+/// hands over a local path or starts a process itself.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationLaunch {
     /// The installed app to open, by its id (`so.tilo.photos`).
     pub app_id: String,
-    /// The content address hash of what it opens; the app opens empty
-    /// without one.
+    /// The content address hash of what it opens. Without content or an
+    /// action destination, the app opens empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// An action to deliver after opening the app, rather than opening it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<crate::ActionAddress>,
 }
 
 impl ApplicationLaunch {
@@ -767,7 +772,34 @@ impl ApplicationLaunch {
         Self {
             app_id: app_id.into(),
             content_hash: None,
+            action: None,
         }
+    }
+
+    /// Open the app in the current workspace and invoke its published action.
+    /// The workspace broker resolves and admits the destination contract.
+    #[must_use]
+    pub fn with_action(
+        app_id: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: None,
+            action: Some(crate::ActionAddress::new(resource, action)),
+        }
+    }
+
+    /// Resolve the destination only from the host's admitted workspace route.
+    #[must_use]
+    pub fn target(&self, room: &str) -> RemoteActionTarget {
+        self.action.as_ref().map_or_else(
+            || application_open_target(room, &self.app_id),
+            |action| {
+                application_action_target(room, &self.app_id, &action.resource, &action.action)
+            },
+        )
     }
 
     /// Open `app_id` with the content whose hash is `content_hash`.
@@ -776,6 +808,7 @@ impl ApplicationLaunch {
         Self {
             app_id: app_id.into(),
             content_hash: Some(content_hash.into()),
+            action: None,
         }
     }
 
@@ -783,7 +816,13 @@ impl ApplicationLaunch {
     /// (when given) of 64 lowercase hex digits.
     #[must_use]
     pub fn valid(&self) -> bool {
-        !self.app_id.is_empty()
+        self.action.as_ref().is_none_or(|action| {
+            self.content_hash.is_none()
+                && !action.resource.is_empty()
+                && action.resource.len() <= 1024
+                && !action.action.is_empty()
+                && action.action.len() <= 128
+        }) && !self.app_id.is_empty()
             && self.app_id.len() <= 128
             && self
                 .app_id
@@ -1960,6 +1999,53 @@ mod tests {
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    #[test]
+    fn application_launch_action_preserves_destination_and_never_falls_back_to_open() {
+        let launch = ApplicationLaunch::with_action(
+            "so.tilo.file-explorer",
+            "files.remote-account:616461",
+            "open-remote-account",
+        );
+        let spec = launch.spec("open-files", "Browse files", "Open this account in Files");
+        let encoded = spec.build_args([]).unwrap();
+        assert_eq!(encoded.type_id, ApplicationLaunch::TYPE);
+        let decoded: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(decoded.valid());
+        for workspace in ["workspace-a", "workspace-b"] {
+            assert_eq!(
+                decoded.target(workspace),
+                application_action_target(
+                    workspace,
+                    "so.tilo.file-explorer",
+                    "files.remote-account:616461",
+                    "open-remote-account",
+                )
+            );
+        }
+        assert!(matches!(decoded.argument(), InvokeArgument::None));
+        let legacy: ApplicationLaunch = serde_json::from_value(serde_json::json!({
+            "app_id": "so.tilo.photos"
+        }))
+        .unwrap();
+        assert!(legacy.valid());
+        assert_eq!(
+            legacy.target("workspace-a"),
+            application_open_target("workspace-a", "so.tilo.photos")
+        );
+        let mut invalid = decoded;
+        invalid.content_hash = Some("a".repeat(64));
+        assert!(
+            !invalid.valid(),
+            "a handoff must not mix content staging and an app action"
+        );
+        invalid.content_hash = None;
+        invalid.action.as_mut().unwrap().resource.clear();
+        assert!(
+            !invalid.valid(),
+            "an invalid destination must fail, not open an empty app"
+        );
     }
 
     #[test]

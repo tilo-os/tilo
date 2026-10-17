@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
 import unittest
 
 MODULE = Path(__file__).resolve().parents[1] / 'dev/remote_source_prepare.py'
@@ -11,6 +12,89 @@ SPEC.loader.exec_module(BUILD)
 
 
 class SourceBoundaryTests(unittest.TestCase):
+    def fixture(self, root):
+        source, mirror, receipt = root / "owner", root / "mirror", root / "receipt.json"
+        source.mkdir()
+        subprocess.run(["git", "init", "-q", str(source)], check=True)
+        for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "apps/example/src/main.rs"):
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        return source, mirror, receipt
+
+    def test_trusted_parent_alias_does_not_look_like_a_symlink_inside_the_mirror(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, mirror, receipt = self.fixture(root)
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            result = BUILD.prepare(source, alias / mirror.name, receipt)
+            self.assertTrue(result["source_only"])
+            self.assertEqual((mirror / "Cargo.toml").read_text(), "fixture")
+
+    def test_receipt_cannot_overwrite_source_or_enter_mirror(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, mirror, receipt = self.fixture(Path(directory))
+            for target in (source / "Cargo.toml", mirror / "receipt.json"):
+                with self.subTest(target=target):
+                    with self.assertRaisesRegex(ValueError, "outside"):
+                        BUILD.prepare(source, mirror, target)
+            self.assertEqual((source / "Cargo.toml").read_text(), "fixture")
+            self.assertFalse(mirror.exists())
+            result = subprocess.run(["python3", str(MODULE), "--source", str(source),
+                                     "--mirror", str(mirror), "--receipt", str(source / "new/receipt.json")],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((source / "new").exists())
+
+    def test_failed_refresh_invalidates_previous_success_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, mirror, receipt = self.fixture(Path(directory))
+            BUILD.prepare(source, mirror, receipt)
+            self.assertTrue(receipt.is_file())
+            (source / "Cargo.toml").write_text("new snapshot")
+            (mirror / "unexpected").touch()
+            with self.assertRaisesRegex(ValueError, "unexpected upload"):
+                BUILD.prepare(source, mirror, receipt)
+            self.assertEqual((mirror / "Cargo.toml").read_text(), "new snapshot")
+            self.assertFalse(receipt.exists(), "old success must not attest the modified mirror")
+            (mirror / "unexpected").unlink()
+            BUILD.prepare(source, mirror, receipt)
+            self.assertTrue(receipt.is_file())
+
+    def test_stale_source_pruning_cannot_follow_mirror_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, mirror, receipt = self.fixture(root)
+            BUILD.prepare(source, mirror, receipt)
+            old = source / "apps/example/src/main.rs"
+            old.unlink()
+            subprocess.run(["git", "-C", str(source), "rm", "-q", "apps/example/src/main.rs"], check=True)
+            # No current input visits apps/, so only stale-path pruning sees it.
+            shutil.rmtree(mirror / "apps")
+            external = root / "external"
+            victim = external / "example/src/main.rs"
+            victim.parent.mkdir(parents=True)
+            victim.write_text("unrelated source")
+            (mirror / "apps").symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                BUILD.prepare(source, mirror, receipt)
+            self.assertEqual(victim.read_text(), "unrelated source")
+
+    def test_mirror_metadata_symlink_cannot_overwrite_external_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, mirror, receipt = self.fixture(root)
+            BUILD.prepare(source, mirror, receipt)
+            victim = root / "external.json"
+            victim.write_text("{}")
+            (mirror / ".source-manifest.json").unlink()
+            (mirror / ".source-manifest.json").symlink_to(victim)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                BUILD.prepare(source, mirror, receipt)
+            self.assertEqual(victim.read_text(), "{}")
+
     def test_payloads_secrets_and_credentials_never_enter_allowlist(self):
         for name in ['apps/good-morning/.env', 'apps/good-morning/.env.local', 'crates/a/.aws/config',
                      'apps/good-morning/imports/mail.json', 'crates/a/credentials/config',

@@ -682,11 +682,11 @@ fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
         let Some(observed) = run_case(name, case) else {
             return;
         };
-        assert_eq!(observed.requests.len(), 3, "{case}");
+        assert_eq!(observed.requests.len(), 5, "{case}");
         assert!(!observed.response.ok);
         let error = observed.response.error.unwrap();
         assert!(error.contains(&format!("HTTP {case}")), "{error}");
-        assert!(error.contains("(3 attempts)"), "{error}");
+        assert!(error.contains("(5 attempts)"), "{error}");
         assert!(!error.contains("outcome is unknown"), "{error}");
         assert!(!error.contains("fabricated-test-key"));
     }
@@ -762,8 +762,9 @@ fn send_plan(
 }
 
 /// Plan asks again only for a provider that provably did no work, never
-/// once a frame reached the caller, at most three times in all, waiting what
-/// the provider asked for, and only with room left for an answer.
+/// once a frame reached the caller, at most five times in all, waiting what
+/// the provider asked for (else a doubling pause from a second), and only
+/// with room left for an answer.
 #[test]
 fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
     let answered: Outcome = || Ok("answer");
@@ -778,7 +779,7 @@ fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
         let (result, sending) = send_plan(Duration::from_secs(20), false, &[refusal, answered]);
         assert_eq!(result.ok(), Some("answer"));
         assert_eq!(sending.calls, 2);
-        assert_eq!(sending.waits, [Duration::from_millis(500)]);
+        assert_eq!(sending.waits, [Duration::from_secs(1)]);
     }
     let (result, sending) = send_plan(
         Duration::from_secs(20),
@@ -792,16 +793,24 @@ fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
         "Retry-After is honoured"
     );
 
-    // Phase: at most three attempts, and the error counts them.
-    let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
+    // Phase: at most five attempts, and the error counts them.
+    let (result, sending) = send_plan(Duration::from_secs(60), false, &[limited]);
     let failure = result.err().unwrap();
-    assert_eq!(sending.calls, 3);
+    assert_eq!(sending.calls, 5);
     assert_eq!(
         sending.waits,
-        [Duration::from_millis(500), Duration::from_secs(1)]
+        [1, 2, 4, 8].map(Duration::from_secs),
+        "a busy shared quota is ridden out with a doubling pause"
     );
     assert_eq!(failure.status, Some(429));
-    assert!(failure.why.ends_with("(3 attempts)"), "{}", failure.why);
+    assert!(failure.why.ends_with("(5 attempts)"), "{}", failure.why);
+
+    // Phase: a shorter budget stops asking once a pause would leave no room
+    // to answer.
+    let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
+    assert!(result.is_err());
+    assert_eq!(sending.calls, 4);
+    assert_eq!(sending.waits, [1, 2, 4].map(Duration::from_secs));
 
     // Phase: a failure that may have done the work is never sent again.
     let (result, sending) = send_plan(Duration::from_secs(20), false, &[failed, answered]);

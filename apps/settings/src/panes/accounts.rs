@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use accounts::email::AccountConfig;
 use tracing::warn;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 
@@ -44,8 +44,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Body, El, Item, SettingsSection, StatusTone, card, card_with_action, field_row, item_row, note,
-    row, rows, semantic_status_pill, setting_row, setting_row_described, untitled, value_row,
+    Body, El, Item, SettingsSection, StatusTone, card, field_row, item_row, note, row, rows,
+    semantic_status_pill, setting_row, setting_row_described, untitled, value_row,
 };
 
 mod cloud_control;
@@ -57,6 +57,8 @@ pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use runtime_fs::cloud::CloudRequest;
 use vault_lane::Step;
+#[cfg(test)]
+mod cloud_import_acceptance;
 #[cfg(test)]
 mod signin_tests;
 
@@ -121,8 +123,16 @@ pub enum AccountsEffect {
     /// Check and save the account form, or take the sign-in's next step.
     #[effect(label = "Save account")]
     SaveAccountForm,
-    /// Explicitly request Gmail access alongside the Google files sign-in.
-    #[effect(label = "Connect files and Gmail")]
+    /// Select the services on the open provider connection form.
+    #[effect(view)]
+    SelectAccountServices {
+        files: bool,
+        mail: bool,
+        #[param("Files mode: sync or import")]
+        files_mode: String,
+    },
+    /// Compatibility action requesting both Google services.
+    #[effect(label = "Continue with Files and Mail")]
     ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
@@ -164,6 +174,9 @@ pub enum AccountsEffect {
         #[param("The account's id")]
         account: String,
     },
+    /// Recover an interrupted Files mode change after closing the connection form.
+    #[effect(row, job, device_only, idempotent, label = "Recover mode change")]
+    RecoverCloudMode { account: String },
 }
 
 /// Answer `effect` on the area's model; a connection check runs on a
@@ -265,6 +278,13 @@ pub(crate) fn answer(
         }
         AccountsEffect::SaveAccountForm => model.command(AccountViewCommand::Submit),
         AccountsEffect::ConnectGoogleMail => model.connect_google_mail()?,
+        AccountsEffect::SelectAccountServices {
+            files,
+            mail,
+            files_mode,
+        } => {
+            model.select_account_services(files, mail, &files_mode)?;
+        }
         AccountsEffect::CancelAccountForm => model.command(AccountViewCommand::Cancel),
         AccountsEffect::SaveNewPassword => {
             model.command(AccountViewCommand::SubmitReauthentication);
@@ -291,19 +311,35 @@ pub(crate) fn answer(
         AccountsEffect::ResumeSync { account } => {
             return cloud(model, CloudRequest::Resume { account }, cx);
         }
-        AccountsEffect::TestAccount { account } => {
-            let check = model.connection_check(&account)?;
-            drop(model);
-            return Ok(crate::device_read::job(
-                cx,
-                check,
-                |_: &mut SettingsApp, outcome: Result<String, String>, _| {
-                    complete_account_check(outcome)
-                },
-            ));
-        }
+        AccountsEffect::RecoverCloudMode { account } => return recover_mode(model, account, cx),
+        AccountsEffect::TestAccount { account } => return test_account(model, &account, cx),
     }
     Ok(Effected::done())
+}
+
+fn recover_mode(
+    model: std::cell::RefMut<'_, AccountsPane>,
+    account: String,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    if model.sign_in.is_some() {
+        return Err("Close the account connection form before recovering its mode change".into());
+    }
+    cloud(model, CloudRequest::RecoverImport { account }, cx)
+}
+
+fn test_account(
+    model: std::cell::RefMut<'_, AccountsPane>,
+    account: &str,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let check = model.connection_check(account)?;
+    drop(model);
+    Ok(crate::device_read::job(
+        cx,
+        check,
+        |_: &mut SettingsApp, outcome: Result<String, String>, _| complete_account_check(outcome),
+    ))
 }
 
 fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
@@ -471,6 +507,9 @@ impl AccountsArea {
                     "settings.account",
                     view.label.clone(),
                 );
+                if let Some(action) = model.files_handoff(&view) {
+                    row = row.operation(action);
+                }
                 if !view.kind.is_cloud_storage() {
                     row = row.operation(offer(AccountsEffect::EditAccount {
                         account: id.clone(),
@@ -488,6 +527,10 @@ impl AccountsArea {
                         AccountsEffect::PauseSync {
                             account: id.clone(),
                         }
+                    }));
+                } else if model.can_recover_cloud_mode(&view) {
+                    row = row.operation(offer(AccountsEffect::RecoverCloudMode {
+                        account: id.clone(),
                     }));
                 }
                 row.operation(offer(AccountsEffect::SignInAgain {
@@ -534,6 +577,33 @@ fn kind_shown(kind: AccountKind) -> String {
         AccountKind::Dropbox => "accounts-kind-dropbox",
         AccountKind::ICloudDrive => "accounts-kind-icloud",
     })
+}
+
+fn sync_detail(
+    runtime: Option<&accounts::AccountSyncStatus>,
+    import_only: bool,
+    granted_mail: bool,
+) -> String {
+    if import_only && runtime.is_none_or(|status| status.message.is_none()) {
+        return t("accounts-import-no-sync");
+    }
+    let Some(status) = runtime else {
+        return t(if granted_mail {
+            "accounts-mail-not-synced"
+        } else {
+            "accounts-sync-none"
+        });
+    };
+    let when = status
+        .last_success_unix
+        .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
+    match status.message.as_deref() {
+        Some(message) => t_args(
+            "accounts-sync-when-msg",
+            &[("when", when.as_str().into()), ("message", message.into())],
+        ),
+        None => t_args("accounts-sync-when", &[("when", when.into())]),
+    }
 }
 
 fn account_status(
@@ -897,6 +967,36 @@ impl AccountsPane {
 
     /// `button`, invoking `effect` in the window this model serves.
     fn bound(&self, button: Button, effect: AccountsEffect) -> Button {
+        // Row effects are published on the existing account resource, not
+        // the Settings root. Bind the painted control to that same contract.
+        let account = match &effect {
+            AccountsEffect::EditAccount { account }
+            | AccountsEffect::SignInAgain { account }
+            | AccountsEffect::TestAccount { account }
+            | AccountsEffect::RemoveAccount { account }
+            | AccountsEffect::SyncNow { account }
+            | AccountsEffect::PauseSync { account }
+            | AccountsEffect::ResumeSync { account }
+            | AccountsEffect::RecoverCloudMode { account } => Some(account),
+            _ => None,
+        };
+        if let Some(cx) = &self.cx
+            && let Some(account) = account
+        {
+            let spec = SettingsEffect::from(effect.clone()).bound();
+            let resource = ui::tilo_actions::Resource::new(
+                format!("settings.account:{account}"),
+                "settings.account",
+                account,
+            )
+            .with_action(spec);
+            let invocation =
+                ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(effect.id(), &[]);
+            return match cx.row_binding(&resource, invocation) {
+                Some(binding) => button.bind_action(binding),
+                None => button.unavailable(),
+            };
+        }
         match &self.cx {
             Some(cx) => cx.bind_invocation(button, effect),
             None => button,
@@ -986,20 +1086,45 @@ impl AccountsPane {
     }
 
     fn open_sign_in(&mut self, kind: AccountKind, existing: Option<&accounts::Account>) {
+        if self.sign_in_saving {
+            return;
+        }
         self.form_kind = None;
         self.reauth_id = None;
         self.sign_in_round = self.sign_in_round.wrapping_add(1);
         self.sign_in_saving = false;
-        self.sign_in = Some(cloud_signin::SignInFlow::new(
+        let mut flow = cloud_signin::SignInFlow::new(
             kind,
             existing,
             self.custodian.clone(),
             std::sync::Arc::clone(&self.opener),
-        ));
+        );
+        if let Some(mail_id) = existing
+            .and_then(|account| {
+                account
+                    .config
+                    .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            })
+            .and_then(serde_json::Value::as_str)
+        {
+            let store = self.account_root.store();
+            let email = store
+                .get(&accounts::AccountId::from(mail_id))
+                .and_then(|mail| mail.config.get("email"))
+                .and_then(serde_json::Value::as_str);
+            if let Some(email) = email {
+                flow.expect_mailbox(Some(email.to_string()));
+            }
+        }
+        self.sign_in = Some(flow);
         self.changed = true;
     }
 
     fn close_sign_in(&mut self) {
+        // Keep the daemon's Import preparation alive until metadata is durable.
+        if self.sign_in_saving {
+            return;
+        }
         if let Some(flow) = self.sign_in.as_mut() {
             flow.cancel();
         }
@@ -1012,6 +1137,10 @@ impl AccountsPane {
             return;
         };
         let (completed, changed) = flow.poll();
+        if let Some(id) = flow.take_saved() {
+            self.publish_signed_in(id);
+            return;
+        }
         if changed {
             self.changed = true;
         }
@@ -1050,21 +1179,15 @@ impl AccountsPane {
         }
         match saved {
             Ok(id) => {
-                let custodian = self.custodian.clone();
-                // Publishing may renew a session over the network; the
-                // account is already saved, so this never blocks the pane.
-                let _ = crate::device_read::thread(
-                    "settings-accounts-worker",
-                    Box::new(move || {
-                        if let Err(error) = custodian.signed_in(&id) {
-                            warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
-                        }
-                    }),
-                );
-                if current {
-                    self.sign_in = None;
+                if current && let Some(flow) = self.sign_in.as_mut() {
+                    flow.finish_async(id);
+                    // A non-mode-changing sign-in finishes immediately.
+                    if let Some(id) = flow.take_saved() {
+                        self.publish_signed_in(id);
+                    }
+                } else {
+                    self.publish_signed_in(id);
                 }
-                self.queue_reload();
             }
             Err(error) => {
                 if current && let Some(flow) = self.sign_in.as_mut() {
@@ -1074,6 +1197,46 @@ impl AccountsPane {
         }
         self.changed = true;
         Step::Done
+    }
+
+    fn publish_signed_in(&mut self, id: accounts::AccountId) {
+        let custodian = self.custodian.clone();
+        // Credential publication may renew a session over the network.
+        let _ = crate::device_read::thread(
+            "settings-accounts-worker",
+            Box::new(move || {
+                if let Err(error) = custodian.signed_in(&id) {
+                    warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
+                }
+            }),
+        );
+        self.sign_in = None;
+        self.queue_reload();
+        self.changed = true;
+    }
+
+    /// Update the open, idle connection form's service choices without starting sign-in.
+    ///
+    /// Uses the same validation as the `select-account-services` action; `mode`
+    /// must be `sync` or `import`.
+    ///
+    /// # Errors
+    /// Returns an error if the mode is invalid, the form is closed or busy,
+    /// or the requested services are unavailable for the account.
+    pub fn select_account_services(
+        &mut self,
+        files: bool,
+        mail: bool,
+        mode: &str,
+    ) -> Result<(), String> {
+        let mode = serde_json::from_value(serde_json::Value::String(mode.to_string()))
+            .map_err(|_| "Files mode must be sync or import".to_string())?;
+        self.sign_in
+            .as_ref()
+            .ok_or_else(|| "Open an account connection form first".to_string())?
+            .select_services(files, mail, mode)?;
+        self.changed = true;
+        Ok(())
     }
 
     fn connect_google_mail(&mut self) -> Result<(), String> {
@@ -1099,7 +1262,24 @@ impl AccountsPane {
     ) -> Result<(accounts::Account, Option<accounts::Account>), String> {
         let type_id = completed.kind.type_id();
         let shared = account_root.store();
-        let id = completed.existing_id.clone().map_or_else(
+        let mailbox_identity = completed
+            .config
+            .get("email")
+            .and_then(serde_json::Value::as_str);
+        let existing_mail =
+            if completed.kind == AccountKind::Mail && completed.existing_id.is_none() {
+                mailbox_identity.and_then(|email| find_mailbox(&shared, email))
+            } else {
+                None
+            };
+        if existing_mail.is_some() {
+            return Err("This mailbox is already connected. Manage its existing Mail account instead of replacing its grant".into());
+        }
+        let existing_id = completed
+            .existing_id
+            .clone()
+            .or_else(|| existing_mail.map(|account| account.id.to_string()));
+        let id = existing_id.clone().map_or_else(
             || {
                 accounts::AccountId::from(format!(
                     "{}-{}",
@@ -1109,7 +1289,7 @@ impl AccountsPane {
             },
             accounts::AccountId::from,
         );
-        let mut stored = match (completed.existing_id.is_some(), shared.get(&id)) {
+        let mut stored = match (existing_id.is_some(), shared.get(&id)) {
             (true, Some(stored)) if stored.type_id.as_str() == type_id => stored.clone(),
             (true, Some(_)) => {
                 return Err("account type changed; refresh Settings and try again".into());
@@ -1118,8 +1298,15 @@ impl AccountsPane {
             (false, Some(_)) => return Err("this account is already configured".into()),
             (false, None) => accounts::Account::new(id.clone(), type_id),
         };
-        stored.display_name.clone_from(&completed.display_name);
-        merge_config(&mut stored.config, completed.config.clone());
+        let mut config = completed.config.clone();
+        if completed.kind == AccountKind::Mail && existing_id.is_some() {
+            if let Some(name) = stored.config.get("display_name") {
+                merge_config(&mut config, serde_json::json!({"display_name": name}));
+            }
+        } else {
+            stored.display_name.clone_from(&completed.display_name);
+        }
+        merge_config(&mut stored.config, config);
         if completed.kind == AccountKind::Nextcloud {
             let mut identity = serde_json::Map::new();
             identity.insert("id".into(), id.as_str().into());
@@ -1130,9 +1317,31 @@ impl AccountsPane {
             }
             merge_config(&mut stored.config, serde_json::Value::Object(identity));
         }
+        let mut linked_mail = completed.mail.clone();
+        if let Some(mail) = linked_mail.as_mut() {
+            if let Some(email) = mail.config.get("email").and_then(serde_json::Value::as_str)
+                && let Some(existing) = find_mailbox(&shared, email)
+            {
+                let linked = completed
+                    .config
+                    .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+                    .and_then(serde_json::Value::as_str);
+                if linked != Some(existing.id.as_str()) {
+                    return Err("This mailbox is already connected separately. Manage or disconnect its Mail account before linking it to Files".into());
+                }
+                mail.id = existing.id.clone();
+            }
+            merge_config(
+                &mut stored.config,
+                serde_json::json!({
+                    accounts::cloud_types::MAIL_ACCOUNT_ID_KEY: mail.id.to_string(),
+                }),
+            );
+        }
         let mut granted = None;
-        if let Some(mail) = &completed.mail {
-            let mut mail = mail.clone();
+        if let Some(mail) = linked_mail {
+            let mut mail = mail;
+
             if let Some(existing) = shared.get(&mail.id) {
                 if existing.type_id.as_str() != "email" {
                     return Err("the Gmail identity belongs to another account type".into());
@@ -1147,6 +1356,22 @@ impl AccountsPane {
             granted = Some(mail);
         }
         Ok((stored, granted))
+    }
+
+    /// Exercise the ordinary sign-in transaction synchronously in a test.
+    #[cfg(test)]
+    fn save_signed_in(
+        account_root: &AccountRoot,
+        completed: &cloud_signin::Completed,
+    ) -> Result<accounts::AccountId, String> {
+        let (stored, mail) = Self::signed_in_accounts(account_root, completed)?;
+        let id = stored.id.clone();
+        let accounts = std::iter::once(stored)
+            .chain(mail)
+            .map(|account| (account, Some(&completed.secret)))
+            .collect();
+        Self::commit_accounts(account_root, accounts)?;
+        Ok(id)
     }
 
     /// Seed the ordinary add surface for a deterministic acceptance capture.
@@ -1217,9 +1442,8 @@ impl AccountsPane {
             .get(&accounts::AccountId::from(view.id.clone()))
             .is_some_and(|account| {
                 account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                    && account
-                        .config_as::<AccountConfig>()
-                        .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+                    && AccountConfig::from_value(account.config.clone())
+                        .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
             })
         {
             self.import_review.status = Some(t("accounts-import-oauth-step"));
@@ -1296,9 +1520,8 @@ impl AccountsPane {
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
         {
-            if account
-                .config_as::<AccountConfig>()
-                .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            if AccountConfig::from_value(account.config.clone())
+                .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
             {
                 self.import_review.status = Some(t("accounts-import-oauth-step"));
                 self.changed = true;
@@ -1309,7 +1532,7 @@ impl AccountsPane {
         }
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == "email"
-            && account.config_as::<AccountConfig>().is_some_and(|config| {
+            && AccountConfig::from_value(account.config.clone()).is_ok_and(|config| {
                 config.auth == accounts::email::AuthMethod::OAuth
                     && config.imap_host == "imap.gmail.com"
             })
@@ -1377,19 +1600,31 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
-        panel.push(self.browser_identity_card());
-        panel.push(self.mail_card());
+        // Connected services lead. Empty providers belong to the one chooser,
+        // not to an inventory of accounts the person has not connected.
+        for kind in AccountKind::ALL {
+            if kind == AccountKind::Mail {
+                if let Some(mail) = self.mail_card() {
+                    panel.push(mail);
+                }
+            } else if kind == AccountKind::GoogleDrive {
+                for view in self.dir.views_of(kind) {
+                    let title = kind_shown(kind);
+                    panel.push(card(&title, self.kind_body(kind, &[view])));
+                }
+            } else if !self.dir.views_of(kind).is_empty() {
+                panel.push(self.kind_card(kind));
+            }
+        }
+        panel.push(self.add_account_card());
         panel.push(self.thunderbird_import_card());
-        panel.push(self.kind_card(AccountKind::CalDav));
-        panel.push(self.kind_card(AccountKind::WebDav));
-        panel.push(self.kind_card(AccountKind::Nextcloud));
-        for kind in [
-            AccountKind::GoogleDrive,
-            AccountKind::OneDrive,
-            AccountKind::Dropbox,
-            AccountKind::ICloudDrive,
-        ] {
-            panel.push(self.kind_card(kind));
+        if !self
+            .account_root
+            .store()
+            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
+            .is_empty()
+        {
+            panel.push(self.browser_identity_card());
         }
 
         crate::widgets::cards(panel)
@@ -1441,43 +1676,86 @@ impl AccountsPane {
         card(&t("accounts-browser-identity-title"), rows(body))
     }
 
-    fn mail_card(&self) -> SettingsSection {
+    fn add_account_card(&self) -> SettingsSection {
+        let mut providers = Row::new().with_rhythm(ui::tokens::Rhythm::Related);
+        for kind in AccountKind::ALL {
+            providers = providers.push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.accounts.add.{}", kind.slug()),
+                    &t_args(
+                        "accounts-add-provider",
+                        &[("kind", kind_shown(kind).into())],
+                    ),
+                ),
+                AccountsEffect::AddAccount {
+                    kind: kind.slug().into(),
+                },
+            )));
+        }
+        card(&t("accounts-add"), rows(vec![row(Box::new(providers))]))
+    }
+
+    fn mail_card(&self) -> Option<SettingsSection> {
         let title = kind_shown(AccountKind::Mail);
-        let add = t("accounts-add");
-        let add_btn: El = Box::new(self.bound(
-            Button::new("settings.accounts.add.mail", &add),
-            AccountsEffect::AddAccount {
-                kind: "mail".into(),
-            },
-        ));
-        let views = self.dir.views_of(AccountKind::Mail);
-        let body = self.kind_body(AccountKind::Mail, &views);
-        card_with_action(&title, add_btn, body)
+        let all = self.dir.views_of(AccountKind::Mail);
+        let views: Vec<_> = all
+            .iter()
+            .filter(|mail| {
+                !self
+                    .dir
+                    .views_of(AccountKind::GoogleDrive)
+                    .iter()
+                    .any(|google| {
+                        self.linked_google_mail(google)
+                            .is_some_and(|linked| linked.id == mail.id)
+                    })
+            })
+            .cloned()
+            .collect();
+        (!views.is_empty()).then(|| card(&title, self.kind_body(AccountKind::Mail, &views)))
+    }
+
+    /// Group only the explicit persisted service link, never an email/name match.
+    fn linked_google_mail(&self, view: &AccountView) -> Option<AccountView> {
+        if view.kind != AccountKind::GoogleDrive {
+            return None;
+        }
+        let store = self.account_root.store();
+        let account = store.get(&view.id.clone().into())?;
+        let id = account
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)?
+            .as_str()?;
+        self.dir
+            .views_of(AccountKind::Mail)
+            .into_iter()
+            .find(|mail| mail.id == id)
     }
 
     fn kind_card(&self, kind: AccountKind) -> SettingsSection {
         let views = self.dir.views_of(kind);
-        let add = t("accounts-add");
-        card_with_action(
-            &kind_shown(kind),
-            Box::new(self.bound(
-                Button::new(&format!("settings.accounts.add.{}", kind.slug()), &add),
-                AccountsEffect::AddAccount {
-                    kind: kind.slug().into(),
-                },
-            )),
-            self.kind_body(kind, &views),
-        )
+        card(&kind_shown(kind), self.kind_body(kind, &views))
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> Body {
-        let mut body: Vec<Item> = if views.is_empty() {
+        let mut body: Vec<Item> = if views.is_empty() && kind == AccountKind::GoogleDrive {
+            vec![note(&t("accounts-google-empty-services"))]
+        } else if views.is_empty() {
             vec![note(&t_args(
                 "accounts-kind-empty",
                 &[("kind", kind_shown(kind).into())],
             ))]
         } else {
-            views.iter().map(|v| self.account_row(v)).collect()
+            views
+                .iter()
+                .flat_map(|view| {
+                    let mut items = vec![self.account_row(view)];
+                    if let Some(mail) = self.linked_google_mail(view) {
+                        items.push(self.account_row(&mail));
+                    }
+                    items
+                })
+                .collect()
         };
         if kind.is_cloud_storage()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
@@ -1487,6 +1765,69 @@ impl AccountsPane {
             body.push(note(&t("accounts-best-effort-icloud")));
         }
         rows(body)
+    }
+
+    /// One broker-routed contract shared by the painted button and account row.
+    fn files_handoff(&self, view: &AccountView) -> Option<ui::tilo_actions::ActionSpec> {
+        use accounts::cloud_types::FilesMode;
+        if self.is_sample
+            || !view.enabled
+            || !(view.kind.is_cloud_storage()
+                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud))
+        {
+            return None;
+        }
+        let account = self
+            .account_root
+            .store()
+            .get(&view.id.clone().into())?
+            .clone();
+        if account
+            .config
+            .get("use_files")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
+            return None;
+        }
+        let label = match accounts::cloud_types::files_mode(&account)? {
+            FilesMode::Sync => t("accounts-browse-files"),
+            FilesMode::Import => t("accounts-choose-import-files"),
+        };
+        Some(
+            ui::tilo_actions::remote::ApplicationLaunch::with_action(
+                "so.tilo.file-explorer",
+                format!("files.remote-account:{}", hex::encode(&view.id)),
+                "open-remote-account",
+            )
+            .spec("open-files", &label, &t("accounts-open-files-description")),
+        )
+    }
+
+    fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
+        let spec = self.files_handoff(view)?;
+        let label = spec.label.clone();
+        let resource = ui::tilo_actions::Resource::new(
+            format!("settings.account:{}", view.id),
+            "settings.account",
+            &view.label,
+        )
+        .with_action(spec);
+        let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "open-files").ok()?;
+        let store = self.account_root.store();
+        if let Some(account) = store.get(&view.id.clone().into()) {
+            details.push(t(match accounts::cloud_types::files_mode(account) {
+                Some(accounts::cloud_types::FilesMode::Import) => {
+                    "accounts-files-configured-import"
+                }
+                _ => "accounts-files-configured-sync",
+            }));
+        }
+        Some(
+            Button::new(&format!("settings.accounts.files.{}", view.id), &label)
+                .role(ui::widget::ButtonRole::Primary)
+                .on_action(binding),
+        )
     }
 
     /// One account: label + connection summary, status, and a Remove button
@@ -1504,17 +1845,33 @@ impl AccountsPane {
             .accounts
             .iter()
             .any(|account| account.id == view.id && account.config.import_pending);
-        let (status, status_tone) = if pending {
-            (t("accounts-status-reauth"), StatusTone::Warning)
-        } else if mount.is_some_and(|mount| mount.paused) {
-            (t("accounts-status-paused"), StatusTone::Neutral)
-        } else {
-            account_status(
-                self.is_sample,
-                view.enabled,
-                runtime.map(|status| status.health),
-            )
-        };
+        let import_only = self.account_root.store().get(&id).is_some_and(|account| {
+            accounts::cloud_types::files_mode(account)
+                == Some(accounts::cloud_types::FilesMode::Import)
+                && view.kind != AccountKind::Mail
+        });
+        // An OAuth grant is not a successful first sync. Only replace the
+        // unknown state, never a recorded error, offline or sign-in requirement.
+        let not_synced =
+            runtime.is_none_or(|status| status.health == accounts::AccountSyncHealth::Never);
+        let granted_mail =
+            view.kind == AccountKind::Mail && self.custodian.oauth_scopes(&id).is_ok();
+        let (status, status_tone) =
+            if !self.is_sample && view.enabled && !pending && not_synced && import_only {
+                (t("accounts-status-import-only"), StatusTone::Neutral)
+            } else if !self.is_sample && view.enabled && !pending && not_synced && granted_mail {
+                (t("accounts-status-mail-granted"), StatusTone::Neutral)
+            } else if pending {
+                (t("accounts-status-reauth"), StatusTone::Warning)
+            } else if mount.is_some_and(|mount| mount.paused) {
+                (t("accounts-status-paused"), StatusTone::Neutral)
+            } else {
+                account_status(
+                    self.is_sample,
+                    view.enabled,
+                    runtime.map(|status| status.health),
+                )
+            };
 
         // Identity and health lead; what is worth knowing hugs the name and
         // the maintenance actions sit under the text, so narrow layouts stay
@@ -1529,75 +1886,153 @@ impl AccountsPane {
         marks.push(semantic_status_pill(&status, status_tone));
 
         let mut details = vec![view.summary.clone()];
-        let mut actions: Vec<Button> = Vec::new();
+        let mut actions: Vec<Button> = self.files_button(view, &mut details).into_iter().collect();
         if !self.is_sample {
-            details.push(runtime.map_or_else(
-                || t("accounts-sync-none"),
-                |status| {
-                    let when = status
-                        .last_success_unix
-                        .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
-                    match status.message.as_deref() {
-                        Some(message) => t_args(
-                            "accounts-sync-when-msg",
-                            &[("when", when.as_str().into()), ("message", message.into())],
-                        ),
-                        None => t_args("accounts-sync-when", &[("when", when.into())]),
-                    }
-                },
+            details.push(sync_detail(runtime, import_only, granted_mail));
+            actions.extend(self.account_maintenance_actions(
+                view,
+                runtime.is_some_and(|status| {
+                    status.health == accounts::AccountSyncHealth::NeedsAuthentication
+                }),
             ));
-            let needs_sign_in = runtime.is_some_and(|status| {
-                status.health == accounts::AccountSyncHealth::NeedsAuthentication
-            });
-            let reauth_label = if view.kind == AccountKind::ICloudDrive && needs_sign_in {
-                t("accounts-reauth-icloud")
-            } else {
-                t("accounts-reauth")
-            };
-            let edit = t("accounts-edit");
-            let check = if view.kind == AccountKind::Mail {
-                t("accounts-check-server")
-            } else {
-                t("accounts-verify")
-            };
-            let remove = t("accounts-remove");
-            if !view.kind.is_cloud_storage() {
+            if let Some(mount) = mount {
+                actions.extend(self.sync_actions(&view.id, mount.paused));
+            } else if self.can_recover_cloud_mode(view) {
+                details.push(t("accounts-recover-mode-description"));
                 actions.push(self.bound(
-                    Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
-                    AccountsEffect::EditAccount {
+                    Button::new(
+                        &format!("settings.accounts.recover-mode.{}", view.id),
+                        &t("accounts-recover-mode"),
+                    ),
+                    AccountsEffect::RecoverCloudMode {
                         account: view.id.clone(),
                     },
                 ));
             }
-            actions.push(self.bound(
-                Button::new(
-                    &format!("settings.accounts.reauth.{}", view.id),
-                    &reauth_label,
-                ),
-                AccountsEffect::SignInAgain {
-                    account: view.id.clone(),
-                },
-            ));
-            actions.push(self.bound(
-                Button::new(&format!("settings.accounts.test.{}", view.id), &check),
-                AccountsEffect::TestAccount {
-                    account: view.id.clone(),
-                },
-            ));
-            actions.push(
-                self.bound(
-                    Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
-                        .role(ui::widget::ButtonRole::Destructive),
-                    AccountsEffect::RemoveAccount {
-                        account: view.id.clone(),
-                    },
-                ),
-            );
-            if let Some(mount) = mount {
-                actions.extend(self.sync_actions(&view.id, mount.paused));
-            }
         }
-        item_row(&view.label, marks, &details, actions)
+        // Keep the service name on the primary line and the account identity
+        // on a secondary line, rather than joining metadata into the label.
+        // The configured service identifies Gmail, never an email-domain guess.
+        let service = if view.kind == AccountKind::GoogleDrive {
+            Some(t("accounts-google-files-service"))
+        } else if view.kind == AccountKind::Mail
+            && self.dir.mail.accounts.iter().any(|mail| {
+                mail.id == view.id
+                    && mail.config.auth == accounts::email::AuthMethod::OAuth
+                    && mail.config.imap_host == "imap.gmail.com"
+            })
+        {
+            Some(t("accounts-google-mail-service"))
+        } else {
+            None
+        };
+        let label = if let Some(service) = service {
+            if view.label != view.summary
+                && view.label != "Google"
+                && view.label != AccountKind::GoogleDrive.label()
+            {
+                details.insert(0, view.label.clone());
+            }
+            service
+        } else {
+            view.label.clone()
+        };
+        item_row(&label, marks, &details, actions)
+    }
+
+    fn account_maintenance_actions(&self, view: &AccountView, needs_sign_in: bool) -> Vec<Button> {
+        // Shared MenuItem currently accepts view callbacks, not ActionBinding.
+        // Keep these native, service-labelled action controls rather than route
+        // maintenance through a private menu callback that bypasses admission.
+        let mut actions = Vec::new();
+        let service_label = |action: String| {
+            let service = if view.kind == AccountKind::Mail {
+                Some(t("accounts-service-mail"))
+            } else if view.kind.is_cloud_storage()
+                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud)
+            {
+                Some(t("accounts-service-files"))
+            } else {
+                None
+            };
+            service.map_or_else(
+                || action.clone(),
+                |service| {
+                    t_args(
+                        "accounts-service-action",
+                        &[
+                            ("action", action.clone().into()),
+                            ("service", service.into()),
+                        ],
+                    )
+                },
+            )
+        };
+        let reauth_label = if view.kind == AccountKind::ICloudDrive && needs_sign_in {
+            t("accounts-reauth-icloud")
+        } else {
+            t("accounts-reauth")
+        };
+        let reauth_label = service_label(reauth_label);
+        let edit = service_label(t("accounts-edit"));
+        let check = if view.kind == AccountKind::Mail {
+            t("accounts-check-server")
+        } else {
+            t("accounts-verify")
+        };
+        let check = service_label(check);
+        let remove = t(if view.kind == AccountKind::Mail {
+            "accounts-disconnect-mail"
+        } else if view.kind.is_cloud_storage()
+            || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud)
+        {
+            "accounts-remove-files"
+        } else {
+            "accounts-remove"
+        });
+        if !view.kind.is_cloud_storage() {
+            actions.push(self.bound(
+                Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
+                AccountsEffect::EditAccount {
+                    account: view.id.clone(),
+                },
+            ));
+        }
+        actions.push(self.bound(
+            Button::new(
+                &format!("settings.accounts.reauth.{}", view.id),
+                &reauth_label,
+            ),
+            AccountsEffect::SignInAgain {
+                account: view.id.clone(),
+            },
+        ));
+        actions.push(self.bound(
+            Button::new(&format!("settings.accounts.test.{}", view.id), &check),
+            AccountsEffect::TestAccount {
+                account: view.id.clone(),
+            },
+        ));
+        actions.push(
+            self.bound(
+                Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
+                    .role(ui::widget::ButtonRole::Destructive),
+                AccountsEffect::RemoveAccount {
+                    account: view.id.clone(),
+                },
+            ),
+        );
+        actions
+    }
+
+    fn can_recover_cloud_mode(&self, view: &AccountView) -> bool {
+        (view.kind.is_cloud_storage()
+            || matches!(view.kind, AccountKind::Nextcloud | AccountKind::WebDav))
+            && self.cloud.mount(&view.id).is_none()
+            && self
+                .sync_statuses
+                .get(&accounts::AccountId::from(view.id.as_str()))
+                .is_some_and(|status| status.health == accounts::AccountSyncHealth::Error)
     }
 
     /// Sync now, and pause or resume, for a mounted file account.
@@ -1929,9 +2364,8 @@ impl AccountsPane {
             (None, None) => accounts::Account::new(id.clone(), expected_type),
         };
         if stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE {
-            let config = stored
-                .config_as::<AccountConfig>()
-                .ok_or_else(|| t("accounts-import-malformed"))?;
+            let config = AccountConfig::from_value(stored.config.clone())
+                .map_err(|_| t("accounts-import-malformed"))?;
             if config.auth == accounts::email::AuthMethod::OAuth {
                 return Err(t("accounts-import-oauth-step"));
             }
@@ -1956,7 +2390,9 @@ impl AccountsPane {
                 config.autofill_from_email();
                 merge_config(
                     &mut stored.config,
-                    serde_json::to_value(config).map_err(|_| "could not prepare email settings")?,
+                    config
+                        .to_value()
+                        .map_err(|_| "could not prepare email settings")?,
                 );
             }
             AccountKind::Mail => merge_config(
@@ -2333,6 +2769,25 @@ impl AccountsPane {
         // person's record while the vault was written is kept.
         let mut updated_store = root.store();
         updated_store.remove(&removal.id);
+        // Removing Mail is an explicit disconnect, not an implicit grant rewrite.
+        let linked: Vec<_> = updated_store
+            .all()
+            .iter()
+            .filter(|account| {
+                account
+                    .config
+                    .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    == Some(removal.id.as_str())
+            })
+            .cloned()
+            .collect();
+        for mut account in linked {
+            if let Some(config) = account.config.as_object_mut() {
+                config.remove(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY);
+            }
+            updated_store.upsert(account);
+        }
         if let Err(error) = root.save_store(&updated_store) {
             let failed = format!("could not remove account metadata: {error}");
             return self.roll_back_removal(removal, failed, Ok(()), settle);
@@ -2795,8 +3250,22 @@ fn relative_sync_time(unix: i64) -> String {
     clippy::needless_pass_by_value,
     reason = "callers construct per-kind JSON values solely to merge them into the persisted opaque configuration"
 )]
+fn find_mailbox<'a>(
+    store: &'a accounts::AccountStore,
+    email: &str,
+) -> Option<&'a accounts::Account> {
+    store.all().iter().find(|account| {
+        account.type_id.as_str() == "email"
+            && account
+                .config
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|existing| existing.eq_ignore_ascii_case(email))
+    })
+}
+
 fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
-    let Some(updates) = updates.as_object() else {
+    let serde_json::Value::Object(updates) = updates else {
         return;
     };
     if !target.is_object() {
@@ -2804,7 +3273,7 @@ fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
     }
     if let Some(target) = target.as_object_mut() {
         for (key, value) in updates {
-            target.insert(key.clone(), value.clone());
+            target.insert(key, value);
         }
     }
 }
@@ -2971,7 +3440,7 @@ mod tests {
         }
     }
 
-    fn lay_out(pane: &AccountsPane) -> Box<dyn Widget> {
+    pub(super) fn lay_out(pane: &AccountsPane) -> Box<dyn Widget> {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -2981,6 +3450,50 @@ mod tests {
     }
 
     /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
+    #[test]
+    fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
+        fn texts(widget: &dyn Widget) -> Vec<String> {
+            let mut result: Vec<_> = widget
+                .accessibility()
+                .and_then(|node| node.value)
+                .into_iter()
+                .collect();
+            for child in widget.children() {
+                result.extend(texts(child));
+            }
+            result
+        }
+        let (_scratch, root) = scratch_root();
+        let id = accounts::AccountId::from("import-google");
+        let mut account =
+            accounts::Account::new(id.clone(), account_custody::providers::GOOGLE_DRIVE_TYPE);
+        account.config = serde_json::json!({"files_mode": "import", "use_files": true});
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account);
+        root.save_store(&store).unwrap();
+        let reporter = root.sync_reporter(id);
+        for expected in [
+            "accounts-status-error",
+            "accounts-status-offline",
+            "accounts-status-reauth",
+        ] {
+            match expected {
+                "accounts-status-error" => reporter.failed(),
+                "accounts-status-offline" => reporter.offline(),
+                _ => reporter.needs_authentication(),
+            }
+            .unwrap();
+            let pane = AccountsPane::in_root(root.clone());
+            let composed = lay_out(&pane);
+            let labels = texts(composed.as_ref());
+            assert!(labels.contains(&t(expected)), "{labels:?}");
+            assert!(
+                !labels.contains(&t("accounts-status-import-only")),
+                "a known failure is not an untested import source"
+            );
+        }
+    }
+
     #[test]
     fn accounts_pane_renders_only_real_accounts_as_removable() {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
@@ -3001,7 +3514,11 @@ mod tests {
             assert_eq!(
                 labels
                     .iter()
-                    .filter(|label| **label == t("accounts-add"))
+                    .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
+                        == t_args(
+                            "accounts-add-provider",
+                            &[("kind", kind_shown(kind).into())]
+                        )))
                     .count(),
                 AccountKind::ALL.len(),
                 "one Add action per provider kind"
@@ -3049,7 +3566,13 @@ mod tests {
             assert_eq!(
                 labels
                     .iter()
-                    .filter(|label| label.as_str() == "Remove")
+                    .filter(|label| [
+                        "accounts-remove",
+                        "accounts-remove-files",
+                        "accounts-disconnect-mail"
+                    ]
+                    .into_iter()
+                    .any(|key| **label == t(key)))
                     .count(),
                 4,
                 "one explicit Remove action per real account"
@@ -3057,10 +3580,14 @@ mod tests {
             assert_eq!(
                 labels
                     .iter()
-                    .filter(|label| label.as_str() == "Add account")
+                    .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
+                        == t_args(
+                            "accounts-add-provider",
+                            &[("kind", kind_shown(kind).into())]
+                        )))
                     .count(),
                 AccountKind::ALL.len(),
-                "each provider card exposes a compact add action"
+                "the single chooser retains every provider's add action"
             );
         }
 

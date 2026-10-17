@@ -19,6 +19,8 @@ use tilo_peer_state::workspace_task::{
 
 #[path = "native_task_launch_tests.rs"]
 mod closed_app;
+#[path = "native_task_confirmation_tests.rs"]
+mod confirmation;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
 

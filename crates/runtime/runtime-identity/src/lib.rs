@@ -73,6 +73,11 @@ pub mod wire {
     pub struct Handshake {
         pub workspace_id: String,
         pub app_id: String,
+        /// The surface file the app was started with (`TILO_SURFACE`, its
+        /// hash checked): what a development host takes as the surface of
+        /// an app it holds no package of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub surface: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]

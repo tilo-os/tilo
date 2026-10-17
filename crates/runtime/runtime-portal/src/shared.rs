@@ -6,7 +6,8 @@
 //! dropped. So the first caller starts a hub thread that owns a duplicate of
 //! the inherited socket; every caller then gets a private socket pair whose
 //! far end the hub serves with the service's bootstrap capability, forwarding
-//! each call over the single real connection.
+//! each call over the single real connection. Descriptors a client hands
+//! the service ride that connection's descriptor lane.
 
 use std::collections::HashMap;
 use std::io;
@@ -19,34 +20,47 @@ use rustix::io::{FdFlags, fcntl_setfd};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
+use crate::descriptor_lane::{DescriptorSender, DescriptorStream};
 use crate::{CapnpClient, NotAvailable, serve_connected_io};
 
-type Hub = mpsc::UnboundedSender<StdUnixStream>;
+/// One inherited connection's hub: where new clients are handed for serving,
+/// and the descriptor lane its single upstream writes carry.
+#[derive(Clone)]
+struct Hub {
+    clients: mpsc::UnboundedSender<StdUnixStream>,
+    descriptors: DescriptorSender,
+}
+
+fn hub(name: &str, fd: RawFd) -> Result<Hub, NotAvailable> {
+    static HUBS: OnceLock<Mutex<HashMap<RawFd, Hub>>> = OnceLock::new();
+    let mut hubs = HUBS.get_or_init(Mutex::default).lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("service connection registry poisoned"))
+    })?;
+    Ok(match hubs.entry(fd) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(start(name, fd)?).clone(),
+    })
+}
 
 /// A private connection to the service behind the inherited descriptor
 /// `fd`, multiplexed with every other client of it in this process. The
 /// inherited descriptor itself stays open and no client owns it.
 pub(crate) fn connect(name: &str, fd: RawFd) -> Result<OwnedFd, NotAvailable> {
-    static HUBS: OnceLock<Mutex<HashMap<RawFd, Hub>>> = OnceLock::new();
-    let hub = {
-        let mut hubs = HUBS.get_or_init(Mutex::default).lock().map_err(|_| {
-            NotAvailable::ConnectionFailed(io::Error::other("service connection registry poisoned"))
-        })?;
-        match hubs.entry(fd) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(start(name, fd)?).clone()
-            }
-        }
-    };
+    let hub = hub(name, fd)?;
     let (local, remote) = StdUnixStream::pair()?;
-    hub.send(remote).map_err(|_| {
+    hub.clients.send(remote).map_err(|_| {
         NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::BrokenPipe,
             format!("the {name} service connection has ended"),
         ))
     })?;
     Ok(OwnedFd::from(local))
+}
+
+/// The descriptor lane of the inherited connection `fd`: what is sent on it
+/// reaches the service ahead of any call a client makes afterwards.
+pub(crate) fn descriptors(name: &str, fd: RawFd) -> Result<DescriptorSender, NotAvailable> {
+    Ok(hub(name, fd)?.descriptors)
 }
 
 fn start(name: &str, fd: RawFd) -> Result<Hub, NotAvailable> {
@@ -70,25 +84,37 @@ fn start(name: &str, fd: RawFd) -> Result<Hub, NotAvailable> {
         .enable_io()
         .build()?;
     let (sender, receiver) = mpsc::unbounded_channel();
+    let descriptors = DescriptorSender::new();
+    let lane = descriptors.clone();
     std::thread::Builder::new()
         .name(format!("tilo-svc-{name}"))
         .spawn(move || {
-            tokio::task::LocalSet::new().block_on(&runtime, serve(upstream, receiver));
+            tokio::task::LocalSet::new().block_on(&runtime, serve(upstream, lane, receiver));
         })?;
-    Ok(sender)
+    Ok(Hub {
+        clients: sender,
+        descriptors,
+    })
 }
 
 #[expect(
     clippy::future_not_send,
     reason = "Cap'n Proto RPC is single-threaded; the hub runs on its own LocalSet"
 )]
-async fn serve(upstream: StdUnixStream, mut clients: mpsc::UnboundedReceiver<StdUnixStream>) {
+async fn serve(
+    upstream: StdUnixStream,
+    descriptors: DescriptorSender,
+    mut clients: mpsc::UnboundedReceiver<StdUnixStream>,
+) {
     // Returning drops `clients`, so later `connect` calls report the end.
     let Ok(upstream) = UnixStream::from_std(upstream) else {
         return;
     };
-    let service: capnp::capability::Client =
-        CapnpClient::from_connected_io(upstream, rpc_twoparty_capnp::Side::Client).bootstrap();
+    let service: capnp::capability::Client = CapnpClient::from_connected_io(
+        DescriptorStream::sending(upstream, descriptors),
+        rpc_twoparty_capnp::Side::Client,
+    )
+    .bootstrap();
     while let Some(client) = clients.recv().await {
         let Ok(client) = client
             .set_nonblocking(true)

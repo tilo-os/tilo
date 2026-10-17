@@ -1134,6 +1134,7 @@ mod tests {
             opens_ext: Vec::new(),
             opens_mime: Vec::new(),
             opens_schemes: Vec::new(),
+            opens_secondary: false,
             continuity: crate::manifest::ContinuityContract::default(),
         }
     }

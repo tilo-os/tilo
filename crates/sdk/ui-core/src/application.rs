@@ -70,6 +70,7 @@ pub struct HostContextInputs {
     pub device_id: String,
     pub instance_id: InstanceId,
     pub permissions: Rc<RefCell<PermissionContext>>,
+    /// The trusted local person, retained independently of later action attribution.
     pub author: UserId,
     pub action_context: tilo_actions::ActionContext,
 }
@@ -87,6 +88,7 @@ pub struct HostContext {
     initialization: Option<crate::collaboration::native_initial::RecordInitialization>,
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
+    host_person: UserId,
     action_context: tilo_actions::ActionContext,
     /// See [`Self::write_as_author`].
     writes_as_author: bool,
@@ -316,6 +318,7 @@ impl PendingReplacement {
 /// factory consumes it ([`HostContext::reopener`]).
 #[derive(Clone)]
 pub struct Reopener {
+    host_person: UserId,
     records: RecordStore,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -372,6 +375,7 @@ impl Reopener {
             &target,
             new_record,
         )?;
+        context.host_person = self.host_person.clone();
         context.writes_as_author = self.writes_as_author;
         context.services = self.services.clone();
         context.content.clone_from(&self.content);
@@ -421,6 +425,7 @@ impl HostContext {
     /// window later ([`Reopener`]).
     pub fn reopener(&self) -> Reopener {
         Reopener {
+            host_person: self.host_person.clone(),
             records: self.records.clone(),
             views: Rc::clone(&self.views),
             device_id: self.device_id.clone(),
@@ -574,6 +579,7 @@ impl HostContext {
             reservation,
             initialization,
             permissions,
+            host_person: author.clone(),
             author,
             action_context,
             writes_as_author: false,
@@ -742,6 +748,11 @@ impl HostContext {
     }
     pub fn author(&self) -> &UserId {
         &self.author
+    }
+    /// The immutable local person supplied at host preparation, not the
+    /// author currently attributed to an action.
+    pub fn host_person(&self) -> &UserId {
+        &self.host_person
     }
     /// A snapshot of the participant's permissions at this moment.
     pub fn permissions(&self) -> PermissionContext {
@@ -933,10 +944,12 @@ impl HostContext {
             control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
+            device_id: self.device_id.clone(),
             records: self.records.clone(),
             checkout: self.record.clone(),
             permissions: self.permissions.clone(),
             author: self.author.clone(),
+            host_person: self.host_person.clone(),
             operation_context: self.action_context.clone(),
             writes_as_author: self.writes_as_author,
         }
@@ -2600,6 +2613,40 @@ mod portable_tests {
         drop(first);
         assert!(retained.is_available());
     }
+    #[test]
+    fn trusted_host_person_survives_author_changes_and_reopening() {
+        let cache =
+            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open(probe::APP, probe::ROOM)
+            .unwrap();
+        let definition = probe::definition(probe::probe_factory);
+        let mut context = HostContext::prepare(
+            &definition,
+            HostContextInputs {
+                records,
+                views: Rc::new(InstanceViewStore::portable(cache, probe::ROOM).unwrap()),
+                device_id: probe::DEVICE.into(),
+                instance_id: 7,
+                permissions: probe::permissions(),
+                author: probe::author(),
+                action_context: probe::provenance(),
+            },
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        context.author = UserId("agent".into());
+        assert_eq!(context.host_person(), &probe::author());
+        assert_eq!(context.callback_binding().host_person, probe::author());
+        let (reopened, _) = context
+            .reopener()
+            .prepare(&definition, RecordId::minted())
+            .unwrap();
+        assert_eq!(reopened.author(), &UserId("agent".into()));
+        assert_eq!(reopened.host_person(), &probe::author());
+        assert_eq!(reopened.callback_binding().host_person, probe::author());
+    }
+
     #[test]
     fn portable_host_checks_namespaces_authority_and_persists_real_component() {
         let cache =

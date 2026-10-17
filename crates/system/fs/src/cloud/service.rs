@@ -62,6 +62,9 @@ use super::providers::{self, MountSpec};
 use super::volume::{CloudVolume, DEFAULT_IDLE_POLL_MAX, VolumeConfig};
 use tilo_lock::MutexRecover as _;
 
+mod import_transition;
+use import_transition::ImportHold;
+
 /// What a running mount tells the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MountEvent {
@@ -81,7 +84,7 @@ pub trait RunningMount: Send {
     /// What the mount's provider offers beyond files and folders.
     fn capabilities(&self) -> CloudCapabilities;
     /// Unmount and wait for the mount to end.
-    fn stop(self: Box<Self>);
+    fn stop(self: Box<Self>) -> io::Result<()>;
 }
 
 /// Starts mounts. [`ProcessLauncher`] runs `fs mount-cloud` children with a
@@ -152,6 +155,7 @@ struct Mounted {
 
 enum Signal {
     Accounts,
+    ImportStopped(String, Result<(), String>),
     Event(String, MountEvent),
     /// A control request and where its answer goes.
     Control(CloudRequest, Sender<CloudResponse>),
@@ -170,6 +174,9 @@ pub struct CloudService {
     /// the answer goes.
     pending: HashMap<u64, (String, Sender<CloudResponse>)>,
     next_request: u64,
+    imports: super::import::Imports,
+    import_holds: HashMap<String, ImportHold>,
+    transition_error: Option<String>,
     signals: Sender<Signal>,
     inbox: Receiver<Signal>,
 }
@@ -185,7 +192,8 @@ impl CloudService {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Self {
+        let imports = super::import::Imports::new(&config.state_root);
+        let mut service = Self {
             config,
             launcher,
             mounts: HashMap::new(),
@@ -194,9 +202,23 @@ impl CloudService {
             paused,
             pending: HashMap::new(),
             next_request: 1,
+            imports,
+            import_holds: HashMap::new(),
+            transition_error: None,
             signals,
             inbox,
-        }
+        };
+        service.restore_import_commits();
+        service
+    }
+
+    /// Configure disk staging for imports whose provider omits a body length.
+    ///
+    /// Defaults are 1 GiB per file and 4 GiB across the service. Known-length
+    /// bodies stream without staging. Change limits before starting workers;
+    /// an active worker returns `WouldBlock` rather than losing its accounting.
+    pub fn set_import_staging_limits(&mut self, per_file: u64, aggregate: u64) -> io::Result<()> {
+        self.imports.set_staging_limits(per_file, aggregate)
     }
 
     fn save_paused(&self) {
@@ -285,8 +307,24 @@ impl CloudService {
 
     /// Bring the mounts in line with the account store.
     pub fn reconcile(&mut self) {
+        if self.transition_error.is_some() {
+            return; // An unreadable commit journal cannot authorize writable mounts.
+        }
         self.retry.clear();
         let store = self.store();
+        self.reconcile_import_holds(&store);
+        self.imports.reconcile(
+            store
+                .all()
+                .iter()
+                .filter_map(providers::source_spec)
+                .collect(),
+        );
+        self.credentials.retain(|id, _| {
+            store
+                .get(&AccountId::from(id.as_str()))
+                .is_some_and(|a| providers::source_spec(a).is_some())
+        });
         let wanted: Vec<MountSpec> = store.all().iter().filter_map(providers::spec_for).collect();
         let labels: Vec<(&str, &str)> = store
             .all()
@@ -302,11 +340,12 @@ impl CloudService {
             .mounts
             .iter()
             .filter(|(id, mounted)| {
-                !wanted.iter().any(|spec| {
-                    &spec.account_id == *id
-                        && *spec == mounted.spec
-                        && names.get(*id) == Some(&mounted.dir_name)
-                })
+                !self.import_holds.contains_key(*id)
+                    && !wanted.iter().any(|spec| {
+                        &spec.account_id == *id
+                            && *spec == mounted.spec
+                            && names.get(*id) == Some(&mounted.dir_name)
+                    })
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -316,7 +355,9 @@ impl CloudService {
         }
 
         for spec in &wanted {
-            if self.mounts.contains_key(&spec.account_id) {
+            if self.mounts.contains_key(&spec.account_id)
+                || self.import_holds.contains_key(&spec.account_id)
+            {
                 continue;
             }
             let Some(dir_name) = names.get(&spec.account_id).cloned() else {
@@ -376,7 +417,9 @@ impl CloudService {
         let Some(mounted) = self.mounts.remove(id) else {
             return;
         };
-        mounted.running.stop();
+        if let Err(error) = mounted.running.stop() {
+            tracing::warn!(%error, "cloud mount did not stop cleanly");
+        }
         let _ = fs::remove_dir(self.config.mounts_root.join(&mounted.dir_name));
         self.credentials.remove(id);
         self.drop_pending(id);
@@ -403,6 +446,13 @@ impl CloudService {
 
     /// Handle one mount event (health, credential refresh, exit).
     fn on_event(&mut self, id: &str, event: MountEvent) {
+        if self.import_holds.contains_key(id) && !matches!(event, MountEvent::Reply(_)) {
+            if event == MountEvent::Exited && self.mounts.contains_key(id) {
+                self.fail_import_hold(id, "the mount exited during preparation".into());
+            } else {
+                return;
+            }
+        }
         match event {
             MountEvent::Health(health) => {
                 if let Some(mounted) = self.mounts.get_mut(id) {
@@ -433,6 +483,9 @@ impl CloudService {
                 }
             }
             MountEvent::Reply(reply) => {
+                if self.import_freeze_reply(id, &reply) {
+                    return;
+                }
                 let Some((_, answer)) = self.pending.remove(&reply.id) else {
                     return;
                 };
@@ -471,6 +524,11 @@ impl CloudService {
 
     /// Send `message` to `account`'s mount.
     fn send_to(&mut self, account: &str, message: &ToMount) -> Result<(), String> {
+        if self.import_holds.contains_key(account)
+            && !matches!(message, ToMount::PrepareImport { .. })
+        {
+            return Err("the account is preparing import; commit or abort first".into());
+        }
         let mounted = self
             .mounts
             .get_mut(account)
@@ -490,6 +548,18 @@ impl CloudService {
         };
         let response = match request {
             CloudRequest::List => CloudResponse::Mounts(self.mount_list()),
+            CloudRequest::PrepareImport { account } => {
+                self.prepare_import(&account, reply);
+                return;
+            }
+            CloudRequest::AbortImport { account, token } => self.abort_import(&account, &token),
+            CloudRequest::BeginCommitImport { account, token } => {
+                self.begin_commit_import(&account, &token)
+            }
+            CloudRequest::CompleteImport { account, token } => {
+                self.complete_import(&account, &token)
+            }
+            CloudRequest::RecoverImport { account } => self.recover_import(&account),
             CloudRequest::SyncNow { account } => {
                 if self.mounts.contains_key(&account) {
                     done(self.send_to(&account, &ToMount::SyncNow))
@@ -521,6 +591,33 @@ impl CloudService {
                     self.save_paused();
                 }
                 done(result)
+            }
+            CloudRequest::Import { account, request } => {
+                // Revalidate on every request, even before the watcher delivers removal.
+                let store = self.store();
+                self.imports.reconcile(
+                    store
+                        .all()
+                        .iter()
+                        .filter_map(providers::source_spec)
+                        .collect(),
+                );
+                let Some(handoff) = self.handoff() else {
+                    let _ = reply.send(CloudResponse::Import(
+                        runtime_fs::cloud::ImportReply::Error(super::import::failure(
+                            runtime_fs::cloud::ImportErrorKind::AuthenticationRequired,
+                        )),
+                    ));
+                    return;
+                };
+                // Credential refresh and all provider I/O happen on bounded import workers.
+                let credentials = Arc::new(HandoffCredentialSource::new(
+                    AccountId::from(account.as_str()),
+                    handoff,
+                    Arc::clone(&self.config.refresher),
+                ));
+                self.imports.request(account, request, credentials, reply);
+                return;
             }
             CloudRequest::File { account, request } => {
                 let id = self.next_request;
@@ -573,6 +670,7 @@ impl CloudService {
 
     /// Process queued events without blocking.
     pub fn pump(&mut self) {
+        self.expire_import_holds();
         while let Ok(signal) = self.inbox.try_recv() {
             self.handle(signal);
         }
@@ -608,6 +706,7 @@ impl CloudService {
     fn handle(&mut self, signal: Signal) {
         match signal {
             Signal::Accounts => self.reconcile(),
+            Signal::ImportStopped(id, result) => self.import_stopped(&id, result),
             Signal::Control(request, reply) => self.control(request, reply),
             Signal::Event(id, event) => {
                 let exited = event == MountEvent::Exited;
@@ -657,14 +756,36 @@ impl CloudService {
         }
         self.reconcile();
         loop {
-            let signal = if self.retry.is_empty() {
-                self.inbox.recv().ok()
+            self.imports.expire();
+            self.expire_import_holds();
+            let expiry = self.imports.next_expiry();
+            let expiry = if self.import_holds.is_empty() {
+                expiry
             } else {
-                match self.inbox.recv_timeout(RETRY_INTERVAL) {
+                Some(expiry.map_or(Duration::from_secs(1), |left| {
+                    left.min(Duration::from_secs(1))
+                }))
+            };
+            let timeout = if self.retry.is_empty() {
+                expiry
+            } else {
+                Some(expiry.map_or(RETRY_INTERVAL, |left| left.min(RETRY_INTERVAL)))
+            };
+            let signal = if let Some(timeout) = timeout {
+                match self.inbox.recv_timeout(timeout) {
                     Ok(signal) => Some(signal),
-                    Err(mpsc::RecvTimeoutError::Timeout) => Some(Signal::Accounts),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.imports.expire();
+                        self.expire_import_holds();
+                        if !self.retry.is_empty() {
+                            self.reconcile();
+                        }
+                        continue;
+                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => None,
                 }
+            } else {
+                self.inbox.recv().ok()
             };
             let Some(signal) = signal else { break };
             self.handle(signal);
@@ -675,6 +796,7 @@ impl CloudService {
 
     /// Stop every mount.
     pub fn shutdown(&mut self) {
+        self.imports.cancel_all();
         let ids: Vec<String> = self.mounts.keys().cloned().collect();
         for id in ids {
             self.unmount(&id, false);
@@ -754,6 +876,25 @@ pub fn dispatch(
     reply: &Arc<dyn Fn(MountReply) + Send + Sync>,
 ) {
     match message {
+        ToMount::PrepareImport { id } => {
+            let worker = Arc::clone(volume);
+            let answer = Arc::clone(reply);
+            if std::thread::Builder::new()
+                .name("cloud-freeze".into())
+                .spawn(move || {
+                    let result = worker
+                        .prepare_import()
+                        .map(|()| runtime_fs::cloud::FileReply::ImportFrozen);
+                    answer(MountReply { id, result });
+                })
+                .is_err()
+            {
+                reply(MountReply {
+                    id,
+                    result: Err("cannot start import preparation".into()),
+                });
+            }
+        }
         ToMount::SyncNow => volume.sync_now(),
         ToMount::Pause => volume.pause(),
         ToMount::Resume => volume.resume(),
@@ -1007,7 +1148,7 @@ impl Launcher for ProcessLauncher {
             capabilities,
         };
         if ready_rx.recv_timeout(self.ready_timeout).is_err() {
-            mount.halt();
+            let _ = mount.halt();
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the cloud mount did not become ready",
@@ -1018,12 +1159,16 @@ impl Launcher for ProcessLauncher {
 }
 
 impl ChildMount {
-    fn halt(&mut self) {
+    fn halt(&mut self) -> io::Result<()> {
         // Closing stdin asks the mount to unmount and exit.
         self.stdin.take();
         if self.exited.recv_timeout(Duration::from_secs(10)).is_ok() {
-            let _ = self.child.wait();
-            return;
+            let status = self.child.wait()?;
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other("cloud mount exited unsuccessfully"))
+            };
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -1031,6 +1176,9 @@ impl ChildMount {
             .arg("-u")
             .arg(&self.mount_point)
             .status();
+        Err(io::Error::other(
+            "the cloud mount did not stop cleanly before its deadline",
+        ))
     }
 }
 
@@ -1052,8 +1200,8 @@ impl RunningMount for ChildMount {
         *self.capabilities.lock_recover()
     }
 
-    fn stop(mut self: Box<Self>) {
-        self.halt();
+    fn stop(mut self: Box<Self>) -> io::Result<()> {
+        self.halt()
     }
 }
 
@@ -1167,9 +1315,10 @@ impl RunningMount for InProcessMount {
         self.volume.control_capabilities()
     }
 
-    fn stop(self: Box<Self>) {
+    fn stop(self: Box<Self>) -> io::Result<()> {
         self.volume.shutdown();
         self.volumes.lock_recover().remove(&self.account_id);
+        Ok(())
     }
 }
 
@@ -1243,7 +1392,7 @@ pub fn run_mount(mount_point: &Path, state_dir: &Path) -> io::Result<()> {
     // signal.
     credentials.pump(input, |message| dispatch(&volume, message, &reply), || {});
     volume.shutdown();
-    session.umount_and_join()?;
+    crate::fuse_session::unmount_and_join(session)?;
     for worker in workers {
         let _ = worker.join();
     }

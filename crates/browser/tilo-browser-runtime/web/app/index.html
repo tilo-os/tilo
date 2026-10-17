@@ -37,8 +37,18 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     #surface { height: calc(100% - 28px); }
     #bar { height: 28px; line-height: 28px; padding: 0 8px; display: flex; gap: 12px; }
     #bar a { color: #9ab4ff; margin-left: auto; }
-    .tilo-entry-card { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); display: grid; gap: 10px; padding: 20px; border-radius: 12px; background: #1f2228; border: 1px solid #3a3d44; max-width: 420px; }
-    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; }
+    .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
+    .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
+    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
+    .tilo-entry-card button:hover { background: #26282e; }
+    .tilo-entry-card button.tilo-entry-primary { border-color: transparent; background: #f2f2f4; color: #121214; font-weight: 500; }
+    .tilo-entry-card button.tilo-entry-primary:hover { background: #ffffff; }
+    .tilo-entry-actions { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; }
+    .tilo-entry-options { display: grid; gap: 6px; }
+    .tilo-entry-options button { text-align: left; }
+    /* While the page asks something, the arrival screen behind it waits too:
+       no breathing mark, line, bar or note that the network is slow. */
+    body:has(.tilo-entry-card) :is(#arrival > *, #arrival-note, #arrival-bar, #status) { visibility: hidden; }
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }

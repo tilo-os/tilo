@@ -66,6 +66,7 @@ fn manifest() -> ManifestView {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        opens_secondary: false,
         continuity: launcher::manifest::ContinuityContract::default(),
     }
 }
@@ -662,6 +663,194 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
         );
         let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
         assert!(line.starts_with("ERR "), "{line}");
+    }
+    drop(home);
+}
+
+/// Run the fixture as Settings, the one package the launcher gives parts of
+/// the session's configuration, with Landlock enforced as in production.
+fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
+    let manifest = ManifestView {
+        package_id: "so.tilo.settings".to_string(),
+        ..manifest()
+    };
+    let opts = RunOptions {
+        no_services: true,
+        bwrap_bin: Some(bwrap()),
+        landlock_enforce: true,
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        mode: launcher::run::LaunchMode::Cli {
+            command: "roomtest".to_string(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
+        },
+        ..isolated_options(&data.path)
+    };
+    let (status, out) = run_with_captured(&manifest, roomtest_payload(), &opts).expect("launch");
+    let text = String::from_utf8_lossy(&out).trim().to_string();
+    assert!(
+        status.success(),
+        "fixture exited {status:?} with stdout {text:?}"
+    );
+    text
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one session configuration, probed phase by phase through the production launch"
+)]
+fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
+    // Built before the home is replaced: the fixture compiles with `rustc`
+    // from the developer's toolchain, which lives under the real `HOME`.
+    let _ = roomtest_payload();
+    let home = tilo_test_env::TestHome::new().expect("temporary home");
+    let host = home.config().join("tilo");
+    let attestors = host.join("trusted-attestors.toml");
+    let revoked = host.join("revoked-keys.toml");
+    let registries = host.join("registries.toml");
+    let record = host.join("records/person.json");
+    let state = host.join("state.json");
+    let settings = host.join("session/settings.json");
+    let accounts = host.join("accounts/store.json");
+    let root_secret = host.join("identity/secrets/0123abcd.key");
+    let active = host.join("identity/active");
+    let identity_record = host.join("identity/primary.json");
+    for (path, contents) in [
+        (&root_secret, "root secret"),
+        (&active, "primary"),
+        (&identity_record, r#"{"schema_version":2}"#),
+        (&attestors, "# trusted attestors"),
+        (&revoked, "# revoked keys"),
+        (&registries, "# registries"),
+        (&record, r#"{"person":true}"#),
+        (&state, r#"{"workspaces":[]}"#),
+        (&settings, r#"{"region":{"units":"metric"}}"#),
+        (&accounts, r#"{"accounts":[]}"#),
+    ] {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("config dir");
+        std::fs::write(path, contents).expect("config file");
+    }
+    let config = appdir::SANDBOX_SESSION_CONFIG;
+    let data = DataHome::new();
+    let run = |argv: &[&str]| run_as_settings(&data, argv);
+
+    // Phase `settings_is_told_where_its_document_is`.
+    assert_eq!(
+        run(&["env", "TILO_SESSION_SETTINGS"]),
+        format!(
+            "ENV TILO_SESSION_SETTINGS={}",
+            appdir::SANDBOX_SESSION_SETTINGS
+        )
+    );
+
+    // Phase `the_trust_lists_registries_and_records_are_not_there`.
+    for private in [
+        "trusted-attestors.toml",
+        "revoked-keys.toml",
+        "registries.toml",
+        "records/person.json",
+    ] {
+        let line = run(&["read", &format!("{config}/{private}")]);
+        assert!(
+            line.starts_with("ERR "),
+            "{private} must not reach the Settings sandbox: {line}"
+        );
+    }
+    // A trust list written where the session keeps them lands in the app's
+    // own directory, never on the host.
+    let planted = run(&[
+        "writeabs",
+        &format!("{config}/trusted-attestors.toml"),
+        "planted",
+    ]);
+    assert!(planted.starts_with("WROTE "), "{planted}");
+    assert_eq!(
+        std::fs::read_to_string(&attestors).expect("attestors"),
+        "# trusted attestors"
+    );
+
+    // Phase `the_identity_store_is_not_there`: the root secret, the active
+    // selector and the records are the host's, administered behind its
+    // identity actions.
+    for private in [
+        "identity/secrets/0123abcd.key",
+        "identity/active",
+        "identity/primary.json",
+    ] {
+        let line = run(&["read", &format!("{config}/{private}")]);
+        assert!(
+            line.starts_with("ERR "),
+            "{private} must not reach the Settings sandbox: {line}"
+        );
+    }
+    let listing = run(&["readdir", &format!("{config}/identity")]);
+    assert!(
+        listing.starts_with("ERR "),
+        "the identity store must not be listable from Settings: {listing}"
+    );
+
+    // Phase `the_workspace_tree_reads_and_refuses_writes`.
+    assert_eq!(
+        run(&["read", &format!("{config}/state.json")]),
+        format!(r#"OK {config}/state.json {{"workspaces":[]}}"#)
+    );
+    let line = run(&["writeabs", &format!("{config}/state.json"), "{}"]);
+    assert!(
+        line.starts_with("ERR "),
+        "state.json must be read-only: {line}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&state).expect("state"),
+        r#"{"workspaces":[]}"#
+    );
+
+    // Phase `the_settings_document_is_replaced_by_rename_and_the_host_sees_it`.
+    let session = format!("{config}/session");
+    assert_eq!(
+        run(&["read", appdir::SANDBOX_SESSION_SETTINGS]),
+        format!(
+            r#"OK {} {{"region":{{"units":"metric"}}}}"#,
+            appdir::SANDBOX_SESSION_SETTINGS
+        )
+    );
+    let temp = format!("{session}/.settings.json.1.tmp");
+    let wrote = run(&["writeabs", &temp, r#"{"region":{"units":"imperial"}}"#]);
+    assert!(wrote.starts_with("WROTE "), "{wrote}");
+    let renamed = run(&["rename", &temp, appdir::SANDBOX_SESSION_SETTINGS]);
+    assert!(renamed.starts_with("RENAMED "), "{renamed}");
+    assert_eq!(
+        std::fs::read_to_string(&settings).expect("settings"),
+        r#"{"region":{"units":"imperial"}}"#,
+        "the compositor reads the document Settings replaced"
+    );
+    assert_eq!(
+        run(&["readdir", &session]),
+        format!("OK {session} settings.json"),
+        "the session directory holds the document and nothing else of Tilo's"
+    );
+
+    // Phase `the_account_stores_stay_writable`.
+    let wrote = run(&[
+        "writeabs",
+        &format!("{config}/accounts/store.json"),
+        r#"{"accounts":[1]}"#,
+    ]);
+    assert!(wrote.starts_with("WROTE "), "{wrote}");
+    assert_eq!(
+        std::fs::read_to_string(&accounts).expect("accounts"),
+        r#"{"accounts":[1]}"#
+    );
+
+    // On the host, nothing outside those parts changed.
+    for (path, contents) in [
+        (&revoked, "# revoked keys"),
+        (&registries, "# registries"),
+        (&record, r#"{"person":true}"#),
+        (&root_secret, "root secret"),
+        (&active, "primary"),
+        (&identity_record, r#"{"schema_version":2}"#),
+    ] {
+        assert_eq!(std::fs::read_to_string(path).expect("unchanged"), contents);
     }
     drop(home);
 }

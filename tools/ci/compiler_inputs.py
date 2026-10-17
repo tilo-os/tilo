@@ -196,10 +196,17 @@ def main() -> int:
             except json.JSONDecodeError:
                 print(line, end="", flush=True)
                 continue
+            if not isinstance(message, dict):
+                continue
             if message.get("reason") in {"compiler-artifact", "build-script-executed", "build-finished"}:
                 messages.append(message)
             if message.get("reason") == "compiler-message":
-                print(message["message"].get("rendered", ""), end="", flush=True)
+                diagnostic = message.get("message")
+                rendered = diagnostic.get("rendered") if isinstance(diagnostic, dict) else None
+                if isinstance(rendered, str):
+                    print(rendered, end="", flush=True)
+                else:
+                    print("::warning::Compiler diagnostic unavailable; compilation result unchanged.")
         status = proc.wait()
     try:
         receipt = collect(messages, metadata, root, binding)
@@ -215,7 +222,7 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(receipt, separators=(",", ":")) + "\n")
         print(f"Compiler inputs: {len(receipt['targets'])} target observations; selection unchanged.")
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.CalledProcessError) as error:
         # Observability cannot turn a successful compile red or hide its failure.
         print(f"::warning::Compiler input receipt unavailable ({type(error).__name__}).")
     return 0 if observing else status

@@ -135,6 +135,10 @@ pub struct AppCandidate {
     pub package_id: String,
     pub display_name: String,
     pub resources: BTreeSet<ResourceKind>,
+    /// Picked for these resources on purpose rather than opened by default
+    /// (an editor that imports video): without an explicit choice, another
+    /// app claiming the resource wins. The manifest's `[providers].secondary`.
+    pub secondary: bool,
 }
 
 impl AppCandidate {
@@ -326,7 +330,8 @@ impl<'a> DefaultAppResolver<'a> {
     }
 
     /// Without an explicit choice: a Tilo package first, since it runs sandboxed and
-    /// collaborative; then the host's own `mimeapps.list` default; then any host
+    /// collaborative, one that opens the resource ahead of one that is only picked
+    /// for it; then the host's own `mimeapps.list` default; then any host
     /// application, deterministically by name.
     fn fallback(&self, resource: &ResourceKind) -> Option<DefaultAppSelection> {
         let mut candidates: Vec<&AppCandidate> = self
@@ -337,6 +342,7 @@ impl<'a> DefaultAppResolver<'a> {
         candidates.sort_by(|a, b| {
             a.is_host()
                 .cmp(&b.is_host())
+                .then_with(|| a.secondary.cmp(&b.secondary))
                 .then_with(|| a.display_name.cmp(&b.display_name))
                 .then_with(|| a.package_id.cmp(&b.package_id))
         });
@@ -447,6 +453,7 @@ mod tests {
             package_id: id.into(),
             display_name: name.into(),
             resources: [r(ext)].into(),
+            secondary: false,
         }
     }
 
@@ -563,6 +570,7 @@ mod tests {
             package_id: crate::mimeapps::host_app_id(desktop_id),
             display_name: name.into(),
             resources: [resource.clone()].into(),
+            secondary: false,
         }
     }
 
@@ -589,6 +597,7 @@ mod tests {
             package_id: "so.tilo.pdf-viewer".into(),
             display_name: "PDF Viewer".into(),
             resources: [pdf.clone()].into(),
+            secondary: false,
         });
         let selected = DefaultAppResolver::new(&with_package)
             .with_system_defaults(&chain)
@@ -606,6 +615,46 @@ mod tests {
         assert_eq!(
             selected.package_id, "okular.desktop",
             "a personal choice of a host app wins over a package"
+        );
+    }
+
+    #[test]
+    fn a_secondary_claimant_is_the_default_only_when_nothing_else_claims() {
+        let mp4 = r("mp4");
+        let mov = r("mov");
+        let editor = AppCandidate {
+            resources: [mp4.clone(), mov.clone()].into(),
+            secondary: true,
+            ..app("so.tilo.video-editor", "Video Editor", "mp4")
+        };
+        let apps = [editor, app("so.tilo.video-player", "Video Player", "mp4")];
+        let resolver = DefaultAppResolver::new(&apps);
+        let personal = PersonalDefaults::default();
+        assert_eq!(
+            resolver
+                .resolve(&mp4, "ada", &personal, None)
+                .unwrap()
+                .package_id,
+            "so.tilo.video-player",
+            "the player opens video ahead of the editor whose name sorts first"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&mov, "ada", &personal, None)
+                .unwrap()
+                .package_id,
+            "so.tilo.video-editor"
+        );
+        let chosen = PersonalDefaults {
+            handlers: [(mp4.clone(), "so.tilo.video-editor".into())].into(),
+        };
+        assert_eq!(
+            resolver
+                .resolve(&mp4, "ada", &chosen, None)
+                .unwrap()
+                .package_id,
+            "so.tilo.video-editor",
+            "choosing the editor still makes it the default"
         );
     }
 

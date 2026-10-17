@@ -1690,10 +1690,12 @@ fn rail_fill(theme: &Theme, focused: bool, hover: bool, present: bool) -> Color 
 }
 
 impl StripRail {
-    /// One window is not a strip you can travel along, and a single
-    /// segment would be noise.
+    /// Drawn for any strip with a window, like the ribbon for any
+    /// workspace with a strip: the pair reads as one object turned ninety
+    /// degrees, and the rail missing while the ribbon showed a lone strip
+    /// read as the rail being gone, not as "one window here".
     pub fn is_meaningful(&self) -> bool {
-        self.count >= 2
+        self.count >= 1
     }
 
     pub fn extent(&self) -> f64 {
@@ -1808,11 +1810,18 @@ mod rail_tests {
 
     #[test]
     fn rail_segments_are_ordered_weighted_and_hittable() {
-        // Case `a_single_group_draws_no_rail`.
+        // Case `a_single_group_draws_its_one_segment_like_the_ribbon`.
         {
-            assert!(!rail(1, 0, vec![0]).is_meaningful());
-            assert!(rail(2, 0, vec![0]).is_meaningful());
-            assert!(rail(1, 0, vec![0]).hit(Point::new(800.0, 884.0)).is_none());
+            assert!(!rail(0, 0, vec![]).is_meaningful());
+            assert!(rail(1, 0, vec![0]).is_meaningful());
+            let lone = rail(1, 0, vec![0]);
+            let seg = lone.segment_rect(0).unwrap();
+            assert!(
+                (seg.center().x - 800.0).abs() < 0.5,
+                "a lone segment sits on the centre line: {seg:?}"
+            );
+            assert_eq!(lone.hit(seg.center()), Some(0));
+            assert!(rail(0, 0, vec![]).hit(Point::new(800.0, 897.0)).is_none());
         }
 
         // Case `segments_run_in_order_with_the_focused_one_longest`.

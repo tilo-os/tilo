@@ -2612,8 +2612,9 @@ impl MailApp {
             return;
         };
         let mut adopted = AccountStore::from_store(&person.store(), &vault);
-        let changed = {
+        let active_changed = {
             let mut st = self.shared.borrow_mut();
+            let previous = st.accounts.active_account().cloned();
             if let Some(shown) = st
                 .accounts
                 .active_account()
@@ -2622,14 +2623,29 @@ impl MailApp {
             {
                 adopted.active = index;
             }
-            let changed = st.accounts != adopted;
+            for account in &mut adopted.accounts {
+                if let Some(previous) = st.accounts.accounts.iter().find(|a| a.id == account.id) {
+                    account.collapsed = previous.collapsed;
+                }
+            }
+            let active_changed = previous.as_ref().map(|a| (&a.id, &a.config))
+                != adopted.active_account().map(|a| (&a.id, &a.config));
             st.accounts = adopted;
-            changed
+            active_changed
         };
-        if changed && self.connect_requested && self.engine.is_some() {
-            let cfg = self.shared.borrow().accounts.active_config();
+        // An empty window has already completed its first sync. Its first
+        // Settings-created account must connect here, not wait for the
+        // one-time startup path to run again. Inactive additions need no fetch.
+        if self.shared.borrow().accounts.is_empty() {
+            self.connect_requested = false;
+        } else if self.engine.is_some() && (active_changed || !self.connect_requested) {
+            let (cfg, folder) = {
+                let st = self.shared.borrow();
+                (st.accounts.active_config(), st.folder)
+            };
             self.post_engine(EngineRequest::connect(cfg.clone()));
-            self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
+            self.post_engine(EngineRequest::fetch(cfg, folder));
+            self.connect_requested = true;
         }
         self.dirty = true;
     }
@@ -5003,6 +5019,73 @@ mod tests {
     use super::*;
     use crate::resource::TestMail;
     use automerge::ReadDoc;
+
+    #[test]
+    fn settings_mail_account_connects_after_an_empty_windows_first_sync() {
+        let mut host =
+            ui::framework::testing::TestApp::<settings::resource::SettingsShell>::new().unwrap();
+        let record = host.person::<PersonAccounts>().unwrap();
+        let mut mail = MailApp::new_first_run();
+        let (requests, outgoing) = std::sync::mpsc::channel();
+        let (_events, incoming) = std::sync::mpsc::channel();
+        mail.engine = Some(EngineHandle {
+            tx: requests,
+            rx: incoming,
+        });
+        mail.follow_person_accounts(record.clone());
+        let doc = TestMail::doc();
+        mail.sync(&doc, &automerge::ROOT);
+        assert!(mail.shared.borrow().seeded);
+        assert!(!mail.connect_requested);
+        assert!(outgoing.try_recv().is_err());
+
+        let config = AccountConfig {
+            email: "ada@example.org".into(),
+            username: "ada@example.org".into(),
+            imap_host: "imap.gmail.com".into(),
+            smtp_host: "smtp.gmail.com".into(),
+            auth: accounts::email::AuthMethod::OAuth,
+            ..Default::default()
+        };
+        let mut stored = accounts::Account::new("gmail-ada", crate::account::TYPE_ID);
+        stored.set_config(&config);
+        record.invoke(&PersonAccounts::saving(&stored)).unwrap();
+        mail.sync(&doc, &automerge::ROOT);
+        assert_eq!(mail.shared.borrow().accounts.active_config(), config);
+        assert!(!mail.is_first_run());
+        assert!(mail.connect_requested);
+        assert!(
+            matches!(outgoing.try_recv().unwrap(), EngineRequest::Connect { account, .. } if account == config)
+        );
+        assert!(
+            matches!(outgoing.try_recv().unwrap(), EngineRequest::Fetch { account, folder: Folder::Inbox, .. } if account == config)
+        );
+        assert!(outgoing.try_recv().is_err());
+
+        mail.shared.borrow_mut().accounts.toggle_collapsed(0);
+        mail.shared.borrow_mut().folder = Folder::Sent;
+        let mut other = accounts::Account::new("gmail-other", crate::account::TYPE_ID);
+        let mut other_config = config.clone();
+        other_config.email = "other@example.org".into();
+        other.set_config(&other_config);
+        record.invoke(&PersonAccounts::saving(&other)).unwrap();
+        mail.sync(&doc, &automerge::ROOT);
+        assert_eq!(mail.shared.borrow().accounts.len(), 2);
+        assert_eq!(mail.shared.borrow().accounts.active_config(), config);
+        assert!(
+            mail.shared
+                .borrow()
+                .accounts
+                .active_account()
+                .unwrap()
+                .collapsed
+        );
+        assert_eq!(mail.shared.borrow().folder, Folder::Sent);
+        assert!(
+            outgoing.try_recv().is_err(),
+            "an inactive addition must not refetch the active mailbox"
+        );
+    }
 
     #[cfg(feature = "live")]
     #[test]

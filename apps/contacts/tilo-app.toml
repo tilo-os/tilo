@@ -19,7 +19,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.save", "files.paths", "app-files", "notifications", "threads"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "notifications", "threads", "open-uri"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

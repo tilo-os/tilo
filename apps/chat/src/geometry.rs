@@ -12,20 +12,6 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AvatarSize, ButtonFace, ChipFace, ControlSize};
 
-/// How a column header shares its row between a title and an optional
-/// trailing chip (the sidebar's "3 online"). The chip yields first: it is
-/// shown only while the whole title still fits beside it, so the workspace
-/// name never elides to make room for a status chip. Returns the width the
-/// title may take and whether the chip shows.
-pub(crate) fn title_beside_chip(avail: f64, title_w: f64, chip_w: f64, gap: f64) -> (f64, bool) {
-    let avail = avail.max(0.0);
-    if chip_w > 0.0 && title_w + gap + chip_w <= avail {
-        (avail - gap - chip_w, true)
-    } else {
-        (avail, false)
-    }
-}
-
 /// The chat window's chrome metrics in one theme: the header row, the
 /// content gutter, the message column and the composer's height range. The
 /// paint pass refreshes it from the theme it draws with; event handling and
@@ -118,16 +104,6 @@ mod tests {
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
-    }
-
-    #[test]
-    fn the_chip_yields_before_the_title_elides() {
-        // Room for both: the title keeps its width beside the chip.
-        assert_eq!(title_beside_chip(200.0, 100.0, 60.0, 8.0), (132.0, true));
-        // Too tight for both: the chip goes and the title takes the row.
-        assert_eq!(title_beside_chip(150.0, 100.0, 60.0, 8.0), (150.0, false));
-        // No chip at all.
-        assert_eq!(title_beside_chip(150.0, 100.0, 0.0, 8.0), (150.0, false));
     }
 
     #[test]

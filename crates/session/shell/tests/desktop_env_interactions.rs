@@ -304,11 +304,21 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
             &layout,
             Point::new(unpainted.group.center().x, unpainted.group.y0 + 1.0),
         );
+        // A rest in the reveal band shows the bar once the dwell runs out.
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .unwrap()
+                .elapse_maximized_chrome_intent(),
+            "a rest in the band reveals the bar"
+        );
         paint_group(&mut host, &layout, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
         let restore = bounds.restore.expect("painted Restore");
         let client = bounds.client.expect("active client");
-        assert!(restore.y1 <= client.y0);
+        assert!(
+            client.contains(restore.center()),
+            "the bar stands over the client's top edge"
+        );
         assert_eq!(host.active_window_control_rects().unwrap().1, restore);
         cursor(&mut host, &layout, restore.center());
         press(&mut host, &layout);
@@ -322,6 +332,11 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
         host.tick_pending_maximize_harvest_for_tests();
         assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
 
+        // The pointer left the output, which hid the bar: reach for it again.
+        host.group_at_for_tests(strip_id, 0)
+            .unwrap()
+            .set_maximized_chrome_shown_for_tests(true);
+        paint_group(&mut host, &layout, strip_id);
         cursor(&mut host, &layout, restore.center());
         paint_group(&mut host, &layout, strip_id);
         press(&mut host, &layout);
@@ -340,6 +355,10 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
             "a scale change must cancel the old held gesture"
         );
 
+        host.group_at_for_tests(strip_id, 0)
+            .unwrap()
+            .set_maximized_chrome_shown_for_tests(true);
+        paint_group(&mut host, &scaled, strip_id);
         cursor(&mut host, &scaled, target.center());
         press(&mut host, &scaled);
         assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
@@ -1089,17 +1108,11 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
-        // The SDK owns the theme-dependent system lane policy; the hidden
-        // tab strip itself still reserves no height.
+        // The client fills the whole window: its bar hides at rest and
+        // appears over the top edge when reached for, taking no room.
         assert_eq!(
-            app,
-            vello::kurbo::Rect::new(
-                maximized.x0,
-                maximized.y0 + ui::widget::maximized_chrome_height(&layout2.theme),
-                maximized.x1,
-                maximized.y1,
-            ),
-            "the client must fill exactly the area below compact system controls",
+            app, maximized,
+            "the maximized client must fill the window: no lane above it",
         );
         assert_approx_eq!(
             group.bar_for_tests().get_rect().height(),
@@ -1107,12 +1120,34 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "the hidden tab strip must reserve no height",
         );
 
-        // Reveal through the host's pointer route at the group's actual,
-        // nonzero origin. Painting must produce a usable Restore target.
+        // At rest, with the pointer in the app, no bar is painted.
+        cursor(&mut host, &layout2, maximized.center());
+        paint_group(&mut host, &layout2, strip_id);
+        assert!(
+            host.active_window_bounds()
+                .expect("painted active group")
+                .restore
+                .is_none(),
+            "the bar hides while the pointer is in the app",
+        );
+        // A rest in the reveal band at the window's top, through the host's
+        // pointer route at the group's actual, nonzero origin, shows it once
+        // the dwell runs out. Painting must produce a usable Restore target.
         cursor(
             &mut host,
             &layout2,
             Point::new(maximized.center().x, maximized.y0 + 1.0),
+        );
+        cursor(
+            &mut host,
+            &layout2,
+            Point::new(maximized.center().x + 1.0, maximized.y0 + 2.0),
+        );
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("maximized group")
+                .elapse_maximized_chrome_intent(),
+            "a rest in the band reveals the bar",
         );
         paint_group(&mut host, &layout2, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
@@ -1123,22 +1158,12 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "Restore must reveal below the OS top bar"
         );
         assert!(
-            restore.y0 >= maximized.y0,
-            "Restore must stay below the OS top bar",
-        );
-        assert!(
-            restore.y1 <= app.y0,
-            "Restore must stay clear of the client header",
+            restore.y0 >= maximized.y0 + ui::widget::top_edge_reveal::REVEAL_BAND_PX,
+            "Restore stands below the reveal band, never under the resting pointer",
         );
         assert!(
             restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
             "Restore must stay inside the maximized group",
-        );
-        let client_top = (restore.y1 + ui::widget::tabs::TAB_PILL_INSET_Y).ceil();
-        assert_eq!(
-            app,
-            ui::kurbo::Rect::new(maximized.x0, client_top, maximized.x1, maximized.y1),
-            "the client fills exactly the group below painted system chrome",
         );
         cursor(&mut host, &layout2, restore.center());
         press(&mut host, &layout2);

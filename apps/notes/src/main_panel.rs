@@ -63,6 +63,14 @@ use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
 
+fn empty_content() -> EmptyStateContent<'static> {
+    EmptyStateContent {
+        icon: Some(Icon::FileText),
+        action_label: Some("New note"),
+        ..EmptyStateContent::new("Start your first note")
+    }
+}
+
 /// The note header's geometry in the theme the tree was built with. The note
 /// title is the page's `LargeTitle`: an editable heading pinned above the
 /// body, so there is a single clear heading per page. Every measure is a
@@ -112,10 +120,30 @@ impl Metrics {
     }
 }
 
+/// A line of body text people read comfortably: about seventy characters,
+/// measured from a pangram so it follows the font and the text scale.
+fn reading_width(theme: &Theme) -> f64 {
+    const SAMPLE: &str = "the quick brown fox jumps over the lazy dog";
+    const CHARACTERS: u32 = 70;
+    let style = theme.text(TextRole::Body);
+    let sample = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        f64::from(text.measure_style(SAMPLE, None, &style).0)
+    });
+    // `SAMPLE` is ASCII, so its byte length is its character count.
+    let per_character = sample / num::f64_of_usize(SAMPLE.len());
+    (per_character * f64::from(CHARACTERS)).max(f64::from(theme.tokens.metrics.chooser_width))
+}
+
 /// Place a child of the panel at `top`, from the text edge to the trailing
 /// gutter and as tall as its own content. The panel positions these by
 /// hand: they are absolute, so their height never sizes the panel.
-fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, top: f64) {
+fn pin_under_gutter(
+    taffy: &mut TaffyTree<()>,
+    node: NodeId,
+    metrics: &Metrics,
+    side: f64,
+    top: f64,
+) {
     let Ok(existing) = taffy.style(node).cloned() else {
         return;
     };
@@ -125,8 +153,8 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, 
             position: taffy::Position::Absolute,
             size: Size::auto(),
             inset: taffy::Rect {
-                left: length(num::f32_of_f64(metrics.text_edge)),
-                right: length(num::f32_of_f64(metrics.gutter)),
+                left: length(num::f32_of_f64(metrics.text_edge + side)),
+                right: length(num::f32_of_f64(metrics.gutter + side)),
                 top: length(num::f32_of_f64(top)),
                 bottom: taffy::LengthPercentageAuto::auto(),
             },
@@ -349,6 +377,13 @@ pub struct MainPanel {
     /// Set while a new chip height is being discovered so the host rebuilds
     /// the absolute editor inset on the immediately following layout pass.
     tag_layout_dirty: bool,
+    /// How far the text column stands in from each gutter, as the last
+    /// layout found it: a wide window shows one centred column of the
+    /// reading measure rather than lines as wide as the screen.
+    column_side: f64,
+    /// The widest the text column grows: about seventy characters of body
+    /// text, measured in the theme the tree was built with.
+    reading_width: f64,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
@@ -447,6 +482,8 @@ impl MainPanel {
             header_node: None,
             metadata_height: 0.0,
             tag_layout_dirty: false,
+            column_side: 0.0,
+            reading_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
             notebook: None,
@@ -1078,6 +1115,14 @@ impl MainPanel {
         }
     }
 
+    /// How far the text column stands in from each gutter at panel `width`:
+    /// none until the text would run past the reading measure, then whatever
+    /// keeps the column at that measure, centred.
+    fn column_side_for(&self, width: f64) -> f64 {
+        let text = (width - self.metrics.text_edge - self.metrics.gutter).max(0.0);
+        ((text - self.reading_width) / 2.0).max(0.0).floor()
+    }
+
     /// Where the header stands, from the layout the toolkit solved for it:
     /// `metadata_height` is what the body is inset by.
     fn measure_header(&mut self, taffy: &TaffyTree<()>) {
@@ -1375,7 +1420,7 @@ impl MainPanel {
         self.title_label.current_text().to_owned()
     }
 
-    /// Test hook: centre of the first-note call to action after a draw pass.
+    /// Test hook: centre of the first-note call to action after a layout pass.
     #[doc(hidden)]
     pub fn empty_action_center_for_test(&self) -> Option<Point> {
         (self.empty_action_rect.width() > 0.0).then(|| self.empty_action_rect.center())
@@ -1466,6 +1511,7 @@ impl Widget for MainPanel {
         self.metrics.text_edge = self.metrics.gutter + editor.handle_gutter(theme);
         self.metrics.body_inset = (self.metrics.text_edge - editor.text_inset(theme)).max(0.0);
         self.layout_theme = theme.clone();
+        self.reading_width = reading_width(theme);
         // The panel is a **leaf** in the parent's flex tree — we do
         // all internal positioning by hand in `apply_layout`. Using a
         // flex container with the editor as a child caused taffy's
@@ -1501,8 +1547,8 @@ impl Widget for MainPanel {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(num::f32_of_f64(self.metrics.body_inset)),
-                        right: length(num::f32_of_f64(self.metrics.gutter)),
+                        left: length(num::f32_of_f64(self.metrics.body_inset + self.column_side)),
+                        right: length(num::f32_of_f64(self.metrics.gutter + self.column_side)),
                         top: length(num::f32_of_f64(self.editor_top_inset())),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
@@ -1537,6 +1583,7 @@ impl Widget for MainPanel {
                 taffy,
                 node,
                 &self.metrics,
+                self.column_side,
                 top_inset + self.metrics.header_gap,
             );
         }
@@ -1584,11 +1631,29 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        // Input can arrive before the first paint, including after a resize.
+        self.empty_action_rect = if self.page_id.is_none() {
+            ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+                EmptyState::layout(text, &self.layout_theme, self.rect, &empty_content())
+                    .action
+                    .unwrap_or(Rect::ZERO)
+            })
+        } else {
+            Rect::ZERO
+        };
         // A title that does not fit its line steps down one role instead of
         // eliding, so a phone at 200% text still reads the whole name. This
         // is responsive type, not cancellation of the text scale.
-        let gutter = self.metrics.gutter;
-        let text_edge = self.metrics.text_edge;
+        // The editor and header were built at the last width's column; a
+        // new width that moves the column builds them again at once.
+        let side = self.column_side_for(self.rect.width());
+        if (side - self.column_side).abs() > 0.5 {
+            self.column_side = side;
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
+        let gutter = self.metrics.gutter + side;
+        let text_edge = self.metrics.text_edge + side;
         let line_width = (self.rect.width() - text_edge - gutter).max(0.0);
         let fits = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
             let style = self.layout_theme.text(TextRole::LargeTitle);
@@ -1602,9 +1667,9 @@ impl Widget for MainPanel {
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
             self.rect.x0 + text_edge,
-            self.rect.y0 + gutter,
+            self.rect.y0 + self.metrics.gutter,
             (self.rect.x1 - gutter).max(self.rect.x0 + text_edge),
-            self.rect.y0 + gutter + self.title_height(),
+            self.rect.y0 + self.metrics.gutter + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);
         let prior_metadata = self.metadata_height;
@@ -1901,17 +1966,12 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            self.empty_action_rect = EmptyState::paint(
+            EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileText),
-                    action_label: Some("New note"),
-                    ..EmptyStateContent::new("Start your first note")
-                },
+                &empty_content(),
                 self.last_pointer,
-            )
-            .unwrap_or(Rect::ZERO);
+            );
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,
