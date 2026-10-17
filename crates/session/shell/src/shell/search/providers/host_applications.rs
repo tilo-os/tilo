@@ -947,7 +947,6 @@ mod tests {
                     opens_secondary: false,
                     offers: Vec::new(),
                 }],
-                crate::shell::chrome_state::OpenTarget::Beside,
             );
             assert!(
                 tilo_rows[0].score > host_rows[0].score,

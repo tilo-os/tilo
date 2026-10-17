@@ -24,8 +24,8 @@ pub enum Destination {
     /// the right of the active window, or into its group when that group
     /// is already tabbed.
     Beside,
-    /// An app chosen from search: use the rightmost insertion point on
-    /// screen, or the first point immediately to its right.
+    /// An app chosen from search: its own window right of the active one,
+    /// never a tab of it, even when that group is tabbed.
     Search,
     /// Join the focused group as a tab, whatever the rule would say.
     /// Falls back to `Beside` when nothing is focused.

@@ -508,7 +508,7 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
         }
 
-        fn a_searched_app_keeps_its_rightmost_target_until_it_maps() {
+        fn a_searched_app_opens_beside_the_window_you_were_in_even_after_focus_moves() {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
             let ids = strip_of(&mut tree, &[3, 1, 1, 1]);
@@ -552,8 +552,10 @@ mod tests {
                 .id;
             assert_eq!(
                 groups.iter().map(|group| group.id).collect::<Vec<_>>(),
-                vec![ids[0], ids[1], ids[2], landed, ids[3]],
-                "the mapped app must retain the rightmost on-screen target captured by search",
+                vec![ids[0], landed, ids[1], ids[2], ids[3]],
+                "a searched app opens as its own window right of the (tabbed) window \
+                 you were in when you pressed Enter, not at the far edge of the screen \
+                 and not as a tab, and keeps that target until it maps",
             );
             crate::shell::launcher::clear_pending_placements();
         }
@@ -563,6 +565,6 @@ mod tests {
         a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards();
         a_launch_beside_a_lone_selected_window_lands_right_of_it();
         a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam();
-        a_searched_app_keeps_its_rightmost_target_until_it_maps();
+        a_searched_app_opens_beside_the_window_you_were_in_even_after_focus_moves();
     }
 }

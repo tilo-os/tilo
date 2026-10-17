@@ -1172,10 +1172,6 @@ search-scope-this-app = This app
 search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
 
-# Where a launched app will open
-search-opens-beside = Opens in rightmost space
-search-opens-here = Opens here, as a tab
-
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
 search-provider-records = Records
@@ -1503,8 +1499,7 @@ search-action-device-revoked-body = The revocation was root-signed and recorded 
 # Search: applications
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
-search-apps-open-subtitle = { $target } · { $detail }
-search-apps-shortcut-subtitle = { $target } · Shortcut
+search-apps-shortcut-subtitle = Shortcut
 search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
 search-apps-verification-pending = Registry verification pending
 search-apps-store-subtitle = App Store · { $trust } · { $detail }

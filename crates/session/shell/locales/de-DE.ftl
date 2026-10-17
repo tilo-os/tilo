@@ -1498,8 +1498,7 @@ search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel s
 # Suche: Anwendungen
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
-search-apps-open-subtitle = { $target } · { $detail }
-search-apps-shortcut-subtitle = { $target } · Verknüpfung
+search-apps-shortcut-subtitle = Verknüpfung
 search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
 search-apps-verification-pending = Prüfung durch die Registry ausstehend
 search-apps-store-subtitle = App Store · { $trust } · { $detail }
@@ -2591,8 +2590,6 @@ activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichs
 
 activity-morning-next = Nächste ausgewählte Quelle
 search-host-app-open = { $app } öffnen
-search-opens-beside = Öffnet sich ganz rechts
-search-opens-here = Öffnet sich hier als Tab
 qs-network-details = WLAN-Netzwerke
 qs-bluetooth-details = Bluetooth-Geräte
 search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
