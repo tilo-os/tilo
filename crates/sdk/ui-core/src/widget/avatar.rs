@@ -104,6 +104,7 @@ impl PresenceStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct AvatarFace<'a> {
     name: &'a str,
+    #[cfg(feature = "local-daemons")]
     identity: &'a str,
     tint: Tint<'a>,
     image: Option<&'a peniko::ImageData>,
@@ -119,6 +120,7 @@ impl<'a> AvatarFace<'a> {
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
             name,
+            #[cfg(feature = "local-daemons")]
             identity,
             tint: Tint::Identity(identity),
             image: None,
