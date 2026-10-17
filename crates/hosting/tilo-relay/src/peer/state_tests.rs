@@ -3071,6 +3071,81 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     );
 }
 
+/// A catch-up that replays only the commits it held unlinks nothing from
+/// the device's queue: it writes `Ready` without a cleanup turn of the
+/// owner, and its held commits are gone once it is written.
+#[tokio::test]
+async fn catch_up_of_held_commits_alone_takes_no_cleanup_turn() {
+    let fixture = Arc::new(Fixture::new());
+    fixture.enqueue(1).await;
+    fixture.drained_wait().await;
+    let root = fixture.store.root().to_path_buf();
+    let (prepare_release, prepare_reached) =
+        crate::store::test_barrier::install(&root, "replay-manifest-prepare");
+    let replaying = fixture.clone();
+    let mut task = tokio::spawn(async move {
+        let mut wire = Vec::new();
+        Box::pin(replaying.replay_to(&mut wire))
+            .await
+            .map(|()| wire)
+    });
+    prepare_reached.await.unwrap();
+    fixture.enqueue(2).await;
+    fixture.drained_wait().await;
+    assert_eq!(
+        fixture.count_held(),
+        1,
+        "the commit made during the replay was not held for its catch-up"
+    );
+    // The first replay's cleanup, in the turn that cuts the catch-up.
+    let (boundary_release, boundary_reached) =
+        crate::store::test_barrier::install(&root, "replay-cleanup");
+    drop(prepare_release);
+    boundary_reached.await.unwrap();
+    // Any cleanup after it is the catch-up's own turn.
+    let (_catch_up_release, catch_up_cleanup) =
+        crate::store::test_barrier::install(&root, "replay-cleanup");
+    drop(boundary_release);
+    let wire = tokio::select! {
+        result = &mut task => result.unwrap().unwrap(),
+        _ = catch_up_cleanup => panic!("a catch-up of held commits alone took a cleanup turn"),
+    };
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice());
+    let mut deltas = Vec::new();
+    let ready = loop {
+        match reader.read_next().await.unwrap() {
+            Some(EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => deltas.push(envelope),
+            Some(EnvelopeV2::State(Envelope::Ready { pending_deltas, .. })) => {
+                break pending_deltas;
+            }
+            frame => panic!("unexpected replay frame: {frame:?}"),
+        }
+    };
+    for kind in [1, 2] {
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|envelope| **envelope == fixture.envelope(kind))
+                .count(),
+            1,
+            "commit {kind} was not replayed exactly once"
+        );
+    }
+    assert_eq!(ready as usize, deltas.len());
+    assert_eq!(
+        fixture.count_held(),
+        0,
+        "the written catch-up left its held commits"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        0
+    );
+}
+
 #[tokio::test]
 async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() {
     let mut fixture = Fixture::with_delivery_capacity(1);

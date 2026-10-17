@@ -286,9 +286,17 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                 );
                 if boundary_done {
                     crate::timing::event("join.catchup", phase, summary.total_frames);
-                    let cleaning = crate::timing::start();
-                    finish_replay_cleanup(run, &handle, peer, session, private_rx, write).await?;
-                    crate::timing::event("join.cleanup", cleaning, 0);
+                    run.catchup.discard_held(run.owner.workers()).await;
+                    // A catch-up that replayed nothing from the device's own
+                    // queue has nothing to unlink, and needs no owner turn.
+                    if summary.cleanup_entries == 0 {
+                        crate::timing::window("join.cleanup_skipped", crate::timing::start());
+                    } else {
+                        let cleaning = crate::timing::start();
+                        finish_replay_cleanup(run, &handle, peer, session, private_rx, write)
+                            .await?;
+                        crate::timing::event("join.cleanup", cleaning, summary.cleanup_entries);
+                    }
                     return Ok(replayed_frames);
                 }
                 crate::timing::event("join.replay", phase, summary.total_frames);
@@ -743,6 +751,24 @@ impl ReplayCatchup {
         let name = format!("{sequence:016x}-{}.delta", blake3::hash(bytes).to_hex());
         std::fs::write(self.held.join(name), bytes)?;
         Ok(())
+    }
+
+    /// Remove the commits this catch-up held, once its final cut is written:
+    /// the cut pinned what it replays, and nothing is held past the cut (a
+    /// commit is held only while the catch-up is [`Self::ACTIVE`]). What
+    /// cannot be removed now is left to the drop and to work reclamation.
+    async fn discard_held(&self, workers: Arc<tokio::sync::Semaphore>) {
+        let held = self.held.clone();
+        let removed =
+            crate::persistence::blocking(workers, move || match std::fs::remove_dir_all(held) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                removed => removed.map_err(StoreError::from),
+            })
+            .await
+            .and_then(|removed| removed);
+        if let Err(error) = removed {
+            tracing::debug!(%error, "a written catch-up's held commits were left for reclamation");
+        }
     }
 }
 impl Drop for ReplayCatchup {
