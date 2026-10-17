@@ -46,6 +46,7 @@ macro_rules! directory_fake_methods {
                         max_bytes: request.get_max_bytes(),
                         max_work: request.get_max_work(),
                         max_depth: request.get_max_depth(),
+                        resource_name: String::new(),
                     },
                 );
                 let mut page = results.get().init_page();
@@ -210,6 +211,7 @@ fn sdk_lazy_directory_query_resolve_and_invoke_use_exact_runtime_methods() {
         max_bytes: 8192,
         max_work: 10,
         max_depth: 2,
+        resource_name: String::new(),
     };
     assert!(manager.send(CollabRequest::QueryActionDirectory {
         request_id: 11,
@@ -342,6 +344,7 @@ fn pending_directory_rpc_releases_lane(method: &'static str) {
                 max_bytes: 8192,
                 max_work: 10,
                 max_depth: 1,
+                resource_name: String::new(),
             },
         },
         "resolve" => CollabRequest::ResolvePublishedAction {

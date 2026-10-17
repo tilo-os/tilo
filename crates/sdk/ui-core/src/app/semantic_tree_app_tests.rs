@@ -2141,6 +2141,7 @@ fn directory_query(
         max_bytes,
         max_work,
         max_depth: 8,
+        resource_name: String::new(),
     }
 }
 
@@ -2228,6 +2229,7 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
             max_bytes: 8_192,
             max_work: 32,
             max_depth: 8,
+            resource_name: String::new(),
         });
         assert_eq!(tail.rows.len(), 1);
         assert_eq!(tail.rows[0].resource, "test.counter:128");
@@ -2257,6 +2259,7 @@ fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
         max_bytes: 8_192,
         max_work: 8,
         max_depth: 8,
+        resource_name: String::new(),
     });
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].resource, "test.item:99999");
@@ -2312,6 +2315,7 @@ fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
         max_bytes: 1_024,
         max_work: 1,
         max_depth: 1,
+        resource_name: String::new(),
     });
     assert!(page.stale_cursor);
 }

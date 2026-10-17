@@ -63,6 +63,7 @@ fn initial_history_query() -> runtime_collab::ActionDirectoryQuery {
         max_bytes: 8192,
         max_work: 32,
         max_depth: 8,
+        resource_name: String::new(),
     }
 }
 fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
