@@ -858,6 +858,13 @@ impl OriginalInvocation {
         {
             return Err("external moderation target action or contract mismatch".into());
         }
+        // An Outside grant authorizes a capability, not an exact signed
+        // assertion. Admission of a Confirm contract consumes the host's
+        // one-use token bound to this actor, action and exact arguments.
+        // Refuse a Store publication that tries to remove that policy.
+        if data.spec.contract.confirmation != tilo_actions::ConfirmationPolicy::Confirm {
+            return Err("external moderation requires exact system confirmation".into());
+        }
         let argument = data
             .request
             .argument
