@@ -1570,6 +1570,8 @@ pub struct DialogLayout {
     pub secret_fields: Vec<Rect>,
     /// The "Remember on this device" row of a network-secrets sheet.
     pub remember: Option<Rect>,
+    /// Trusted disclosure navigation; never resolves the consent reply.
+    pub review_back: Option<Rect>,
 }
 
 pub struct PortalDialogController {
@@ -1577,6 +1579,7 @@ pub struct PortalDialogController {
     active: Option<String>,
     active_authentication_generation: Option<uuid::Uuid>,
     selected: usize,
+    review_page: usize,
     launcher_name: String,
     launcher_icon: usize,
     launcher_field: usize,
@@ -1612,6 +1615,7 @@ impl PortalDialogController {
             active: None,
             active_authentication_generation: None,
             selected: 0,
+            review_page: 0,
             launcher_name: String::new(),
             launcher_icon: 0,
             launcher_field: 0,
@@ -1644,6 +1648,7 @@ impl PortalDialogController {
                 .as_deref()
                 .and_then(|handle| self.queue.authentication_generation(handle));
             self.selected = 0;
+            self.review_page = 0;
             self.launcher_icon = 0;
             self.launcher_field = 0;
             self.forget_secret();
@@ -1752,10 +1757,51 @@ impl PortalDialogController {
         };
         true
     }
+    /// The displayed disclosure uses bounded pages, not an unbounded sheet.
+    /// All pages must be traversed before a separate final approval.
+    pub fn review_pages(&self) -> Option<Vec<String>> {
+        let view = self.view()?;
+        if !matches!(&view, DialogView::ActionGrant { detail, .. } if detail.contains('\n')) {
+            return None;
+        }
+        // At 14 px even full-width glyphs fit 24 columns inside the
+        // narrowest supported sheet's gutters. Break long identifiers too:
+        // word wrapping alone would hide endpoint or signing-key suffixes.
+        let mut lines = Vec::new();
+        for line in view.detail().split('\n') {
+            let chars: Vec<_> = line.chars().collect();
+            if chars.is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.extend(chars.chunks(24).map(|part| part.iter().collect::<String>()));
+            }
+        }
+        Some(lines.chunks(6).map(|page| page.join("\n")).collect())
+    }
+    pub fn displayed_detail(&self) -> String {
+        self.review_pages()
+            .and_then(|pages| pages.get(self.review_page).cloned())
+            .unwrap_or_else(|| self.view().map_or_else(String::new, |view| view.detail()))
+    }
+    pub fn reviewing_more(&self) -> bool {
+        self.review_pages()
+            .is_some_and(|pages| self.review_page + 1 < pages.len())
+    }
+    pub fn review_back(&mut self) -> bool {
+        if self.review_page == 0 {
+            return false;
+        }
+        self.review_page -= 1;
+        true
+    }
     pub fn confirm(&mut self) -> bool {
         let Some(view) = self.view() else {
             return false;
         };
+        if self.reviewing_more() {
+            self.review_page += 1;
+            return true;
+        }
         let done = match &view {
             DialogView::DriveConsent { .. } => self.queue.finish_drive_consent(
                 view.handle(),
@@ -1930,12 +1976,16 @@ impl PortalDialogController {
                     ..
                 }
             );
-        let extra_detail = if field_review {
+        let extra_detail = if moderation_review {
+            // Six disclosure lines on every page keep navigation and the
+            // final consent controls stationary, including on laptops.
+            5.0 * 24.0
+        } else if field_review {
             small_count_as_f64(view.detail().lines().count().saturating_sub(1)) * 24.0
         } else {
             0.0
         };
-        let review_width = if moderation_review { 900.0 } else { 560.0 };
+        let review_width = 560.0;
         let width = bounds.width().min(review_width);
         let row_count = view.selectable_count().min(6);
         let launcher_editor = view.launcher_editor();
@@ -1959,7 +2009,12 @@ impl PortalDialogController {
             + small_count_as_f64(
                 row_count + launcher_rows + secret_rows + network_fields + remember_row,
             ) * 48.0;
-        if field_review && (height > bounds.height() || width < review_width) {
+        let minimum_width = if moderation_review {
+            400.0
+        } else {
+            review_width
+        };
+        if field_review && (height > bounds.height() || width < minimum_width) {
             // A clipped security review cannot approve anything invisibly.
             return None;
         }
@@ -2039,9 +2094,14 @@ impl PortalDialogController {
             secret,
             secret_fields,
             remember,
+            review_back: (moderation_review && self.review_page > 0)
+                .then(|| Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x0 + 108.0, cancel.y1)),
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
+        if layout.review_back.is_some_and(|rect| rect.contains(point)) {
+            return self.review_back();
+        }
         if let Some(index) = layout
             .secret_fields
             .iter()
@@ -2604,9 +2664,9 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     t_args(key, &[("risk", risk.into())])
 }
 
-/// Keep the complete disclosure readable on the trusted sheet. Wrapping uses a
-/// conservative glyph bound at 14 px in the 852 px content area. Oversized
-/// reviews fail closed in `layout`, rather than hiding content behind Allow.
+/// Keep every disclosure field and make control characters visible. The
+/// controller paginates this complete text into a bounded trusted sheet;
+/// neither long values nor short displays may hide content behind Allow.
 fn moderation_detail(
     preview: &tilo_action_broker::app_actions::ModerationConsentPreview,
 ) -> String {
