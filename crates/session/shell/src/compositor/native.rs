@@ -14531,7 +14531,14 @@ pub fn run() {
         if let Some(watchdog) = &watchdog {
             watchdog.parking();
         }
+        super::liveness::trace_wake(
+            "dispatch-enter-ms",
+            park.map_or(u64::MAX, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX - 1)
+            }),
+        );
         let dispatched = event_loop.dispatch(park, &mut state);
+        super::liveness::trace_wake("dispatch-return", u64::from(dispatched.is_ok()));
         if let Some(watchdog) = &watchdog {
             watchdog.unparked();
         }
