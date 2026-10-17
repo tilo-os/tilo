@@ -2081,18 +2081,23 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
-        let mut ledger =
-            self.remote_invocations
-                .lock()
-                .map_err(|_| ActionHostError::Unavailable {
-                    reason: "the invocation ledger is unavailable".into(),
-                })?;
-        let (job, _) = ledger.admit(caller, request, || {
-            self.start_for(caller, own_peer, launch, origin, request, request)
-        })?;
-        let job = *job;
-        drop(ledger);
-        Ok(self.receipt_for(request.invocation, job))
+        let reservation = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            })?
+            .reserve(caller, request)?;
+        if reservation == Reservation::Admitted {
+            return self
+                .remote_job(caller, &request.invocation)
+                .map(|job| self.receipt_for(request.invocation, job))
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        // Signing and durable admission can block. Keep the UUID reserved, but
+        // never hold the UI's lookup/enqueue mutex across those operations.
+        let started = self.start_for(caller, own_peer, launch, origin, request, request);
+        self.finish_directory_admission(request.invocation, started)
     }
 
     fn receipt_for(&self, invocation: tilo_actions::InvocationId, job: u64) -> InvocationReceipt {
