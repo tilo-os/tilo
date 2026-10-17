@@ -524,6 +524,9 @@ pub struct CodeApp {
     bound_node: Option<TreeId>,
     /// One-time seed guard for the CRDT buffers.
     seeded: bool,
+    /// The file whose disk text was last submitted to the document, and
+    /// when: the submission is repeated until the document holds the text.
+    text_seed: Option<(String, std::time::Instant)>,
 
     /// The embedded system terminal, spawned lazily the first time the Terminal
     /// dock tab is shown. `None` until then (so `CodeApp::new` — used across the
@@ -936,6 +939,7 @@ impl CodeApp {
             editor_col_node: None,
             bound_node: default,
             seeded: false,
+            text_seed: None,
             terminal: None,
             terminal_runs: terminal::runs::RunQueue::default(),
             terminal_focused: false,
@@ -1159,6 +1163,8 @@ impl CodeApp {
             }
         }
 
+        self.record_missing_text(doc);
+
         // Bind the editor to the active buffer.
         let active = self.session.active_buffer().map(|b| (b.node, b.language));
         match active {
@@ -1177,6 +1183,42 @@ impl CodeApp {
                 }
             }
         }
+    }
+
+    /// Record again the disk text of the file the window shows while the
+    /// document does not hold it. Opening a file submits its text once, and
+    /// that submission can be refused — a launch hands the editor its file
+    /// before its record takes changes — which left the file open with an
+    /// empty editor and nothing to select or edit. Repeated at most once a
+    /// second; recording text the document already holds changes nothing.
+    fn record_missing_text(&mut self, doc: &AutoCommit) {
+        const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+        let Some(buffer) = self.session.active_buffer() else {
+            return;
+        };
+        if buffer.stamp.is_none() || buffer.path.is_none() {
+            return;
+        }
+        let key = self.buffer_key(buffer.node);
+        if EditorDoc::buffer_text_key(doc, &key).is_some()
+            || self
+                .live_state
+                .as_ref()
+                .is_some_and(|live| live.with(|state| state.buffers.contains_key(&key)))
+        {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self
+            .text_seed
+            .as_ref()
+            .is_some_and(|(seeded, at)| *seeded == key && now.duration_since(*at) < RETRY)
+        {
+            return;
+        }
+        let text = buffer.saved_text.clone();
+        self.text_seed = Some((key.clone(), now));
+        self.submit(&actions::record_text_action(key, text));
     }
 
     /// Ask for the text of the file the window shows, and only that.
@@ -1224,6 +1266,7 @@ impl CodeApp {
                     .as_ref()
                     .is_some_and(|live| live.with(|state| state.buffers.contains_key(&key)));
                 if !already_opened {
+                    self.text_seed = Some((key.clone(), std::time::Instant::now()));
                     self.submit(&actions::record_text_action(key, text.clone()));
                 }
                 let path = self.session.project.disk_path_of(node);

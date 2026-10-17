@@ -427,10 +427,37 @@ mod tests {
             })
             .expect_err("a missing file cannot be opened");
         assert!(error.to_string().contains("tilo-code-file"), "{error}");
+        // A path the sandbox cannot see looks missing from inside it: the
+        // answer names the way a file is handed to Code.
+        assert!(error.to_string().contains("open it from Files"), "{error}");
         assert!(
             editor(&mut sample.app, |app| app.notice().cloned())
                 .is_some_and(|notice| notice.is_error)
         );
+    }
+
+    /// Every file type the package claims is one the editor knows the
+    /// language of, so a file the desktop hands it is highlighted and
+    /// indented as its kind, never shown as plain text.
+    #[test]
+    fn every_claimed_file_type_is_a_language_the_editor_knows() {
+        let manifest = include_str!("../tilo-app.toml");
+        let providers = &manifest[manifest.find("\n[providers]").unwrap()..];
+        let list = &providers[providers.find("\next").unwrap()..];
+        let list = &list[list.find('[').unwrap() + 1..list.find(']').unwrap()];
+        let claimed: Vec<&str> = list
+            .split(',')
+            .map(|ext| ext.trim().trim_matches('"'))
+            .filter(|ext| !ext.is_empty())
+            .collect();
+        assert!(claimed.contains(&"py"), "Python files are Code's");
+        for ext in claimed {
+            assert_ne!(
+                crate::model::Language::from_path(&format!("file.{ext}")),
+                crate::model::Language::PlainText,
+                ".{ext} is claimed but has no language"
+            );
+        }
     }
 
     #[test]
