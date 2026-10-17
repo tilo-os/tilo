@@ -1157,14 +1157,10 @@ impl DesktopSurface {
             self.root.draw(scene, transform, text, theme, presence);
             return;
         }
-        if let Some(backdrop) = child_mut(self.root.as_mut(), &[0, 0]) {
-            backdrop.draw(scene, transform, text, theme, presence);
-        }
-        // Windows never overlap, so a window's docked tab strip has only
-        // this behind it: its blur stays valid while the desktop does.
-        ui::backdrop::mark_desktop(scene);
-        if let Some(windows) = child_mut(self.root.as_mut(), &[0, 1, 1]) {
-            windows.draw(scene, transform, text, theme, presence);
+        for path in [&[0, 0][..], &[0, 1, 1]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
         }
     }
 
@@ -1202,9 +1198,6 @@ impl DesktopSurface {
         presence: &PresenceCtx,
     ) -> Option<Rect> {
         child_mut(self.root.as_mut(), &[0, 0])?.draw(backdrop, transform, text, theme, presence);
-        // The desktop is the section below: nothing drawn into the
-        // workspace is behind a window's docked tab strip.
-        ui::backdrop::mark_desktop(workspace);
         if self.external_navigation {
             child_mut(self.root.as_mut(), &[0, 1, 0])?
                 .draw(workspace, transform, text, theme, presence);

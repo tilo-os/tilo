@@ -304,135 +304,6 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
     }
 }
 
-/// A window drawn before a strip and beside it: content a docked strip
-/// never stands on.
-fn window_beside(scene: &mut Scene, colour: Color) {
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        colour,
-        None,
-        &Rect::new(200.0, 0.0, 256.0, 40.0),
-    );
-}
-
-fn over_desktop(scene: &mut Scene, theme: &Theme) {
-    fill_over_desktop(
-        scene,
-        Affine::IDENTITY,
-        &panel(),
-        Material::Floating,
-        theme,
-        crate::chrome::panel_ground(theme),
-    );
-}
-
-#[test]
-fn a_surface_over_the_desktop_takes_the_marked_desktop_and_nothing_drawn_after() {
-    let theme = Theme::dark();
-    let mut scene = stripes(256, 192);
-    let desktop_len = scene.encoding().draw_tags.len();
-    let recording = BackdropRecording::begin();
-    layer_scene(&scene, 0);
-    mark_desktop(&scene);
-    window_beside(&mut scene, Color::WHITE);
-    over_desktop(&mut scene, &theme);
-    // A strip drawn by a row into a nested scene lands on the desktop of
-    // the scene the row is appended to.
-    let mut row = Scene::new();
-    nest_scene(&row);
-    window_beside(&mut row, Color::WHITE);
-    over_desktop(&mut row, &theme);
-    append_nested(&mut scene, &row, Affine::translate((0.0, 20.0)));
-    // A scene with no mark gives it everything drawn before it.
-    let mut unmarked = stripes(256, 192);
-    layer_scene(&unmarked, 1);
-    window_beside(&mut unmarked, Color::WHITE);
-    let unmarked_len = unmarked.encoding().draw_tags.len();
-    over_desktop(&mut unmarked, &theme);
-    let surfaces = recording.finish();
-    assert_eq!(surfaces.len(), 3);
-    for surface in &surfaces[..2] {
-        assert!(surface.over_desktop);
-        assert_eq!(
-            surface.below.encoding().draw_tags.len(),
-            desktop_len,
-            "the window drawn before the strip is not behind it"
-        );
-    }
-    assert_eq!(surfaces[1].bounds, PANEL + Vec2::new(0.0, 20.0));
-    assert!(!surfaces[2].over_desktop);
-    assert_eq!(surfaces[2].below.encoding().draw_tags.len(), unmarked_len);
-}
-
-/// The strip is always on screen; its blur is made once and kept while the
-/// desktop, its place and the blur hold, however much the windows change.
-#[test]
-fn a_blur_over_an_unchanged_desktop_is_kept_and_made_again_when_it_changes() {
-    let gpu = crate::offscreen::shared_gpu().expect("a wgpu adapter");
-    let mut renderer = Renderer::new(
-        &gpu.device,
-        vello::RendererOptions {
-            use_cpu: false,
-            antialiasing_support: vello::AaSupport::all(),
-            num_init_threads: None,
-            pipeline_cache: None,
-        },
-    )
-    .expect("vello renderer");
-    let theme = Theme::dark();
-    let target = (256, 192);
-    let frame = |desktop: &Scene, window: Color| {
-        let mut scene = desktop.clone();
-        let recording = BackdropRecording::begin();
-        layer_scene(&scene, 0);
-        mark_desktop(&scene);
-        window_beside(&mut scene, window);
-        over_desktop(&mut scene, &theme);
-        BackdropFrame::from_single_scene(recording.finish())
-    };
-    let mut blur = BackdropBlur::new(&gpu.device);
-    let mut prepare = |frame: &BackdropFrame| {
-        let stats = blur.prepare(
-            &gpu.device,
-            &gpu.queue,
-            &mut renderer,
-            frame,
-            target,
-            Color::BLACK,
-        );
-        blur.release(&mut renderer);
-        stats
-    };
-    let desktop = stripes(target.0, target.1);
-    let first = prepare(&frame(&desktop, Color::WHITE));
-    assert_eq!((first.substituted, first.kept), (1, 0));
-    let window_changed = prepare(&frame(&desktop, Color::BLACK));
-    assert_eq!(
-        (window_changed.substituted, window_changed.kept),
-        (1, 1),
-        "a window repainting beside the strip leaves its blur as it was"
-    );
-    let mut moved = desktop.clone();
-    window_beside(&mut moved, Color::WHITE);
-    let desktop_changed = prepare(&frame(&moved, Color::WHITE));
-    assert_eq!(
-        (desktop_changed.substituted, desktop_changed.kept),
-        (1, 0),
-        "a changed desktop is blurred again"
-    );
-    // A surface over whatever was drawn before it is never kept.
-    let below = {
-        let mut scene = desktop.clone();
-        let recording = BackdropRecording::begin();
-        layer_scene(&scene, 0);
-        floating(&mut scene, Affine::IDENTITY, &theme);
-        BackdropFrame::from_single_scene(recording.finish())
-    };
-    assert_eq!(prepare(&below).kept, 0);
-    assert_eq!(prepare(&below).kept, 0);
-}
-
 /// Median wall time, GPU completion included, of `run` over `samples`
 /// iterations after a warm-up.
 fn median_us(device: &wgpu::Device, samples: usize, mut run: impl FnMut()) -> u128 {
@@ -481,7 +352,6 @@ fn cost_at_1080p() {
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
         below: stripes(target.0, target.1),
         ground,
-        over_desktop: false,
     };
     let frame = BackdropFrame {
         regions: vec![region.clone()],
@@ -555,5 +425,191 @@ fn cost_at_1080p() {
         info.device_type,
         whole.saturating_sub(ground_only),
         encode_us[encode_us.len() / 2],
+    );
+}
+
+/// A docked strip frosts with the desktop its painter published: the
+/// blurred picture under the tint, an ordinary image fill that encodes the
+/// same while the desktop does. Nothing published, or reduced
+/// transparency, is the opaque ground.
+#[test]
+fn a_surface_over_the_published_desktop_is_an_image_fill_under_the_tint() {
+    let theme = Theme::dark();
+    let ground = crate::chrome::panel_ground(&theme);
+    let mut wallpaper = Vec::new();
+    for y in 0..64_u32 {
+        for x in 0..64_u32 {
+            let v = if (x / 8 + y / 8) % 2 == 0 { 0 } else { 255 };
+            wallpaper.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let wallpaper = crate::raster::rgba8(wallpaper, 64, 64);
+    let display = Rect::new(0.0, 0.0, 256.0, 192.0);
+    let draw = |theme: &Theme| {
+        let mut scene = Scene::new();
+        desktop::fill(
+            &mut scene,
+            (Affine::IDENTITY, Affine::IDENTITY),
+            &panel(),
+            Material::Floating,
+            theme,
+            ground,
+        );
+        scene
+    };
+    desktop::publish(Vec::new());
+    assert!(
+        draw(&theme).encoding().resources.patches.is_empty(),
+        "nothing published: opaque"
+    );
+    let blurred = desktop::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
+    let again = desktop::blurred_cover(&wallpaper, display, 24.0).expect("cached");
+    assert_eq!(
+        blurred.0.data.id(),
+        again.0.data.id(),
+        "made once per wallpaper and size"
+    );
+    // Blurred by 24 px, 8 px checks average out to grey.
+    let pixels = blurred.0.data.data();
+    let mid = (blurred.0.height as usize / 2 * blurred.0.width as usize
+        + blurred.0.width as usize / 2)
+        * 4;
+    let grey = pixels[mid];
+    assert!((100..=155).contains(&grey), "the checks still show: {grey}");
+    desktop::publish(vec![desktop::image_piece(
+        Affine::IDENTITY,
+        display,
+        blurred,
+    )]);
+    let frosted = draw(&theme);
+    assert_eq!(
+        frosted.encoding().resources.patches.len(),
+        1,
+        "one image fill"
+    );
+    assert!(
+        frosted.encoding_eq(&draw(&theme)),
+        "the same desktop encodes the same"
+    );
+    assert!(
+        draw(&theme.clone().with_reduce_transparency(true))
+            .encoding()
+            .resources
+            .patches
+            .is_empty(),
+        "reduced transparency is opaque"
+    );
+    desktop::publish(Vec::new());
+}
+
+/// What frosting the window strips costs at 1080p on this machine's
+/// adapter: blurring a 4K wallpaper once, and rendering a frame with three
+/// docked strips frosted against the same frame with them opaque.
+///
+/// `cargo test -p tilo-ui --lib backdrop::tests::frost_cost_at_1080p -- --ignored --nocapture`
+#[test]
+#[ignore = "a timing report for the machine it runs on, not a check"]
+fn frost_cost_at_1080p() {
+    let gpu = crate::offscreen::shared_gpu().expect("a wgpu adapter");
+    let mut renderer = Renderer::new(
+        &gpu.device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .expect("vello renderer");
+    let theme = Theme::dark();
+    let (width, height) = (1920_u32, 1080_u32);
+    let mut wallpaper = Vec::with_capacity(3840 * 2160 * 4);
+    for y in 0..2160_u32 {
+        for x in 0..3840_u32 {
+            wallpaper.extend_from_slice(&[(x / 7) as u8, (y / 5) as u8, ((x + y) / 11) as u8, 255]);
+        }
+    }
+    let wallpaper = crate::raster::rgba8(wallpaper, 3840, 2160);
+    let display = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    let started = crate::time::now();
+    let blurred = desktop::blurred_cover(&wallpaper, display, 24.0).expect("pixels in memory");
+    let blur_us = started.elapsed().as_micros();
+    let ground = crate::chrome::panel_ground(&theme);
+    let frame = |material: Material| {
+        let mut scene = Scene::new();
+        let brush = ImageBrush::new(wallpaper.clone());
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &brush,
+            Some(Affine::scale(0.5)),
+            &display,
+        );
+        for i in 0..3 {
+            let strip = RoundedRect::new(
+                40.0 + 620.0 * f64::from(i),
+                40.0,
+                620.0 * f64::from(i + 1),
+                84.0,
+                16.0,
+            );
+            desktop::fill(
+                &mut scene,
+                (Affine::IDENTITY, Affine::IDENTITY),
+                &strip,
+                material,
+                &theme,
+                ground,
+            );
+        }
+        scene
+    };
+    desktop::publish(vec![desktop::image_piece(
+        Affine::IDENTITY,
+        display,
+        blurred,
+    )]);
+    let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut time = |scene: &Scene| {
+        median_us(&gpu.device, 30, || {
+            renderer
+                .render_to_texture(
+                    &gpu.device,
+                    &gpu.queue,
+                    scene,
+                    &view,
+                    &RenderParams {
+                        base_color: Color::BLACK,
+                        width,
+                        height,
+                        antialiasing_method: AaConfig::Area,
+                    },
+                )
+                .expect("render");
+        })
+    };
+    let frosted = time(&frame(Material::Floating));
+    let opaque = time(&frame(Material::Opaque));
+    desktop::publish(Vec::new());
+    let info = gpu.device.adapter_info();
+    println!(
+        "frosted strips at {width}x{height} on {} ({:?}): blurring a 3840x2160 wallpaper once \
+         {blur_us} us; a frame with three frosted strips {frosted} us, with them opaque \
+         {opaque} us (medians)",
+        info.name, info.device_type,
     );
 }

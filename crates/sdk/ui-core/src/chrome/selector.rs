@@ -16,7 +16,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 
-use super::shell::{HAIRLINE_ALPHA, PRESS_SCALE, SelectionState, SelectionTier, panel_ground};
+use super::shell::{
+    HAIRLINE_ALPHA, PRESS_SCALE, SELECTION_MIN_STEP, SelectionState, SelectionTier, lightness_step,
+    panel_ground,
+};
 use crate::floating_surface::Material;
 use crate::theme::Theme;
 use crate::tokens::colors::composite;
@@ -27,8 +30,11 @@ use crate::tokens::{Colors, SelectorFinish, StripMaterial};
 pub enum SelectorRole<'a> {
     /// The body a docked strip of selectors stands on: the floating
     /// material over the desktop behind it (or the opaque panel ground),
-    /// edged like the panel it is made of.
-    Strip,
+    /// edged like the panel it is made of. Carries the transform from the
+    /// desktop's coordinates into the scene's: the identity, or a strip's
+    /// pan when it is drawn in canvas coordinates
+    /// ([`crate::backdrop::desktop`]).
+    Strip(Affine),
     /// One selector, in the tier [`selector_tier`] resolved (or one a
     /// caller animating it faded).
     Item(&'a SelectionTier),
@@ -46,10 +52,60 @@ pub fn selector_finish(theme: &Theme) -> SelectorFinish {
 
 /// The ground a docked strip's items stand on: the panel ground its
 /// material is tinted with, which is also the whole of it where nothing is
-/// blurred.
+/// blurred. On a light palette it stays one surface step below white, so
+/// the active tab can rise a full step toward the light above it.
 #[must_use]
 pub fn strip_ground(theme: &Theme) -> Color {
-    panel_ground(theme)
+    use crate::color::Oklch;
+    let ground = panel_ground(theme);
+    let palette = &theme.tokens.colors.palette;
+    if palette.dark || palette.high_contrast {
+        return ground;
+    }
+    let mut lch = Oklch::from_color(ground);
+    let ceiling = 1.0 - palette.lift().abs();
+    if lch.l <= ceiling {
+        return ground;
+    }
+    lch.l = ceiling;
+    lch.to_color()
+}
+
+/// The active selector's fill on `ground`: one surface step of it
+/// ([`Colors::lift_on`]), opaque. On a light palette a selector rises
+/// toward the light, as a raised surface does, while the ground leaves room
+/// for at least [`SELECTION_MIN_STEP`] above it (the strip's light ground
+/// does, a white window does not); elsewhere it takes the palette's way.
+fn active_lift(theme: &Theme, ground: Color) -> Color {
+    use crate::color::Oklch;
+    let colors = &theme.tokens.colors;
+    let step = colors.lift_on(ground, 1.0);
+    if colors.palette.dark || colors.palette.high_contrast {
+        return step;
+    }
+    let from = Oklch::from_color(ground).l;
+    let mut up = Oklch::from_color(step);
+    let rise = (up.l - from).abs().min(1.0 - from);
+    if rise < SELECTION_MIN_STEP {
+        return step;
+    }
+    up.l = from + rise;
+    up.to_color()
+}
+
+/// The hover film's opacity: the finish's, or more where `lift` stands so
+/// close to `ground` that the finish's film would not clear
+/// [`SELECTION_MIN_STEP`] (a light strip, where the lift is capped by
+/// white). Never opaque, so a hover stays short of the active tier.
+fn hover_alpha(finish: f32, lift: Color, ground: Color) -> f32 {
+    const MOST: f32 = 0.95;
+    let mut alpha = finish.clamp(0.0, MOST);
+    while alpha < MOST
+        && lightness_step(composite(lift.with_alpha(alpha), ground), ground) < SELECTION_MIN_STEP
+    {
+        alpha = (alpha + 0.025).min(MOST);
+    }
+    alpha
 }
 
 /// How one selector on `ground` paints for `state`.
@@ -58,25 +114,25 @@ pub fn strip_ground(theme: &Theme) -> Color {
 /// |---|---|---|---|
 /// | idle | none | none | none |
 /// | hover | the active lift at the finish's hover opacity | none | none |
-/// | active | `lift_on(ground, 1.0)`, opaque | `hairline_on(ground, 26)` | the finish's rim |
+/// | active | one surface step of the ground, opaque (toward the light on a light palette) | `hairline_on(ground, 26)` | the finish's rim |
 /// | pressed | as active, scaled 0.97 | as active | as active |
 ///
-/// The active lift is [`super::selection_tier_on`]'s, so a selector and a
-/// selected row move the same distance off the same ground. Hover is a
+/// The active lift is a surface step of the ground, as
+/// [`super::selection_tier_on`]'s is, so a selector and a selected row move
+/// the same distance off the same ground. Hover is a
 /// film rather than a half step so a frosted strip still shows through a
 /// hovered tab; where the finish is opaque it is that film composited onto
 /// the ground. Its opacity is admitted only where it clears
 /// [`super::SELECTION_MIN_STEP`] on every ground an opaque strip offers.
 #[must_use]
 pub fn selector_tier(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
-    let colors = &theme.tokens.colors;
     let finish = selector_finish(theme);
     let lifted = state.active || state.pressed;
-    let lift = colors.lift_on(ground, 1.0);
+    let lift = active_lift(theme, ground);
     let fill = if lifted {
         lift
     } else if state.hover {
-        let film = lift.with_alpha(finish.hover_alpha);
+        let film = lift.with_alpha(hover_alpha(finish.hover_alpha, lift, ground));
         if finish.translucent() {
             film
         } else {
@@ -112,18 +168,23 @@ pub fn paint_selector(
         return;
     }
     match role {
-        SelectorRole::Strip => paint_strip(scene, transform, shape, theme),
+        SelectorRole::Strip(desktop) => paint_strip(scene, (transform, desktop), shape, theme),
         SelectorRole::Item(tier) => paint_item(scene, transform, shape, tier, theme),
     }
 }
 
-fn paint_strip(scene: &mut Scene, transform: Affine, shape: &RoundedRect, theme: &Theme) {
+fn paint_strip(
+    scene: &mut Scene,
+    (transform, desktop): (Affine, Affine),
+    shape: &RoundedRect,
+    theme: &Theme,
+) {
     let ground = strip_ground(theme);
     let material = match selector_finish(theme).strip {
         StripMaterial::Floating => Material::Floating,
         StripMaterial::Opaque => Material::Opaque,
     };
-    crate::backdrop::fill_over_desktop(scene, transform, shape, material, theme, ground);
+    crate::backdrop::desktop::fill(scene, (transform, desktop), shape, material, theme, ground);
     let radius = shape.radii().top_left;
     scene.stroke(
         &Stroke::new(1.0),

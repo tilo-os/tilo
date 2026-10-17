@@ -405,7 +405,7 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
-            Self::paint_strip_body(&self.bar, scene, transform, theme);
+            Self::paint_strip_body(&self.bar, scene, (transform, Affine::IDENTITY), theme);
             self.bar.draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -1246,7 +1246,7 @@ impl WindowGroup {
         let capture_rect = host.complete_content_rect()?;
         self.bar
             .set_group_focused(self.focused || self.search_active);
-        Self::paint_strip_body(&self.bar, scene, transform, theme);
+        Self::paint_strip_body(&self.bar, scene, (transform, Affine::IDENTITY), theme);
         self.bar.draw(scene, transform, tr, theme, presence);
         if let Some(name) = opening_name.as_deref() {
             host.set_opening_name(name);
@@ -2275,10 +2275,16 @@ impl WindowGroup {
     ///
     /// Whoever draws the group calls this first, into the scene the group
     /// is composed into rather than into a drawing of the group it keeps:
-    /// the strip is made of the floating material, whose blurred backdrop is
-    /// recorded only where it is drawn, so a kept drawing replayed on a
-    /// later frame would show the strip opaque.
-    pub fn draw_docked_strip(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// a frosted strip shows the desktop behind where it is, and
+    /// `desktop` (the desktop's coordinates in the scene's, moved by the
+    /// pan of a strip drawn in canvas coordinates) belongs to the row, not
+    /// to the group's drawing.
+    pub fn draw_docked_strip(
+        &mut self,
+        scene: &mut Scene,
+        (transform, desktop): (Affine, Affine),
+        theme: &Theme,
+    ) {
         if self.maximized || !self.navigation_bar_visible() {
             return;
         }
@@ -2308,7 +2314,7 @@ impl WindowGroup {
             );
         }
         let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
-        Self::paint_strip_body(&self.bar, scene, transform, theme);
+        Self::paint_strip_body(&self.bar, scene, (transform, desktop), theme);
         if fading {
             scene.pop_layer();
         }
@@ -2316,7 +2322,12 @@ impl WindowGroup {
 
     /// The docked strip's body at the bar's rect, its capsule concentric
     /// with the tabs inset in it.
-    fn paint_strip_body(bar: &TabBar, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn paint_strip_body(
+        bar: &TabBar,
+        scene: &mut Scene,
+        (transform, desktop): (Affine, Affine),
+        theme: &Theme,
+    ) {
         let strip = crate::chrome::strip_shape(
             bar.bar_rect(),
             f64::from(theme.tokens.radii.control),
@@ -2326,7 +2337,7 @@ impl WindowGroup {
             scene,
             transform,
             &strip,
-            crate::chrome::SelectorRole::Strip,
+            crate::chrome::SelectorRole::Strip(desktop),
             theme,
         );
     }
@@ -3862,7 +3873,7 @@ mod tests {
                 theme.name
             );
             let mut scene = Scene::new();
-            group.draw_docked_strip(&mut scene, Affine::IDENTITY, &theme);
+            group.draw_docked_strip(&mut scene, (Affine::IDENTITY, Affine::IDENTITY), &theme);
             group.draw(
                 &mut scene,
                 Affine::IDENTITY,

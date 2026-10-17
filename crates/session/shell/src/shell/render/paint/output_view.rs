@@ -266,7 +266,6 @@ fn backdrop_through(
                     blur_px: region.blur_px,
                     below,
                     ground: region.ground,
-                    over_desktop: region.over_desktop,
                 }
             })
             .collect(),

@@ -3807,7 +3807,6 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
         layer: 0,
         below: Scene::new(),
         ground: Color::BLACK,
-        over_desktop: false,
     };
     let caret = FineDamageRect {
         x: 1_000,

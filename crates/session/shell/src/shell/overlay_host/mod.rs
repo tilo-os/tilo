@@ -1844,10 +1844,8 @@ impl ShellOverlayHost {
         for &(strip, row) in &apart {
             let mut scene = Scene::new();
             // A blurred surface drawn into a strip is recorded as drawn into
-            // the workspace, so the frame producer sees it; the desktop
-            // section is all that is behind its windows' tab strips.
+            // the workspace, so the frame producer sees it.
             ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
-            ui::backdrop::mark_desktop(&scene);
             // Each window group is a damage part of the strip's drawing.
             let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
                 // SAFETY: as above.

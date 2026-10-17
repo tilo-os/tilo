@@ -913,20 +913,24 @@ stands on and paints with `chrome::paint_selector`:
 |---|---|---|---|
 | idle | none | none | none |
 | hover | the active lift as a film, at the theme's hover opacity | none | none |
-| **active** | `lift_on(ground, 1.0)`, opaque | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
+| **active** | one surface step of the ground, opaque (toward the light on a light palette, where the ground has room) | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
 | pressed | as active, scaled 0.97 | as active | as active |
 
-The active fill is `selection_tier_on`'s lift, so a chosen tab and a selected
+The active fill is a surface step of the ground, as `selection_tier_on`'s is, so a chosen tab and a selected
 row move the same distance off the same ground; the hover film, composited
 on an opaque ground, also clears `SELECTION_MIN_STEP` and stays short of the
 active step. The window group's tab strip stands on a body of its own,
 `SelectorRole::Strip`, one body behind the whole strip rather than one per
-tab: the panel ground, or where the theme makes it frosted
-(`StripMaterial::Floating`) the floating material over the desktop behind
-it (blur and 72 % panel-ground tint, as menus and the palette). Frosted is
-not the stock finish while the shell's retained presenter gives up its pan
-layers, scroll copies and sparse damage for any frame with a blurred surface
-on screen. In-app
+tab: the floating material (blur and 72 % panel-ground tint, as menus and
+the palette) over the desktop behind it. Windows never overlap, so that is
+all that is behind a strip: the desktop's painter publishes itself blurred
+once per wallpaper, size and radius (`backdrop::desktop`), and the strip is
+an ordinary image fill of it, so it costs no blur pass per frame, a tab's
+hover damages only the tab, and a strip panned as a retained layer carries
+its frosting along until it rests. On a light palette the active tab rises
+toward the light (white on the frosted strip) wherever the ground leaves a
+full `SELECTION_MIN_STEP` above it; a hover raises its film's opacity where
+the theme's would not clear that step. In-app
 tabs stand on the window ground and have no strip: there is nothing behind
 them to blur, and the same tiers make them read as the same family. The
 rim span, rim and hover opacity and what the strip is made of are the
