@@ -410,7 +410,7 @@ mod tests {
             "preparation": {
                 "operation": operation,
                 "kind": "new",
-                "root_key": [7; 32],
+                "root_key": vec![7; 32],
                 "device_key": null,
                 "record_name": null
             },
@@ -418,9 +418,9 @@ mod tests {
                 "schema": 1,
                 "filename": format!("{}.sealed", uuid::Uuid::new_v4()),
                 "sealed_bytes": 256,
-                "ciphertext_sha256": [1; 32],
+                "ciphertext_sha256": vec![1; 32],
                 "binding": operation,
-                "group": [7; 32],
+                "group": vec![7; 32],
                 "accounts": 2
             }
         })
@@ -432,7 +432,7 @@ mod tests {
         let reviewed: DraftSource = serde_json::from_value(value.clone()).unwrap();
         reviewed.validate().unwrap();
         let mut foreign = value;
-        foreign["account_checkpoint"]["group"] = serde_json::json!([8; 32]);
+        foreign["account_checkpoint"]["group"] = serde_json::json!(vec![8; 32]);
         let foreign: DraftSource = serde_json::from_value(foreign).unwrap();
         assert!(foreign.validate().is_err());
     }
