@@ -638,6 +638,9 @@ struct SimulatedVblankPresenter {
     last_render: Duration,
     /// What the last frame repainted.
     last_painted: PaintedArea,
+    /// The client frame the simulated display scans out, when it shows one
+    /// instead of a composited frame.
+    scanned_out: Option<u64>,
     /// `wl_shm` bytes uploaded to client-frame textures as of the last frame.
     shm_uploaded: u64,
 }
@@ -652,6 +655,8 @@ struct PaintedArea {
     raster: u64,
     /// The frame rendered the whole target.
     dense: bool,
+    /// The display showed a client's own buffer: nothing was rendered.
+    scanout: bool,
     /// Encoding, uploads and submission on the CPU, and the wait for the GPU
     /// to finish the render and the copy into the scanout buffer.
     submit_us: u128,
@@ -704,6 +709,7 @@ impl SimulatedVblankPresenter {
             queued_last: false,
             last_render: Duration::ZERO,
             last_painted: PaintedArea::default(),
+            scanned_out: None,
             shm_uploaded: crate::shell::gpu_frames::shm_upload_bytes(),
         })
     }
@@ -758,6 +764,9 @@ impl SimulatedVblankPresenter {
             damage.map(|damage| damage.revision),
             frame.scroll_copies.as_ref(),
         );
+        if let Some(shown) = self.scan_out(frame, damage) {
+            return shown;
+        }
         if let Some(damage) = damage
             && damage.regions.is_some_and(<[_]>::is_empty)
             && frame.hdr_layers.is_empty()
@@ -822,6 +831,7 @@ impl SimulatedVblankPresenter {
                         target
                     },
                     dense: !sparse,
+                    scanout: false,
                     submit_us: timing.submit_us,
                     settle_us: timing.completed_readback_map_us,
                 }
@@ -832,6 +842,45 @@ impl SimulatedVblankPresenter {
             }
         };
         true
+    }
+}
+
+impl SimulatedVblankPresenter {
+    /// Show the frame's client buffer by itself, as the DRM presenter flips
+    /// a fullscreen or maximized client's buffer onto the primary plane:
+    /// `Some(true)` when a flip of it is queued, `Some(false)` when that
+    /// buffer is already shown, `None` to composite. The rules are the DRM
+    /// presenter's, less the plane's own `TEST_ONLY` verdict: an opaque
+    /// dma-buf covering the display exactly.
+    fn scan_out(
+        &mut self,
+        frame: &crate::compositor::frame::FramePaint,
+        damage: Option<SceneDamage<'_>>,
+    ) -> Option<bool> {
+        let candidate = frame.scanout.as_ref().filter(|candidate| {
+            candidate.covers((0, 0), self.view.size) && frame.hdr_layers.is_empty()
+        });
+        let client = candidate
+            .and_then(|candidate| crate::shell::gpu_frames::client_frame(&candidate.image))
+            .filter(|client| client.dmabuf().is_some() && client.opaque());
+        let Some((candidate, _client)) = candidate.zip(client) else {
+            self.scanned_out = None;
+            return None;
+        };
+        // What changed below the client is owed to the next composited frame.
+        match damage {
+            Some(damage) => {
+                self.bridge.defer_output(&self.view, damage);
+            }
+            None => self.bridge.invalidate_output_view(&self.view),
+        }
+        let id = candidate.image.data.id();
+        let shown = self.scanned_out.replace(id) == Some(id);
+        self.last_painted = PaintedArea {
+            scanout: !shown,
+            ..PaintedArea::default()
+        };
+        Some(!shown)
     }
 }
 
@@ -890,12 +939,13 @@ impl Presenter for SimulatedVblankPresenter {
         let shm_upload =
             uploaded.saturating_sub(std::mem::replace(&mut self.shm_uploaded, uploaded));
         Some(format!(
-            "gpu_us={} damage_px={} raster_px={} dense={} submit_us={} settle_us={} \
+            "gpu_us={} damage_px={} raster_px={} dense={} scanout={} submit_us={} settle_us={} \
              shm_upload_bytes={shm_upload}",
             self.last_render.as_micros(),
             painted.damage,
             painted.raster,
             u8::from(painted.dense),
+            u8::from(painted.scanout),
             painted.submit_us,
             painted.settle_us,
         ))

@@ -4905,13 +4905,6 @@ impl Widget for GroupRow {
             };
             self.apart_window =
                 unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                &clip,
-            );
             let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
             // When a group is maximized, siblings stay out of layout so
             // they are not squashed; they still paint under a fade.
@@ -4923,6 +4916,26 @@ impl Widget for GroupRow {
                             g.maximized && in_run.get(i).copied().unwrap_or(false)
                         })
                     });
+            // A maximized window at rest inside the viewport is the lane's
+            // only drawing: the clip would cut nothing, and left out, the
+            // window's client frame stays the last thing drawn, which a
+            // display can scan out instead of compositing the frame.
+            let clipped = !maximized_idx
+                .and_then(|i| self.groups.get(i))
+                .is_some_and(|group| {
+                    !shifted
+                        && !self.sibling_fade.is_visible(crate::time::now())
+                        && clip.contains_rect(group.drawn_rect())
+                });
+            if clipped {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &clip,
+                );
+            }
             self.draw_groups(
                 scene,
                 transform,
@@ -4941,7 +4954,9 @@ impl Widget for GroupRow {
                 maximized_idx,
                 &in_run,
             );
-            scene.pop_layer();
+            if clipped {
+                scene.pop_layer();
+            }
             if shifted {
                 self.offset_lane(k, -shift);
             }

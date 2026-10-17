@@ -4104,6 +4104,9 @@ pub struct ForeignSurfaceWidget {
     preserve_transparency: bool,
     floating_input_rect: Option<Rect>,
     last_draw: Option<std::time::Instant>,
+    /// The window fills its display ([`Widget::set_full_bleed`]): the frame
+    /// is drawn square and unclipped, the last thing in its tile.
+    full_bleed: bool,
 }
 
 impl ForeignSurfaceWidget {
@@ -4122,6 +4125,7 @@ impl ForeignSurfaceWidget {
             preserve_transparency: false,
             floating_input_rect: None,
             last_draw: None,
+            full_bleed: false,
         }
     }
 
@@ -4546,7 +4550,11 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.tile);
+        let radius = if self.full_bleed {
+            0.0
+        } else {
+            f64::from(theme.tokens.radii.tile)
+        };
         if crate::shell::capture_protection::painting_for_capture()
             && self.capture_protected_rect().is_some()
         {
@@ -4594,6 +4602,20 @@ impl Widget for ForeignSurfaceWidget {
                 None,
                 &clip,
             );
+            if self.full_bleed && self.sheet_images.is_empty() {
+                // Square: the image lands inside the tile (`fit_rect`), so
+                // no clip is needed, and the frame stays one plain image
+                // fill a display can scan out in place of the composite.
+                scene.fill(
+                    Fill::NonZero,
+                    brush_transform,
+                    &brush,
+                    None,
+                    &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
+                );
+                self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
+                return;
+            }
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -4649,6 +4671,13 @@ impl Widget for ForeignSurfaceWidget {
 
     fn name(&self) -> &'static str {
         "ForeignSurfaceWidget"
+    }
+
+    fn set_full_bleed(&mut self, full_bleed: bool) {
+        if self.full_bleed != full_bleed {
+            self.full_bleed = full_bleed;
+            self.placement_dirty = true;
+        }
     }
 
     /// Whether the client has drawn something that belongs on screen — the
