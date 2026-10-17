@@ -5,7 +5,7 @@
 // edited without regenerating, or bindings edited by hand, fail here.
 
 const EXPECTED_SCHEMA_FNV1A: u64 = 0x4a89_e3c4_8adc_7490;
-const EXPECTED_BINDINGS_FNV1A: u64 = 0x638c_cab7_1860_2df1;
+const EXPECTED_BINDINGS_FNV1A: u64 = 0x7306_173d_b0e3_8e15;
 const SCHEMAS: [&str; 2] = ["schema/fs.capnp", "schema/blobs.capnp"];
 const GENERATED: [&str; 2] = ["src/generated/fs_capnp.rs", "src/generated/blobs_capnp.rs"];
 
