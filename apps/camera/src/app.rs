@@ -836,26 +836,20 @@ impl CameraApp {
         Vec::new()
     }
 
-    /// Whether a real camera is open and delivering the viewfinder.
-    fn viewfinder_live(&self) -> bool {
+    /// Whether a real camera is open with pictures to pull every frame. A
+    /// camera still waiting for the person's answer has none, and its
+    /// answer wakes the app by itself.
+    fn viewfinder_streaming(&self) -> bool {
         #[cfg(feature = "live-capture")]
         {
-            self.camera.is_some()
+            self.camera
+                .as_ref()
+                .is_some_and(|camera| !camera.waiting_quietly())
         }
         #[cfg(not(feature = "live-capture"))]
         {
             false
         }
-    }
-
-    /// Whether the live viewfinder has no camera yet on a platform whose
-    /// devices appear only after the user is asked.
-    fn awaiting_camera(&self) -> bool {
-        matches!(self.storage, Storage::Disk(_))
-            && self.screen == Screen::Camera
-            && !self.viewfinder_live()
-            && tilo_capture::availability(tilo_capture::Feature::Camera)
-                == tilo_capture::Availability::Prompt
     }
 
     fn viewfinder_seed(facing: Facing) -> u8 {
@@ -2442,12 +2436,20 @@ impl CameraApp {
             Facing::Front => 1,
             Facing::Wide => 2,
         };
+        // Where the platform asks the person first (macOS, the page), the
+        // list may be empty before it has: the page answers its enumeration
+        // later, a confined app cannot list at all. Ask for the default
+        // camera then (the empty id); the platform's prompt decides, and its
+        // answer wakes the app rather than the app looking again.
+        let prompts = tilo_capture::availability(tilo_capture::Feature::Camera)
+            == tilo_capture::Availability::Prompt;
         let device = self
             .selected_camera
             .as_ref()
             .filter(|selected| devices.contains(selected))
             .cloned()
-            .or_else(|| devices.get(idx).or_else(|| devices.first()).cloned());
+            .or_else(|| devices.get(idx).or_else(|| devices.first()).cloned())
+            .or_else(|| prompts.then(String::new));
         let (rw, rh) = capture_request_dims(self.settings.resolution);
         let want = device.map(|d| (d, rw, rh));
 
@@ -2475,7 +2477,12 @@ impl CameraApp {
             }
             self.cam_config = want;
         }
+        self.drain_camera();
+    }
 
+    /// Take what the open camera has: its end, or its newest picture.
+    #[cfg(feature = "live-capture")]
+    fn drain_camera(&mut self) {
         // A start the user refused, or a camera that went away, ends the
         // session; the settings key stays so a new request is not made every
         // frame.
@@ -2486,6 +2493,7 @@ impl CameraApp {
         {
             self.camera = None;
             self.camera_issue = Some(camera_issue_for(Some(&error)));
+            self.dirty = true;
         }
         if let Some(cam) = &mut self.camera
             && let Some(f) = cam.take_latest()
@@ -2512,6 +2520,7 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
 fn camera_issue_for(error: Option<&tilo_capture::CaptureError>) -> CameraIssue {
     match error {
         Some(tilo_capture::CaptureError::PermissionDenied) => CameraIssue::PermissionDenied,
+        Some(tilo_capture::CaptureError::NotFound) => CameraIssue::NoDevice,
         _ => CameraIssue::StartFailed,
     }
 }
@@ -3343,18 +3352,16 @@ impl Widget for CameraApp {
         // Reduced-motion users receive the same capture correctness through a
         // low-frequency wake deadline below, without a continuous UI loop.
         // A live viewfinder is content, not motion: it runs regardless.
-        let mut animating = self.viewfinder_live()
+        // A camera waiting for the person's answer is not live yet.
+        let mut animating = self.viewfinder_streaming()
             || self.tooltip.needs_frame()
             || ((self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced);
         self.for_each_child(&mut |child| animating |= child.needs_animation_frame());
         animating
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.awaiting_camera() {
-            // Where access is prompted (the page, macOS) devices appear
-            // asynchronously; look again rather than wait for input.
-            return Some(ui::time::now() + Duration::from_secs(1));
-        }
+        // Waiting for a camera wakes nothing: the person's answer, or the
+        // capture failing, wakes the app (`capture::Capture::watch`).
         // A toast goes away by itself once its time is up.
         let toast = self
             .toast_shown
@@ -4068,6 +4075,108 @@ mod tests {
                 )
             );
             assert!(matches!(app.recovery_action().1, Action::RetryCamera));
+        }
+    }
+
+    /// A camera waiting for the person's answer runs no frame loop and sets
+    /// no timer. Their answer, either way, wakes the window, and the next
+    /// look shows it: the viewfinder streams, or the honest permission
+    /// state. The camera is the macOS sandbox broker's, whose host asks.
+    #[cfg(all(unix, feature = "live-capture"))]
+    #[test]
+    fn a_camera_waiting_for_permission_sleeps_until_the_answer_wakes_it() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+        use tilo_capture::broker::{Client, Policy, Sources, serve, synthetic};
+        use tilo_capture::grants::{DeviceGrants, GrantPolicy};
+
+        for allow in [true, false] {
+            let dir = std::env::temp_dir().join(format!(
+                "camera-permission-wake-{}-{allow}",
+                std::process::id()
+            ));
+            let grants = Arc::new(DeviceGrants::open(&dir.join("grants")).unwrap());
+            let (asked_tx, asked_rx) = mpsc::channel::<()>();
+            let (answer_tx, answer_rx) = mpsc::channel::<bool>();
+            let prompt = Mutex::new((asked_tx, answer_rx));
+            let (app_end, host_end) = std::os::unix::net::UnixDatagram::pair().unwrap();
+            let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
+                grants,
+                room: "r".into(),
+                app: "so.tilo.camera".into(),
+                declared: vec![tilo_capture::DeviceKind::Camera],
+                consent: move |_| {
+                    let prompt = prompt.lock().unwrap();
+                    let _ = prompt.0.send(());
+                    Ok(prompt.1.recv().unwrap_or(false))
+                },
+            });
+            let sources: Arc<dyn Sources> = Arc::new(synthetic::Devices);
+            std::thread::spawn(move || serve(&host_end, &policy, &sources));
+
+            let mut scope = ui::wake::WakeScope::new();
+            let (woke_tx, woke_rx) = mpsc::channel::<()>();
+            let woke_tx = Mutex::new(woke_tx);
+            scope
+                .bind(move |_| {
+                    let _ = woke_tx.lock().unwrap().send(());
+                })
+                .unwrap();
+            let _entered = scope.enter();
+
+            let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
+            let video = Client::new(app_end)
+                .camera(&tilo_capture::CameraRequest {
+                    device: None,
+                    width: 640,
+                    height: 480,
+                })
+                .unwrap();
+            app.camera = Some(crate::capture::Capture::watch(video));
+            asked_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the host asks the person");
+            app.drain_camera();
+            assert!(app.camera.is_some(), "the prompt is open");
+            assert!(
+                !app.needs_animation_frame(),
+                "no frame loop while the prompt is open"
+            );
+            assert_eq!(
+                app.next_wake_deadline(),
+                None,
+                "no timer while the prompt is open"
+            );
+            assert!(
+                woke_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                "nothing wakes the window before the answer"
+            );
+
+            answer_tx.send(allow).unwrap();
+            woke_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the answer wakes the window");
+            app.drain_camera();
+            if allow {
+                assert!(app.camera.is_some());
+                assert_eq!(app.camera_issue, None);
+                assert!(
+                    app.needs_animation_frame(),
+                    "the granted viewfinder streams"
+                );
+            } else {
+                assert!(app.camera.is_none());
+                assert_eq!(app.camera_issue, Some(CameraIssue::PermissionDenied));
+                assert!(app.needs_redraw(), "the refusal is drawn");
+                assert!(!app.needs_animation_frame());
+                assert_eq!(
+                    app.next_wake_deadline(),
+                    None,
+                    "a refusal sets no timer either"
+                );
+            }
+            drop(app);
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

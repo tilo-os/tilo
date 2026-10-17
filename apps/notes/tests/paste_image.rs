@@ -253,3 +253,93 @@ fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
         assert_eq!(images(&app, page).len(), 5);
     }
 }
+
+/// A picture a collaborator put in the note arrives after the note says it
+/// is there. Until it does, the window sleeps: no timer looks for it. When
+/// its bytes reach the record's content store, the sync their arrival
+/// brings draws it, with no wait.
+#[test]
+fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() {
+    use ui::collaboration::record_content::ContentLane;
+
+    // No caret in the editor: its blink is a timer of its own.
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    let page = PageId::new_v4();
+    app.invoke(Invoke::apply(&create_page_action(page, None, "First")).unwrap())
+        .unwrap();
+    // Larger than what a notebook keeps inline, so the note names its bytes
+    // and this device has to receive them.
+    let picture = png(40, 30, true);
+    assert!(picture.len() > ui::tilo_resource::storage::BYTES_INLINE_LIMIT);
+    let digest = blake3::hash(&picture).to_hex().to_string();
+    let source = format!("asset:{digest}");
+
+    // The collaborator's device keeps the bytes; this one does not.
+    let theirs = ui::wake::WakeScope::new();
+    ui::tilo_resource::content::register(&theirs.handle(), tilo_content::ContentStore::memory());
+    app.merge_peer_edit(|doc| {
+        let _device = theirs.enter();
+        crate::component_support::apply_to(
+            doc,
+            &notes::actions::place_image_action(page, picture.clone(), Some("their photo")),
+        )
+        .unwrap();
+    });
+    for _ in 0..3 {
+        app.harness().relayout();
+    }
+    assert!(
+        !app.surface_mut::<notes::NotesApp>()
+            .image_decoded_for_test(&source),
+        "the bytes are not on this device yet"
+    );
+    let lane = ContentLane::of("so.tilo.notes", app.record().as_str());
+    assert_eq!(
+        lane.take_requests().wants,
+        vec![digest.clone()],
+        "the window asked the record's route for the bytes"
+    );
+    // The save the merge started shows its status for a moment, on timers
+    // and a fade of its own; once they have run out the notebook must ask
+    // for nothing more. Waiting for the bytes used to keep a one-second
+    // timer for ever.
+    let started = std::time::Instant::now();
+    loop {
+        let (animating, deadline) = app.surface_mut::<notes::NotesApp>().frame_demand_for_test();
+        if !animating && deadline.is_none() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "something keeps waking the notebook while the bytes are away"
+        );
+        // Frames only when the live host would run them, each followed by
+        // the idle pass that hands edits to the record's writer.
+        let schedule = app.harness().frame_schedule();
+        if schedule.queued_work
+            || schedule.needs_animation_frame
+            || schedule
+                .next_wake_deadline
+                .is_some_and(|deadline| deadline <= ui::time::now())
+        {
+            app.harness().relayout();
+            app.harness().persist_tick();
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(
+        !app.surface_mut::<notes::NotesApp>()
+            .image_decoded_for_test(&source),
+        "nothing arrived meanwhile"
+    );
+
+    lane.arrive(digest, picture);
+    app.harness().relayout();
+    assert!(
+        app.surface_mut::<notes::NotesApp>()
+            .image_decoded_for_test(&source),
+        "the frame after the bytes arrived draws the picture"
+    );
+}

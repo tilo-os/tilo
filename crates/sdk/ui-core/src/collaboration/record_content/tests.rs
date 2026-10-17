@@ -77,3 +77,24 @@ fn a_record_that_is_not_the_windows_own_keeps_its_content_on_its_route() {
         "a window's own record sends on the window's route"
     );
 }
+
+/// Content reaching a record's store moves the count a waiting window
+/// compares, whichever way it came; a read that finds nothing does not
+/// need to.
+#[test]
+fn content_reaching_a_store_moves_the_arrival_count() {
+    let (store, lane) = record_store("arrivals");
+    let bytes = b"arriving later".to_vec();
+    let hash = tilo_content::hash_bytes(&bytes);
+    // Other tests run in parallel and move the count too: only that it
+    // moved is asserted.
+    let before = arrivals();
+    assert_eq!(store.read(&hash), None);
+    lane.arrive(hash.clone(), bytes.clone());
+    let arrived = arrivals();
+    assert!(arrived > before, "content that arrived on the route counts");
+    assert_eq!(store.read(&hash), Some(bytes));
+
+    store.put(b"stored here").unwrap();
+    assert!(arrivals() > arrived, "content an app stored counts");
+}

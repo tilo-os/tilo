@@ -39,7 +39,7 @@ use objc2_foundation::{
     NSError, NSNotification, NSNotificationCenter, NSNumber, NSObject, NSObjectProtocol, NSString,
 };
 
-use crate::{CaptureError, CaptureState, Device, DeviceKind};
+use crate::{CaptureError, CaptureState, Device, DeviceKind, Wake};
 use tilo_lock::MutexRecover as _;
 
 /// What the delegate does with each sample buffer.
@@ -90,6 +90,8 @@ impl SampleDelegate {
 struct Shared<T> {
     latest: Option<T>,
     state: Option<CaptureState>,
+    /// Told when `state` changes.
+    wake: Option<Wake>,
 }
 
 impl<T> Default for Shared<T> {
@@ -97,6 +99,7 @@ impl<T> Default for Shared<T> {
         Self {
             latest: None,
             state: None,
+            wake: None,
         }
     }
 }
@@ -104,13 +107,24 @@ impl<T> Default for Shared<T> {
 type Slot<T> = Arc<Mutex<Shared<T>>>;
 
 /// A later state replaces an earlier one, except that [`CaptureState::Live`]
-/// never replaces anything.
+/// never replaces anything. A change wakes whoever asked to hear of it;
+/// the `Live` every picture settles does not, once it holds.
 fn settle<T>(slot: &Slot<T>, state: CaptureState) {
     let mut shared = slot.lock_recover();
-    if state == CaptureState::Live {
+    let changed = if state == CaptureState::Live {
+        let first = shared.state.is_none();
         shared.state.get_or_insert(state);
+        first
+    } else if shared.state.as_ref() == Some(&state) {
+        false
     } else {
         shared.state = Some(state);
+        true
+    };
+    let wake = changed.then(|| shared.wake.clone()).flatten();
+    drop(shared);
+    if let Some(wake) = wake {
+        wake();
     }
 }
 
