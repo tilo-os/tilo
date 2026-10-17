@@ -1347,7 +1347,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         let mut changed = legacy_wakeup || received_changes;
         if self.momentum.is_active() {
-            let delta = self.momentum.tick(elapsed);
+            let delta = self.momentum.advance(now);
             let moved = self.scroll_by(delta);
             changed |= moved;
             if !moved {
