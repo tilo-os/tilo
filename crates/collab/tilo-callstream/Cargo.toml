@@ -15,11 +15,14 @@ name = "tilo_callstream"
 path = "src/lib.rs"
 
 [features]
+# Decoder admission for sequenced units, shared by workspace-control and
+# peer surface viewers without exposing the neighbour protocol to apps.
+unit-chain = ["dep:neighbour-wire"]
 # `surface_decoder`: the shared-surface receive path (every wire codec, RGBA or
 # P010, the sender's announced colorimetry). The colorimetry types ride in the
 # neighbour protocol, so this pulls in its wire vocabulary; the chat call path
 # does not need it.
-surface-decoder = ["dep:neighbour-wire"]
+surface-decoder = ["unit-chain"]
 # `mp4_recording`: muxes encoded access units into MP4/MOV through `appsrc`.
 recording = ["dep:gstreamer-app"]
 
@@ -31,7 +34,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 thiserror.workspace = true
 tracing = "0.1"
 workspace-hack = { version = "0.1" }
-# The wire colorimetry the shared-surface decoder reports and applies.
+# Shared decoder admission and the wire colorimetry the surface decoder applies.
 neighbour-wire = { path = "../neighbour-wire", optional = true }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.

@@ -156,7 +156,7 @@ impl TiloSession {
             .name("remote-tilo-decode".into())
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
-                let mut chain = neighbour_wire::unit_chain::UnitChain::default();
+                let mut chain = tilo_callstream::unit_chain::UnitChain::default();
                 let mut asked: Option<std::time::Instant> = None;
                 while encoded_rx.recv().is_ok() {
                     let units = std::mem::take(&mut *encoded_worker.lock_recover());
@@ -166,7 +166,7 @@ impl TiloSession {
                             &encoded,
                         );
                         match chain.admit(seq, keyframe) {
-                            neighbour_wire::unit_chain::Admission::Decode => {
+                            tilo_callstream::unit_chain::Admission::Decode => {
                                 if keyframe {
                                     asked = None;
                                     keyframe_wanted_worker.store(0, Ordering::Release);
@@ -175,8 +175,8 @@ impl TiloSession {
                                     *decoded_worker.lock_recover() = Some(frame);
                                 }
                             }
-                            neighbour_wire::unit_chain::Admission::Stale => {}
-                            neighbour_wire::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                            tilo_callstream::unit_chain::Admission::Stale => {}
+                            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
                                 if broke
                                     || asked.is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY)
                                 {
