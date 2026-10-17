@@ -6,6 +6,7 @@ pub mod capability;
 mod geom;
 mod interaction;
 mod key;
+mod labels;
 mod layer;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
@@ -14,6 +15,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
+pub use labels::{ParticipantLabels, name_key};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -598,6 +600,10 @@ pub struct PresenceCtx {
     /// people (a row for yourself there is a pill over your own document).
     /// `None` until the room has said.
     self_participant: Option<(UserId, String)>,
+    /// The numbers people who share a name are told apart by, resolved from
+    /// [`Self::names`] and [`Self::self_participant`] whenever either
+    /// changes. See [`ParticipantLabels`].
+    labels: ParticipantLabels,
     /// The surface this process draws, spelled as [`crate::local_surface_id`]
     /// spells it, compared against a pointer's claimed surface to decide
     /// whether a content-space position is this process's to place. `None`
@@ -719,6 +725,7 @@ impl PresenceCtx {
             return;
         }
         self.self_participant = Some((id, name.into()));
+        self.refresh_labels();
     }
 
     /// Clear the room-certified spelling of this session after a complete
@@ -727,6 +734,7 @@ impl PresenceCtx {
     /// authenticated answer.
     pub(crate) fn clear_self_participant(&mut self) {
         self.self_participant = None;
+        self.refresh_labels();
     }
 
     /// Which participant in the room this session is, if the room has said.
@@ -1103,15 +1111,79 @@ impl PresenceCtx {
 
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
-        let name = name.into();
-        let shown = self.kind_label(&user, &name);
+        self.names.insert(user.clone(), name.into());
+        self.refresh_labels();
         // Relabel any already-drawn pill too, in case the pointer arrived first.
+        self.relabel_cursor(&user);
+    }
+
+    fn relabel_cursor(&mut self, user: &UserId) {
+        let shown = self.display_name(user);
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
                 cursor.label.clone_from(&shown);
             }
         }
-        self.names.insert(user, name);
+    }
+
+    /// Re-resolve who needs a number to be told apart, over every person
+    /// the room names including this session's own, and relabel the pills
+    /// of anyone whose label that changed.
+    fn refresh_labels(&mut self) {
+        let own = self
+            .self_participant
+            .as_ref()
+            .map(|(id, name)| (id.0.as_str(), name.as_str()));
+        let next = ParticipantLabels::new(
+            self.names
+                .iter()
+                .map(|(UserId(id), name)| (id.as_str(), name.as_str()))
+                .chain(own)
+                .filter(|(id, _)| {
+                    self.participant_kind(&UserId((*id).to_owned())) == ParticipantKind::Person
+                }),
+        );
+        if next == self.labels {
+            return;
+        }
+        self.labels = next;
+        let named: Vec<UserId> = self
+            .remote_cursors
+            .iter()
+            .map(|cursor| UserId(cursor.user_id.clone()))
+            .filter(|user| self.names.contains_key(user))
+            .collect();
+        for user in named {
+            self.relabel_cursor(&user);
+        }
+    }
+
+    /// The numbers people who share a name are told apart by in this room.
+    /// [`Self::display_name`] already applies them; this is for a caller
+    /// that holds names of its own for the same participants.
+    pub fn labels(&self) -> &ParticipantLabels {
+        &self.labels
+    }
+
+    /// Everyone the room names, this session's own participant included,
+    /// as they are shown, in an order every replica shares: who a people
+    /// list or a mention picker offers.
+    pub fn roster(&self) -> Vec<PresenceUser> {
+        let mut ids: Vec<&UserId> = self.names.keys().collect();
+        if let Some((own, _)) = &self.self_participant
+            && !self.names.contains_key(own)
+        {
+            ids.push(own);
+        }
+        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.into_iter().map(|id| self.user(id)).collect()
+    }
+
+    /// What this session's own participant is shown as, numbered like
+    /// anyone else's name; `None` until the room has named them.
+    pub fn self_label(&self) -> Option<String> {
+        self.self_name()?;
+        self.self_id().map(|id| self.display_name(id))
     }
 
     /// Seed the authenticated participant kind announced by the room. Both
@@ -1123,13 +1195,12 @@ impl PresenceCtx {
         kind: impl Into<ParticipantKind>,
     ) {
         let user = user.as_ref().clone();
-        self.participant_kinds.insert(user.clone(), kind.into());
-        let shown = self.display_name(&user);
-        for cursor in &mut self.remote_cursors {
-            if cursor.user_id == user.0 {
-                cursor.label.clone_from(&shown);
-            }
+        let kind = kind.into();
+        if self.participant_kinds.insert(user.clone(), kind) == Some(kind) {
+            return;
         }
+        self.refresh_labels();
+        self.relabel_cursor(&user);
     }
 
     pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
@@ -1167,23 +1238,34 @@ impl PresenceCtx {
         self.acting_for.get(user)
     }
 
-    /// The friendly name to show for `user`, falling back to the raw id
-    /// when the roster hasn't announced one. Never blank. Software acting
+    /// What every surface calls `user` — chat lines, pills, people lists,
+    /// the top bar, mentions: [`Self::display_name`] by its id.
+    pub fn participant_label(&self, user: &str) -> String {
+        self.display_name(&UserId(user.to_owned()))
+    }
+
+    /// The friendly name to show for `user`, this session's own
+    /// participant included, falling back to the raw id when the roster
+    /// hasn't announced one. Never blank. People who share a name carry
+    /// their number ("Ada (2)", see [`ParticipantLabels`]). Software acting
     /// for a person is named with that person ("Claude, for Ada"), else
     /// with its kind ("Claude · Agent").
     pub fn display_name(&self, user: &UserId) -> String {
-        let name = self
-            .names
-            .get(user)
-            .cloned()
-            .unwrap_or_else(|| user.0.clone());
+        let name = self.names.get(user).cloned().or_else(|| {
+            self.self_participant
+                .as_ref()
+                .filter(|(id, _)| id == user)
+                .map(|(_, name)| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+        });
+        let name = name.unwrap_or_else(|| user.0.clone());
         self.kind_label(user, &name)
     }
 
     fn kind_label(&self, user: &UserId, name: &str) -> String {
         let kind = self.participant_kind(user);
         if kind == ParticipantKind::Person {
-            return name.to_owned();
+            return self.labels.label(&user.0, name);
         }
         // A person the roster has not named yet is left out rather than
         // shown as their raw key: "Claude" reads better than "Claude, for
@@ -1192,11 +1274,14 @@ impl PresenceCtx {
             .acting_for
             .get(user)
             .and_then(|person| self.names.get(person).map(|name| (person, name)))
-            .and_then(|(person, name)| crate::history_source::human_label(name, &person.0))
+            .and_then(|(person, name)| {
+                crate::history_source::human_label(name, &person.0)
+                    .map(|name| self.labels.label(&person.0, name))
+            })
         {
             return crate::i18n::widget_format(
                 "participant-acting-for",
-                &[("name", name.into()), ("person", person.into())],
+                &[("name", name.into()), ("person", person.as_str().into())],
             );
         }
         match kind {
@@ -1439,8 +1524,18 @@ impl PresenceCtx {
             f32::from(b) / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
-        let label =
-            display_name.map_or_else(|| self.display_name(&uid), std::string::ToString::to_string);
+        // A name handed in still carries the number its owner is told apart
+        // by, when it is the name the room knows them by.
+        let label = display_name.map_or_else(
+            || self.display_name(&uid),
+            |name| {
+                if self.participant_kind(&uid) == ParticipantKind::Person {
+                    self.labels.label(&user_id, name)
+                } else {
+                    name.to_owned()
+                }
+            },
+        );
         if let Some(existing) = self
             .remote_cursors
             .iter_mut()
@@ -1774,6 +1869,7 @@ impl PresenceCtx {
         self.statuses.remove(&uid);
         self.remove_interactions_for_actor(user_id);
         self.remove_remote_cursor(user_id);
+        self.refresh_labels();
     }
 
     /// Current status for a room participant. Inferred statuses apply their
@@ -2320,6 +2416,57 @@ mod string_id_wrapper_tests {
 
             assert_eq!(ctx.remote_cursors[0].label, "Xaver");
         }
+    }
+
+    #[test]
+    fn people_sharing_a_name_are_numbered_alike_for_everyone_including_themselves() {
+        let ada = UserId("key-a".into());
+        let other_ada = UserId("key-b".into());
+        let agent = UserId("agent:claude".into());
+        // The room seen from Ada's machine: she is the self row.
+        let mut mine = PresenceCtx::empty();
+        mine.upsert_remote_cursor("key-b".into(), [1.0, 1.0], Some("ada"));
+        mine.set_self_participant(ada.clone(), "Ada");
+        mine.set_display_name(other_ada.clone(), "ada");
+        mine.set_participant_kind(&agent, ParticipantKind::Agent);
+        mine.set_display_name(agent.clone(), "Ada");
+        // And from the other Ada's, who heard of everyone in another order.
+        let mut theirs = PresenceCtx::empty();
+        theirs.set_participant_kind(&agent, ParticipantKind::Agent);
+        theirs.set_display_name(agent.clone(), "Ada");
+        theirs.set_display_name(ada.clone(), "Ada");
+        theirs.set_self_participant(other_ada.clone(), "ada");
+
+        for ctx in [&mine, &theirs] {
+            assert_eq!(ctx.display_name(&ada), "Ada (1)");
+            assert_eq!(ctx.display_name(&other_ada), "ada (2)");
+            assert_eq!(
+                ctx.display_name(&agent),
+                crate::history_source::agent_display_label("Ada"),
+                "an agent keeps its kind label and takes no number"
+            );
+        }
+        assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
+        assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
+        assert_eq!(
+            mine.remote_cursors[0].label, "ada (2)",
+            "a pill drawn before the collision was known is renumbered"
+        );
+        let listed: Vec<String> = mine.roster().into_iter().map(|u| u.name).collect();
+        assert_eq!(
+            listed,
+            [
+                crate::history_source::agent_display_label("Ada"),
+                "Ada (1)".to_owned(),
+                "ada (2)".to_owned()
+            ]
+        );
+
+        mine.set_display_name(other_ada.clone(), "Bea");
+        assert_eq!(mine.self_label().as_deref(), Some("Ada"));
+        assert_eq!(mine.remote_cursors[0].label, "Bea");
+        theirs.unregister_peer("key-a");
+        assert_eq!(theirs.self_label().as_deref(), Some("ada"));
     }
 
     #[test]

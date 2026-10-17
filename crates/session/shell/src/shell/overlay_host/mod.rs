@@ -22249,21 +22249,31 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         if flags.collaborators {
-            let (mut rows, unavailable, screen_exposure) = self.chrome.as_ref().map_or_else(
-                || (Vec::new(), None, None),
-                |chrome| {
-                    let state = chrome.borrow();
-                    let local_user = state.active_local_user();
-                    (
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        ),
-                        state.collab_unavailable.clone(),
-                        collaborators_screen_exposure(&state),
-                    )
-                },
-            );
+            // The name this person goes by, numbered like anyone else's when
+            // someone here shares it; never "You", never their key.
+            let own_name = ui::local_identity::load()
+                .map(|identity| identity.display_name)
+                .filter(|name| !name.trim().is_empty());
+            let (mut rows, own_shown, unavailable, screen_exposure) =
+                self.chrome.as_ref().map_or_else(
+                    || (Vec::new(), None, None, None),
+                    |chrome| {
+                        let state = chrome.borrow();
+                        let local_user = state.active_local_user();
+                        let (rows, own_shown) =
+                            tilo_desktop::collaborators::collaborator_roster_rows_named(
+                                &state.tree().desktop,
+                                &local_user,
+                                own_name.as_deref(),
+                            );
+                        (
+                            rows,
+                            own_shown,
+                            state.collab_unavailable.clone(),
+                            collaborators_screen_exposure(&state),
+                        )
+                    },
+                );
             let now = std::time::SystemTime::now();
             let interactions = presence.visible_interactions(std::time::Instant::now());
             for row in &mut rows {
@@ -22293,7 +22303,9 @@ impl ShellOverlayHost {
                 .map(|chrome| chrome.borrow().local_user_id.clone())
                 .filter(|id| !id.trim().is_empty())
                 .unwrap_or_else(crate::shell::state::local_user_id);
-            let own_label = ui::history_source::participant_display_label(&own_id);
+            let own_label = own_shown
+                .or(own_name)
+                .unwrap_or_else(|| ui::history_source::participant_display_label(&own_id));
             let own_activity = interactions
                 .iter()
                 .find(|interaction| {

@@ -7,9 +7,12 @@
 //! names them: a display name, a monogram and a colour.
 //!
 //! The demo used by screenshots and tests reads as [`LocalIdentity::demo`],
-//! the seeded demo's own person (`u_me` / "You").
+//! the seeded demo's own person (`u_me` / "Quinn Davis").
 
 use crate::model::{self, Id};
+
+/// What the demo's own person is called: a name, like anyone else's.
+pub const DEMO_NAME: &str = "Quinn Davis";
 
 /// The participant a view is for, as it is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +28,7 @@ impl LocalIdentity {
     pub fn demo() -> Self {
         Self {
             id: model::ME.to_string(),
-            name: "You".to_string(),
+            name: DEMO_NAME.to_string(),
             initials: "QD".to_string(),
             color_idx: 0,
         }
@@ -138,7 +141,7 @@ mod tests {
     fn identity_derivation_is_stable_and_tidy() {
         let me = LocalIdentity::demo();
         assert_eq!(me.id, model::ME, "case demo: id");
-        assert_eq!(me.name, "You", "case demo: name");
+        assert_eq!(me.name, DEMO_NAME, "case demo: name");
 
         let a = LocalIdentity::for_participant("alice");
         assert_eq!(a.id, "alice");

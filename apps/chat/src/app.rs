@@ -727,6 +727,11 @@ pub struct ChatApp {
     // presence (see `adopt_room`). A peer never writes its own name into
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
+    /// The numbers people who share a name are told apart by, as the room
+    /// resolves them, so every screen in it numbers the same people alike.
+    pub(crate) room_labels: ui::presence::ParticipantLabels,
+    /// What the room calls this window's person, numbered like anyone else.
+    pub(crate) own_label: Option<String>,
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated room roster.
     pub(crate) room_agents: Vec<Id>,
@@ -769,7 +774,7 @@ pub struct ChatApp {
 
     // Other spellings of this window's person the room uses. See
     // `adopt_own_participant`: what was said under one of these is still
-    // this person, so their lines go on reading "You".
+    // this person, so their lines go on reading as theirs.
     pub(crate) former_ids: Vec<Id>,
 
     // The OS permission gate: routes channel participation + file-embed
@@ -999,6 +1004,8 @@ impl ChatApp {
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
+            room_labels: ui::presence::ParticipantLabels::default(),
+            own_label: None,
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
             capture_agent_presence: None,
@@ -1723,8 +1730,11 @@ impl ChatApp {
     /// This window signs what it writes with the id its host gave it, the
     /// author every action of its person carries. A room that spells the
     /// same participant differently names them too: lines recorded under
-    /// that spelling are still this person's, so "You" stays beside them.
+    /// that spelling are still this person's, so their name stays beside
+    /// them.
     fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
+        self.room_labels.clone_from(presence.labels());
+        self.own_label = presence.self_label();
         if let Some(room_id) = presence.self_id()
             && room_id.0 != self.me.id
             && !self.former_ids.contains(&room_id.0)
@@ -1786,6 +1796,8 @@ impl ChatApp {
         view.me = parent.me.clone();
         view.perms = parent.perms.clone();
         view.room_names.clone_from(&parent.room_names);
+        view.room_labels.clone_from(&parent.room_labels);
+        view.own_label.clone_from(&parent.own_label);
         view.room_colors.clone_from(&parent.room_colors);
         view.room_agents.clone_from(&parent.room_agents);
         view.capture_agent_presence
@@ -2103,6 +2115,8 @@ impl ChatApp {
 
     /// What to call `id`: the room's answer first, the document's stored name
     /// as an offline fallback, and the raw id last so a label is never blank.
+    /// People who share a name carry the number the room tells them apart
+    /// by ("Ada (2)"), this window's own person included.
     ///
     /// The precedence is the point. A client that could name itself would be
     /// telling every other peer what to call it, and two peers disagreeing
@@ -2114,13 +2128,19 @@ impl ChatApp {
         {
             return self.agent_display_name(agent);
         }
+        if self.is_me(id)
+            && let Some(own) = &self.own_label
+        {
+            return own.clone();
+        }
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
+            let n = self.room_labels.label(id, n);
             return if self.is_me(id) {
-                n.clone()
+                n
             } else {
-                crate::identity::shared_name_label(id, n)
+                crate::identity::shared_name_label(id, &n)
             };
         }
         if let Some(agent) = self.agent_authors.get(id) {
@@ -2129,10 +2149,11 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
+            let name = self.room_labels.label(id, &u.name);
             return if self.is_me(id) {
-                u.name.clone()
+                name
             } else {
-                crate::identity::shared_name_label(id, &u.name)
+                crate::identity::shared_name_label(id, &name)
             };
         }
         // Your own name, which this had no way to reach until the room named
@@ -2145,9 +2166,9 @@ impl ChatApp {
         id.to_string()
     }
 
-    /// What to call `id` on screen, with "You" for this session's own
-    /// participant and an honest placeholder for someone the room has not
-    /// named yet — nobody is ever shown their raw routing id.
+    /// What to call `id` on screen: this session's own participant by their
+    /// name like anyone else, and an honest placeholder for someone the room
+    /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
         if self
             .native_voice
@@ -2163,7 +2184,11 @@ impl ChatApp {
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
-            return "You".to_string();
+            let own = self.display_name(id);
+            if own != id && !own.trim().is_empty() {
+                return own;
+            }
+            return crate::identity::unnamed_label(id);
         }
         if let Some(agent) = id.strip_prefix("agent:")
             && self.room_agents.iter().any(|known| known == agent)
@@ -3710,6 +3735,8 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_labels.clone_from(&self.room_labels);
+            surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
@@ -3779,6 +3806,8 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_labels.clone_from(&self.room_labels);
+            surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
@@ -5142,7 +5171,7 @@ mod identity_on_screen {
             shown.contains("2154"),
             "ambiguous names must distinguish the actual participant"
         );
-        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
         assert_eq!(
             crate::testing::users(&state.doc)[0].name,
             "You",
@@ -5151,7 +5180,7 @@ mod identity_on_screen {
     }
 
     #[test]
-    fn people_on_screen_are_named_honestly_and_you_are_you() {
+    fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         // Phase: roster_vocabulary_never_calls_an_agent_a_person.
         {
             let mut app = ChatApp::new_ephemeral();
@@ -5198,11 +5227,40 @@ mod identity_on_screen {
             );
         }
 
-        // Phase: the_person_reading_the_screen_is_you.
+        // Phase: the_person_reading_the_screen_is_shown_their_name.
         {
             let app = ChatApp::new_ephemeral();
             let me = app.me.id.clone();
-            assert_eq!(app.user_name(&me), "You");
+            assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
+        }
+
+        // Phase: people_sharing_a_name_are_numbered_as_the_room_numbers_them.
+        {
+            use ui::permissions::UserId;
+            let mut app = ChatApp::new_ephemeral();
+            let me = app.me.id.clone();
+            let mut presence = PresenceCtx::default();
+            presence.set_self_participant(UserId(me.clone()), "Sam");
+            presence.set_display_name(UserId("a-peer".into()), "sam");
+            presence.set_display_name(UserId("z-peer".into()), "Kim");
+            app.adopt_room(&presence);
+            assert_eq!(app.user_name("a-peer"), "sam (1)");
+            assert_eq!(app.user_name(&me), "Sam (2)");
+            assert_eq!(app.user_name("z-peer"), "Kim");
+            let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
+            assert!(
+                offered.contains(&"sam (1)".to_owned()),
+                "the @ picker offers the numbered name, got {offered:?}"
+            );
+
+            presence.set_display_name(UserId("a-peer".into()), "Alex");
+            app.adopt_room(&presence);
+            assert_eq!(app.user_name("a-peer"), "Alex");
+            assert_eq!(
+                app.user_name(&me),
+                "Sam",
+                "the number goes once nobody shares it"
+            );
         }
     }
 }
