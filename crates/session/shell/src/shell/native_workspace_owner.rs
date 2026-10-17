@@ -14,6 +14,8 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+pub(crate) use publication_tests::edit as test_document_edit;
+#[cfg(test)]
 pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
@@ -107,6 +109,12 @@ impl Store for TreeStore {
         }
         // The encode is bounded: an oversized candidate is refused here.
         let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
+        // Taken before the writer accepts the record: from then until this
+        // export is published, the policy observers hold is the previous
+        // record's, and they must know its replacement is on the way rather
+        // than judge it withdrawn.
+        let export = matches!(change, Change::Room { .. })
+            .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
         // What the file must still hold: the record this tree last installed.
         let base = store::digest(&tree.native_authority).map_err(|e| e.to_string())?;
         let sequence = tree.native_runtime.next_sequence();
@@ -136,7 +144,9 @@ impl Store for TreeStore {
                 *tree = candidate;
                 // Only the acknowledged final admitted projection reaches authority exports.
                 tree.export_fs_capabilities();
-                crate::shell::launcher::action_authority::Export::of(&tree).submit();
+                if let Some(export) = export {
+                    export.submit();
+                }
             }
         }
         Ok(())
