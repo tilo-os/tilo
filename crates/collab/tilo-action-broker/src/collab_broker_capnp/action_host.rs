@@ -2310,6 +2310,7 @@ impl CapnpBrokerState {
         let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
+            &root.app_id,
             &offered,
             argument,
             &actor,
@@ -2429,6 +2430,7 @@ impl CapnpBrokerState {
         let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
             peer_id,
+            &app_id,
             &offered,
             argument.as_deref(),
             &actor,

@@ -133,14 +133,20 @@ mod external_moderation_rpc_tests {
                 .unwrap()
                 .clone();
             let (actor, origin) = self.caller();
+            // Simulate the trusted host sheet answering these exact bytes.
+            let witness = self
+                .state
+                .witness_confirmation(actor.id(), (resource, action), Some(argument))
+                .unwrap();
             let token = self
                 .state
                 .confirmation_token(
                     peer,
+                    &self.route.app_id,
                     &offered,
                     Some(argument),
                     &actor,
-                    Some(&tilo_actions::remote::Confirmation::Confirmed),
+                    Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
                 )
                 .unwrap();
             let job = self
@@ -418,19 +424,46 @@ mod external_moderation_rpc_tests {
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
                     assert!(matches!(
-                        room.state
-                            .confirmation_token(980, &offered, Some(&exact), &actor, None),
+                        room.state.confirmation_token(
+                            980,
+                            &room.route.app_id,
+                            &offered,
+                            Some(&exact),
+                            &actor,
+                            None
+                        ),
+                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
+                    ));
+                    assert!(actor.direct(), "the app's own identity is a direct person");
+                    assert!(matches!(
+                        room.state.confirmation_token(
+                            980,
+                            &room.route.app_id,
+                            &offered,
+                            Some(&exact),
+                            &actor,
+                            Some(&tilo_actions::remote::Confirmation::Confirmed),
+                        ),
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
                     for altered in ["missing", "payload", "destination"] {
+                        let witness = room
+                            .state
+                            .witness_confirmation(
+                                actor.id(),
+                                (&offered.resource, action),
+                                Some(&exact),
+                            )
+                            .unwrap();
                         let token = room
                             .state
                             .confirmation_token(
                                 980,
+                                &room.route.app_id,
                                 &offered,
                                 Some(&exact),
                                 &actor,
-                                Some(&tilo_actions::remote::Confirmation::Confirmed),
+                                Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
                             )
                             .unwrap()
                             .unwrap();
@@ -481,6 +514,60 @@ mod external_moderation_rpc_tests {
                         operation,
                     };
                     refused(&target.handle, &request, id, "HTTPS").await;
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_requires_witness_without_publisher_confirmation_policy() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for action in ["submit-report", "appeal"] {
+                    let room = Room::new(false);
+                    let target = room.worker(980).await;
+                    let mut descriptor = descriptor(action);
+                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+                    target
+                        .handle
+                        .publish_actions(&room.route.app_id, &[descriptor])
+                        .await
+                        .unwrap();
+                    let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let (actor, origin) = room.caller();
+                    assert!(actor.direct());
+                    let exact = argument(&operation(action == "appeal"));
+                    assert!(matches!(
+                        room.state.confirmation_token(
+                            980,
+                            &room.route.app_id,
+                            &offered,
+                            Some(&exact),
+                            &actor,
+                            Some(&tilo_actions::remote::Confirmation::Confirmed),
+                        ),
+                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
+                    ));
+                    let result = room.state.start_invocation_confirmed_for_origin(
+                        980,
+                        &offered.resource,
+                        action,
+                        InvocationInputs {
+                            original_request: None,
+                            requested: None,
+                            caller: None,
+                            execution: None,
+                            argument: Some(&exact),
+                            actor: &actor,
+                            confirmation_token: None,
+                            context: None,
+                        },
+                        Some(origin),
+                    );
+                    let error = result
+                        .err()
+                        .expect("Store disclosure always requires a host grant");
+                    assert!(error.contains("confirmation"), "{error}");
                 }
             })
             .await;

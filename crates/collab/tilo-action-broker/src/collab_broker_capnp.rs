@@ -2214,6 +2214,7 @@ mod host_steps;
 mod launchable;
 mod local_action_host;
 mod witness;
+use witness::requires_store_witness;
 mod workspace_open;
 pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
@@ -5896,6 +5897,7 @@ impl CapnpBrokerState {
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
         if asks
+            || requires_store_witness(&offered.0.app_id, &offered.1.action)
             || !matches!(
                 offered.1.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::None
@@ -6359,6 +6361,7 @@ impl CapnpBrokerState {
     pub(crate) fn confirmation_token(
         &self,
         peer_id: u64,
+        app: &str,
         offered: &PublishedAction,
         argument: Option<&str>,
         actor: &BrokerActor,
@@ -6376,6 +6379,11 @@ impl CapnpBrokerState {
             ),
             _ => false,
         };
+        // Store disclosures must be answered on a trusted host sheet, even
+        // when the publisher's connection is admitted as the person themself.
+        if requires_store_witness(app, &offered.action) && !witnessed {
+            return Err(ActionHostError::ConfirmationRequired);
+        }
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
         // asks only when it removes what a person may want back.
@@ -6394,6 +6402,10 @@ impl CapnpBrokerState {
             .map_err(|reason| ActionHostError::Unavailable { reason })
     }
 
+    /// Trusted internal callers only: admission must already have checked
+    /// the person's answer for the exact invocation. Untrusted confirmations
+    /// must go through `confirmation_token` instead.
+    ///
     /// Mint the one-use grant carrying a confirmation already decided to
     /// the dispatch of `actor`'s invocation of `offered` on `peer_id` with
     /// `argument`, and nothing else.

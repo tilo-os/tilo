@@ -21,6 +21,12 @@ use super::execution_activity::ShownActor;
 use super::{BrokerActor, CapnpBrokerState, CrdtRoute};
 use crate::app_actions::{AppActionConsent, AppActionConsentRequest};
 
+/// These Store actions disclose signed content outside the workspace.
+/// Their confirmation must come from the host, not the publishing app.
+pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
+    app == "so.tilo.store" && matches!(action, "submit-report" | "appeal")
+}
+
 /// What the person is asked, and what their answer is bound to.
 struct Question {
     request: AppActionConsentRequest,
@@ -43,7 +49,7 @@ pub(super) async fn serve_answering(
     let RemoteActionMessage::Invoke(request) = message else {
         return Some(first);
     };
-    if !needs_witness(&first) || BrokerActor::for_caller(&caller).direct() {
+    if !needs_witness(&first) {
         return Some(first);
     }
     let witnessed = match state
@@ -89,20 +95,33 @@ impl CapnpBrokerState {
         request: &InvokeRequest,
     ) -> tilo_actions::remote::Pending<Result<Confirmation, ActionHostError>> {
         use tilo_actions::remote::Pending;
-        let Some(person) = person
-            .map(str::to_owned)
-            .or_else(|| caller.acting_for_person().map(str::to_owned))
-        else {
+        let Some(person) = (match caller.principal() {
+            // A direct caller cannot nominate another person to answer.
+            tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.clone()),
+            _ => person
+                .map(str::to_owned)
+                .or_else(|| caller.acting_for_person().map(str::to_owned))
+                .or_else(|| {
+                    caller
+                        .user_public_key()
+                        .map(|root| super::principal_id_for_root(*root))
+                }),
+        }) else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
-        if BrokerActor::for_caller(caller).direct() {
-            // A person acting themselves confirms on the screen they act
-            // from; nobody else answers for them.
+        let Some(question) = self.witness_question(caller, &person, request) else {
+            return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
+                ActionHostError::ConfirmationRequired
+            } else {
+                ActionHostError::UnknownAction
+            }));
+        };
+        if question.actor.direct()
+            && !requires_store_witness(&question.request.target_app, &question.request.action)
+        {
+            // Other direct actions keep confirming on the caller's screen.
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
-        let Some(question) = self.witness_question(caller, &person, request) else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
-        };
         let Some(answer) = self.ask_person(&question) else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
@@ -232,9 +251,7 @@ impl CapnpBrokerState {
         };
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
-        let moderation = if app_id == "so.tilo.store"
-            && matches!(address.action.as_str(), "submit-report" | "appeal")
-        {
+        let moderation = if requires_store_witness(&app_id, &address.action) {
             let root = caller.user_public_key().copied().or_else(|| {
                 tilo_identity_host::broker::trusted_current_device(room)
                     .ok()
