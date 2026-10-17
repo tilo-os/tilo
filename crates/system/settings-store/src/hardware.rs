@@ -2565,8 +2565,16 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     // back to maximize and restore, and Super+number to strips.
     (ShortcutAction::PreviousStrip, &["Super"], "up"),
     (ShortcutAction::NextStrip, &["Super"], "down"),
-    (ShortcutAction::MoveGroupToPreviousStrip, &["Shift", "Super"], "up"),
-    (ShortcutAction::MoveGroupToNextStrip, &["Shift", "Super"], "down"),
+    (
+        ShortcutAction::MoveGroupToPreviousStrip,
+        &["Shift", "Super"],
+        "up",
+    ),
+    (
+        ShortcutAction::MoveGroupToNextStrip,
+        &["Shift", "Super"],
+        "down",
+    ),
     (ShortcutAction::FocusGroup1, &["Super"], "1"),
     (ShortcutAction::FocusGroup2, &["Super"], "2"),
     (ShortcutAction::FocusGroup3, &["Super"], "3"),
@@ -3172,7 +3180,10 @@ mod tests {
                     ShortcutAction::MoveGroupToPreviousStrip,
                     "Super+Ctrl+Shift+Up",
                 ),
-                (ShortcutAction::MoveGroupToNextStrip, "Super+Ctrl+Shift+Down"),
+                (
+                    ShortcutAction::MoveGroupToNextStrip,
+                    "Super+Ctrl+Shift+Down",
+                ),
             ] {
                 assert_eq!(
                     cfg.bindings[&action].display(),

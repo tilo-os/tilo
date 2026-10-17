@@ -662,8 +662,14 @@ mod tests {
             ("restore-window", "Super+Down".to_string()),
             ("previous-strip", "Super+Ctrl+Up".to_string()),
             ("next-strip", "Super+Ctrl+Down".to_string()),
-            ("move-group-to-previous-strip", "Super+Ctrl+Shift+Up".to_string()),
-            ("move-group-to-next-strip", "Super+Ctrl+Shift+Down".to_string()),
+            (
+                "move-group-to-previous-strip",
+                "Super+Ctrl+Shift+Up".to_string(),
+            ),
+            (
+                "move-group-to-next-strip",
+                "Super+Ctrl+Shift+Down".to_string(),
+            ),
         ];
         let strips = [
             "focus-strip-1",
