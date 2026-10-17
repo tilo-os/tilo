@@ -46,6 +46,8 @@ pub(crate) mod approved_checks;
 mod broker;
 pub mod browser_service_sessions;
 #[cfg(feature = "broker-transport")]
+pub(crate) mod external_moderation;
+#[cfg(feature = "broker-transport")]
 pub(crate) use broker::{person_chat_command, subscribe_person_chat};
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -236,6 +238,12 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    #[cfg(feature = "broker-transport")]
+    ExternalModeration {
+        command: runtime_collab::external_moderation::Request,
+        on_behalf_of: tilo_actions::InvocationId,
+        reply: crate::invocation_scope::ExternalModerationReply,
+    },
     SelectedDiscovery {
         request_id: u64,
         command: runtime_collab::open_selected::discovery::Request,

@@ -774,6 +774,32 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.invocation
     }
 
+    /// Submit the exact approved moderation operation through the record's host.
+    /// Pass the returned Send future to the action's existing job.
+    ///
+    /// # Errors
+    /// Refuses projection drains, changed dispatch custody or unavailable transport.
+    pub fn external_moderation(
+        &self,
+        operation: registry_types::ExternalModerationOperation,
+    ) -> Result<ui_core::invocation_scope::ExternalModerationFuture, String> {
+        if let Some(custody) = &self.custody {
+            return custody.external_moderation(operation);
+        }
+        let target = self
+            .target
+            .as_ref()
+            .ok_or("external moderation requires an exact dispatched record target")?;
+        if target.route().app_id != self.env.dispatch.app_id() {
+            return Err("external moderation dispatch app changed".into());
+        }
+        target.external_moderation(
+            self.invocation
+                .ok_or("external moderation requires a dispatched invocation")?,
+            operation,
+        )
+    }
+
     /// Run an approved project check through this effect's admitted host channel.
     /// Commands, source paths and resource bounds are chosen by the project host.
     /// Pass the returned future to the existing effect job with [`Self::spawn`].

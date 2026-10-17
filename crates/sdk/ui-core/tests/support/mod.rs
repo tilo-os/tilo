@@ -130,6 +130,10 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
+            #[cfg(feature = "broker-transport")]
+            CollabRequest::ExternalModeration { .. } => {
+                // No host authority here: dropping response custody refuses the request.
+            }
             CollabRequest::Document { mutation, .. } => {
                 let mutation = relay_mutation(mutation);
                 let event = document_event(&mutation, &from);

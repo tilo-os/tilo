@@ -1182,6 +1182,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::OpenSelected { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OpenSelectedV2 { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -4961,6 +4962,7 @@ struct SdkJoinContext<'a> {
 
 struct SdkRoute {
     _checks: Option<super::approved_checks::Registration>,
+    _moderation: Option<super::external_moderation::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -5118,6 +5120,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let moderation = super::external_moderation::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: external moderation lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -5131,6 +5139,7 @@ async fn ensure_sdk_route(
         channel_id,
         SdkRoute {
             _checks: checks,
+            _moderation: moderation,
             spec: spec.clone(),
             channel,
             presence,
@@ -6812,6 +6821,14 @@ async fn dispatch_sdk_request(
         return false;
     }
     match request {
+        CollabRequest::ExternalModeration {
+            command,
+            on_behalf_of,
+            reply,
+        } => {
+            super::external_moderation::execute(&route.channel, &command, on_behalf_of, &reply)
+                .await;
+        }
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => {
