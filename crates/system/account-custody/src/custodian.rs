@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use accounts::{Account, AccountId, HandoffCredential, HandoffStore, Secret, SecretVault};
+use accounts::{Account, AccountCredentials, AccountId, HandoffCredential, HandoffStore, Secret};
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
@@ -679,11 +679,12 @@ impl Custodian {
         self.config_root.as_deref()
     }
 
-    fn vault(&self) -> SecretVault {
+    fn credentials(&self) -> Result<AccountCredentials, CustodyError> {
         match &self.config_root {
-            Some(root) => SecretVault::open_in(root),
-            None => SecretVault::open(),
+            Some(root) => AccountCredentials::open_in(root),
+            None => AccountCredentials::open(),
         }
+        .map_err(CustodyError::Storage)
     }
 
     fn store(&self) -> accounts::AccountStore {
@@ -1093,10 +1094,7 @@ impl Custodian {
     /// # Errors
     /// Missing grant or an unreadable vault.
     pub fn oauth_scopes(&self, id: &AccountId) -> Result<Option<String>, CustodyError> {
-        let vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
+        let vault = self.credentials()?;
         let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
         let Some((Grant::Oauth2 { tokens, .. }, _)) = decode_grant(&secret) else {
             return Err(CustodyError::NeedsAuthentication);
@@ -1113,10 +1111,7 @@ impl Custodian {
     /// # Errors
     /// An unreadable vault.
     pub fn oauth_grant_state(&self, id: &AccountId) -> Result<GrantState, CustodyError> {
-        let vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
+        let vault = self.credentials()?;
         let Some(secret) = vault.get(id) else {
             return Ok(GrantState::Missing);
         };
@@ -1133,12 +1128,9 @@ impl Custodian {
     /// # Errors
     /// [`CustodyError::Storage`] when the vault cannot be written.
     pub fn seal_oauth(&self, id: &AccountId, tokens: &TokenSet) -> Result<(), CustodyError> {
-        let mut vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
-        vault.put(id, &oauth_secret(tokens));
-        vault.try_save().map_err(CustodyError::Storage)
+        let mut credentials = self.credentials()?;
+        credentials.put(id, &oauth_secret(tokens));
+        credentials.try_save().map_err(CustodyError::Storage)
     }
 
     /// Forget a local OAuth grant. Provider-side revocation remains separate.
@@ -1146,10 +1138,7 @@ impl Custodian {
     /// # Errors
     /// A vault recovery or persistence failure.
     pub fn forget_oauth(&self, id: &AccountId) -> Result<(), CustodyError> {
-        let mut vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
+        let mut vault = self.credentials()?;
         vault.remove(id);
         vault.try_save().map_err(CustodyError::Storage)
     }
@@ -1185,25 +1174,24 @@ impl Custodian {
         oauth_use: OAuthUse,
         force: bool,
     ) -> Result<(Zeroizing<String>, Option<u64>), CustodyError> {
-        let mut vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
+        let mut vault = self.credentials()?;
         let tokens = self.fresh_oauth_tokens(&mut vault, id, oauth_use, force)?;
         let expires = tokens.expires_at();
         Ok((Zeroizing::new(tokens.access_token), expires))
     }
 
     /// `id`'s sealed `OAuth` tokens, refreshed when due (or `force`), with
-    /// any change sealed back into `vault`.
+    /// any change sealed back into `credentials`.
     fn fresh_oauth_tokens(
         &self,
-        vault: &mut SecretVault,
+        credentials: &mut AccountCredentials,
         id: &AccountId,
         oauth_use: OAuthUse,
         force: bool,
     ) -> Result<TokenSet, CustodyError> {
-        let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let secret = credentials
+            .get(id)
+            .ok_or(CustodyError::NeedsAuthentication)?;
         let Some((
             Grant::Oauth2 {
                 mut tokens,
@@ -1220,8 +1208,8 @@ impl Custodian {
             imported.validate(oauth_use)?;
         }
         if legacy {
-            vault.put(id, &oauth_secret(&tokens));
-            vault.try_save().map_err(CustodyError::Storage)?;
+            credentials.put(id, &oauth_secret(&tokens));
+            credentials.try_save().map_err(CustodyError::Storage)?;
         }
         if tokens.refresh_token.is_empty() {
             return Err(CustodyError::NeedsAuthentication);
@@ -1235,7 +1223,7 @@ impl Custodian {
                         // The provider revoked the grant: its access token
                         // must not be handed out again either. Keep the
                         // account, drop the dead grant until the next sign-in.
-                        vault.put(
+                        credentials.put(
                             id,
                             &registered_secret(
                                 &TokenSet::default(),
@@ -1244,7 +1232,7 @@ impl Custodian {
                                 copy_origin,
                             ),
                         );
-                        vault.try_save().map_err(CustodyError::Storage)?;
+                        credentials.try_save().map_err(CustodyError::Storage)?;
                         return Err(CustodyError::NeedsAuthentication);
                     }
                     Err(error) => return Err(error.into()),
@@ -1254,11 +1242,11 @@ impl Custodian {
                 renewed.scope = tokens.scope;
             }
             tokens = renewed;
-            vault.put(
+            credentials.put(
                 id,
                 &registered_secret(&tokens, registration, copied, copy_origin),
             );
-            vault.try_save().map_err(CustodyError::Storage)?;
+            credentials.try_save().map_err(CustodyError::Storage)?;
         }
         Ok(tokens)
     }
@@ -1336,13 +1324,12 @@ impl Custodian {
         if !account.enabled {
             return Err(CustodyError::Account("account is disabled".into()));
         }
-        let mut vault = self.vault();
-        if let Some(error) = vault.recovery_error() {
-            return Err(CustodyError::Storage(error.to_string()));
-        }
-        let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let mut credentials = self.credentials()?;
+        let secret = credentials
+            .get(id)
+            .ok_or(CustodyError::NeedsAuthentication)?;
         let credential = if let Some(cloud) = OAuthCloud::from_type_id(account.type_id.as_str()) {
-            let tokens = self.fresh_oauth_tokens(&mut vault, id, cloud.oauth_use(), force)?;
+            let tokens = self.fresh_oauth_tokens(&mut credentials, id, cloud.oauth_use(), force)?;
             HandoffCredential::Bearer {
                 token: Zeroizing::new(tokens.access_token.clone()),
                 expires_unix: tokens.expires_at(),
@@ -1366,11 +1353,11 @@ impl Custodian {
                     ICloudAuthError::Offline => CustodyError::Offline,
                     other => CustodyError::SignIn(other.to_string()),
                 })?;
-            vault.put(
+            credentials.put(
                 id,
                 &icloud_secret_with_provenance(&apple_id, &renewed, copied, copy_origin),
             );
-            vault.try_save().map_err(CustodyError::Storage)?;
+            credentials.try_save().map_err(CustodyError::Storage)?;
             HandoffCredential::Session {
                 headers: headers.headers,
                 expires_unix: headers.expires_unix,

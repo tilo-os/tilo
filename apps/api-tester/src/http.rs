@@ -18,13 +18,21 @@ use crate::vars;
 
 /// A fully-resolved request, with all `{{vars}}` expanded and auth folded
 /// into the header list. This is the exact thing that hits the wire.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Outgoing {
     pub method: String,
     /// Full URL including the assembled query string.
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+}
+
+impl std::fmt::Debug for Outgoing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Outgoing")
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Resolve a [`Request`] against `env_vars` into a concrete [`Outgoing`].
@@ -64,7 +72,7 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
         .collect();
 
     match &req.auth {
-        Auth::None => {}
+        Auth::None | Auth::SecretRef { .. } => {}
         Auth::Bearer { token } => {
             headers.push(("Authorization".into(), format!("Bearer {}", sub(token))));
         }

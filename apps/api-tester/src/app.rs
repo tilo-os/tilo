@@ -871,7 +871,7 @@ impl ApiTesterApp {
             },
         };
         if self.request.auth.label() != next.label() {
-            let before = Credentials::of(&self.request.auth);
+            let before = self.workspace.request.auth.clone();
             self.request.auth = next;
             let after = Credentials::of(&self.request.auth);
             if let Some(dispatcher) = &self.dispatcher {
@@ -1368,13 +1368,29 @@ impl ApiTesterApp {
 }
 
 impl ApiTesterApp {
-    fn credential(&mut self, id: &Id) -> String {
+    fn credential(&mut self, id: &Id, reference: &str) -> Result<String, String> {
+        if !reference.is_empty() {
+            let store = self
+                .secrets
+                .as_ref()
+                .ok_or("this window keeps no secrets")?;
+            let auth = crate::credentials::resolve(
+                &Auth::SecretRef {
+                    id: reference.into(),
+                    scheme: String::new(),
+                },
+                store,
+            )
+            .map_err(str::to_owned)?;
+            return Ok(auth.secret().unwrap_or_default().to_owned());
+        }
+        // Compatibility with credentials created before immutable references.
         if let Some(known) = self.credentials.get(id) {
-            return known.clone();
+            return Ok(known.clone());
         }
         let found = self.secret(CREDENTIAL, id.as_str()).unwrap_or_default();
         self.credentials.insert(id.clone(), found.clone());
-        found
+        Ok(found)
     }
 }
 
@@ -1390,18 +1406,53 @@ impl ApiTesterApp {
 }
 
 impl ApiTesterApp {
+    fn import_legacy(&self, snapshot: String, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
+        use base64::Engine;
+        use ui::tilo_resource::Model;
+        if *self.workspace != Workspace::blank() {
+            return Err("Import requires a new, empty workspace".into());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(snapshot)
+            .map_err(|_| "Invalid base64 snapshot")?;
+        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
+        let before = self.workspace.clone();
+        let imported = ui::rt::app().spawn_pinned(move || async move {
+            crate::migration::snapshot(&bytes, &secrets).await
+        });
+        Ok(cx.spawn(
+            move |_| async move {
+                imported
+                    .await
+                    .map_err(|_| "Import task failed".to_string())?
+            },
+            move |app: &mut Self, imported, cx| {
+                let imported = imported?;
+                if app.workspace != before {
+                    return Err("Workspace changed during import; use a new workspace".into());
+                }
+                cx.submit(Workspace::IMPORT_WORKSPACE.with(imported.to_json()));
+                Ok(Effected::done())
+            },
+        ))
+    }
+
     pub(crate) fn answer_effect(
         &mut self,
         effect: ApiTesterEffect,
         cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         match effect {
+            ApiTesterEffect::ImportLegacy { snapshot } => self.import_legacy(snapshot, cx),
             ApiTesterEffect::PickEnvironment { choice } => {
                 self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
                 self.dirty = true;
                 Ok(Effected::done())
             }
             ApiTesterEffect::Send => {
+                let reference = self.workspace.request.auth.reference.clone();
+                let credential = self.credential(&self.request.id.clone(), &reference)?;
+                self.request.auth = self.request.auth.with_secret(&credential);
                 let method = self.request.method;
                 let out = self.outgoing();
                 self.start_send(method, out, cx)
@@ -1412,22 +1463,49 @@ impl ApiTesterApp {
                     return Err("saved request no longer exists".to_string());
                 };
                 let mut outgoing = saved.shown(&request);
+                let reference = saved.auth.reference.clone();
                 cx.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
                     collection: collection.clone(),
                     request,
                 }));
-                let credential = self.credential(&outgoing.id);
+                let credential = self.credential(&outgoing.id, &reference)?;
                 outgoing.auth = outgoing.auth.with_secret(&credential);
                 let out = http::build_outgoing(&outgoing, &self.env_vars());
                 self.start_send(outgoing.method, out, cx)
             }
             ApiTesterEffect::SetCredential { secret } => {
                 let id = self.request.id.clone();
-                self.keep_secret(CREDENTIAL, id.as_str(), &secret)?;
-                self.credentials.insert(id, secret.clone());
-                self.request.auth = self.request.auth.with_secret(&secret);
-                self.dirty = true;
-                Ok(Effected::done())
+                let before = self.workspace.request.auth.clone();
+                let auth = self.request.auth.with_secret(&secret);
+                let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
+                // Build storage futures on their owning runtime thread: browser
+                // storage handles must never move between threads.
+                let stored = ui::rt::app().spawn_pinned(move || async move {
+                    crate::credentials::seal_async(&auth, &secrets)
+                        .await
+                        .map_err(str::to_owned)
+                });
+                Ok(cx.spawn(
+                    move |_| async move {
+                        stored
+                            .await
+                            .map_err(|_| "credential storage task failed".to_string())?
+                    },
+                    move |app: &mut Self, sealed, cx| {
+                        let Auth::SecretRef { id: reference, .. } = sealed? else {
+                            return Err("choose an authentication scheme first".into());
+                        };
+                        if app.request.id != id || app.workspace.request.auth != before {
+                            return Err(
+                                "request changed while saving authentication; try again".into()
+                            );
+                        }
+                        cx.submit(Workspace::paths().request.auth.reference.replace(reference));
+                        app.request.auth = app.request.auth.with_secret(&secret);
+                        app.dirty = true;
+                        Ok(Effected::done())
+                    },
+                ))
             }
             ApiTesterEffect::SetSecretValue { variable, value } => {
                 let secret = self
@@ -1523,7 +1601,10 @@ impl ApiTesterApp {
             || self.active_env != state.active_environment
             || self.history != history;
         let mut request = state.request_shown();
-        request.auth = request.auth.with_secret(&self.credential(&request.id));
+        match self.credential(&request.id, &state.request.auth.reference) {
+            Ok(secret) => request.auth = request.auth.with_secret(&secret),
+            Err(error) => self.error = Some(error),
+        }
         let replaced = self.request.id != request.id;
         let body_changed = self.request.body_mode != request.body_mode;
         let auth_changed =

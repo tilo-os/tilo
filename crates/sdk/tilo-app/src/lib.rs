@@ -48,6 +48,7 @@ pub mod launch {
 ///
 /// ```ignore
 /// ui::main!(hello::App);                           // a `ResourceApp`
+/// ui::main!(hello::App, init = hello::initialize);  // optional process setup
 /// ui::main!(definition = hello::definition);       // fn() -> &'static ApplicationDefinition
 /// ```
 ///
@@ -64,7 +65,11 @@ macro_rules! main {
         }
     };
     ($app:ty) => {
+        $crate::main!($app, init = || {});
+    };
+    ($app:ty, init = $init:expr) => {
         fn main() {
+            ($init)();
             #[cfg(not(target_arch = "wasm32"))]
             $crate::framework::run::<$app>();
         }

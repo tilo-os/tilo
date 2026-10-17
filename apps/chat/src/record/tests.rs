@@ -5,7 +5,7 @@ use super::*;
 const ADA: &str = "u_ada";
 const BO: &str = "u_bo";
 
-fn id(raw: &str) -> Id {
+pub(super) fn id(raw: &str) -> Id {
     Id::from_raw(raw)
 }
 
@@ -20,7 +20,7 @@ fn begin(name: &str, initials: &str) -> Invoke<Chat> {
 }
 
 /// A starter chat Ada made, with Bo introduced.
-fn room() -> Replica<Chat> {
+pub(super) fn room() -> Replica<Chat> {
     let mut ada = Replica::<Chat>::new().as_author(ADA);
     ada.set_now_ms(1_000_000);
     ada.apply(begin("Ada", "AD")).unwrap();

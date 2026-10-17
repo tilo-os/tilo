@@ -295,7 +295,7 @@ impl ChatApp {
             view.set_mention_paint(paint);
             *painted = fingerprint;
         }
-        let blocks = m.blocks();
+        let blocks = self.agent_display_blocks(m);
         view.show(&blocks);
         let editor = view.editor_mut();
         editor.clear_document_selection();
@@ -303,7 +303,7 @@ impl ChatApp {
             && message == &m.id
             && self.revealed_message.as_ref() == Some(message)
             && source == &m.text
-            && crate::body::plain_text(&blocks) == *source
+            && crate::body::plain_text(&m.blocks()) == *source
         {
             let position = |offset: usize| {
                 let mut remaining = offset;
@@ -350,6 +350,43 @@ impl ChatApp {
         height
     }
 
+    /// Presentation is projected from received facts, never a simulated timer.
+    /// Provider reasoning is separate from the agent's explanation of a decision.
+    pub(crate) fn agent_display_blocks(&self, m: &Message) -> Vec<ui::widget::BlockContent> {
+        let mut blocks = m.blocks();
+        let Some(work) = &m.work else {
+            return blocks;
+        };
+        let Some(stream) = &work.stream else {
+            return blocks;
+        };
+        let mut lines = Vec::new();
+        {
+            lines.push(crate::i18n::t(stream.status_key()));
+            if stream.finish.is_none() && !stream.progress.is_empty() {
+                lines.push(stream.progress.clone());
+            }
+            if !stream.detail.is_empty() {
+                lines.push(stream.detail.clone());
+            }
+            if stream
+                .finish
+                .is_some_and(|finish| finish != crate::agent_stream::AgentFinish::Complete)
+            {
+                lines.push(crate::i18n::t("chat-agent-recovery"));
+            }
+            if self.expanded_reasoning.contains(&m.id) && !stream.reasoning.is_empty() {
+                lines.push(crate::i18n::t("chat-agent-provider-reasoning"));
+                lines.push(stream.reasoning.clone());
+            }
+        }
+        blocks.push(ui::widget::BlockContent::paragraph(
+            format!("{}/agent-status", m.id),
+            lines.join("\n"),
+        ));
+        blocks
+    }
+
     /// Paint a message's body where [`Self::layout_body`] last put it.
     fn draw_body(&self, m: &Message, paint: &mut PaintCtx<'_>) {
         if let Some((_, view)) = self.body_views.borrow_mut().get_mut(&(0, m.id.clone())) {
@@ -378,34 +415,11 @@ impl ChatApp {
         name_at: Point,
         max_x: f64,
     ) -> (f64, f64) {
-        let name = self.user_name(&m.author);
-        let color = self.identity_colour(&m.author);
+        let name = self.message_author_name(m);
+        let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
         let shown = self.shown_avatar(m);
-        let author = if m.author.starts_with("bot:") {
-            Author::Bot {
-                bot_name: &name,
-                // The roster does not name a bot's installer yet; the chip's
-                // details are not shown in Chat so far.
-                installed_by: "",
-                appearance: m.appearance.as_ref(),
-                linked: None,
-                image: shown.as_ref(),
-            }
-        } else if self.agent_authors.contains_key(&m.author) {
-            Author::Agent {
-                name: &name,
-                for_person: None,
-                color,
-            }
-        } else {
-            Author::Person {
-                name: &name,
-                identity: &m.author,
-                avatar: None,
-                color: Some(color),
-            }
-        };
+        let author = self.message_author(m, &name, &initiator, shown.as_ref());
         let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
         let theme = ctx.theme;
         let style = theme.text(TextRole::Body).strong();
@@ -423,6 +437,46 @@ impl ChatApp {
         }
         author.paint(&line, ctx);
         (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h)
+    }
+
+    pub(crate) fn message_author<'a>(
+        &'a self,
+        m: &'a Message,
+        name: &'a str,
+        initiator: &'a str,
+        shown: Option<&'a vello::peniko::ImageData>,
+    ) -> Author<'a> {
+        let color = self.identity_colour(&m.author);
+        if m.author.starts_with("bot:") {
+            Author::Bot {
+                bot_name: name,
+                // The roster does not name a bot's installer yet; the chip's
+                // details are not shown in Chat so far.
+                installed_by: "",
+                appearance: m.appearance.as_ref(),
+                linked: None,
+                image: shown,
+            }
+        } else if self.is_provider_output(m) {
+            Author::Agent {
+                name,
+                for_person: Some(initiator),
+                color,
+            }
+        } else if self.agent_authors.contains_key(&m.author) {
+            Author::Agent {
+                name,
+                for_person: None,
+                color,
+            }
+        } else {
+            Author::Person {
+                name,
+                identity: &m.author,
+                avatar: None,
+                color: Some(color),
+            }
+        }
     }
 
     /// The colour `id` chose (or was given) as theirs: what their avatar,
@@ -1129,7 +1183,32 @@ impl ChatApp {
             h.x0 + self.chrome.gutter
         };
         let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
-        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
+        let mut cluster_left =
+            self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
+        for command in self.model_controls(&self.active_channel) {
+            let caption = crate::i18n::t(&format!("chat-model-{command}"));
+            let height = ButtonFace::height(ControlSize::Small, theme);
+            let width =
+                width_of(tr, &caption, &theme.text(TextRole::Label)) + 2.0 * f64::from(sp.s3);
+            let rect = Rect::new(
+                cluster_left - width - f64::from(sp.s2),
+                h.center().y - height / 2.0,
+                cluster_left - f64::from(sp.s2),
+                h.center().y + height / 2.0,
+            );
+            if rect.x0 < left + f64::from(sp.s16) {
+                break;
+            }
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &caption).control_size(ControlSize::Small),
+            );
+            Self::push_hit(hits, rect, Hit::HostModel(command.into()));
+            cluster_left = rect.x0;
+        }
 
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
@@ -1784,7 +1863,12 @@ impl ChatApp {
                     .1,
             )
             .max(self.chrome.body_line)
-        } else if m.text.is_empty() {
+        } else if m.text.is_empty()
+            && m.work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_none()
+        {
             0.0
         } else {
             // Measured by the same view that paints it, so a row never clips
@@ -1844,6 +1928,16 @@ impl ChatApp {
             header_h,
             body_h,
             work_h,
+            reasoning_h: if !editing
+                && m.work
+                    .as_ref()
+                    .and_then(|work| work.stream.as_ref())
+                    .is_some_and(|stream| !stream.reasoning.is_empty())
+            {
+                ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2)
+            } else {
+                0.0
+            },
             resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
             } else {
@@ -1905,7 +1999,12 @@ impl ChatApp {
                 y,
                 hits,
             );
-        } else if !m.text.is_empty() {
+        } else if !m.text.is_empty()
+            || m.work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_some()
+        {
             // The body as written: paragraphs, formatting, and mentions in
             // their participants' colours, drawn by the editor that wrote it.
             self.layout_body(
@@ -1917,6 +2016,22 @@ impl ChatApp {
             );
             self.draw_body(&m, &mut PaintCtx::new(scene, tf, tr, theme));
             *y += rm.body_h;
+        }
+        if rm.reasoning_h > 0.0 {
+            let caption = crate::i18n::t(if self.expanded_reasoning.contains(&m.id) {
+                "chat-agent-hide-reasoning"
+            } else {
+                "chat-agent-show-reasoning"
+            });
+            let rect = Rect::new(
+                column.text_x,
+                *y,
+                column.text_x + f64::from(column.text_width),
+                *y + rm.reasoning_h - f64::from(theme.tokens.spacing.s2),
+            );
+            Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
+            Self::push_hit(hits, rect, Hit::AgentReasoning(m.id.clone()));
+            *y += rm.reasoning_h;
         }
         if !rm.editing
             && let Some(work) = &m.work
@@ -3074,7 +3189,7 @@ impl ChatApp {
             panel.x1,
             comp.y0 - f64::from(theme.tokens.spacing.s2),
         );
-        self.draw_thread_body(PaintCtx::new(scene, tf, tr, theme), body, &parent_id);
+        self.draw_thread_scroller(PaintCtx::new(scene, tf, tr, theme), body, &parent_id, hits);
         if !self.can_participate() {
             self.composer_thread.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
@@ -3102,6 +3217,66 @@ impl ChatApp {
             let key = ChatApp::draft_presence_key(&draft);
             Self::draw_draft_presence(&self.composer_thread, &key, scene, tf, tr, theme, presence);
         }
+    }
+
+    /// Fixed navigation stays reachable even when a provider answer fills the thread.
+    fn draw_thread_scroller(
+        &mut self,
+        paint: PaintCtx<'_>,
+        body: Rect,
+        parent_id: &str,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let mut controls = vec![
+            (
+                crate::i18n::t("chat-thread-start"),
+                Hit::ThreadScroll(false),
+            ),
+            (crate::i18n::t("chat-thread-end"), Hit::ThreadScroll(true)),
+        ];
+        if let Some(message) = self.messages.iter().rev().find(|message| {
+            (message.id == parent_id || message.parent.as_deref() == Some(parent_id))
+                && message
+                    .work
+                    .as_ref()
+                    .and_then(|work| work.stream.as_ref())
+                    .is_some_and(|stream| !stream.reasoning.is_empty())
+        }) {
+            controls.push((
+                crate::i18n::t(if self.expanded_reasoning.contains(&message.id) {
+                    "chat-agent-hide-reasoning"
+                } else {
+                    "chat-agent-show-reasoning"
+                }),
+                Hit::AgentReasoning(message.id.clone()),
+            ));
+        }
+        let width = (body.width() - gap * (controls.len() as f64 + 1.0)) / controls.len() as f64;
+        for (index, (caption, hit)) in controls.into_iter().enumerate() {
+            let x = body.x0 + gap + index as f64 * (width + gap);
+            let rect = Rect::new(x, body.y0 + gap, x + width, body.y0 + gap + height);
+            Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
+            Self::push_hit(hits, rect, hit);
+        }
+        self.draw_thread_body(
+            PaintCtx::new(scene, tf, tr, theme),
+            Rect::new(
+                body.x0,
+                (body.y0 + height + 2.0 * gap).min(body.y1),
+                body.x1,
+                body.y1,
+            ),
+            parent_id,
+            hits,
+        );
     }
 
     /// A detail panel's part of the header row: its title, and its close
@@ -3209,7 +3384,20 @@ impl ChatApp {
         self.draw_panel_header(
             PaintCtx::new(scene, tf, tr, theme),
             panel,
-            &crate::i18n::t("chat-thread-title"),
+            &self
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| {
+                    self.thread_open.as_deref().is_some_and(|parent| {
+                        message.id == parent || message.parent.as_deref() == Some(parent)
+                    })
+                })
+                .find_map(|message| message.work.as_ref()?.stream.as_ref())
+                .map_or_else(
+                    || crate::i18n::t("chat-thread-title"),
+                    |stream| crate::i18n::t(stream.status_key()),
+                ),
             Hit::CloseThread,
             hits,
         )
@@ -3217,7 +3405,13 @@ impl ChatApp {
 
     /// The thread: the parent message, a "N replies" divider, then every
     /// reply in order, clipped between the header and the thread composer.
-    fn draw_thread_body(&mut self, paint: PaintCtx<'_>, body: Rect, parent_id: &str) {
+    fn draw_thread_body(
+        &mut self,
+        paint: PaintCtx<'_>,
+        body: Rect,
+        parent_id: &str,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
         let PaintCtx {
             scene,
             transform: tf,
@@ -3225,6 +3419,7 @@ impl ChatApp {
             theme,
         } = paint;
         let sp = &theme.tokens.spacing;
+        let first_hit = hits.len();
         push_clip(scene, tf, body);
         let gutter = f64::from(sp.s4);
         let column = Rect::new(body.x0 + gutter, body.y0, body.x1 - gutter, body.y1);
@@ -3250,9 +3445,19 @@ impl ChatApp {
             ui::num::f32_of_f64(body.width()),
             ui::num::f32_of_f64(content),
         );
+        if self.thread_follow {
+            self.thread_scroll
+                .set_offset_y(self.thread_scroll.max_offset_y());
+        }
         let mut y = body.y0 + f64::from(sp.s4) - f64::from(self.thread_scroll.offset_y());
         if let Some(parent) = parent {
-            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), &parent, column, y);
+            y = self.draw_thread_message(
+                PaintCtx::new(scene, tf, tr, theme),
+                &parent,
+                column,
+                y,
+                hits,
+            );
             let n = model::reply_count(&self.messages, parent_id);
             let label = crate::i18n::t_args("chat-thread-replies", &[("count", n.into())]);
             let style = theme.text(TextRole::Caption);
@@ -3282,9 +3487,13 @@ impl ChatApp {
             y = band.y1;
         }
         for r in &replies {
-            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), r, column, y);
+            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), r, column, y, hits);
         }
         scene.pop_layer();
+        for (rect, _) in hits.iter_mut().skip(first_hit) {
+            *rect = rect.intersect(body);
+        }
+        hits.retain(|(rect, _)| rect.width() > 0.0 && rect.height() > 0.0);
         self.thread_scroll.draw_bar_overlay(scene, tf, theme);
     }
 
@@ -3307,8 +3516,22 @@ impl ChatApp {
             .1;
         let mut height =
             f64::from(name_height).max(AvatarSize::Small.side(theme)) + f64::from(sp.s1);
-        if !message.text.is_empty() {
+        if !message.text.is_empty()
+            || message
+                .work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_some()
+        {
             height += self.layout_body(message, Point::ZERO, width, theme, tr) + f64::from(sp.s1);
+        }
+        if message
+            .work
+            .as_ref()
+            .and_then(|work| work.stream.as_ref())
+            .is_some_and(|stream| !stream.reasoning.is_empty())
+        {
+            height += ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2);
         }
         if let Some(work) = &message.work {
             height += measure_agent_work(tr, theme, work, width);
@@ -3325,7 +3548,14 @@ impl ChatApp {
 
     /// One message in a thread: avatar, author and time, body, attachment and
     /// reactions, on one left edge. Returns the y after it.
-    fn draw_thread_message(&self, paint: PaintCtx<'_>, m: &Message, column: Rect, y: f64) -> f64 {
+    fn draw_thread_message(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: Rect,
+        y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
         let PaintCtx {
             scene,
             transform: tf,
@@ -3355,10 +3585,31 @@ impl ChatApp {
             None,
         );
         let mut yy = y + nh.max(side) + f64::from(sp.s1);
-        if !m.text.is_empty() {
+        if !m.text.is_empty()
+            || m.work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_some()
+        {
             let body_h = self.layout_body(m, Point::new(tx, yy), tw, theme, tr);
             self.draw_body(m, &mut PaintCtx::new(scene, tf, tr, theme));
             yy += body_h + f64::from(sp.s1);
+        }
+        if m.work
+            .as_ref()
+            .and_then(|work| work.stream.as_ref())
+            .is_some_and(|stream| !stream.reasoning.is_empty())
+        {
+            let height = ButtonFace::height(ControlSize::Regular, theme);
+            let caption = crate::i18n::t(if self.expanded_reasoning.contains(&m.id) {
+                "chat-agent-hide-reasoning"
+            } else {
+                "chat-agent-show-reasoning"
+            });
+            let rect = Rect::new(tx, yy, tx + f64::from(tw), yy + height);
+            Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
+            Self::push_hit(hits, rect, Hit::AgentReasoning(m.id.clone()));
+            yy += height + f64::from(sp.s2);
         }
         if let Some(work) = &m.work {
             let height = measure_agent_work(tr, theme, work, tw);
@@ -3797,7 +4048,25 @@ pub(crate) fn agent_work_accessible_description(work: &AgentWork) -> String {
 impl From<&AgentWork> for AgentWorkPresentation {
     fn from(work: &AgentWork) -> Self {
         use crate::i18n::{t, t_args};
-        let summary = match &work.state {
+        let state = work
+            .stream
+            .as_ref()
+            .and_then(|stream| stream.finish)
+            .map_or_else(
+                || work.state.clone(),
+                |outcome| AgentWorkState::ProviderFinished { outcome },
+            );
+        let summary = match &state {
+            AgentWorkState::ProviderFinished { outcome } => {
+                use crate::agent_stream::AgentFinish;
+                t(match outcome {
+                    AgentFinish::Complete => "chat-agent-complete",
+                    AgentFinish::Truncated => "chat-agent-truncated",
+                    AgentFinish::Refused => "chat-agent-refused",
+                    AgentFinish::Cancelled => "chat-agent-cancelled",
+                    AgentFinish::Failed => "chat-agent-failed",
+                })
+            }
             AgentWorkState::Taken => t("chat-agent-work-taken"),
             AgentWorkState::Waiting { app } => {
                 t_args("chat-agent-work-waiting", &[("app", app.into())])
@@ -3934,6 +4203,7 @@ struct RowM {
     header_h: f64,
     body_h: f64,
     work_h: f64,
+    reasoning_h: f64,
     resource_h: f64,
     att_h: f64,
     react_h: f64,
@@ -3957,6 +4227,7 @@ impl RowM {
             + header
             + body
             + self.work_h
+            + self.reasoning_h
             + self.resource_h
             + self.edited_h
             + self.att_h
@@ -4186,6 +4457,7 @@ mod tests {
             header_h: 0.0,
             body_h: 0.0,
             work_h: 96.0,
+            reasoning_h: 0.0,
             resource_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,

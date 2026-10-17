@@ -86,6 +86,7 @@ impl HeldModel {
                     output: Some(serde_json::to_string(&found).unwrap()),
                     configured: None,
                     error: None,
+                    model_error: None,
                     event: None,
                 };
                 if write_frame(&mut service, &reply).is_err() {

@@ -295,6 +295,7 @@ pub(crate) enum Hit {
     /// Open the cross-workspace conversation inbox. This is navigation, not a
     /// second kind of Tilo workspace.
     Inbox,
+    HostModel(String),
     /// Return from Inbox to channels belonging to the active Tilo workspace.
     CurrentContext,
     Channel(Id),
@@ -354,6 +355,8 @@ pub(crate) enum Hit {
     /// Return a scrolled conversation to its newest message without changing
     /// any shared document state.
     JumpToLatest,
+    ThreadScroll(bool),
+    AgentReasoning(String),
     ComposerEmoji(Point),
     /// Open the workspace file picker to share an attachment.
     Attach,
@@ -410,8 +413,11 @@ impl Hit {
             Self::FocusThread => "chat.thread-composer".into(),
             Self::FocusRename => "chat.rename".into(),
             Self::FocusEdit => "chat.message-edit".into(),
+            Self::HostModel(command) => format!("chat.model.{command}"),
             Self::Send => "chat.send".into(),
             Self::JumpToLatest => "chat.jump-to-latest".into(),
+            Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
+            Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
             Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
@@ -552,6 +558,8 @@ mod call_chrome_motion_tests {
     reason = "the bools split across unrelated concerns (attachment-picker/emoji-popover open flags, layout/render bookkeeping, and --shots-only staging), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ChatApp {
+    pub(crate) host_model: crate::host_model::HostModel,
+    pub(crate) expanded_reasoning: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
@@ -605,6 +613,7 @@ pub struct ChatApp {
     pub(crate) scroll: f64,
     /// Independent, top-origin thread offset and production paint metrics.
     pub(crate) thread_scroll: ui::widget::Scrollable,
+    pub(crate) thread_follow: bool,
     pub(crate) thread_body: Rect,
     /// A durable read watermark is only advanced while the reader can actually
     /// see the newest edge. This flag is local presentation state, refreshed
@@ -842,7 +851,7 @@ pub struct ChatApp {
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
-    canonical_dirty: bool,
+    pub(crate) canonical_dirty: bool,
     /// Document heads and pending-operation count at the last reload,
     /// so an unchanged document is not reloaded and repainted every frame.
     synced: Option<(Vec<automerge::ChangeHash>, usize)>,
@@ -932,6 +941,7 @@ impl ChatApp {
             focus: Focus::Main,
             scroll: 0.0,
             thread_scroll: ui::widget::Scrollable::new_vertical().always_visible(),
+            thread_follow: false,
             thread_body: Rect::ZERO,
             timeline_at_end: true,
             presented: false,
@@ -1012,6 +1022,8 @@ impl ChatApp {
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
+            host_model: crate::host_model::HostModel::default(),
+            expanded_reasoning: std::collections::HashSet::new(),
             dispatch: None,
             pending_call: None,
             sharing_context: false,
@@ -1324,6 +1336,15 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.call = CallState::default();
             }
+            "agent-streaming" | "agent-failed" | "agent-reasoning" | "agent-long-thread" => {
+                if matches!(scenario, "agent-reasoning" | "agent-long-thread") {
+                    self.expanded_reasoning.insert("shot_agent_stream".into());
+                }
+                self.thread_open =
+                    (scenario == "agent-long-thread").then(|| "shot_agent_stream".into());
+                self.right_flap.snap(scenario == "agent-long-thread");
+                self.call = CallState::default();
+            }
             "agent-work" => {
                 self.thread_open = Some("m_agent_request".into());
                 self.right_flap.snap(true);
@@ -1615,9 +1636,8 @@ impl ChatApp {
                 }
             })
             .map(|message| {
-                let author = self.user_name(&message.author);
                 let node = AccessNode::new(Role::ListItem)
-                    .with_name(format!("{author}: {}", message.text))
+                    .with_name(self.model_message_label(message))
                     .with_hashed_key((&message.id, "message"));
                 if let Some(work) = &message.work {
                     node.with_description(crate::render_chat::agent_work_accessible_description(
@@ -3241,8 +3261,31 @@ impl ChatApp {
                         Role::MultilineTextInput,
                         false,
                     ),
+                    Hit::HostModel(command) => (
+                        crate::i18n::t(&format!("chat-model-{command}")),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::Send => ("Send message".into(), Role::Button, false),
                     Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
+                    Hit::ThreadScroll(end) => (
+                        crate::i18n::t(if *end {
+                            "chat-thread-end"
+                        } else {
+                            "chat-thread-start"
+                        }),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::AgentReasoning(id) => (
+                        crate::i18n::t(if self.expanded_reasoning.contains(id) {
+                            "chat-agent-hide-reasoning"
+                        } else {
+                            "chat-agent-show-reasoning"
+                        }),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::ComposerEmoji(_) => {
                         (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
                     }
@@ -4637,13 +4680,15 @@ impl Widget for ChatApp {
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
+        let model_changed = self.pump_model();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present)
+        std::mem::take(&mut self.read_on_present) || model_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.read_on_present
+            || self.host_model.needs_frame()
             || self.resource_navigation.pending()
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating

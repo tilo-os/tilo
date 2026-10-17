@@ -110,6 +110,19 @@ pub trait ResourceApp: 'static {
     /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
 
+    /// Import a former document format using host-local custody, before typed
+    /// projection or resource publication. Unlike schema evolution this may
+    /// depend on device services. A pending or failed import must leave the
+    /// document unchanged; returning an error withholds the resource. Reopening
+    /// retries the import, so retain acknowledged writes across pending retries.
+    ///
+    /// # Errors
+    /// Returns a safe, user-visible reason why the record cannot yet open.
+    fn import_record(context: &HostContext) -> Result<(), String> {
+        let _ = context;
+        Ok(())
+    }
+
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
     /// it must build widgets and nothing else.
@@ -786,6 +799,9 @@ fn open_root<A: ResourceApp>(
     capture: bool,
     created: bool,
 ) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError> {
+    if let Err(reason) = A::import_record(context) {
+        return Ok(Err(reason));
+    }
     let migrated = migrate_older(context, <A::Resource as Resource>::VERSION, &mut |doc| {
         tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
     })?;

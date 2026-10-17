@@ -68,10 +68,6 @@ fn canonical_image_store(
     ui::ImageStore::with_max_dimension(&fetcher, 2048)
 }
 
-/// How long referenced image bytes that have not arrived wait before the
-/// notebook is read for them again.
-const CANONICAL_ASSETS_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 
 /// One block of a note as the window's index keeps it.
@@ -359,8 +355,9 @@ pub struct NotesApp {
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
     canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
-    /// collaborator's device; retried at most once a second.
-    canonical_assets_waiting: Option<ui::time::Instant>,
+    /// collaborator's device: the record content arrival count when the
+    /// notebook was last read for them. Read again once it has moved.
+    canonical_assets_waiting: Option<u64>,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
     /// Last mouse position in logical coords. Used to hit-test
@@ -575,6 +572,7 @@ impl NotesApp {
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
         let content = crate::notebook::content();
+        let looked = ui::collaboration::record_content::arrivals();
         let snapshot =
             crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
         let waiting = snapshot.len() < workspace.images.len();
@@ -583,7 +581,7 @@ impl NotesApp {
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
         }
-        app.canonical_assets_waiting = waiting.then(ui::time::now);
+        app.canonical_assets_waiting = waiting.then_some(looked);
         app.canonical_asset_manifest = manifest;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
@@ -1918,12 +1916,14 @@ impl NotesApp {
     /// request a subsequent sync rather than travelling through `handle_event`.
     /// Keep the image snapshot in step with the notebook's asset references,
     /// and pick up referenced bytes that arrive from a collaborator's device
-    /// after the reference did.
+    /// after the reference did. Their arrival syncs the window and moves the
+    /// record content's arrival count; nothing looks for them on a timer.
     fn refresh_canonical_assets(&mut self) {
         let manifest = self.workspace.images.clone();
+        let looked = ui::collaboration::record_content::arrivals();
         let retry = self
             .canonical_assets_waiting
-            .is_some_and(|since| since.elapsed() >= CANONICAL_ASSETS_RETRY);
+            .is_some_and(|seen| seen != looked);
         if manifest == self.canonical_asset_manifest && !retry {
             return;
         }
@@ -1948,7 +1948,7 @@ impl NotesApp {
                 .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
         }
         self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then(ui::time::now);
+        self.canonical_assets_waiting = waiting.then_some(looked);
         if arrived {
             // The image store remembers a failed load, and an image block is
             // laid out (and asked for) in the frame it appears, before its
@@ -1960,12 +1960,6 @@ impl NotesApp {
                 self.self_dirty = true;
             }
         }
-    }
-
-    /// When the images still on their way are looked for again.
-    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
-        self.canonical_assets_waiting
-            .map(|since| since + CANONICAL_ASSETS_RETRY)
     }
 
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
@@ -2235,6 +2229,13 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_menu_open_for_test(&self) -> bool {
         self.sidebar.context_menu_open_for_test()
+    }
+
+    /// Test hook: whether the notebook wants a frame every vsync, and the
+    /// time it next asks to be woken at.
+    #[doc(hidden)]
+    pub fn frame_demand_for_test(&self) -> (bool, Option<ui::time::Instant>) {
+        (self.needs_animation_frame(), self.next_wake_deadline())
     }
 
     /// Test hook: whether the picture `source` (`asset:<digest>`) has
@@ -2828,9 +2829,6 @@ impl Widget for NotesApp {
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let mut earliest = self.save_surface.next_wake_deadline();
-        if let Some(deadline) = self.canonical_assets_retry_deadline() {
-            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
-        }
         for child in self.children() {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));

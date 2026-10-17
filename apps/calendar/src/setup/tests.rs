@@ -41,7 +41,10 @@ fn selected_nextcloud_calendars_keep_files_and_adopted_credentials() {
     let mut shared = AccountStore::new();
     shared.upsert(account.clone());
     shared.save_in(root.path()).unwrap();
-    let mut projection = crate::AccountStore::from_store(&shared, &vault);
+    let mut projection = crate::AccountStore::from_store(
+        &shared,
+        &accounts::AccountCredentials::open_in(root.path()).unwrap(),
+    );
     assert_eq!(projection.accounts.len(), 1);
     assert_eq!(projection.accounts[0].id, "canonical-nextcloud");
     assert_eq!(projection.accounts[0].config.password, "adopted-password");
@@ -295,7 +298,10 @@ fn google_projection_uses_original_id_and_never_serializes_tokens() {
         .unwrap();
     let vault = SecretVault::open_in(root.path());
     let before = vault.get(&AccountId::from("drive-account")).unwrap();
-    let projection = crate::AccountStore::from_store(&shared, &vault);
+    let projection = crate::AccountStore::from_store(
+        &shared,
+        &accounts::AccountCredentials::open_in(root.path()).unwrap(),
+    );
     assert_eq!(
         projection.accounts[0].config.oauth_account_id.as_deref(),
         Some("drive-account")

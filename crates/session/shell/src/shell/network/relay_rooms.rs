@@ -845,11 +845,16 @@ impl ShellNetwork {
                 return Ok(());
             }
         }
-        let own = self.enter_host_room(relay, user, &listing.room)?;
-        let local = if first {
-            active
+        let (local, own) = if let Some(retry) = self.pending_host_room(room)? {
+            retry
         } else {
-            tree.write().append_empty_workspace(&listing.name)
+            let own = self.enter_host_room(relay, user, &listing.room)?;
+            let local = if first {
+                active
+            } else {
+                tree.write().append_empty_workspace(&listing.name)
+            };
+            (local, own)
         };
         if let PeerSyncResponse::EnrollmentPending { id } =
             self.accept_peer_invitation(local, &own)?
@@ -867,6 +872,28 @@ impl ShellNetwork {
         }
         tracing::info!(room = %listing.room, name = %listing.name, "joining a host room");
         Ok(())
+    }
+
+    /// The slot and invitation of `room`'s retained enrollment, still active
+    /// after its exchange or its installation failed. A retry redeems exactly
+    /// that invitation in that slot: a fresh one never matches the proof the
+    /// slot retains, which the host resolves idempotently.
+    fn pending_host_room(&self, room: RoomId) -> Result<Option<(WorkspaceId, String)>, String> {
+        let Some(pending) = self.native_owner()?.pending_enrollment(room)? else {
+            return Ok(None);
+        };
+        let Some(local) = pending.target_workspace() else {
+            return Ok(None);
+        };
+        if pending.status() != tilo_joined_room::PendingEnrollmentStatus::Active {
+            return Ok(None);
+        }
+        let intent =
+            tilo_joined_room::VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
+        Ok(Some((
+            local,
+            join::encode_invitation_text(intent.verified_join().signed_invitation()),
+        )))
     }
 
     /// Whether a shared room's enrollment is still to be installed, never

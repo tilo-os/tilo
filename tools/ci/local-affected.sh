@@ -147,7 +147,7 @@ while IFS= read -r row; do
   if want test; then
     # shellcheck disable=SC2086
     TILO_TEST_NTFS_FIXTURES=$ntfs step "nextest shard $shard ($tests)" \
-      bash tools/test-env.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+      bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
   fi
   if want goldens; then
     case " $tests " in

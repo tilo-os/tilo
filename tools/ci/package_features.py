@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Feature selections for native package verification, never app deployment.
+
+Gateway defaults are client-only. Its own tests must also observe the server,
+trusted-host adapter and native segmentation rather than passing without them.
+Only enable these features when the gateway itself is selected, not for its
+client dependents. Keep package argument strings separate from feature flags.
+"""
+from __future__ import annotations
+
+import sys
+
+NATIVE_TEST_FEATURES = {
+    "tilo-model-gateway": ("local-models", "host-backend", "runtime-client"),
+}
+
+
+def arguments(packages: list[str]) -> list[str]:
+    features = [f"{package}/{feature}" for package in sorted(set(packages))
+                for feature in NATIVE_TEST_FEATURES.get(package, ())]
+    return ["--features", ",".join(features)] if features else []
+
+
+def main(argv: list[str]) -> None:
+    packages = []
+    for index, arg in enumerate(argv):
+        if arg in ("-p", "--package"):
+            packages.append(argv[index + 1])
+        elif arg == "--workspace":
+            packages.extend(NATIVE_TEST_FEATURES)
+    print(" ".join(arguments(packages)))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

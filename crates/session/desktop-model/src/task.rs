@@ -410,6 +410,10 @@ pub struct WorkspaceTaskControl {
     pub execution: Option<WorkspaceTaskExecution>,
     #[serde(default)]
     pub directions: Vec<WorkspaceTaskDirection>,
+    /// Private bounded model-turn snapshots for this run; never public audit.
+    #[serde(default)]
+    pub presentations:
+        std::collections::BTreeMap<String, collab_types::task_presentation::TaskPresentation>,
     #[serde(default)]
     pub receipts: Vec<WorkspaceTaskMutationReceipt>,
     /// The action of the active run that waits for the person's answer.

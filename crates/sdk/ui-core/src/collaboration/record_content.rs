@@ -13,6 +13,8 @@
 //!   reads as [`ContentState::Pending`] until it is here;
 //! - content that arrives ([`CollabEvent::RecordContent`](super::CollabEvent::RecordContent))
 //!   is verified and kept in the store, where the app's next read finds it.
+//!   The event syncs the window, and [`arrivals`] moves: an app waiting for
+//!   content looks again then, never on a timer.
 //!
 //! The app's window and the store meet in a [`ContentLane`], one per
 //! record of a process: the store queues its requests there, and the
@@ -26,6 +28,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_content::{
@@ -35,6 +38,21 @@ use tilo_lock::MutexRecover as _;
 
 /// Largest content one record references.
 pub const MAX_RECORD_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+
+static ARRIVALS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times content has reached a record's store in this process:
+/// arrived on a record's route, or stored by an app. A window that lacks
+/// content its record references reads again when this has moved since it
+/// last looked; it never looks on a timer.
+#[must_use]
+pub fn arrivals() -> u64 {
+    ARRIVALS.load(Ordering::Acquire)
+}
+
+fn arrived_somewhere() {
+    ARRIVALS.fetch_add(1, Ordering::AcqRel);
+}
 
 #[derive(Default)]
 struct LaneState {
@@ -188,11 +206,13 @@ impl ContentLane {
         }
     }
 
-    /// Content arrived on the record's route.
+    /// Content arrived on the record's route. The store keeps it on its
+    /// next read.
     pub fn arrive(&self, hash: String, bytes: Vec<u8>) {
         if let Ok(mut state) = self.state.lock() {
             state.arrived.push((hash, bytes));
         }
+        arrived_somewhere();
     }
 
     fn take_arrived(&self) -> Vec<(String, Vec<u8>)> {
@@ -251,6 +271,7 @@ impl ContentBackend for RecordContent {
         }
         let stored = self.local.put_reader(&mut bytes.as_slice(), mime)?;
         self.lane.offer(&stored.hash, bytes);
+        arrived_somewhere();
         Ok(stored)
     }
 

@@ -136,7 +136,7 @@ pub(crate) fn call_row(channel: &str) -> String {
 }
 
 /// `work` as an agent reports it.
-fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
+pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
     use crate::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
 
     let (state, app, did, about) = match &work.state {
@@ -147,6 +147,17 @@ fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
         }
         AgentWorkState::Done { did } => ("done", None, Some(did.clone()), None),
         AgentWorkState::Refused => ("refused", None, None, None),
+        AgentWorkState::ProviderFinished { outcome } => {
+            use crate::agent_stream::AgentFinish;
+            let state = match outcome {
+                AgentFinish::Complete => "provider_complete",
+                AgentFinish::Truncated => "provider_truncated",
+                AgentFinish::Refused => "provider_refused",
+                AgentFinish::Cancelled => "provider_cancelled",
+                AgentFinish::Failed => "provider_failed",
+            };
+            (state, None, None, None)
+        }
     };
     crate::record::WorkUpdate {
         state: state.into(),

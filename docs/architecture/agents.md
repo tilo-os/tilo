@@ -88,32 +88,56 @@ lifecycle. Provider translation is delegated to mature components:
 Agent profile / Task Center
            |
            v
-Tilo model gateway (per-user, secrets stay here)
+Tilo model gateway (native launcher or light authenticated HTTP host)
            |
-           +-- LiteLLM Proxy -> OpenAI, Anthropic, compatible cloud APIs
-           +-- vLLM OpenAI-compatible server -> local model
-           +-- compatible endpoint -> remote vLLM, LM Studio, Ollama, etc.
+           +-- common accounts credential broker (keys stay server-side)
+           +-- Rig provider adapters -> OpenAI, Anthropic, compatible APIs
+           +-- compatible endpoint -> vLLM, LM Studio, Ollama, etc.
            |
            v
 Agent runtime -> Tilo action/resource gateway -> collaboration broker -> app
 ```
 
-[LiteLLM](https://docs.litellm.ai/) is a provider-normalization layer only; it
-does not decide Tilo permissions or own downloads. Provider profiles store a
-stable id, label, endpoint kind, base URL, model alias, enabled state and a
-reference to a secret in the accounts vault. Agents connect only to the Tilo
-gateway; provider credentials never enter their sandbox. Existing host-side
+Rig is the production provider translation layer: provider JSON, SSE decoding,
+reasoning normalization and tool-argument assembly. It does not decide Tilo
+permissions or own downloads. LiteLLM is not a required service. Provider
+profiles store endpoint/model configuration and a credential reference; the
+common accounts `ServiceCredentials` broker binds provider keys to service,
+purpose and canonical endpoint origin. Agents connect only to the Tilo gateway;
+provider credentials never enter their sandbox. Existing host-side
 OpenAI-compatible planners can opt in to [request presets](agent-model-presets.md);
 these provider hints do not change credentials, context selection or authority.
 
-Local installation uses the [Hugging Face Hub download/cache
+The native launcher authenticates a caller through its capability transport.
+The light HTTP adapter authenticates host-issued, expiring, revocable sessions;
+it needs no relay/node runtime and never trusts a caller ID in request JSON.
+Settings credential management requires an explicit grant and offers no key-read
+operation. See [the gateway deployment contract](../../crates/agent/model-gateway/README.md).
+
+Chat's native bootstrap installs launcher-backed models, while component hosts
+inject a mount-local model capability. Chat's assistant is explicitly prose-only;
+its caller cannot request tools or tool history. The action-capable Agent loop
+retains bounded discovery, confirmation and broker authorization. Provider tool
+deltas remain inert until a successful complete turn validates arguments and
+unique call IDs; failed, truncated or refused turns do not authorize calls.
+
+The Agent producer streams ordered answer and provider-reasoning events through
+the replicated Chat document, retaining partial output and terminal outcomes.
+The reasoning UI identifies **Reasoning shared by the provider** honestly:
+provider-exposed reasoning tokens need not be summaries and are not suppressed
+merely for being raw reasoning. No reasoning is fabricated when a provider
+exposes none, and the assistant's own hidden chain of thought is never substituted.
+
+A local model deployment can use the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
 to an immutable revision, and starts [vLLM's OpenAI-compatible
 server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. Tilo presents license, size, revision,
-download/load progress and VRAM state, then supervises the process behind a
-loopback or network-namespace boundary. Downloading is an explicit management
-operation, never a side effect of an agent request.
+against that resolved snapshot. A managed installation UI must present license,
+size, revision, download/load progress and VRAM state, and supervise the process
+behind a loopback or network-namespace boundary. This is a deployment/lifecycle
+requirement, not a claim that the gateway downloads or supervises models today.
+Downloading must be an explicit management operation, never a side effect of an
+agent request.
 
 ## Agent experience and MCP
 
@@ -179,12 +203,13 @@ can carry data out. An agent that reads private data and then searches can
 leak that data in its query, just as it could by opening a page in the
 browser.
 
-## Delivery order
+## Remaining integration requirements
 
 1. **Identity and access truth** — preserve agent kind end to end; durable
    Agents page; explicit agent permission subjects; immediate revocation.
-2. **Provider-neutral model protocol** — retain Anthropic as one adapter, add
-   OpenAI-compatible tool calls, provider profiles and vault-backed secrets.
+2. **Provider-neutral model protocol** — preserve the implemented Rig adapters,
+   OpenAI-compatible tool calls, provider profiles, streaming and broker-backed
+   credentials as new providers and hosts are added.
 3. **Task Center** — manual typed tasks first, then optional model-backed
    planning; cancellation/retry only where the action contract permits it.
 4. **Local runtime** — explicit HF snapshot lifecycle, hardware fit checks and

@@ -5,7 +5,9 @@
 //! headless path never opens a device. Opening is asynchronous where the
 //! platform asks the user first; `CameraApp::poll_camera` drains the newest
 //! frame each sync and turns a refused or failed start into the honest
-//! "camera unavailable" state rather than faking a feed.
+//! "camera unavailable" state rather than faking a feed. While the person
+//! has not answered, the app sleeps: the backend wakes it with the answer
+//! ([`Capture::waiting_quietly`]).
 
 #![cfg(feature = "live-capture")]
 
@@ -33,6 +35,11 @@ pub fn list_devices() -> Vec<String> {
 /// A running capture session. Drop to stop it.
 pub struct Capture {
     video: VideoCapture,
+    /// The backend wakes the window whose code opened the capture when its
+    /// state moves, so nothing needs to look while it is starting.
+    announces: bool,
+    /// The state last read was [`CaptureState::Starting`].
+    starting: bool,
 }
 
 impl Capture {
@@ -50,7 +57,25 @@ impl Capture {
             width,
             height,
         })?;
-        Ok(Self { video })
+        Ok(Self::watch(video))
+    }
+
+    /// `video`, waking the window whose code runs now when its state moves.
+    pub fn watch(mut video: VideoCapture) -> Self {
+        let wake = ui::wake::WakeHandle::new();
+        let announces = video.notify(move || wake.wake());
+        Self {
+            video,
+            announces,
+            starting: true,
+        }
+    }
+
+    /// Whether the capture is waiting for the person's answer (or the
+    /// device) and will wake the window when it comes: until then there is
+    /// no picture to look for.
+    pub fn waiting_quietly(&self) -> bool {
+        self.announces && self.starting
     }
 
     /// The newest frame since the last call.
@@ -64,7 +89,9 @@ impl Capture {
 
     /// Why the capture failed or stopped, once it has.
     pub fn failure(&mut self) -> Option<CaptureError> {
-        match self.video.state() {
+        let state = self.video.state();
+        self.starting = state == CaptureState::Starting;
+        match state {
             CaptureState::Failed(error) => Some(error),
             CaptureState::Ended => Some(CaptureError::Failed("the camera stopped".into())),
             CaptureState::Starting | CaptureState::Live => None,

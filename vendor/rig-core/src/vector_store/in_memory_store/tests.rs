@@ -1,0 +1,718 @@
+use std::cmp::Reverse;
+
+use crate::{embeddings::embedding::Embedding, vector_store::IndexStrategy};
+
+use super::{InMemoryVectorStore, RankingItem};
+
+// No equality, ordering, cloning, or default implementations are needed for payloads.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Product {
+    price: f64,
+}
+
+fn product(price: f64) -> (Product, Vec<Embedding>) {
+    (
+        Product { price },
+        vec![Embedding {
+            document: format!("price {price}"),
+            vec: vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        }],
+    )
+}
+
+#[test]
+fn non_equality_documents_support_default_and_constructors() {
+    let empty = InMemoryVectorStore::<Product>::default();
+    assert!(empty.is_empty());
+    assert!(matches!(empty.index_strategy, IndexStrategy::BruteForce));
+
+    let builder = super::InMemoryVectorStoreBuilder::<Product>::default();
+    assert!(builder.build().is_empty());
+
+    let mut automatic = InMemoryVectorStore::from_documents([product(1.5)]);
+    automatic.add_documents([product(2.5)]);
+    assert_eq!(automatic.len(), 2);
+
+    let (doc, embeddings) = product(3.5);
+    let mut explicit = InMemoryVectorStore::from_documents_with_ids([("sale", doc, embeddings)]);
+    let (doc, embeddings) = product(4.5);
+    explicit.add_documents_with_ids([("sale", doc, embeddings)]);
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit.embeddings["sale"].0.price, 4.5);
+}
+
+#[test]
+fn custom_ids_accept_captured_mutable_state() {
+    let namespace = String::from("catalog");
+    let mut counter = 0;
+    let mut id = |doc: &Product| {
+        counter += 1;
+        format!("{namespace}:{counter}:{}", doc.price)
+    };
+    let mut store =
+        InMemoryVectorStore::from_documents_with_id_f([product(1.5), product(2.5)], &mut id);
+    store.add_documents_with_id_f([product(3.5)], &mut id);
+    store.add_documents_with_id_f([], &mut id);
+    assert_eq!(counter, 3);
+    assert_eq!(store.len(), 3);
+    for (id, price) in [
+        ("catalog:1:1.5", 1.5),
+        ("catalog:2:2.5", 2.5),
+        ("catalog:3:3.5", 3.5),
+    ] {
+        assert_eq!(store.embeddings[id].0.price, price);
+    }
+}
+
+#[test]
+fn ranking_equality_uses_only_score_and_id() {
+    use ordered_float::OrderedFloat;
+
+    let id = String::from("a");
+    let other_id = String::from("b");
+    let first_doc = Product { price: 1.5 };
+    let second_doc = Product { price: 2.5 };
+    let first = RankingItem(OrderedFloat(1.0), &id, &first_doc);
+    let same_key = RankingItem(OrderedFloat(1.0), &id, &second_doc);
+    let other_key = RankingItem(OrderedFloat(1.0), &other_id, &first_doc);
+    let lower_score = RankingItem(OrderedFloat(0.5), &id, &first_doc);
+    for other in [&same_key, &other_key, &lower_score] {
+        assert_eq!(first == *other, first.cmp(other).is_eq());
+        assert_eq!(first.partial_cmp(other), Some(first.cmp(other)));
+    }
+    assert!(first == same_key);
+    assert!(first > other_key);
+    assert!(first > lower_score);
+}
+
+#[tokio::test]
+async fn non_equality_documents_support_search_and_filters() -> anyhow::Result<()> {
+    use crate::test_utils::MockEmbeddings;
+    use crate::vector_store::VectorStoreIndex;
+    use crate::vector_store::request::{Filter, SearchFilter, VectorSearchRequest};
+
+    for strategy in [
+        IndexStrategy::BruteForce,
+        IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        },
+    ] {
+        // Identical vectors ensure LSH recall without depending on random hyperplanes.
+        let (doc, embeddings) = product(3.5);
+        let mut store = InMemoryVectorStore::builder()
+            .index_strategy(strategy)
+            .documents([product(1.5), product(2.5)])
+            .documents_with_ids([("sale", doc, embeddings)])
+            .build();
+        store.add_documents([product(4.5)]);
+        if matches!(store.index_strategy, IndexStrategy::LSH { .. }) {
+            anyhow::ensure!(store.lsh_index.is_some(), "LSH was not initialized");
+        }
+        let index = store.index(MockEmbeddings::model());
+        let request = VectorSearchRequest::builder()
+            .query("product")
+            .samples(2)
+            .threshold(0.9)
+            .filter(Filter::gt("price", serde_json::json!(2.0)))
+            .build();
+        let documents = index.top_n::<Product>(request.clone()).await?;
+        let ids = index.top_n_ids(request).await?;
+        anyhow::ensure!(
+            documents.len() == 2 && ids.len() == 2,
+            "unexpected result count"
+        );
+        for (position, (id, price)) in [("doc1", 2.5), ("doc3", 4.5)].into_iter().enumerate() {
+            anyhow::ensure!(documents[position].id == id, "document tie order changed");
+            anyhow::ensure!(
+                documents[position].document.price == price,
+                "payload changed"
+            );
+            anyhow::ensure!(ids[position].id == id, "ID tie order changed");
+            anyhow::ensure!(documents[position].score >= 0.9, "threshold was ignored");
+            anyhow::ensure!(
+                documents[position].score == ids[position].score,
+                "scores differ"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_auto_ids() {
+    let mut vector_store = InMemoryVectorStore::builder()
+        .index_strategy(IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        })
+        .documents(vec![
+            (
+                "glarb-garb",
+                vec![Embedding {
+                    document: "glarb-garb".to_string(),
+                    vec: vec![0.1, 0.1, 0.5],
+                }],
+            ),
+            (
+                "marble-marble",
+                vec![Embedding {
+                    document: "marble-marble".to_string(),
+                    vec: vec![0.7, -0.3, 0.0],
+                }],
+            ),
+            (
+                "flumb-flumb",
+                vec![Embedding {
+                    document: "flumb-flumb".to_string(),
+                    vec: vec![0.3, 0.7, 0.1],
+                }],
+            ),
+        ])
+        .build();
+
+    vector_store.add_documents(vec![
+        (
+            "brotato",
+            vec![Embedding {
+                document: "brotato".to_string(),
+                vec: vec![0.3, 0.7, 0.1],
+            }],
+        ),
+        (
+            "ping-pong",
+            vec![Embedding {
+                document: "ping-pong".to_string(),
+                vec: vec![0.7, -0.3, 0.0],
+            }],
+        ),
+    ]);
+
+    let mut store = vector_store.embeddings.into_iter().collect::<Vec<_>>();
+    store.sort_by_key(|(id, _)| id.clone());
+
+    assert_eq!(
+        store,
+        vec![
+            (
+                "doc0".to_string(),
+                (
+                    "glarb-garb",
+                    vec![Embedding {
+                        document: "glarb-garb".to_string(),
+                        vec: vec![0.1, 0.1, 0.5],
+                    }]
+                )
+            ),
+            (
+                "doc1".to_string(),
+                (
+                    "marble-marble",
+                    vec![Embedding {
+                        document: "marble-marble".to_string(),
+                        vec: vec![0.7, -0.3, 0.0],
+                    }]
+                )
+            ),
+            (
+                "doc2".to_string(),
+                (
+                    "flumb-flumb",
+                    vec![Embedding {
+                        document: "flumb-flumb".to_string(),
+                        vec: vec![0.3, 0.7, 0.1],
+                    }]
+                )
+            ),
+            (
+                "doc3".to_string(),
+                (
+                    "brotato",
+                    vec![Embedding {
+                        document: "brotato".to_string(),
+                        vec: vec![0.3, 0.7, 0.1],
+                    }]
+                )
+            ),
+            (
+                "doc4".to_string(),
+                (
+                    "ping-pong",
+                    vec![Embedding {
+                        document: "ping-pong".to_string(),
+                        vec: vec![0.7, -0.3, 0.0],
+                    }]
+                )
+            )
+        ]
+    );
+}
+
+fn generated_id_document(text: &str) -> (&str, Vec<Embedding>) {
+    (
+        text,
+        vec![Embedding {
+            document: text.to_owned(),
+            vec: vec![1.0, 0.0],
+        }],
+    )
+}
+
+fn check_generated_id_documents(
+    store: &InMemoryVectorStore<&str>,
+    expected: &[(&str, &str)],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        store.len() == expected.len(),
+        "expected {} documents, found {}",
+        expected.len(),
+        store.len()
+    );
+    for &(id, text) in expected {
+        anyhow::ensure!(
+            store.embeddings.get(id) == Some(&generated_id_document(text)),
+            "document or embeddings changed for {id}"
+        );
+    }
+    if matches!(store.index_strategy, IndexStrategy::LSH { .. }) {
+        anyhow::ensure!(
+            store.lsh_index.is_some(),
+            "LSH must not fall back to a scan"
+        );
+    }
+
+    // Identical vectors guarantee matching LSH buckets without relying on
+    // approximate recall or a particular set of random hyperplanes.
+    let query = Embedding {
+        document: "query".to_owned(),
+        vec: vec![1.0, 0.0],
+    };
+    let mut results: Vec<_> = store
+        .vector_search(&query, expected.len(), None, None)?
+        .into_iter()
+        .map(|Reverse(RankingItem(_, id, doc))| {
+            (
+                id.as_str(),
+                *doc,
+                store.embeddings[id].1[0].document.as_str(),
+            )
+        })
+        .collect();
+    results.sort_unstable();
+    let mut expected_results: Vec<_> = expected
+        .iter()
+        .map(|&(id, text)| (id, text, text))
+        .collect();
+    expected_results.sort_unstable();
+    anyhow::ensure!(
+        results == expected_results,
+        "search lost or changed documents: {results:?} != {expected_results:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn generated_document_ids_preserve_existing_documents() -> anyhow::Result<()> {
+    for strategy in [
+        IndexStrategy::BruteForce,
+        IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        },
+    ] {
+        let (_, embeddings) = generated_id_document("original");
+        let mut store = InMemoryVectorStore::builder()
+            .index_strategy(strategy)
+            .documents_with_ids([("doc1", "original", embeddings)])
+            .build();
+        store.add_documents(["first", "second"].map(generated_id_document));
+        let mut expected = vec![("doc1", "original"), ("doc2", "first"), ("doc3", "second")];
+        check_generated_id_documents(&store, &expected)?;
+
+        let explicit = [
+            ("doc0", "gap"),
+            ("doc7", "seven"),
+            ("doc8", "eight"),
+            ("doc10", "ten"),
+            ("custom", "custom document"),
+        ];
+        store.add_documents_with_ids(explicit.map(|(id, text)| {
+            let (doc, embeddings) = generated_id_document(text);
+            (id, doc, embeddings)
+        }));
+        expected.extend(explicit);
+        store.add_documents(["third", "fourth"].map(generated_id_document));
+        store.add_documents(["fifth", "sixth"].map(generated_id_document));
+        store.add_documents([]);
+        expected.extend([
+            ("doc9", "third"),
+            ("doc11", "fourth"),
+            ("doc12", "fifth"),
+            ("doc13", "sixth"),
+        ]);
+        check_generated_id_documents(&store, &expected)?;
+
+        let (_, embeddings) = generated_id_document("replacement");
+        store.add_documents_with_ids([("doc1", "replacement", embeddings)]);
+        expected.retain(|(id, _)| *id != "doc1");
+        expected.push(("doc1", "replacement"));
+        check_generated_id_documents(&store, &expected)?;
+
+        store.add_documents_with_id_f([generated_id_document("function replacement")], |_| {
+            "doc1".to_owned()
+        });
+        expected.retain(|(id, _)| *id != "doc1");
+        expected.push(("doc1", "function replacement"));
+        check_generated_id_documents(&store, &expected)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn generated_builder_ids_preserve_existing_documents() -> anyhow::Result<()> {
+    for strategy in [
+        IndexStrategy::BruteForce,
+        IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        },
+    ] {
+        let (_, embeddings) = generated_id_document("original");
+        let explicit = [
+            ("doc0", "gap"),
+            ("doc7", "seven"),
+            ("doc8", "eight"),
+            ("doc10", "ten"),
+            ("custom", "custom document"),
+        ];
+        let store = InMemoryVectorStore::builder()
+            .index_strategy(strategy)
+            .documents_with_ids([("doc1", "original", embeddings)])
+            .documents(["first", "second"].map(generated_id_document))
+            .documents_with_ids(explicit.map(|(id, text)| {
+                let (doc, embeddings) = generated_id_document(text);
+                (id, doc, embeddings)
+            }))
+            .documents(["third", "fourth"].map(generated_id_document))
+            .documents(["fifth", "sixth"].map(generated_id_document))
+            .documents([])
+            .build();
+        let mut expected = vec![
+            ("doc1", "original"),
+            ("doc2", "first"),
+            ("doc3", "second"),
+            ("doc9", "third"),
+            ("doc11", "fourth"),
+            ("doc12", "fifth"),
+            ("doc13", "sixth"),
+        ];
+        expected.extend(explicit);
+        check_generated_id_documents(&store, &expected)?;
+
+        // Explicit IDs still replace both explicit and generated documents.
+        let (_, replacement) = generated_id_document("replacement");
+        let (_, generated_replacement) = generated_id_document("generated replacement");
+        let store = InMemoryVectorStore::builder()
+            .index_strategy(store.index_strategy.clone())
+            .documents_with_ids(
+                store
+                    .iter()
+                    .map(|(id, (doc, embeddings))| (id, *doc, embeddings.clone())),
+            )
+            .documents_with_ids([
+                ("doc1", "replacement", replacement),
+                ("doc2", "generated replacement", generated_replacement),
+            ])
+            .build();
+        expected.retain(|(id, _)| *id != "doc1" && *id != "doc2");
+        expected.extend([("doc1", "replacement"), ("doc2", "generated replacement")]);
+        check_generated_id_documents(&store, &expected)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn test_single_embedding() {
+    let vector_store = InMemoryVectorStore::builder()
+        .index_strategy(IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        })
+        .documents_with_ids(vec![
+            (
+                "doc1",
+                "glarb-garb",
+                vec![Embedding {
+                    document: "glarb-garb".to_string(),
+                    vec: vec![0.1, 0.1, 0.5],
+                }],
+            ),
+            (
+                "doc2",
+                "marble-marble",
+                vec![Embedding {
+                    document: "marble-marble".to_string(),
+                    vec: vec![0.7, -0.3, 0.0],
+                }],
+            ),
+            (
+                "doc3",
+                "flumb-flumb",
+                vec![Embedding {
+                    document: "flumb-flumb".to_string(),
+                    vec: vec![0.3, 0.7, 0.1],
+                }],
+            ),
+        ])
+        .build();
+
+    let ranking = vector_store
+        .vector_search(
+            &Embedding {
+                document: "glarby-glarble".to_string(),
+                vec: vec![0.0, 0.1, 0.6],
+            },
+            1,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        ranking
+            .into_iter()
+            .map(|Reverse(RankingItem(distance, id, doc))| {
+                (
+                    distance.0,
+                    id.clone(),
+                    serde_json::from_str(&serde_json::to_string(doc).unwrap()).unwrap(),
+                )
+            })
+            .collect::<Vec<(_, _, String)>>(),
+        vec![(
+            0.9807965956109156,
+            "doc1".to_string(),
+            "glarb-garb".to_string()
+        )]
+    );
+}
+
+#[test]
+fn test_multiple_embeddings() {
+    let vector_store = InMemoryVectorStore::builder()
+        .index_strategy(IndexStrategy::LSH {
+            num_tables: 5,
+            num_hyperplanes: 10,
+        })
+        .documents_with_ids(vec![
+            (
+                "doc1",
+                "glarb-garb",
+                vec![
+                    Embedding {
+                        document: "glarb-garb".to_string(),
+                        vec: vec![0.1, 0.1, 0.5],
+                    },
+                    Embedding {
+                        document: "don't-choose-me".to_string(),
+                        vec: vec![-0.5, 0.9, 0.1],
+                    },
+                ],
+            ),
+            (
+                "doc2",
+                "marble-marble",
+                vec![
+                    Embedding {
+                        document: "marble-marble".to_string(),
+                        vec: vec![0.7, -0.3, 0.0],
+                    },
+                    Embedding {
+                        document: "sandwich".to_string(),
+                        vec: vec![0.5, 0.5, -0.7],
+                    },
+                ],
+            ),
+            (
+                "doc3",
+                "flumb-flumb",
+                vec![
+                    Embedding {
+                        document: "flumb-flumb".to_string(),
+                        vec: vec![0.3, 0.7, 0.1],
+                    },
+                    Embedding {
+                        document: "banana".to_string(),
+                        vec: vec![0.1, -0.5, -0.5],
+                    },
+                ],
+            ),
+        ])
+        .build();
+
+    let ranking = vector_store
+        .vector_search(
+            &Embedding {
+                document: "glarby-glarble".to_string(),
+                vec: vec![0.0, 0.1, 0.6],
+            },
+            1,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(
+        ranking
+            .into_iter()
+            .map(|Reverse(RankingItem(distance, id, doc))| {
+                (
+                    distance.0,
+                    id.clone(),
+                    serde_json::from_str(&serde_json::to_string(doc).unwrap()).unwrap(),
+                )
+            })
+            .collect::<Vec<(_, _, String)>>(),
+        vec![(
+            0.9807965956109156,
+            "doc1".to_string(),
+            "glarb-garb".to_string()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn top_n_honors_filter_and_threshold() {
+    use crate::test_utils::MockEmbeddings;
+    use crate::vector_store::VectorStoreIndex;
+    use crate::vector_store::request::{Filter, SearchFilter, VectorSearchRequest};
+    use serde::Serialize;
+    use serde_json::json;
+
+    // Document payloads carry metadata alongside content, like real backends.
+    #[derive(Clone, Serialize, PartialEq, Eq)]
+    struct Item {
+        category: String,
+        text: String,
+    }
+
+    fn item(category: &str, text: &str) -> Item {
+        Item {
+            category: category.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    // `MockEmbeddingModel` embeds every query as this fixed 10-dim vector; give
+    // every document the same embedding so all cosine similarities are 1.0 and
+    // only the filter/threshold decide the result set.
+    let vec = vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+    let embedding = |doc: &str| {
+        vec![Embedding {
+            document: doc.to_string(),
+            vec: vec.clone(),
+        }]
+    };
+
+    let index = InMemoryVectorStore::from_documents_with_ids(vec![
+        ("a", item("fruit", "banana"), embedding("banana")),
+        ("b", item("veg", "carrot"), embedding("carrot")),
+        ("c", item("fruit", "apple"), embedding("apple")),
+    ])
+    .index(MockEmbeddings::model());
+
+    let ids = |req| async {
+        let mut out: Vec<String> = index
+            .top_n_ids(req)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|result| result.id)
+            .collect();
+        out.sort();
+        out
+    };
+
+    // No filter: every document is returned.
+    let all = ids(VectorSearchRequest::builder()
+        .query("q")
+        .samples(10)
+        .build())
+    .await;
+    assert_eq!(all, vec!["a", "b", "c"]);
+
+    // Metadata filter: only documents whose `category` field is `fruit`.
+    let fruit = ids(VectorSearchRequest::builder()
+        .query("q")
+        .samples(10)
+        .filter(Filter::eq("category", json!("fruit")))
+        .build())
+    .await;
+    assert_eq!(fruit, vec!["a", "c"]);
+
+    // Threshold above the maximum similarity (1.0): nothing qualifies.
+    let none = ids(VectorSearchRequest::builder()
+        .query("q")
+        .samples(10)
+        .threshold(2.0)
+        .build())
+    .await;
+    assert!(none.is_empty());
+
+    // Threshold at or below the similarity keeps all matches.
+    let kept = ids(VectorSearchRequest::builder()
+        .query("q")
+        .samples(10)
+        .threshold(0.5)
+        .build())
+    .await;
+    assert_eq!(kept, vec!["a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn top_n_excludes_non_finite_similarity() {
+    use crate::test_utils::MockEmbeddings;
+    use crate::vector_store::VectorStoreIndex;
+    use crate::vector_store::request::VectorSearchRequest;
+
+    let embedding = |doc: &str, vec: Vec<f64>| {
+        vec![Embedding {
+            document: doc.to_string(),
+            vec,
+        }]
+    };
+
+    // The zero-magnitude embedding produces a NaN cosine similarity, which
+    // sorts as the maximum under OrderedFloat. It must not rank first (or
+    // appear at all), even with no threshold set.
+    let index = InMemoryVectorStore::from_documents_with_ids(vec![
+        (
+            "good",
+            "good".to_string(),
+            embedding(
+                "good",
+                vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+            ),
+        ),
+        (
+            "degenerate",
+            "degenerate".to_string(),
+            embedding("degenerate", vec![0.0; 10]),
+        ),
+    ])
+    .index(MockEmbeddings::model());
+
+    let ids: Vec<String> = index
+        .top_n_ids(
+            VectorSearchRequest::builder()
+                .query("q")
+                .samples(10)
+                .build(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|result| result.id)
+        .collect();
+    assert_eq!(ids, vec!["good".to_string()]);
+}

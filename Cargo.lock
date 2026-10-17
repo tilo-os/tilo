@@ -151,9 +151,12 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "tilo-secret-vault",
+ "tilo-secrets",
  "tracing",
  "url",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "workspace-hack",
  "zeroize",
 ]
@@ -851,6 +854,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1003,7 +1028,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
 dependencies = [
  "fastrand",
- "gloo-timers",
+ "gloo-timers 0.3.0",
  "tokio",
 ]
 
@@ -1974,6 +1999,7 @@ dependencies = [
  "tilo-doc",
  "tilo-document",
  "tilo-files",
+ "tilo-model-gateway",
  "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",
@@ -3728,6 +3754,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "ebook"
 version = "0.1.0"
 dependencies = [
@@ -5086,9 +5118,13 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-timer"
-version = "3.0.4"
+version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+dependencies = [
+ "gloo-timers 0.2.6",
+ "send_wrapper 0.4.0",
+]
 
 [[package]]
 name = "futures-util"
@@ -5472,6 +5508,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b995a66bb87bebce9a0f4a95aed01daca4872c050bfcb21653361c03bc35e5c"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "gloo-timers"
@@ -9384,6 +9432,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-providers"
+version = "0.1.0"
+dependencies = [
+ "provider-settings-ui",
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "moderation-model"
 version = "0.1.0"
 dependencies = [
@@ -9625,7 +9683,7 @@ dependencies = [
  "futures-util",
  "js-sys",
  "pin-project",
- "send_wrapper",
+ "send_wrapper 0.6.0",
  "tokio",
  "tokio-util",
  "wasm-bindgen",
@@ -12238,6 +12296,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-settings-ui"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "hex",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-app",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "psl"
 version = "2.1.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13070,6 +13142,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "rig-core"
+version = "0.44.0"
+dependencies = [
+ "async-stream",
+ "base64",
+ "bytes",
+ "fastrand",
+ "futures",
+ "glob",
+ "http",
+ "mime",
+ "mime_guess",
+ "ordered-float",
+ "rig-http",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "rig-http"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9b68e5fe7258d64aeffb0a976ad0665ad2f94104d41eb4cdf463065ba57ec0b"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-timer",
+ "http",
+ "mime",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13887,6 +13999,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.4",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14041,6 +14178,12 @@ checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
 
 [[package]]
 name = "send_wrapper"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f638d531eccd6e23b980caf34876660d38e265409d8e99b397ab71eb3612fad0"
+
+[[package]]
+name = "send_wrapper"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
@@ -14095,6 +14238,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -14293,6 +14447,7 @@ dependencies = [
  "launcher",
  "os-actions",
  "package-store",
+ "provider-settings-ui",
  "quick-xml 0.41.0",
  "rcgen",
  "runtime-dylib",
@@ -14320,7 +14475,6 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-locale",
  "tilo-media",
- "tilo-model-gateway",
  "tilo-net",
  "tilo-oauth",
  "tilo-paths",
@@ -16279,6 +16433,7 @@ dependencies = [
  "libc",
  "maps",
  "messages",
+ "model-providers",
  "music",
  "neighbour-wire",
  "notes",
@@ -16704,6 +16859,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-files",
  "tilo-lock",
+ "tilo-model-gateway",
  "tilo-paths",
  "tilo-reference",
  "tilo-relay-protocol",
@@ -17541,6 +17697,7 @@ dependencies = [
 name = "tilo-host"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "ashpd",
  "hex",
  "image",
@@ -17553,6 +17710,7 @@ dependencies = [
  "tilo-location",
  "tilo-lock",
  "tilo-media",
+ "tilo-model-gateway",
  "tilo-net",
  "tilo-notify",
  "tilo-rt",
@@ -17929,12 +18087,18 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "base64",
+ "bytes",
  "clap",
+ "futures-util",
  "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "image",
  "libc",
  "local-model-service",
  "reqwest 0.13.4",
+ "rig-core",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -18014,7 +18178,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-platform-verifier",
- "send_wrapper",
+ "send_wrapper 0.6.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -19613,6 +19777,7 @@ dependencies = [
  "hex-editor",
  "maps",
  "messages",
+ "model-providers",
  "music",
  "notes",
  "passwords",
@@ -23242,6 +23407,7 @@ dependencies = [
  "num-traits",
  "object",
  "once_cell",
+ "ordered-float",
  "p256 0.13.2",
  "p256 0.14.0",
  "p384 0.13.1",
@@ -23408,7 +23574,7 @@ dependencies = [
  "log",
  "pharos",
  "rustc_version",
- "send_wrapper",
+ "send_wrapper 0.6.0",
  "thiserror 2.0.21",
  "wasm-bindgen",
  "wasm-bindgen-futures",

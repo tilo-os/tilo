@@ -7,6 +7,7 @@
 exclude = [
     "vendor/leveldb-sys",
     "vendor/buffa-build",
+    "vendor/rig-core",
     "tools/web/wasm-split",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
@@ -102,6 +103,7 @@ members = [
     "apps/logs",
     "apps/mail",
     "apps/maps",
+    "apps/model-providers",
     "apps/monitor",
     "apps/music",
     "apps/notes",
@@ -143,6 +145,7 @@ members = [
     "crates/agent/provider-config",
 
     # SDK
+    "crates/sdk/provider-settings-ui",
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
@@ -1012,6 +1015,9 @@ debug-assertions = true
 [patch.crates-io]
 # Chromium origin storage reader: bundled engine provenance in vendor/leveldb-sys.
 leveldb-sys = { path = "vendor/leveldb-sys" }
+# Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
+# Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
+rig-core = { path = "vendor/rig-core" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity

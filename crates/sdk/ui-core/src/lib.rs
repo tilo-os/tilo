@@ -307,8 +307,8 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, env, host, location, mpris, notify, png, portal, secrets, time,
-    wake,
+    background, capture, clipboard, env, host, location, models, mpris, notify, png, portal,
+    secrets, time, wake,
 };
 
 /// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.

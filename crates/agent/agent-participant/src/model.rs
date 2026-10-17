@@ -21,7 +21,9 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_agent::surface::{self, Catalogue, Offer};
 use tilo_agent::tools::Answer;
 use tilo_browser_peer::DocumentRoute;
-use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
+/// Trusted-host CLI credential source; sandboxed agents use the gateway capability.
+pub use tilo_model_gateway::host_backend::ApiKey;
+use tilo_model_gateway::openai::{self, Target as ApiTarget};
 
 use crate::planner::{PlanContext, Planner, Step, StepAction, written_steps};
 
@@ -495,56 +497,12 @@ impl PlanModel for ScriptedModel {
     }
 }
 
-/// Where an endpoint's bearer key comes from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ApiKey {
-    /// An unauthenticated endpoint.
-    None,
-    /// A key given once, at start.
-    Value(String),
-    /// A file read before every call, so a rotated key (a Cloud machine's
-    /// daily token) is picked up without a restart.
-    File(std::path::PathBuf),
-}
-
-impl ApiKey {
-    /// `value`, else the file at `file`, else none.
-    #[must_use]
-    pub fn from_env(value: Option<String>, file: Option<String>) -> Self {
-        match (
-            value.filter(|value| !value.is_empty()),
-            file.filter(|file| !file.is_empty()),
-        ) {
-            (Some(value), _) => Self::Value(value),
-            (None, Some(file)) => Self::File(file.into()),
-            (None, None) => Self::None,
-        }
-    }
-
-    /// The key as of now.
-    fn read(&self) -> Result<Option<String>, String> {
-        match self {
-            Self::None => Ok(None),
-            Self::Value(value) => Ok(Some(value.clone())),
-            Self::File(path) => {
-                let text = std::fs::read_to_string(path)
-                    .map_err(|error| format!("the model key file is unreadable: {error}"))?;
-                let key = text.trim();
-                if key.is_empty() || key.len() > 16 * 1024 {
-                    return Err("the model key file is empty or too large".into());
-                }
-                Ok(Some(key.to_owned()))
-            }
-        }
-    }
-}
-
 /// The model Tilo Cloud meters when `cloud:` names no other.
 pub const CLOUD_MODEL: &str = "gpt-4.1-mini-2025-04-14";
 
 /// Output one discovery turn may use: a plan of [`MOST_STEPS`] fits well
 /// within it, and a metered endpoint reserves credit for all of it.
-const TURN_OUTPUT_TOKENS: u64 = 1024;
+const TURN_OUTPUT_TOKENS: u32 = 1024;
 
 /// A model behind an OpenAI-compatible chat-completions endpoint with tool
 /// calls (`OpenAI`, vLLM, llama.cpp, Ollama, LM Studio, `OpenRouter`, Tilo
@@ -559,29 +517,7 @@ pub struct OpenAiModel {
     timeout: std::time::Duration,
     target: ApiTarget,
     profile: crate::profile::Profile,
-    /// One HTTP client for every call, so later turns reuse its pooled
-    /// connection rather than resolving, connecting and handshaking again.
-    /// Built by the first call, on the thread [`Self::post`] runs it on:
-    /// `new` runs inside the agent's entered runtime, where a blocking client
-    /// may not be built. Held as `Any` because this crate reaches reqwest
-    /// only through `tilo_net`, so it cannot name the client's type; see
-    /// [`built_once`].
-    client: std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
-}
-
-/// What `slot` holds, built by `build` the first time. `T` is inferred from
-/// `build`, so a value whose type this crate cannot name can still be kept.
-fn built_once<T: Send + Sync + 'static, E: std::fmt::Display>(
-    slot: &std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
-    build: impl FnOnce() -> Result<T, E>,
-) -> Result<&T, String> {
-    if slot.get().is_none() {
-        let fresh = build().map_err(|error| format!("no HTTP client: {error}"))?;
-        let _ = slot.set(Box::new(fresh));
-    }
-    slot.get()
-        .and_then(|held| held.downcast_ref::<T>())
-        .ok_or_else(|| "no HTTP client".to_string())
+    client: Option<tilo_model_gateway::host_backend::CompletionClient>,
 }
 
 impl OpenAiModel {
@@ -608,119 +544,28 @@ impl OpenAiModel {
             timeout,
             target,
             profile: crate::profile::Profile::default(),
-            client: std::sync::OnceLock::new(),
+            client: None,
         }
     }
 
-    /// Opt-in provider hints. The target's existing field allowlist is
-    /// applied afterwards, so metered endpoints keep their closed contract.
+    /// Opt-in provider hints, filtered by the gateway target's field allowlist.
     #[must_use]
     pub fn with_profile(mut self, profile: crate::profile::Profile) -> Self {
         self.profile = profile;
         self
     }
+}
 
-    /// POST `body` on a thread of its own: the blocking client may not run
-    /// inside the async runtime an agent's session is entered in.
-    fn post(
-        &self,
-        body: &serde_json::Value,
-        key: &str,
-        deadline: std::time::Instant,
-    ) -> Result<serde_json::Value, String> {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| self.post_retrying(body, key, deadline))
-                .join()
-                .unwrap_or_else(|_| Err("the model call panicked".into()))
-        })
-    }
-
-    /// Ask until answered, refused, or out of attempts or time. Every attempt
-    /// carries the same `key`, so a metered endpoint bills the turn once
-    /// however many attempts it took.
-    fn post_retrying(
-        &self,
-        body: &serde_json::Value,
-        key: &str,
-        deadline: std::time::Instant,
-    ) -> Result<serde_json::Value, String> {
-        let mut made = 0_u32;
-        loop {
-            made = made.saturating_add(1);
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return Err("the model call timed out".into());
-            }
-            let failure = match self.post_once(body, key, left) {
-                Ok(answer) => return Ok(answer),
-                Err(failure) => failure,
-            };
-            let wait = openai::backoff(made, failure.retry_after);
-            if !failure.retryable()
-                || made >= openai::ATTEMPTS
-                || std::time::Instant::now()
-                    .checked_add(wait)
-                    .is_none_or(|at| at >= deadline)
-            {
-                return Err(if made == 1 {
-                    failure.to_string()
-                } else {
-                    format!("{failure} (after {made} attempts)")
-                });
-            }
-            tracing::debug!(attempt = made, ?wait, %failure, "retrying the model call");
-            std::thread::sleep(wait);
-        }
-    }
-
-    fn post_once(
-        &self,
-        body: &serde_json::Value,
-        key: &str,
-        budget: std::time::Duration,
-    ) -> Result<serde_json::Value, Failure> {
-        let rejected = |detail: String| Failure {
-            kind: openai::Kind::Rejected,
-            code: None,
-            detail,
-            retry_after: None,
-        };
-        // Each request carries its own budget, replacing the client's default.
-        let client = built_once(&self.client, || tilo_net::http::blocking_client().build())
-            .map_err(rejected)?;
-        let mut request = client
-            .post(&self.endpoint)
-            .timeout(budget)
-            .header("content-type", "application/json")
-            .body(body.to_string());
-        if self.target.needs_idempotency_key() {
-            request = request.header(openai::IDEMPOTENCY_HEADER, key);
-        }
-        if let Some(bearer) = self.api_key.read().map_err(rejected)? {
-            request = request.bearer_auth(bearer);
-        }
-        let response = request
-            .send()
-            .map_err(|error| Failure::transport(error.is_timeout(), error.is_connect()))?;
-        let status = response.status();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let text = response
-            .text()
-            .map_err(|error| Failure::transport(error.is_timeout(), false))?;
-        if !status.is_success() {
-            return Err(Failure::from_http(
-                status.as_u16(),
-                &text,
-                retry_after.as_deref(),
-            ));
-        }
-        serde_json::from_str(&text)
-            .map_err(|error| rejected(format!("unreadable model answer: {error}")))
+/// Keep the host CLI's plain-string contract without changing typed provider errors.
+fn cli_model_error(error: &tilo_model_gateway::host_backend::protocol::ModelError) -> String {
+    use tilo_model_gateway::host_backend::protocol::ErrorKind;
+    if error.kind == ErrorKind::CreditsExhausted {
+        format!(
+            "{}: check your provider's credit or subscription, or choose another model.",
+            openai::OUT_OF_CREDITS
+        )
+    } else {
+        error.to_string()
     }
 }
 
@@ -731,71 +576,104 @@ impl PlanModel for OpenAiModel {
         catalogue: &Catalogue,
         most_steps: usize,
     ) -> Result<Answer, String> {
+        use tilo_model_gateway::host_backend::protocol::{Content, Conversation, ToolResult};
+        if self.client.is_none() {
+            self.client = Some(
+                tilo_model_gateway::host_backend::CompletionClient::new()
+                    .map_err(|error| cli_model_error(&error))?
+                    .with_request_hints({
+                        let mut hints = serde_json::json!({});
+                        self.profile.apply(&mut hints);
+                        hints
+                    }),
+            );
+        }
+        let client = self.client.as_mut().ok_or("no model transport")?;
         let deadline = std::time::Instant::now()
             .checked_add(self.timeout)
             .unwrap_or_else(std::time::Instant::now);
-        // Keys are derived from this run, the turn and the request, so each
-        // turn has one key for all of its attempts and no two turns share one.
+        // One identity per logical turn, stable across gateway-owned attempts.
         let mut run = [0_u8; 16];
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
-        // The published operations come with the task (and are revealed), so
-        // a task they answer is planned on the first turn. One string: an
-        // OpenAI-compatible provider caches the repeated operations prefix
-        // by itself.
+        // Published operations are shown and revealed before the first turn.
         let task = tilo_agent::model::action_user_turn(task, catalogue, &mut revealed).text();
-        let mut messages = vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You drive Tilo apps only through the resource/action tools. \
-                    The task lists the operations published right now with their parameters: \
-                    when one of them does what is asked, plan it straight away. Use the listing \
-                    tools only for what that list leaves out, describe an operation only when \
-                    its arguments are unclear, and finish by calling `plan` exactly once. \
-                    Preserve every argument's declared JSON type. Never invent an operation id \
-                    or parameter. When an app you need is not open, plan its open operation and \
-                    put the rest of the request in `then`.",
-            }),
-            serde_json::json!({ "role": "user", "content": task }),
-        ];
+        let mut conversation = Conversation::new(
+            "You drive Tilo apps only through the resource/action tools. \
+             The task lists the operations published right now with their parameters: \
+             when one of them does what is asked, plan it straight away. Use the listing \
+             tools only for what that list leaves out, describe an operation only when \
+             its arguments are unclear, and finish by calling `plan` exactly once. \
+             Preserve every argument's declared JSON type. Never invent an operation id \
+             or parameter. When an app you need is not open, plan its open operation and \
+             put the rest of the request in `then`.",
+            &task,
+        );
         for turn in 0..12_u32 {
-            let mut body = serde_json::json!({
-                "model": self.model,
-                "messages": messages,
-                "tools": openai::functions(&tilo_agent::tools::definitions(most_steps)),
-                "tool_choice": "required",
-                "max_tokens": TURN_OUTPUT_TOKENS,
-            });
-            self.profile.apply(&mut body);
-            let body = self.target.shape(body);
-            let key = openai::turn_key(&run, turn, &body);
-            let answer = self.post(&body, &key, deadline)?;
-            let reply = openai::read_turn(&answer)?;
-            if reply.calls.is_empty() {
+            let request = conversation.request(
+                tilo_agent::tools::typed_definitions(most_steps),
+                TURN_OUTPUT_TOKENS,
+            );
+            let key = openai::turn_key(&run, turn, &serde_json::json!((&self.model, &request)));
+            let response = client
+                .complete(
+                    &self.endpoint,
+                    &self.api_key,
+                    self.target,
+                    &self.model,
+                    &request,
+                    &key,
+                    deadline,
+                )
+                .map_err(|error| cli_model_error(&error))?;
+            let calls = conversation
+                .validate_response(&response)
+                .map_err(|error| error.to_string())?;
+            if calls.is_empty() {
+                let text: String = response
+                    .message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        Content::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
                 return Err(format!(
                     "the model neither discovered operations nor planned: {}",
-                    reply
-                        .text
-                        .unwrap_or_default()
-                        .chars()
-                        .take(300)
-                        .collect::<String>()
+                    text.chars().take(300).collect::<String>()
                 ));
             }
-            messages.push(reply.message);
-            for call in &reply.calls {
-                let result = if call.name == tilo_agent::tools::PLAN {
-                    // A refused plan goes back to the model with the reason
-                    // (and the shown ids it may have meant) for another try.
+            let calls: Vec<_> = calls.into_iter().cloned().collect();
+            // Validate the completed turn and entire batch before revealing or planning.
+            tilo_agent::tools::validate_plan_calls(&calls)?;
+            let mut results = Vec::new();
+            for call in calls {
+                let (content, is_error) = if call.name == tilo_agent::tools::PLAN {
                     match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
                         Ok(answer) => return Ok(answer),
-                        Err(error) => tilo_agent::tools::plan_refused(&error),
+                        Err(error) => (tilo_agent::tools::plan_refused(&error), true),
                     }
                 } else {
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
+                    (
+                        tilo_agent::tools::answer(
+                            &call.name,
+                            &call.input,
+                            catalogue,
+                            &mut revealed,
+                        ),
+                        false,
+                    )
                 };
-                messages.push(openai::tool_result(call, &result));
+                results.push(ToolResult {
+                    content,
+                    call_id: call.id,
+                    is_error,
+                });
             }
+            conversation
+                .push(response, results)
+                .map_err(|error| error.to_string())?;
         }
         Err("the model exhausted its discovery turns".into())
     }
@@ -1021,7 +899,7 @@ mod tests {
         let mut model = OpenAiModel::new(
             &url,
             CLOUD_MODEL,
-            ApiKey::Value("tilo-ai-token".into()),
+            ApiKey::None,
             std::time::Duration::from_secs(30),
             ApiTarget::CloudMetered,
         )
@@ -1074,6 +952,24 @@ mod tests {
         )
     }
 
+    /// `OpenAI` permits text content as either a string or typed text blocks.
+    fn message_text(message: &serde_json::Value, role: &str) -> String {
+        assert_eq!(message["role"], role);
+        let content = &message["content"];
+        if let Some(text) = content.as_str() {
+            return text.to_owned();
+        }
+        content
+            .as_array()
+            .expect("text content must be a string or text blocks")
+            .iter()
+            .map(|block| {
+                assert_eq!(block["type"], "text");
+                block["text"].as_str().expect("text block").to_owned()
+            })
+            .collect()
+    }
+
     /// The published operations come with the task, so a task they answer
     /// is planned in ONE request — no listing or describing turn first.
     #[test]
@@ -1087,11 +983,45 @@ mod tests {
         let requests: Vec<(String, String)> = sent.try_iter().collect();
         assert_eq!(requests.len(), 1, "one model turn");
         let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
-        let task = first["messages"][1]["content"].as_str().unwrap();
+        let task = message_text(&first["messages"][1], "user");
         assert!(task.contains(&offer), "{task}");
         assert!(task.contains("open notes then add a note"), "{task}");
-        let system = first["messages"][0]["content"].as_str().unwrap();
+        let system = message_text(&first["messages"][0], "system");
         assert!(!system.contains("before planning"), "{system}");
+    }
+
+    #[test]
+    fn an_incomplete_or_mixed_plan_turn_is_rejected_before_planning() {
+        let offer = open_notes().offers[0].id();
+        for (finish, mixed) in [("length", false), ("tool_calls", true)] {
+            let mut calls = vec![serde_json::json!({
+                "id": "plan", "type": "function", "function": {
+                    "name": "plan",
+                    "arguments": serde_json::json!({
+                        "steps": [{"operation": offer, "arguments": {}}],
+                        "why": "open", "then": null
+                    }).to_string()
+                }
+            })];
+            if mixed {
+                calls.push(serde_json::json!({
+                    "id": "list", "type": "function", "function": {
+                        "name": "list_applications", "arguments": "{}"
+                    }
+                }));
+            }
+            let response = serde_json::json!({"choices": [{
+                "message": {"role": "assistant", "content": null, "tool_calls": calls},
+                "finish_reason": finish
+            }]});
+            let (url, sent) = endpoint(vec![http("200 OK", &response.to_string())]);
+            assert!(
+                standard(&url)
+                    .choose("open notes", &open_notes(), MOST_STEPS)
+                    .is_err()
+            );
+            assert_eq!(sent.try_iter().count(), 1);
+        }
     }
 
     /// Environment settings are applied by the production planner factory.
@@ -1325,8 +1255,13 @@ mod tests {
                 body.len()
             )
         };
-        let (url, carried) =
-            keep_alive_endpoint(vec![kept_open(&list), kept_open(&list), kept_open(&plan)]);
+        let mut second_list = list.clone();
+        second_list["choices"][0]["message"]["tool_calls"][0]["id"] = "c-middle".into();
+        let (url, carried) = keep_alive_endpoint(vec![
+            kept_open(&list),
+            kept_open(&second_list),
+            kept_open(&plan),
+        ]);
         let mut model = OpenAiModel::new(
             &url,
             "test-model",
@@ -1354,7 +1289,7 @@ mod tests {
         let mut model = OpenAiModel::new(
             &url,
             CLOUD_MODEL,
-            ApiKey::Value("tilo-ai-token".into()),
+            ApiKey::None,
             std::time::Duration::from_secs(30),
             ApiTarget::CloudMetered,
         );
@@ -1366,14 +1301,36 @@ mod tests {
     }
 
     #[test]
-    fn a_key_file_is_read_again_for_every_call() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("token");
-        std::fs::write(&path, "first\n").unwrap();
-        let key = ApiKey::File(path.clone());
-        assert_eq!(key.read().unwrap().as_deref(), Some("first"));
-        std::fs::write(&path, "second").unwrap();
-        assert_eq!(key.read().unwrap().as_deref(), Some("second"));
+    fn typed_credit_failure_maps_to_cli_without_retry_or_provider_text() {
+        use tilo_model_gateway::host_backend::protocol::{ErrorKind, ModelError};
+
+        let expected = cli_model_error(&ModelError::new(ErrorKind::CreditsExhausted));
+        assert!(expected.starts_with(openai::OUT_OF_CREDITS), "{expected}");
+        assert!(expected.contains("choose another model"), "{expected}");
+        // Classification comes from the machine code, not the provider's prose.
+        let (url, sent) = endpoint(vec![http(
+            "402 Payment Required",
+            r#"{"error":"private upstream detail","code":"insufficient_credit"}"#,
+        )]);
+        let error = OpenAiModel::new(
+            &url,
+            CLOUD_MODEL,
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::CloudMetered,
+        )
+        .choose("add a note", &open_notes(), MOST_STEPS)
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(!error.contains("private upstream detail"));
+        assert_eq!(
+            sent.try_iter().count(),
+            1,
+            "credit failures are not retried"
+        );
+
+        let other = ModelError::new(ErrorKind::Authentication);
+        assert_eq!(cli_model_error(&other), other.to_string());
     }
 
     #[test]

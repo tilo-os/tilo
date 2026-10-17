@@ -739,7 +739,24 @@ mod tests {
     }
 
     #[test]
-    fn device_sync_lifecycle_persists_keys_and_peers() {
+    fn device_identity_uses_the_injected_store_and_rejects_corrupt_seeds() {
+        let store = tilo_secrets::SecretStore::memory("so.tilo.tube");
+        let first = device_seed(&store).unwrap();
+        assert_eq!(*device_seed(&store).unwrap(), *first);
+        let another_host = tilo_secrets::SecretStore::memory("so.tilo.tube");
+        assert_ne!(*device_seed(&another_host).unwrap(), *first);
+        store
+            .put_blocking(DEVICE_SEED, b"bad", tilo_secrets::PutOptions::default())
+            .unwrap();
+        assert!(device_seed(&store).is_err());
+        assert_eq!(
+            store.get_blocking(DEVICE_SEED).unwrap().unwrap().expose(),
+            b"bad"
+        );
+    }
+
+    #[test]
+    fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
         // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
         {
             let dir = tempfile::tempdir().unwrap();

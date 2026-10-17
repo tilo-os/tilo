@@ -6692,7 +6692,16 @@ impl CapnpBrokerState {
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
             }
-            runtime_collab::TaskRunUpdate::Progress { message } => (
+            runtime_collab::TaskRunUpdate::Progress {
+                presentation: Some(_),
+                ..
+            } => {
+                return Err("typed presentation requires a native task owner".into());
+            }
+            runtime_collab::TaskRunUpdate::Progress {
+                message,
+                presentation: None,
+            } => (
                 format!("Agent progress · {}", bounded_task_message(&message)?),
                 None,
                 false,
@@ -12699,6 +12708,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 instruction: run.instruction,
                 subject: run.subject,
                 run_id: run.run_id,
+                presentation_version: runtime_collab::native_task_revision(&run.lease).map(|_| 1),
                 lease: run.lease,
                 planning: run.planning,
                 execution_budget: run.execution_budget,

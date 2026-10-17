@@ -62,6 +62,10 @@ nextest=$(command -v cargo-nextest) || {
     echo "cargo-nextest is required: cargo install --locked cargo-nextest" >&2
     exit 1
 }
+feature_flags=$(python3 "$repo/tools/ci/package_features.py" "${build_args[@]}")
+read -r -a features <<<"$feature_flags"
+build_args+=("${features[@]}")
+
 metadata="$repo/target/nextest/local"
 mkdir -p "$metadata"
 "$cargo" nextest list --locked --profile ci --list-type binaries-only \

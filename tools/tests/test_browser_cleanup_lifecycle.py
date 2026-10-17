@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
+import sys
 import tempfile
 import time
 import unittest
@@ -185,12 +187,114 @@ class BrowserProcessDiscovery(unittest.TestCase):
                     patch.object(Path, 'read_text', side_effect=error):
                 self.assertEqual(supervisor.children(), [])
 
+    def test_starved_term_phase_still_kills_and_reaps(self):
+        supervisor = self.supervisor()
+        with patch.object(supervisor, 'reap', side_effect=[False, False, True]), \
+                patch.object(supervisor, 'children', return_value=[(123, '456')]), \
+                patch.object(supervisor, 'owned_fields', return_value=['S']), \
+                patch.object(supervisor.os, 'pidfd_open', return_value=42), \
+                patch.object(supervisor.os, 'close'), \
+                patch.object(supervisor.signal, 'pidfd_send_signal') as send, \
+                patch.object(supervisor.time, 'monotonic', side_effect=[0, .1, 5.5, 5.5]), \
+                patch.object(supervisor.time, 'sleep') as pause:
+            supervisor.quiesce()
+        self.assertEqual([call.args for call in send.call_args_list],
+                         [(42, signal.SIGTERM), (42, signal.SIGKILL)])
+        self.assertEqual(pause.call_count, 2, 'KILL must get a post-signal reaping turn')
+
+    def test_unreapable_child_fails_after_bounded_kill_phase(self):
+        supervisor = self.supervisor()
+        with patch.object(supervisor, 'reap', return_value=False), \
+                patch.object(supervisor, 'children', return_value=[(123, '456')]), \
+                patch.object(supervisor, 'owned_fields', return_value=['D']), \
+                patch.object(supervisor.os, 'pidfd_open', return_value=42), \
+                patch.object(supervisor.os, 'close'), \
+                patch.object(supervisor.signal, 'pidfd_send_signal') as send, \
+                patch.object(supervisor.time, 'monotonic', side_effect=[0, .1, 5.5, 5.5, 8.6, 8.6]), \
+                patch.object(supervisor.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'profile must remain; pid=123 birth=456 state=D sent=SIGTERM,SIGKILL'):
+                supervisor.quiesce()
+        self.assertEqual([call.args for call in send.call_args_list],
+                         [(42, signal.SIGTERM), (42, signal.SIGKILL)])
+
+    def test_adopted_children_get_kill_without_renewing_deadline(self):
+        supervisor = self.supervisor()
+        with patch.object(supervisor, 'reap', return_value=False), \
+                patch.object(supervisor, 'children', side_effect=[
+                    [(123, '456')], [(123, '456')],  # First KILL and diagnostic.
+                    [(124, '789')], [(124, '789')], [(124, '789')]]), \
+                patch.object(supervisor, 'owned_fields', return_value=['D']), \
+                patch.object(supervisor.os, 'pidfd_open', side_effect=[42, 43]), \
+                patch.object(supervisor.os, 'close'), \
+                patch.object(supervisor.signal, 'pidfd_send_signal') as send, \
+                patch.object(supervisor.time, 'monotonic', side_effect=[0, 2.1, 2.1, 4, 4, 5.2, 5.2]), \
+                patch.object(supervisor.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'pid=124 birth=789 state=D sent=SIGKILL'):
+                supervisor.quiesce()
+        self.assertEqual([call.args for call in send.call_args_list],
+                         [(42, signal.SIGKILL), (43, signal.SIGKILL)])
+
+    def test_reused_pid_or_changed_parent_is_never_signalled(self):
+        supervisor = self.supervisor()
+        for parent, birth in ((os.getpid(), '789'), (os.getpid() + 1, '456')):
+            fields = ['S', str(parent)] + ['0'] * 17 + [birth]
+            with self.subTest(parent=parent, birth=birth), \
+                    patch.object(supervisor, 'reap', side_effect=[False, True]), \
+                    patch.object(supervisor, 'children', return_value=[(123, '456')]), \
+                    patch.object(Path, 'read_text', return_value='123 (fixture) ' + ' '.join(fields)), \
+                    patch.object(supervisor.os, 'pidfd_open', return_value=42), \
+                    patch.object(supervisor.os, 'close') as close, \
+                    patch.object(supervisor.signal, 'pidfd_send_signal') as send, \
+                    patch.object(supervisor.time, 'sleep'):
+                supervisor.quiesce()
+            send.assert_not_called()
+            close.assert_called_once_with(42)
+
     def test_unreadable_proc_stat_fails_discovery(self):
         supervisor = self.supervisor()
         with patch.object(Path, 'iterdir', return_value=[Path('/proc/123')]), \
                 patch.object(Path, 'read_text', side_effect=PermissionError):
             with self.assertRaises(PermissionError):
                 supervisor.children()
+
+
+class BrowserKillLifecycle(unittest.TestCase):
+    def test_term_resistant_detached_descendants_are_killed_and_reaped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / 'ready'
+            script = '''
+import os, pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    os.setsid()
+    grandchild = os.fork()
+    if grandchild != 0:
+        pathlib.Path(sys.argv[1]).write_text(f'{os.getppid()} {os.getpid()} {grandchild}')
+# A failsafe bounds the fixture's life even if supervision is broken.
+time.sleep(15)
+'''
+            process = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c', script, str(ready)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists():
+                    self.assertIsNone(process.poll(), 'supervisor exited before fixture startup')
+                    self.assertLess(time.monotonic(), deadline, 'owned tree did not start')
+                    time.sleep(.005)
+                pids = [int(pid) for pid in ready.read_text().split()]
+                process.terminate()
+                stdout, stderr = process.communicate(timeout=8)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                self.assertIn('owned browser KILL phase:', stderr)
+                for pid in pids:
+                    self.assertFalse(Path(f'/proc/{pid}').exists(), f'owned child {pid} not reaped')
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.communicate(timeout=20)
 
 
 if __name__ == '__main__':

@@ -86,12 +86,24 @@ pub struct Credentials {
     pub username: String,
     /// Key header, for an API key.
     pub header: String,
+    /// Immutable device-local credential key, published only after durable storage.
+    pub reference: String,
 }
 
 impl Credentials {
     /// The record of `auth`, without its credential.
     pub fn of(auth: &Auth) -> Self {
         match auth {
+            Auth::SecretRef { id, scheme } => Self {
+                scheme: match scheme.as_str() {
+                    "Bearer Token" | "Bearer token" => AuthScheme::Bearer,
+                    "Basic Auth" | "Basic auth" => AuthScheme::Basic,
+                    "API Key" | "API key" => AuthScheme::ApiKey,
+                    _ => AuthScheme::None,
+                },
+                reference: id.clone(),
+                ..Self::default()
+            },
             Auth::None => Self::default(),
             Auth::Bearer { .. } => Self {
                 scheme: AuthScheme::Bearer,
@@ -101,11 +113,13 @@ impl Credentials {
                 scheme: AuthScheme::Basic,
                 username: username.clone(),
                 header: String::new(),
+                reference: String::new(),
             },
             Auth::ApiKey { header, .. } => Self {
                 scheme: AuthScheme::ApiKey,
                 username: String::new(),
                 header: header.clone(),
+                reference: String::new(),
             },
         }
     }

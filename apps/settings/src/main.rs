@@ -7,4 +7,7 @@ extern crate runtime_dylib;
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_accounts_engine;
 
-ui::main!(settings::SettingsShell);
+ui::main!(
+    settings::SettingsShell,
+    init = settings::enable_provider_administration
+);

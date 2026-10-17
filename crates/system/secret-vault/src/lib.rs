@@ -188,6 +188,32 @@ impl VaultFormat {
         self.system_only_key(vault_exists, &self.system_store())
     }
 
+    /// Browser custody with acknowledged creation, serialized across tabs.
+    /// The legacy format's key name and encoding remain authoritative.
+    ///
+    /// # Errors
+    /// Returns an error if key generation or browser custody fails, or if the
+    /// stored key is missing, malformed or unavailable for an existing vault.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub async fn load_or_create_page_key(&self, vault_exists: bool) -> Result<VaultKey, String> {
+        let candidate = if vault_exists {
+            None
+        } else {
+            let key = VaultKey::generate().map_err(|_| "vault key generation failed")?;
+            Some(Zeroizing::new(encode_key(key.expose_secret())))
+        };
+        let (app, item) = self.system_item();
+        let stored = tilo_secrets::web::get_or_create(
+            app,
+            item,
+            candidate.as_ref().map(|encoded| encoded.as_bytes()),
+        )
+        .await
+        .map_err(|error| format!("vault key custody failed: {error}"))?;
+        let encoded = std::str::from_utf8(stored.expose()).map_err(|_| "vault key is not UTF-8")?;
+        decode_key(encoded.trim())
+    }
+
     /// [`Self::load_or_create_system_key`] in `store`.
     pub fn load_or_create_system_key_in(
         &self,

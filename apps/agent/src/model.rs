@@ -15,8 +15,8 @@
 //!   steps (the local document and Chat runners).
 //! * [`TurnRequest`] / [`TurnEvent`] — one streamed model turn of the
 //!   discover → invoke → observe loop that model tasks run
-//!   (`session::agent_loop`). The turn runs on its own thread so completed
-//!   tool calls can be executed while the model is still writing the next.
+//!   (`session::agent_loop`). The turn runs on its own thread; previews
+//!   remain inert until the complete response and tool batch validate.
 //!
 //! Every call is bounded by a timeout; a slow, failed or malformed answer is
 //! reported as such rather than guessed at.
@@ -74,6 +74,7 @@ impl Route {
 pub struct Chooser {
     /// A Settings-selected provider. Its credential remains in the gateway.
     provider: Option<ProviderConnection>,
+    neutral: bool,
     timeout: Duration,
     enabled: bool,
     /// The content-free correlation id of the latest action decision, for
@@ -101,6 +102,7 @@ impl Chooser {
     pub fn new(enabled: bool, timeout: Duration) -> Self {
         Self {
             provider: None,
+            neutral: false,
             timeout,
             enabled,
             trace: AtomicU64::new(0),
@@ -120,6 +122,7 @@ impl Chooser {
         });
         Self {
             provider: Some(ProviderConnection { selection }),
+            neutral: true,
             timeout,
             enabled,
             trace: AtomicU64::new(0),
@@ -141,12 +144,30 @@ impl Chooser {
         let selection = ProviderSelection::from_profile(&profile, model);
         Self {
             provider: Some(ProviderConnection { selection }),
+            neutral: !cfg!(test),
             timeout,
             enabled: true,
             trace: AtomicU64::new(0),
             turns: Some(turns),
             marks: Arc::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted_neutral(timeout: Duration, turns: Arc<dyn TurnTransport>) -> Self {
+        let mut chooser = Self::scripted(
+            timeout,
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+            turns,
+        );
+        chooser.neutral = true;
+        chooser
+    }
+
+    /// Production transports always use the neutral gateway protocol.
+    /// Only unit-test legacy fixtures retain provider envelopes.
+    pub fn uses_neutral_protocol(&self) -> bool {
+        self.neutral
     }
 
     /// The per-turn model timeout this chooser was configured with.
@@ -247,6 +268,21 @@ impl Chooser {
         most_steps: usize,
         live: &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<tools::Answer, Route> {
+        self.choose_actions_observed(rest, catalogue, most_steps, live, &mut |_| {})
+    }
+
+    /// Observe presentation without granting deltas authority to act.
+    ///
+    /// # Errors
+    /// Returns the fallback route when model access or validated planning fails.
+    pub fn choose_actions_observed(
+        &self,
+        rest: &str,
+        catalogue: &Catalogue,
+        most_steps: usize,
+        live: &mut dyn FnMut(StreamSignal<'_>),
+        observe: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
+    ) -> Result<tools::Answer, Route> {
         let fallback = |reason| Err(Route::Keywords(reason));
         if !self.enabled {
             return fallback(Fallback::Disabled);
@@ -255,7 +291,7 @@ impl Chooser {
             if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
-            self.ask_actions_provider(provider, rest, catalogue, most_steps, live)
+            self.ask_actions_provider(provider, rest, catalogue, most_steps, live, observe)
         } else {
             return fallback(Fallback::NoKey);
         };
@@ -307,27 +343,105 @@ impl Chooser {
         catalogue: &Catalogue,
         most_steps: usize,
         live: &mut dyn FnMut(StreamSignal<'_>),
+        observe: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
     ) -> Result<tools::Answer, AskError> {
+        use agent_provider_config::protocol::{Conversation as ModelConversation, ToolResult};
         let began = ui::time::now();
-        let remaining = || self.timeout.checked_sub(began.elapsed());
         let trace_id = uuid::Uuid::new_v4().as_u64_pair().0.max(1);
         self.trace.store(trace_id, Ordering::Relaxed);
-        let decision = ActionDecision {
-            selection: &provider.selection,
-            rest,
-            catalogue,
-            most_steps,
-        };
-        decision.run(
-            trace_id,
-            &mut |body, trace, live| post_action_turn(provider, body, &remaining, trace, live),
-            live,
-        )
+        let mut revealed = Revealed::new();
+        let first = action_user_turn(rest, catalogue, &mut revealed);
+        let mut conversation = ModelConversation::new(ACTION_SYSTEM, first.text());
+        for turn in 0..MAX_ACTION_TURNS {
+            let timeout = self
+                .timeout
+                .checked_sub(began.elapsed())
+                .ok_or_else(|| AskError::Failed("the call timed out".into()))?
+                .min(MAX_TURN_TIME);
+            live(StreamSignal::Turn(turn));
+            let mut request = conversation.request(tools::typed_definitions(most_steps), 4096);
+            first.apply_to(&mut request);
+            let mut previews = NeutralPreviews::default();
+            let mut scanners = BTreeMap::new();
+            let mut reply = String::new();
+            let response = tilo_model_gateway::complete_streaming(
+                &provider.selection.profile_id,
+                &provider.selection.model.id,
+                request,
+                timeout,
+                &mut |event| {
+                    observe(event);
+                    if let Some(output) = previews.frame(event) {
+                        stream_plan_delta(&mut scanners, &output, &mut |signal| {
+                            // The plan's explicit user-facing reply is model output,
+                            // unlike its decision explanation or action arguments.
+                            if let StreamSignal::Reply { text, .. } = signal
+                                && let Some(delta) = text.strip_prefix(&reply)
+                                && !delta.is_empty()
+                            {
+                                observe(&agent_provider_config::protocol::StreamEvent::TextDelta {
+                                    text: delta.into(),
+                                });
+                                text.clone_into(&mut reply);
+                            }
+                            live(signal);
+                        });
+                    }
+                },
+            )
+            .map_err(|error| {
+                let error = error.model_error();
+                AskError::Failed(format!("{error} {}", error.recovery().guidance()))
+            })?;
+            let calls = conversation
+                .validate_response(&response)
+                .map_err(|error| AskError::Failed(error.to_string()))?;
+            let calls: Vec<ToolCall> = calls.into_iter().cloned().collect();
+            tools::validate_plan_calls(&calls).map_err(AskError::Failed)?;
+            if calls.is_empty() {
+                return Err(AskError::Failed("the model called no tool".into()));
+            }
+            if let Some(call) = calls.iter().find(|call| call.name == tools::PLAN) {
+                match tools::read_plan(&call.input, &revealed, most_steps) {
+                    Ok(answer) => return Ok(answer),
+                    Err(error) => {
+                        conversation
+                            .push(
+                                response,
+                                vec![ToolResult {
+                                    call_id: call.id.clone(),
+                                    content: tools::plan_refused(&error),
+                                    is_error: true,
+                                }],
+                            )
+                            .map_err(|error| AskError::Failed(error.to_string()))?;
+                        continue;
+                    }
+                }
+            }
+            let mut results = Vec::with_capacity(calls.len());
+            for call in calls {
+                live(StreamSignal::ToolCall(&call.name));
+                let answer = tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                results.push(ToolResult {
+                    call_id: call.id,
+                    content: answer,
+                    is_error: false,
+                });
+            }
+            conversation
+                .push(response, results)
+                .map_err(|error| AskError::Failed(error.to_string()))?;
+        }
+        Err(AskError::Failed(
+            "the model exhausted the action-discovery turn limit".into(),
+        ))
     }
 }
 
 /// Sends one turn's request body and answers the provider's response body:
 /// the gateway in production, a script in tests.
+#[cfg(test)]
 type PostTurn<'a> = dyn FnMut(
         Value,
         tilo_model_gateway::PlanTrace,
@@ -336,6 +450,7 @@ type PostTurn<'a> = dyn FnMut(
     + 'a;
 
 /// One action decision's conversation, whatever carries its turns.
+#[cfg(test)]
 struct ActionDecision<'a> {
     selection: &'a ProviderSelection,
     rest: &'a str,
@@ -343,6 +458,7 @@ struct ActionDecision<'a> {
     most_steps: usize,
 }
 
+#[cfg(test)]
 impl ActionDecision<'_> {
     /// Run the conversation to a plan. The first turn already shows the
     /// published operations (and reveals them), and the system prompt and
@@ -419,13 +535,9 @@ impl ActionDecision<'_> {
     }
 }
 
-#[derive(Debug)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub input: Value,
-}
+pub use agent_provider_config::protocol::ToolCall;
 
+#[cfg(test)]
 enum ActionTurn {
     Tools {
         /// The assistant turn to replay, in the provider's own dialect.
@@ -443,6 +555,7 @@ enum ActionTurn {
 /// The two wire dialects of the action-discovery tool loop. Both run the
 /// same conversation with the same bounds: read-only discovery tools, then
 /// exactly one `plan` call, alone in its turn, as the final answer.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Dialect {
     /// Anthropic Messages: `system` key, `input_schema` tools, `tool_use`
@@ -453,6 +566,7 @@ enum Dialect {
     OpenAi,
 }
 
+#[cfg(test)]
 impl Dialect {
     fn of(protocol: agent_provider_config::ProviderProtocol) -> Self {
         match protocol {
@@ -526,6 +640,30 @@ impl FirstTurn {
     /// The first user message in `dialect`. A blank part gets no block (an
     /// empty text block is refused), and with no operations there is
     /// nothing worth a breakpoint of its own.
+    /// Keep the stable catalogue and volatile task in separate content blocks;
+    /// provider-specific caching of that boundary belongs to the gateway.
+    fn apply_to(&self, request: &mut agent_provider_config::protocol::ModelRequest) {
+        use agent_provider_config::protocol::Content;
+        let Some(message) = request.messages.get_mut(1) else {
+            return;
+        };
+        message.content = if self.operations.is_empty() {
+            vec![Content::Text {
+                text: self.task.clone(),
+            }]
+        } else {
+            vec![
+                Content::Text {
+                    text: self.operations.clone(),
+                },
+                Content::Text {
+                    text: self.task.clone(),
+                },
+            ]
+        };
+    }
+
+    #[cfg(test)]
     fn message(&self, dialect: Dialect) -> Value {
         let content = match dialect {
             Dialect::Anthropic if !self.operations.trim().is_empty() => {
@@ -557,6 +695,7 @@ impl From<&str> for FirstTurn {
 
 /// Anthropic carries every `tool_result` of a turn in one user message:
 /// gather the trailing result blocks pushed after the assistant turn.
+#[cfg(test)]
 fn fold_anthropic_results(messages: &mut Vec<Value>) {
     let start = messages
         .iter()
@@ -566,6 +705,7 @@ fn fold_anthropic_results(messages: &mut Vec<Value>) {
     messages.push(serde_json::json!({ "role": "user", "content": results }));
 }
 
+#[cfg(test)]
 fn action_request_body_for(
     selection: &ProviderSelection,
     messages: &[Value],
@@ -585,6 +725,7 @@ fn action_request_body_for(
 /// `tool_choice: "required"` keeps the model inside the tool conversation
 /// (an answer that neither discovers nor plans is an error in both dialects).
 /// No `reasoning_effort` is chosen here: the gateway applies the profile's.
+#[cfg(test)]
 fn openai_action_request_body(
     selection: &ProviderSelection,
     messages: &[Value],
@@ -601,6 +742,7 @@ fn openai_action_request_body(
 
 /// `{name, description, input_schema}` → `{type: "function", function:
 /// {name, description, parameters}}`.
+#[cfg(test)]
 fn openai_tools(definitions: &Value) -> Value {
     definitions
         .as_array()
@@ -622,15 +764,20 @@ fn openai_tools(definitions: &Value) -> Value {
         .collect()
 }
 
+#[cfg(test)]
 fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
     let (assistant, calls) = anthropic_calls(body)?;
     settle_turn(assistant, calls)
 }
 
 /// The assistant turn (to replay) and its tool calls, in call order.
+#[cfg(test)]
 fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
+    if root.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
+        return Err("the model turn was truncated".into());
+    }
     if root.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
         return Err("the model declined the action request".into());
     }
@@ -660,6 +807,7 @@ fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
             id: id.into(),
             name: name.into(),
             input,
+            extra_content: None,
         });
     }
     Ok((
@@ -668,18 +816,23 @@ fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     ))
 }
 
+#[cfg(test)]
 fn parse_openai_action_turn(body: &str) -> Result<ActionTurn, String> {
     let (assistant, calls) = openai_calls(body)?;
     settle_turn(assistant, calls)
 }
 
 /// The assistant turn (to replay) and its tool calls, in call order.
+#[cfg(test)]
 fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
     let choice = root
         .pointer("/choices/0")
         .ok_or_else(|| "action response had no choices".to_string())?;
+    if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
+        return Err("the model turn was truncated".into());
+    }
     let message = choice
         .get("message")
         .ok_or_else(|| "action response had no message".to_string())?;
@@ -725,6 +878,10 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
             id: id.into(),
             name: name.into(),
             input,
+            extra_content: call
+                .get("extra_content")
+                .filter(|extra| extra.is_object())
+                .cloned(),
         });
     }
     let mut assistant = serde_json::json!({
@@ -745,7 +902,9 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
 
 /// The rule shared by both dialects: `plan` is the final answer and must be
 /// the only call of its turn; otherwise the turn must call discovery tools.
+#[cfg(test)]
 fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, String> {
+    tools::validate_plan_calls(&calls)?;
     if calls.iter().any(|call| call.name == tools::PLAN) {
         let mut calls = calls.into_iter();
         let (Some(call), None) = (calls.next(), calls.next()) else {
@@ -777,66 +936,21 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
     }
 }
 
-/// Send one action-discovery turn through the profile selected for this
-/// task. Both dialects stream: the gateway reports each tool call the moment
-/// it is complete (logged here), then the assembled body in the provider's
-/// non-streamed shape, so the loop itself is identical for both.
-///
-/// The agent has no provider network namespace and cannot resolve a vault
-/// reference. All profile lookup, credential resolution, and egress happen
-/// at the per-user model gateway reached through a launcher-issued FD.
-fn post_action_turn(
-    provider: &ProviderConnection,
-    body: Value,
-    remaining: &dyn Fn() -> Option<Duration>,
-    trace: tilo_model_gateway::PlanTrace,
-    live: &mut dyn FnMut(StreamSignal<'_>),
-) -> Result<String, AskError> {
-    let timeout = remaining()
-        .filter(|left| !left.is_zero())
-        .ok_or_else(|| AskError::Failed("the call timed out".into()))?
-        .min(MAX_TURN_TIME);
-    let began = ui::time::now();
-    let mut scanners: BTreeMap<u64, plan_stream::PlanArgumentsScanner> = BTreeMap::new();
-    tilo_model_gateway::plan_streaming_deltas(
-        &provider.selection.profile_id,
-        &provider.selection.model.id,
-        body,
-        timeout,
-        Some(trace),
-        &mut |event, output| {
-            if event == tilo_model_gateway::EVENT_TOOL_CALL_DELTA {
-                stream_plan_delta(&mut scanners, output, live);
-                return;
-            }
-            tracing::debug!(
-                event,
-                turn = trace.turn,
-                at_ms = began.elapsed().as_millis() as u64,
-                "model tool call complete"
-            );
-            if event == tilo_model_gateway::EVENT_TOOL_CALL
-                && let Ok(call) = serde_json::from_str::<Value>(output)
-                && let Some(name) = call.get("name").and_then(Value::as_str)
-            {
-                live(StreamSignal::ToolCall(name));
-            }
-        },
-    )
-    .map_err(|error| AskError::Failed(error.to_string()))
-}
-
 // ---------------------------------------------------------------------------
 // Streamed loop turns
 // ---------------------------------------------------------------------------
 
 /// One event of a streamed loop turn, in arrival order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TurnEvent {
+    Neutral(agent_provider_config::protocol::StreamEvent),
     /// An intermediate gateway frame: `event` is
     /// [`tilo_model_gateway::EVENT_TOOL_CALL_DELTA`] or
     /// [`tilo_model_gateway::EVENT_TOOL_CALL`], `output` its JSON.
-    Frame { event: String, output: String },
+    Frame {
+        event: String,
+        output: String,
+    },
     /// The turn is over: the assembled provider body, or why it failed.
     Finished(Result<String, String>),
 }
@@ -967,25 +1081,42 @@ impl TurnTransport for GatewayTurns {
                 let tx = tx.clone();
                 let marks = Arc::clone(&marks);
                 move || {
-                    let result = tilo_model_gateway::plan_streaming_deltas(
-                        &profile_id,
-                        &model_id,
-                        request.body,
-                        request.timeout,
-                        request.trace,
-                        &mut |event, output| {
-                            let _ = tx.send(TurnEvent::Frame {
-                                event: event.to_owned(),
-                                output: output.to_owned(),
-                            });
-                        },
-                    );
+                    let result = if let Ok(neutral) = serde_json::from_value::<
+                        agent_provider_config::protocol::ModelRequest,
+                    >(request.body.clone())
+                    {
+                        let mut previews = NeutralPreviews::default();
+                        tilo_model_gateway::complete_streaming(
+                            &profile_id,
+                            &model_id,
+                            neutral,
+                            request.timeout,
+                            &mut |event| {
+                                let _ = tx.send(TurnEvent::Neutral(event.clone()));
+                                if let Some(output) = previews.frame(event) {
+                                    let _ = tx.send(TurnEvent::Frame {
+                                        event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                                        output,
+                                    });
+                                }
+                            },
+                        )
+                        .map(|response| serde_json::json!(response).to_string())
+                        .inspect_err(|error| {
+                            let _ = tx.send(TurnEvent::Neutral(
+                                agent_provider_config::protocol::StreamEvent::Failed {
+                                    error: error.model_error(),
+                                },
+                            ));
+                        })
+                        .map_err(|error| error.to_string())
+                    } else {
+                        Err("invalid provider-neutral model request".into())
+                    };
                     // The loop hears the turn is over first; the marks held
                     // while it ran (round trips to the gateway) follow.
                     marks.plan_over(ticket);
-                    let _ = tx.send(TurnEvent::Finished(
-                        result.map_err(|error| error.to_string()),
-                    ));
+                    let _ = tx.send(TurnEvent::Finished(result));
                     marks.release(ticket);
                 }
             });
@@ -999,17 +1130,167 @@ impl TurnTransport for GatewayTurns {
     }
 }
 
-/// One conversation of the discover → invoke → observe loop, in the
-/// provider's own dialect.
+/// Provider-neutral history for the discover → invoke → observe loop.
 #[derive(Clone, Debug)]
 pub struct Conversation {
+    history: agent_provider_config::protocol::Conversation,
+    directions: Vec<(usize, String)>,
+    first: Option<FirstTurn>,
+    #[cfg(test)]
+    legacy: Option<LegacyConversation>,
+}
+
+impl Conversation {
+    /// Compatibility constructor; provider selection belongs to the gateway.
+    pub fn new(
+        protocol: agent_provider_config::ProviderProtocol,
+        model: &str,
+        system: &str,
+        first: &FirstTurn,
+    ) -> Self {
+        let _ = (protocol, model);
+        let conversation = Self::neutral_first(system, first);
+        #[cfg(test)]
+        let conversation = Self {
+            legacy: Some(LegacyConversation::new(protocol, model, system, first)),
+            ..conversation
+        };
+        conversation
+    }
+
+    pub fn neutral_first(system: &str, first: &FirstTurn) -> Self {
+        Self {
+            first: Some(first.clone()),
+            ..Self::neutral(system, &first.text())
+        }
+    }
+
+    pub fn neutral(system: &str, user_turn: &str) -> Self {
+        Self {
+            history: agent_provider_config::protocol::Conversation::new(system, user_turn),
+            directions: Vec::new(),
+            first: None,
+            #[cfg(test)]
+            legacy: None,
+        }
+    }
+
+    pub fn streams(&self) -> bool {
+        #[cfg(test)]
+        if let Some(legacy) = &self.legacy {
+            return legacy.streams();
+        }
+        true
+    }
+
+    pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
+        #[cfg(test)]
+        if let Some(legacy) = &self.legacy {
+            return legacy.body(tools);
+        }
+        let mut request = self.history.request(tools.to_vec(), 4096);
+        if let Some(first) = &self.first {
+            first.apply_to(&mut request);
+        }
+        for (offset, (index, text)) in self.directions.iter().enumerate() {
+            request.messages.insert(
+                index + offset,
+                agent_provider_config::protocol::Message::text(
+                    agent_provider_config::protocol::Role::User,
+                    text,
+                ),
+            );
+        }
+        serde_json::json!(request)
+    }
+
+    /// Validate the complete response before any tools may execute.
+    ///
+    /// # Errors
+    /// Rejects malformed, truncated, empty or replayed tool batches.
+    pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
+        #[cfg(test)]
+        if let Some(legacy) = &self.legacy {
+            return legacy.calls(body);
+        }
+        let response: agent_provider_config::protocol::ModelResponse =
+            serde_json::from_str(body).map_err(|_| "invalid gateway completion".to_string())?;
+        let calls = self
+            .history
+            .validate_response(&response)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if calls.is_empty() {
+            return Err("the model called no tool".into());
+        }
+        tools::validate_loop_calls(&calls)?;
+        Ok((serde_json::json!(response), calls))
+    }
+
+    /// Append a validated response and its ordered results atomically.
+    ///
+    /// # Errors
+    /// Rejects malformed responses, mismatched results and consumed call IDs.
+    pub fn push(&mut self, assistant: Value, results: Vec<(String, String)>) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            legacy.push(assistant, results);
+            return Ok(());
+        }
+        let response = serde_json::from_value(assistant)
+            .map_err(|_| "invalid gateway completion".to_string())?;
+        let results = results
+            .into_iter()
+            .map(
+                |(call_id, content)| agent_provider_config::protocol::ToolResult {
+                    call_id,
+                    content,
+                    is_error: false,
+                },
+            )
+            .collect();
+        self.history
+            .push(response, results)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn push_user(&mut self, text: &str) {
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            legacy.push_user(text);
+            return;
+        }
+        self.directions
+            .push((self.history.messages().len(), text.into()));
+    }
+
+    pub fn len(&self) -> usize {
+        #[cfg(test)]
+        if let Some(legacy) = &self.legacy {
+            return legacy.messages.len();
+        }
+        self.history.messages().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// One conversation of the discover → invoke → observe loop, in the
+/// provider's own dialect.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct LegacyConversation {
     dialect: Dialect,
     model: String,
     system: String,
     messages: Vec<Value>,
 }
 
-impl Conversation {
+#[cfg(test)]
+impl LegacyConversation {
     pub fn new(
         protocol: agent_provider_config::ProviderProtocol,
         model: &str,
@@ -1032,9 +1313,15 @@ impl Conversation {
         }
     }
 
+    /// Whether the scripted legacy transport streams argument previews.
+    pub fn streams(&self) -> bool {
+        self.dialect == Dialect::OpenAi
+    }
+
     /// The request for the next turn, offering `tools` (Anthropic-shaped
     /// definitions, re-enveloped for the `OpenAI` dialect).
-    pub fn body(&self, tools: &Value) -> Value {
+    pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
+        let tools = serde_json::json!(tools);
         match self.dialect {
             Dialect::Anthropic => serde_json::json!({
                 "model": self.model,
@@ -1047,7 +1334,7 @@ impl Conversation {
                 "model": self.model,
                 "max_completion_tokens": 4096,
                 "messages": self.messages,
-                "tools": openai_tools(tools),
+                "tools": openai_tools(&tools),
                 "tool_choice": "required",
             }),
         }
@@ -1063,6 +1350,7 @@ impl Conversation {
             Dialect::Anthropic => anthropic_calls(body)?,
             Dialect::OpenAi => openai_calls(body)?,
         };
+        tools::validate_loop_calls(&calls)?;
         if calls.is_empty() {
             return Err("the model called no tool".into());
         }
@@ -1121,6 +1409,39 @@ pub enum StreamSignal<'a> {
         text: &'a str,
         done: bool,
     },
+}
+
+/// Adapt neutral deltas to the existing presentation scanner. Providers may
+/// supply the name only on the first delta; retain it for subsequent chunks.
+#[derive(Default)]
+struct NeutralPreviews {
+    names: BTreeMap<u32, String>,
+}
+
+impl NeutralPreviews {
+    fn frame(&mut self, event: &agent_provider_config::protocol::StreamEvent) -> Option<String> {
+        let agent_provider_config::protocol::StreamEvent::ToolCallDelta {
+            index,
+            id,
+            name,
+            arguments,
+        } = event
+        else {
+            return None;
+        };
+        if let Some(name) = name {
+            self.names.insert(*index, name.clone());
+        }
+        Some(
+            serde_json::json!({
+                "index": index,
+                "id": id,
+                "name": self.names.get(index),
+                "delta": arguments,
+            })
+            .to_string(),
+        )
+    }
 }
 
 /// Feed one `tool_call_delta` frame of a `plan` or `invoke` call to the
@@ -1189,6 +1510,123 @@ mod tests {
     use crate::surface::Offer;
     use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
     use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
+
+    #[test]
+    fn managed_conversations_use_neutral_requests_and_ordered_results() {
+        use agent_provider_config::protocol::{Content, Message, ModelResponse, Role, StopReason};
+        let mut conversation = Conversation::neutral("system", "user");
+        let tools = tools::typed_loop_definitions();
+        let request = conversation.body(&tools);
+        assert!(request.get("model").is_none());
+        assert!(request.get("max_tokens").is_none());
+        assert_eq!(request["max_output_tokens"], 4096);
+        assert_eq!(request["tools"][3]["name"], tools::INVOKE);
+        let response = ModelResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![Content::ToolCall(ToolCall {
+                    id: "call-a".into(),
+                    name: tools::LIST_APPLICATIONS.into(),
+                    input: serde_json::json!({}),
+                    extra_content: None,
+                })],
+            },
+            stop_reason: StopReason::ToolCalls,
+            usage: agent_provider_config::protocol::Usage::default(),
+        };
+        let (assistant, calls) = conversation
+            .calls(&serde_json::json!(response).to_string())
+            .unwrap();
+        assert_eq!(calls[0].id, "call-a");
+        conversation
+            .push(
+                assistant,
+                vec![("call-a".into(), "visible applications".into())],
+            )
+            .unwrap();
+        let next = conversation.body(&tools);
+        assert_eq!(next["messages"][3]["content"][0]["call_id"], "call-a");
+        assert!(
+            conversation
+                .calls(&serde_json::json!(response).to_string())
+                .is_err(),
+            "consumed call ids cannot be replayed"
+        );
+    }
+
+    #[test]
+    fn neutral_history_preserves_catalogue_blocks_and_authenticated_steering() {
+        let first = FirstTurn {
+            operations: "stable catalogue".into(),
+            task: "private instruction".into(),
+        };
+        let mut conversation = Conversation::neutral_first("system", &first);
+        conversation.push_user("authenticated direction");
+        let request = conversation.body(&tools::typed_loop_definitions());
+        assert_eq!(
+            request["messages"][1]["content"][0]["text"],
+            "stable catalogue"
+        );
+        assert_eq!(
+            request["messages"][1]["content"][1]["text"],
+            "private instruction"
+        );
+        assert_eq!(request["messages"][2]["role"], "user");
+        assert_eq!(
+            request["messages"][2]["content"][0]["text"],
+            "authenticated direction"
+        );
+        assert_eq!(
+            request["tools"][3]["input_schema"]["properties"][tools::INVOKE_STANDALONE]["type"],
+            "boolean"
+        );
+    }
+
+    #[test]
+    fn neutral_stream_previews_retain_names_and_never_supply_calls() {
+        use agent_provider_config::protocol::StreamEvent;
+        let mut previews = NeutralPreviews::default();
+        let first = previews
+            .frame(&StreamEvent::ToolCallDelta {
+                index: 0,
+                id: Some("a".into()),
+                name: Some(tools::INVOKE.into()),
+                arguments: "{\"operation\":\"write\",".into(),
+            })
+            .unwrap();
+        let next = previews
+            .frame(&StreamEvent::ToolCallDelta {
+                index: 0,
+                id: None,
+                name: None,
+                arguments: "\"parameters\":{\"text\":\"preview\"}}".into(),
+            })
+            .unwrap();
+        let mut scanners = BTreeMap::new();
+        let mut saw_preview = false;
+        for frame in [first, next] {
+            stream_plan_delta(&mut scanners, &frame, &mut |signal| {
+                if matches!(
+                    signal,
+                    StreamSignal::CallArgument {
+                        text: "preview",
+                        ..
+                    }
+                ) {
+                    saw_preview = true;
+                }
+            });
+        }
+        assert!(saw_preview);
+        assert!(
+            previews
+                .frame(&StreamEvent::Failed {
+                    error: agent_provider_config::protocol::ModelError::invalid("reset"),
+                })
+                .is_none()
+        );
+        assert!(Conversation::neutral("system", "user").streams());
+    }
 
     #[test]
     fn live_tool_transcript_selects_an_arbitrary_typed_app_action() {
@@ -1292,8 +1730,10 @@ mod tests {
         }}]}).to_string();
         let (assistant, calls) = conversation.calls(&body).unwrap();
         assert_eq!(calls.len(), 1);
-        conversation.push(assistant, vec![("call_1".into(), "observed result".into())]);
-        let next = conversation.body(&serde_json::json!([]));
+        conversation
+            .push(assistant, vec![("call_1".into(), "observed result".into())])
+            .unwrap();
+        let next = conversation.body(&[]);
         assert_eq!(
             next["messages"][2]["reasoning_content"],
             "provider-authored thought"
@@ -1308,7 +1748,7 @@ mod tests {
         );
         assert!(
             !fresh
-                .body(&serde_json::json!([]))
+                .body(&[])
                 .to_string()
                 .contains("provider-authored thought")
         );
@@ -1320,7 +1760,7 @@ mod tests {
         );
         assert!(
             !other_dialect
-                .body(&serde_json::json!([]))
+                .body(&[])
                 .to_string()
                 .contains("reasoning_content")
         );

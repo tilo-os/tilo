@@ -521,8 +521,22 @@ fn auth_fields_edit_the_request() {
         },
         "the record holds the auth scheme and username, with no credential"
     );
+    let first_reference = app.state().request.auth.reference;
+    assert!(first_reference.starts_with("request-auth/"));
     let saved = app.read_document(|doc| doc.clone().save());
     assert!(!saved.windows(6).any(|window| window == b"secret"));
+    app.effect(&ApiTesterEffect::SetCredential {
+        secret: "replacement-credential".into(),
+    })
+    .unwrap();
+    app.settle();
+    assert_ne!(app.state().request.auth.reference, first_reference);
+    let saved = app.read_document(|doc| doc.clone().save());
+    assert!(
+        !saved
+            .windows(22)
+            .any(|window| window == b"replacement-credential")
+    );
     app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::ApiKey)).unwrap())
         .unwrap();
     app.invoke(Invoke::edit(&auth.header.replace("X-Api-Key")).unwrap())

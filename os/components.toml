@@ -309,11 +309,13 @@ name = "model-gateway"
 kind = "userspace"
 scope = "session"
 packages = ["tilo-model-gateway"]
-bins = ["tilo-model-gateway"]
+bins = ["tilo-model-gateway", "tilo-model-http"]
+features = ["tilo-model-gateway/local-models"]
 user_units = ["tilo-model-gateway.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
+  { from = "tilo-model-http", to = "/usr/bin/tilo-model-http", mode = "0755" },
 ]
 
 [[component]]

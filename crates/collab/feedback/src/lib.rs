@@ -15,7 +15,7 @@ mod review;
 mod test_store;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
-pub use composer::{Composer, Consent, FeedbackHost};
+pub use composer::{Composer, Consent, FeedbackHost, Subject};
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};
 pub use outbox::{DeliveryState, Outbox};
 pub use review::{Draft, Preview};

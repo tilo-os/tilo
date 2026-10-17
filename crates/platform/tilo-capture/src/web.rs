@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::{
     AudioSource, CameraRequest, CaptureError, CaptureState, Device, DeviceKind, Frame,
-    MicrophoneRequest, ScreenRequest, VideoSource, valid_rgba_frame,
+    MicrophoneRequest, ScreenRequest, VideoSource, Wake, valid_rgba_frame,
 };
 
 #[wasm_bindgen(module = "/web/tilo-capture.mjs")]
@@ -40,6 +40,8 @@ extern "C" {
     fn frame_height(this: &TiloCaptureVideo) -> u32;
     #[wasm_bindgen(method)]
     fn close(this: &TiloCaptureVideo);
+    #[wasm_bindgen(method, js_name = onChange)]
+    fn on_change(this: &TiloCaptureVideo, callback: &Closure<dyn Fn()>);
 
     type TiloCaptureAudio;
     #[wasm_bindgen(constructor)]
@@ -90,7 +92,8 @@ pub(crate) fn devices(kind: DeviceKind) -> Vec<Device> {
         .collect()
 }
 
-struct Video(TiloCaptureVideo);
+/// A page capture, and the callback its status changes call while it runs.
+struct Video(TiloCaptureVideo, Option<Closure<dyn Fn()>>);
 
 impl VideoSource for Video {
     fn state(&mut self) -> CaptureState {
@@ -110,6 +113,13 @@ impl VideoSource for Video {
             rgba,
         })
     }
+
+    fn notify(&mut self, wake: Wake) -> bool {
+        let callback = Closure::<dyn Fn()>::new(move || wake());
+        self.0.on_change(&callback);
+        self.1 = Some(callback);
+        true
+    }
 }
 
 impl Drop for Video {
@@ -119,23 +129,23 @@ impl Drop for Video {
 }
 
 pub(crate) fn open_camera(request: &CameraRequest) -> Result<Box<dyn VideoSource>, CaptureError> {
-    Ok(Box::new(Video(TiloCaptureVideo::new(
-        false,
-        request.device.as_deref().unwrap_or(""),
-        request.width,
-        request.height,
-        false,
-    ))))
+    Ok(Box::new(Video(
+        TiloCaptureVideo::new(
+            false,
+            request.device.as_deref().unwrap_or(""),
+            request.width,
+            request.height,
+            false,
+        ),
+        None,
+    )))
 }
 
 pub(crate) fn open_screen(request: ScreenRequest) -> Result<Box<dyn VideoSource>, CaptureError> {
-    Ok(Box::new(Video(TiloCaptureVideo::new(
-        true,
-        "",
-        0,
-        0,
-        request.cursor,
-    ))))
+    Ok(Box::new(Video(
+        TiloCaptureVideo::new(true, "", 0, 0, request.cursor),
+        None,
+    )))
 }
 
 struct Audio(TiloCaptureAudio);

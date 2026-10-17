@@ -11,9 +11,9 @@ use std::io::Cursor;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use crate::{NO_SEGMENTATION_MODEL, SubjectMatte, VisionImage};
 use base64::Engine as _;
 use tilo_lock::MutexRecover as _;
-use tilo_model_gateway::{NO_SEGMENTATION_MODEL, SubjectMatte, VisionImage};
 use tilo_segment::{Family, Picture, SubjectModel};
 
 /// The longest side of a picture the gateway decodes; callers send at most
@@ -54,7 +54,7 @@ fn threads() -> usize {
 
 /// Find the subject of `image` (see the module docs).
 pub fn segment(image: &VisionImage) -> Result<String, String> {
-    crate::validate_vision_image(image)?;
+    super::validate_vision_image(image)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&image.data_base64)
         .map_err(|_| "the picture is not valid base64".to_string())?;

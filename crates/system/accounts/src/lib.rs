@@ -93,6 +93,12 @@ pub use secrets::{
     CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
     SecretItem, SecretItemKind, SecretStore,
 };
+pub mod service_credentials;
+#[cfg(test)]
+mod service_credentials_tests;
+pub use service_credentials::{
+    AccountCredentials, CredentialRef, ServiceAuthorization, ServiceCredentials,
+};
 #[cfg(feature = "person")]
 pub mod person;
 pub mod status;

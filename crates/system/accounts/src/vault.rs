@@ -14,9 +14,11 @@
 //! explicit-root stores. Existing private plaintext keys migrate only after
 //! authenticated restoration; unavailable protected keys never fall back.
 //! On a Linux desktop session the symmetric key is held by the freedesktop
-//! Secret Service through `secret-tool`; it is not stored beside the
-//! ciphertext. Headless/test environments without Secret Service use an
-//! owner-only local key and can report that weaker custody to their caller.
+//! Secret Service through `tilo-secrets`; it is not stored beside the
+//! ciphertext. New default stores refuse unavailable protected custody rather
+//! than silently creating a local key. Existing owner-only local keys remain
+//! readable for recovery and migration; [`SecretVault::open_in`] explicitly
+//! opts into local custody for headless recovery and tests.
 //!
 //! Failed loads are recorded for callers and prevent saves until recovery and
 //! reopen. Saves revalidate existing ciphertext before replacement; a missing
@@ -50,7 +52,7 @@ pub struct Secret {
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Secret(<private credentials>)")
+        f.debug_struct("Secret").finish_non_exhaustive()
     }
 }
 
@@ -80,6 +82,9 @@ const FORMAT: VaultFormat = VaultFormat {
     dpapi_entropy: b"Tilo Accounts vault key v1",
 };
 
+/// Original and staged replacement per credential, for conflict-checked saves.
+type PendingEdits = BTreeMap<String, (Option<Secret>, Option<Secret>)>;
+
 /// The encrypted, per-[`AccountId`] credential store. Held in memory after
 /// [`SecretVault::open`]; mutations are staged and written by [`SecretVault::save`].
 #[derive(Debug)]
@@ -92,6 +97,10 @@ pub struct SecretVault {
     page: Option<tilo_files::Dir>,
     /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
+    // Explicit edits merge into the latest inventory while the write lock is held.
+    pending: std::sync::Mutex<PendingEdits>,
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    page_in_flight: std::sync::Mutex<Option<PendingEdits>>,
     custody: SecretCustody,
     load_error: Option<String>,
     read_only: bool,
@@ -115,7 +124,7 @@ impl SecretVault {
         match crate::config_root() {
             Some(root) => {
                 let dir = crate::vault_dir_in(&root);
-                Self::open_at(dir, SecretCustody::for_session())
+                Self::open_session_at(dir, SecretCustody::for_session())
             }
             None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
                 Ok(page) => Self::open_page(page),
@@ -123,6 +132,9 @@ impl SecretVault {
                     dir: PathBuf::from("accounts/vault"),
                     page: None,
                     entries: BTreeMap::new(),
+                    pending: std::sync::Mutex::default(),
+                    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                    page_in_flight: std::sync::Mutex::default(),
                     custody: explicit_root_custody(),
                     read_only: false,
                     load_error: Some(format!("user config directory unavailable: {error}")),
@@ -160,6 +172,9 @@ impl SecretVault {
                 dir: PathBuf::new(),
                 page: None,
                 entries: BTreeMap::new(),
+                pending: std::sync::Mutex::default(),
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                page_in_flight: std::sync::Mutex::default(),
                 custody: explicit_root_custody(),
                 read_only: true,
                 load_error: Some("native credential custody unavailable".into()),
@@ -176,13 +191,20 @@ impl SecretVault {
             dir,
             page: None,
             entries,
+            pending: std::sync::Mutex::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            page_in_flight: std::sync::Mutex::default(),
             custody,
             load_error,
             read_only: true,
         }
     }
 
-    fn open_page(page: tilo_files::Dir) -> Self {
+    /// Open the encrypted vault in a supplied profile-bound config directory.
+    /// Browser hosts must load that directory's file mirror and secret custody
+    /// before opening. The Dir capability, not an app-chosen user label, selects
+    /// the inventory; native key custody is unaffected.
+    pub fn open_page(page: tilo_files::Dir) -> Self {
         let (entries, load_error) = match load_page_entries(&page) {
             Ok(entries) => (entries, None),
             Err(error) => {
@@ -194,10 +216,34 @@ impl SecretVault {
             dir: PathBuf::from("accounts/vault"),
             page: Some(page),
             entries,
+            pending: std::sync::Mutex::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            page_in_flight: std::sync::Mutex::default(),
             custody: SecretCustody::System,
             load_error,
             read_only: false,
         }
+    }
+
+    /// Compatibility local keys are retained, but lack of a keyring must not
+    /// silently choose weaker custody for a new default store.
+    fn open_session_at(dir: PathBuf, custody: SecretCustody) -> Self {
+        if custody == SecretCustody::LocalFile && !dir.join("vault.key").exists() {
+            return Self {
+                dir,
+                page: None,
+                entries: BTreeMap::new(),
+                pending: std::sync::Mutex::default(),
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                page_in_flight: std::sync::Mutex::default(),
+                custody,
+                read_only: false,
+                load_error: Some(
+                    "protected credential storage unavailable; restore the system keyring or explicitly open a recovery store".into(),
+                ),
+            };
+        }
+        Self::open_at(dir, custody)
     }
 
     fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
@@ -212,6 +258,9 @@ impl SecretVault {
             dir,
             page: None,
             entries,
+            pending: std::sync::Mutex::default(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            page_in_flight: std::sync::Mutex::default(),
             custody,
             load_error,
             read_only: false,
@@ -229,7 +278,14 @@ impl SecretVault {
 
     /// Store (or replace) `secret` for `id`. In-memory until [`Self::save`].
     pub fn put(&mut self, id: &AccountId, secret: &Secret) {
-        self.entries.insert(id.as_str().to_string(), secret.clone());
+        let original = self.entries.insert(id.as_str().to_string(), secret.clone());
+        let change = self
+            .pending
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.as_str().to_string())
+            .or_insert((original, None));
+        change.1 = Some(secret.clone());
     }
 
     /// Fetch the secret for `id`, if the vault holds one.
@@ -253,7 +309,16 @@ impl SecretVault {
 
     /// Remove the secret for `id`, returning whether one existed. In-memory until [`Self::save`].
     pub fn remove(&mut self, id: &AccountId) -> bool {
-        self.entries.remove(id.as_str()).is_some()
+        let original = self.entries.remove(id.as_str());
+        let existed = original.is_some();
+        let change = self
+            .pending
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id.as_str().to_string())
+            .or_insert((original, None));
+        change.1 = None;
+        existed
     }
 
     /// Whether the vault currently holds no secrets.
@@ -287,41 +352,130 @@ impl SecretVault {
                 "vault recovery required; restore access and reopen: {error}"
             ));
         }
-        if let Some(page) = &self.page {
-            return self.save_page(page);
+        if self.page.is_some() {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            return self.save_page();
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            return Err("page credential storage is only available in a browser".into());
         }
-        // Revalidate the on-disk vault before replacing it, including failures
-        // that appeared after this instance was opened.
-        load_entries(&self.dir, self.custody)?;
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create vault directory: {error}"))?;
+        let _lock = advisory_lock::FileLock::open(
+            &self.dir.join("vault.lock"),
+            advisory_lock::LockMode::Exclusive,
+        )
+        .map_err(|error| format!("could not lock credential vault: {error}"))?;
+        let entries = self.merge_pending(load_entries(&self.dir, self.custody)?)?;
         let key = load_or_create_key(&self.dir, self.custody)
             .ok_or_else(|| "no vault key is available".to_string())?;
         let plaintext = Zeroizing::new(
-            serde_json::to_vec(&self.entries)
+            serde_json::to_vec(&entries)
                 .map_err(|error| format!("could not serialize credential vault: {error}"))?,
         );
         let blob = seal(&key, &plaintext)
             .ok_or_else(|| "credential vault encryption failed".to_string())?;
         tilo_files::native::atomic::write(&self.dir.join("vault.enc"), &blob)
-            .map_err(|error| format!("could not write credential vault: {error}"))
+            .map_err(|error| format!("could not write credential vault: {error}"))?;
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        Ok(())
     }
 }
 
 impl SecretVault {
-    fn save_page(&self, page: &tilo_files::Dir) -> Result<(), String> {
-        load_page_entries(page)?;
-        let key = FORMAT
-            .load_or_create_system_key(page_vault_exists(page))
-            .ok_or_else(|| "no vault key is available".to_string())?;
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&self.entries)
-                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+    fn merge_pending(
+        &self,
+        entries: BTreeMap<String, Secret>,
+    ) -> Result<BTreeMap<String, Secret>, String> {
+        merge_edits(
+            entries,
+            &self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn save_page(&self) -> Result<(), String> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut in_flight = self
+            .page_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let submitted = in_flight.get_or_insert_with(|| pending.clone()).clone();
+        // Identify the requested result, not the freshly loaded baseline. A
+        // synchronous facade may reopen its vault on each retry, after the
+        // committed file has already refreshed the mirror.
+        let replacements: BTreeMap<_, _> = submitted
+            .iter()
+            .map(|(id, (_, replacement))| (id, replacement))
+            .collect();
+        let operation = Zeroizing::new(
+            serde_json::to_string(&replacements)
+                .map_err(|_| "could not encode credential edits")?,
         );
-        let blob = seal(&key, &plaintext)
-            .ok_or_else(|| "credential vault encryption failed".to_string())?;
-        tilo_files::blocking::write_atomic(page, &page_vault(), &blob)
-            .map_err(|error| format!("could not write credential vault: {error}"))
+        let edits = submitted.clone();
+        let page = self.page.as_ref().ok_or("page vault unavailable")?;
+        let committed = tilo_files::web::update_atomic_blocking(
+            page,
+            &page_vault(),
+            &operation,
+            move |blob| async move {
+                let key = FORMAT
+                    .load_or_create_page_key(blob.is_some())
+                    .await
+                    .map_err(tilo_files::FsError::Io)?;
+                let entries = decode_page_entries(blob.as_deref(), &key)
+                    .and_then(|entries| merge_edits(entries, &edits))
+                    .map_err(tilo_files::FsError::Io)?;
+                let plaintext = Zeroizing::new(
+                    serde_json::to_vec(&entries)
+                        .map_err(|error| tilo_files::FsError::Io(error.to_string()))?,
+                );
+                seal(&key, &plaintext).ok_or_else(|| {
+                    tilo_files::FsError::Io("credential vault encryption failed".into())
+                })
+            },
+        );
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(error) => {
+                // Keep the immutable snapshot for retry: an I/O failure may
+                // follow a visible replacement. Reestablish its durable result
+                // before rebasing any edits made while it was in flight.
+                return Err(format!("credential storage failed: {error}"));
+            }
+        };
+        if !committed {
+            return Err("credential save pending; retry after browser storage completes".into());
+        }
+        *in_flight = None;
+        drop(in_flight);
+        for (id, (_, saved)) in submitted {
+            if let Some((original, replacement)) = pending.get_mut(&id) {
+                if replacement == &saved {
+                    pending.remove(&id);
+                } else {
+                    // The user edited again while this snapshot was committing.
+                    // Retain the newer edit, based on the acknowledged value.
+                    *original = saved;
+                }
+            }
+        }
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err("credential save pending; retry remaining edits".into())
+        }
     }
 }
 
@@ -329,12 +483,20 @@ fn page_vault() -> tilo_files::VPath {
     tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
 }
 
-fn page_vault_exists(page: &tilo_files::Dir) -> bool {
-    tilo_files::blocking::metadata(page, &page_vault()).is_ok()
-}
-
 /// As [`load_entries`], for a vault in page storage.
 fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        // An unreleased browser implementation stored an origin-wide inventory.
+        // It has no profile provenance: never import it into the current user.
+        // Retain it for explicit recovery, without making it authoritative.
+        let store = tilo_secrets::SecretStore::for_app("tilo.accounts");
+        if matches!(store.get_blocking("vault.entries"), Ok(Some(_))) {
+            tracing::warn!(
+                "unassigned origin-wide account inventory retained in tilo-secrets tilo.accounts/vault.entries; recover explicitly into the verified owner's profile"
+            );
+        }
+    }
     let blob = match tilo_files::blocking::read(page, &page_vault()) {
         Ok(blob) => blob,
         Err(tilo_files::FsError::NotFound) => return Ok(BTreeMap::new()),
@@ -343,8 +505,18 @@ fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>,
     let key = FORMAT
         .load_or_create_system_key(true)
         .ok_or_else(|| "credential vault key unavailable".to_string())?;
+    decode_page_entries(Some(&blob), &key)
+}
+
+fn decode_page_entries(
+    blob: Option<&[u8]>,
+    key: &VaultKey,
+) -> Result<BTreeMap<String, Secret>, String> {
+    let Some(blob) = blob else {
+        return Ok(BTreeMap::new());
+    };
     let plaintext =
-        open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
+        open(key, blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
     serde_json::from_slice(&plaintext)
         .map_err(|_| "decrypted credential vault is invalid".to_string())
 }
@@ -378,6 +550,24 @@ fn load_entries_read_only(
         open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
     serde_json::from_slice(&plaintext)
         .map_err(|_| "decrypted credential vault is invalid".to_string())
+}
+
+fn merge_edits(
+    mut entries: BTreeMap<String, Secret>,
+    edits: &PendingEdits,
+) -> Result<BTreeMap<String, Secret>, String> {
+    for (id, (original, replacement)) in edits {
+        let current = entries.get(id);
+        if current != original.as_ref() && current != replacement.as_ref() {
+            return Err("credential changed concurrently; reopen and retry".into());
+        }
+        if let Some(secret) = replacement {
+            entries.insert(id.clone(), secret.clone());
+        } else {
+            entries.remove(id);
+        }
+    }
+    Ok(entries)
 }
 
 /// Read and authenticate existing entries, distinguishing absence from damage.
@@ -432,6 +622,25 @@ mod tests {
     use secret_vault::KEY_LEN;
     #[cfg(windows)]
     use std::time::Duration;
+
+    #[test]
+    fn page_inventory_writes_fail_closed_without_cross_page_transactions() {
+        let page = tilo_files::Dir::memory();
+        let mut first = SecretVault::open_page(page.clone());
+        let mut second = SecretVault::open_page(page.clone());
+        first.put(&AccountId::new("first"), &Secret::password("first-secret"));
+        second.put(
+            &AccountId::new("second"),
+            &Secret::password("second-secret"),
+        );
+        assert!(first.try_save().is_err());
+        assert!(second.try_save().is_err());
+        assert!(matches!(
+            tilo_files::blocking::read(&page, &page_vault()),
+            Err(tilo_files::FsError::NotFound)
+        ));
+        assert!(!first.pending.lock().unwrap().is_empty());
+    }
 
     fn local_file_key(dir: &Path) -> Option<VaultKey> {
         load_or_create_key(dir, SecretCustody::LocalFile)
@@ -668,6 +877,34 @@ mod tests {
         );
         assert_eq!(std::fs::read(&key).unwrap(), b"malformed");
         assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_protected_custody_does_not_create_a_default_local_key() {
+        let root = temp_root();
+        let dir = crate::vault_dir_in(&root);
+        let mut refused = SecretVault::open_session_at(dir.clone(), SecretCustody::LocalFile);
+        assert!(refused.recovery_error().is_some());
+        refused.put(&AccountId::from("a"), &Secret::password("secret"));
+        assert!(refused.try_save().is_err());
+        assert!(!dir.exists());
+
+        // Explicit recovery stores remain supported, and their existing data
+        // is still readable through the default compatibility path.
+        let mut recovery = SecretVault::open_in(&root);
+        recovery.put(&AccountId::from("a"), &Secret::password("secret"));
+        recovery.try_save().unwrap();
+        let reopened = SecretVault::open_session_at(dir, explicit_root_custody());
+        assert!(reopened.recovery_error().is_none());
+        assert_eq!(
+            reopened.get(&AccountId::from("a")).unwrap().password,
+            "secret"
+        );
+        assert_eq!(
+            format!("{:?}", Secret::password("sensitive-value")),
+            "Secret { .. }"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

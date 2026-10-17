@@ -69,7 +69,7 @@ pub enum SecretItemKind {
 
 /// One encrypted vault item. Even title, username, URLs and tags stay inside
 /// the authenticated ciphertext because this metadata is often sensitive.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretItem {
     pub id: SecretId,
     pub kind: SecretItemKind,
@@ -88,6 +88,14 @@ pub struct SecretItem {
     pub tags: BTreeSet<String>,
     pub created_unix: u64,
     pub updated_unix: u64,
+}
+
+impl std::fmt::Debug for SecretItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretItem")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SecretItem {
@@ -507,6 +515,9 @@ impl CredentialBroker {
     {
         validate_app_id(&request.app_id)?;
         validate_purpose(&request.purpose)?;
+        if let Some(error) = self.store.recovery_error() {
+            return Err(BrokerError::Storage(error.to_owned()));
+        }
         let item = self
             .store
             .get(&request.item_id)
@@ -692,7 +703,7 @@ fn random_index(bound: usize) -> Result<usize, BrokerError> {
     }
 }
 
-fn canonical_origin(input: &str) -> Result<String, BrokerError> {
+pub(crate) fn canonical_origin(input: &str) -> Result<String, BrokerError> {
     let trimmed = input.trim();
     if trimmed.is_empty()
         || trimmed.len() > MAX_ORIGIN_BYTES
@@ -745,6 +756,36 @@ mod tests {
     use super::*;
     fn root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("tilo-secret-store-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn broker_reports_custody_failure_without_prompting_or_hiding_existing_data() {
+        let root = root();
+        let mut store = SecretStore::open_in(&root);
+        let mut item = SecretItem::login("private-title", "private-user", "private-password");
+        store.put(&mut item).unwrap();
+        let debug = format!("{item:?}");
+        assert!(!debug.contains("private-"));
+        let sealed = crate::vault_dir_in(&root).join("vault.enc");
+        std::fs::write(&sealed, b"damaged existing ciphertext").unwrap();
+        let before = std::fs::read(&sealed).unwrap();
+        let mut broker = CredentialBroker::new(SecretStore::open_in(&root));
+        let request = AccessRequest {
+            app_id: "org.tilo.Browser".into(),
+            item_id: item.id,
+            purpose: "Sign in".into(),
+            origin: None,
+        };
+        assert!(matches!(
+            broker.request_existing(&request),
+            Err(BrokerError::Storage(_))
+        ));
+        assert!(matches!(
+            broker.request(&request, |_, _| panic!("damaged custody must not prompt")),
+            Err(BrokerError::Storage(_))
+        ));
+        assert_eq!(std::fs::read(sealed).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

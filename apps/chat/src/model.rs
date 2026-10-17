@@ -379,6 +379,9 @@ impl Message {
 /// be live would go on claiming it forever.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWork {
+    /// Provider output received through ordered presentation events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<crate::agent_stream::AgentStream>,
     pub state: AgentWorkState,
     /// Epoch seconds at which the agent entered `state`.
     pub since: i64,
@@ -535,6 +538,21 @@ impl AgentWork {
                 did: text(&update.did),
             },
             "refused" => AgentWorkState::Refused,
+            "provider_complete" => AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Complete,
+            },
+            "provider_truncated" => AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Truncated,
+            },
+            "provider_refused" => AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Refused,
+            },
+            "provider_cancelled" => AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Cancelled,
+            },
+            "provider_failed" => AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Failed,
+            },
             other => return Err(format!("`{other}` is not a state of an agent's work")),
         };
         let reasoning = match update.route.as_deref() {
@@ -576,6 +594,7 @@ impl AgentWork {
             since: 0,
             reasoning,
             trace,
+            stream: None,
         })
     }
 
@@ -591,6 +610,7 @@ impl AgentWork {
             since,
             reasoning: None,
             trace: Vec::new(),
+            stream: None,
         }
     }
 
@@ -627,10 +647,15 @@ impl AgentWork {
     /// story; an unfinished one is the agent's last word on it, which is not
     /// the same as a promise that more is coming.
     pub fn finished(&self) -> bool {
-        matches!(
-            self.state,
-            AgentWorkState::Done { .. } | AgentWorkState::Refused
-        )
+        self.stream
+            .as_ref()
+            .is_some_and(|stream| stream.finish.is_some())
+            || matches!(
+                self.state,
+                AgentWorkState::Done { .. }
+                    | AgentWorkState::Refused
+                    | AgentWorkState::ProviderFinished { .. }
+            )
     }
 }
 
@@ -656,6 +681,11 @@ pub enum AgentWorkState {
         did: String,
         /// What it is about, or empty when the request named no subject.
         about: String,
+    },
+    /// A provider turn ended. This says nothing about dispatched operations;
+    /// their outcomes remain in the trace, and only `Done` claims application.
+    ProviderFinished {
+        outcome: crate::agent_stream::AgentFinish,
     },
     /// The operation was applied.
     Done {

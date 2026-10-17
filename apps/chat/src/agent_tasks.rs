@@ -101,11 +101,35 @@ struct AgentTaskTurn {
     run_epoch: u64,
     revision: u64,
     text: String,
+    #[serde(default)]
     received_at: i64,
+    #[serde(default)]
+    presentation: Option<TaskTurnPresentation>,
     #[serde(default)]
     author: String,
     #[serde(default)]
     kind: String,
+}
+
+/// Wire-compatible with the shared, provider-neutral task snapshot. This is
+/// presentation only: neither Chat nor replay can dispatch anything from it.
+#[derive(Clone, Debug, Deserialize)]
+struct TaskTurnPresentation {
+    text: String,
+    #[serde(flatten)]
+    stream: crate::agent_stream::AgentStream,
+}
+
+impl TaskTurnPresentation {
+    fn valid(&self) -> bool {
+        !self.stream.run.is_empty()
+            && self.stream.run.len() <= 192
+            && !self.stream.run.chars().any(char::is_control)
+            && self.stream.progress.is_empty()
+            && self.text.len() <= 32 * 1024
+            && self.stream.reasoning.len() <= 16 * 1024
+            && self.stream.detail.len() <= 2 * 1024
+    }
 }
 
 impl AgentTaskView {
@@ -131,10 +155,16 @@ impl AgentTaskView {
         turns
             .into_iter()
             .map(|turn| {
-                let id = ui::tilo_resource::Id::from_raw(format!(
-                    "task-turn:{}:{}:{}:{}",
-                    turn.task_id, turn.run_epoch, turn.revision, turn.kind
-                ));
+                let id = ui::tilo_resource::Id::from_raw(match &turn.presentation {
+                    Some(presentation) => format!(
+                        "task-reply:{}:{}:{}",
+                        turn.task_id, turn.run_epoch, presentation.stream.run
+                    ),
+                    None => format!(
+                        "task-turn:{}:{}:{}:{}",
+                        turn.task_id, turn.run_epoch, turn.revision, turn.kind
+                    ),
+                });
                 let message = crate::record::Message {
                     channel: ui::tilo_resource::Id::from_raw(channel),
                     author: ui::tilo_resource::Atom(if turn.author.is_empty() {
@@ -142,7 +172,9 @@ impl AgentTaskView {
                     } else {
                         turn.author.clone()
                     }),
-                    text: if turn.kind == "agent-output" {
+                    text: if let Some(presentation) = &turn.presentation {
+                        presentation.text.clone()
+                    } else if turn.kind == "agent-output" {
                         crate::i18n::t_args(
                             "chat-agent-task-output",
                             &[("text", turn.text.clone().into())],
@@ -153,7 +185,25 @@ impl AgentTaskView {
                     ts: turn.received_at,
                     ..crate::record::Message::default()
                 };
-                crate::projection::message_row(&id, &message)
+                let mut row = crate::projection::message_row(&id, &message);
+                if let Some(presentation) = &turn.presentation {
+                    use crate::agent_stream::AgentFinish;
+                    use crate::model::{AgentWork, AgentWorkState};
+                    row.work = Some(AgentWork {
+                        stream: Some(presentation.stream.clone()),
+                        state: match presentation.stream.finish {
+                            None => AgentWorkState::Taken,
+                            Some(AgentFinish::Complete) => {
+                                AgentWorkState::Done { did: String::new() }
+                            }
+                            Some(_) => AgentWorkState::Refused,
+                        },
+                        since: turn.received_at,
+                        reasoning: None,
+                        trace: Vec::new(),
+                    });
+                }
+                row
             })
             .collect()
     }
@@ -196,13 +246,33 @@ impl AgentTaskView {
             })
     }
 
-    fn retain_turn(&mut self, turn: AgentTaskTurn) {
-        self.turns.retain(|known| {
-            !(known.task_id == turn.task_id
+    fn retain_turn(&mut self, mut turn: AgentTaskTurn) {
+        if turn.presentation.as_ref().is_some_and(|p| !p.valid()) {
+            return;
+        }
+        let same = |known: &AgentTaskTurn| {
+            known.task_id == turn.task_id
                 && known.run_epoch == turn.run_epoch
-                && known.revision == turn.revision
-                && known.kind == turn.kind)
-        });
+                && match (&known.presentation, &turn.presentation) {
+                    (Some(a), Some(b)) => a.stream.run == b.stream.run,
+                    (None, None) => known.revision == turn.revision && known.kind == turn.kind,
+                    _ => false,
+                }
+        };
+        let previous = self.turns.iter().find(|known| same(known));
+        if let Some(previous) = previous
+            && let (Some(a), Some(b)) = (&previous.presentation, &turn.presentation)
+            && (a.stream.sequence >= b.stream.sequence || a.stream.finish.is_some())
+        {
+            return;
+        }
+        let received_at = previous.map(|p| p.received_at);
+        self.turns.retain(|known| !same(known));
+        if turn.presentation.is_some()
+            && let Some(at) = received_at
+        {
+            turn.received_at = at;
+        }
         self.turns.push(turn);
     }
 
@@ -378,6 +448,7 @@ impl AgentTaskClient {
             text: "Review search actions. Keep the existing open action and show me what you find."
                 .into(),
             received_at: crate::demo::NOW,
+            presentation: None,
             author: String::new(),
             kind: String::new(),
         });
@@ -406,6 +477,7 @@ impl AgentTaskClient {
                 revision,
                 text: text.into(),
                 received_at: crate::demo::NOW + seconds,
+                presentation: None,
                 author: format!("agent:{agent}"),
                 kind: "agent-output".into(),
             });
@@ -416,6 +488,7 @@ impl AgentTaskClient {
             revision: 6,
             text: "Please check the narrow layout too, before making changes.".into(),
             received_at: crate::demo::NOW + 120,
+            presentation: None,
             author: String::new(),
             kind: String::new(),
         });
@@ -948,13 +1021,31 @@ impl AgentTaskClient {
         if let Some(conversation) = conversation.filter(|read| {
             read.task_id == *task_id
                 && read.run_epoch == *run_epoch
+                && read.turns.len() <= 1024
                 && read.turns.iter().all(|turn| {
                     turn.task_id == *task_id
                         && (turn.run_epoch == 0 || turn.run_epoch == *run_epoch)
+                        && turn.presentation.as_ref().is_none_or(|presentation| {
+                            presentation.valid()
+                                && turn.run_epoch == *run_epoch
+                                && *run_epoch > 0
+                                && turn.kind == "agent-output"
+                                && turn.author == format!("agent:{agent}")
+                        })
                 })
         }) {
-            view.turns.retain(|turn| {
-                turn.task_id != *task_id || (turn.run_epoch != 0 && turn.run_epoch != *run_epoch)
+            view.turns.retain(|known| {
+                conversation.turns.iter().any(|turn| {
+                    known.task_id == turn.task_id
+                        && known.run_epoch == turn.run_epoch
+                        && match (&known.presentation, &turn.presentation) {
+                            (Some(a), Some(b)) => a.stream.run == b.stream.run,
+                            (None, None) => {
+                                known.revision == turn.revision && known.kind == turn.kind
+                            }
+                            _ => false,
+                        }
+                })
             });
             for turn in conversation.turns {
                 view.retain_turn(turn);
@@ -998,6 +1089,7 @@ impl AgentTaskClient {
                 run_epoch: *run_epoch,
                 revision,
                 text: text.clone(),
+                presentation: None,
                 received_at: ui::clock::local_now().timestamp(),
                 author: String::new(),
                 kind: String::new(),
@@ -1037,6 +1129,7 @@ impl AgentTaskClient {
                 run_epoch: 0,
                 revision: 0,
                 text: instruction.clone(),
+                presentation: None,
                 received_at: ui::clock::local_now().timestamp(),
                 author: String::new(),
                 kind: String::new(),
@@ -1336,6 +1429,107 @@ mod tests {
             "Work update: Appended the requested paragraph."
         );
         assert_eq!(messages[2].text, "Work update: The document is updated.");
+    }
+
+    #[test]
+    fn typed_task_output_updates_one_reply_and_preserves_terminal_partial_output() {
+        let mut client = AgentTaskClient::new();
+        client.stage_capture("room", "scribe");
+        let purpose = Purpose::Conversation {
+            agent: "scribe".into(),
+            task_id: "task:review".into(),
+            run_epoch: 7,
+        };
+        let read = |sequence: u64, text: &str, finish: Option<&str>| {
+            succeeded(serde_json::json!({
+                "task_id":"task:review", "run_epoch":7, "turns":[{
+                    "task_id":"task:review", "run_epoch":7, "revision":sequence,
+                    "kind":"agent-output", "author":"agent:scribe", "text":"Readable fallback",
+                    "received_at":20,
+                    "presentation": {"run":"81:0", "sequence":sequence, "text":text,
+                        "reasoning":"Provider-exposed summary", "finish":finish,
+                        "detail":if finish.is_some() {"Partial output retained"} else {""}}
+                }]
+            }))
+        };
+        client.settle_invocation(&purpose, &read(1, "Par", None));
+        let first = client.views["scribe"].conversation_messages("conversation", "me");
+        let reply_id = first[0].id.clone();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "Par");
+        assert!(
+            first[0]
+                .work
+                .as_ref()
+                .unwrap()
+                .stream
+                .as_ref()
+                .unwrap()
+                .finish
+                .is_none()
+        );
+        for sequence in 2..150 {
+            client.settle_invocation(&purpose, &read(sequence, "Partial answer", None));
+        }
+        client.settle_invocation(&purpose, &read(150, "Partial answer", Some("truncated")));
+        // Replayed pages cannot rewind output or resurrect a completed turn.
+        client.settle_invocation(&purpose, &read(1, "Par", None));
+        client.settle_invocation(&purpose, &read(151, "Replacement", Some("complete")));
+        let messages = client.views["scribe"].conversation_messages("conversation", "me");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, reply_id);
+        assert_eq!(messages[0].text, "Partial answer");
+        assert!(!messages[0].edited);
+        let work = messages[0].work.as_ref().unwrap();
+        assert!(
+            work.trace.is_empty(),
+            "presentation cannot claim an executed action"
+        );
+        let stream = work.stream.as_ref().unwrap();
+        assert_eq!(stream.sequence, 150);
+        assert_eq!(stream.reasoning, "Provider-exposed summary");
+        assert_eq!(
+            stream.finish,
+            Some(crate::agent_stream::AgentFinish::Truncated)
+        );
+        assert_eq!(stream.detail, "Partial output retained");
+        // An oversized page is refused without replacing the retained reply.
+        client.settle_invocation(&purpose, &read(152, &"x".repeat(32 * 1024 + 1), None));
+        assert_eq!(
+            client.views["scribe"].conversation_messages("conversation", "me")[0].text,
+            "Partial answer"
+        );
+    }
+
+    #[test]
+    fn typed_task_output_requires_exact_epoch_and_agent_author() {
+        let mut client = AgentTaskClient::new();
+        client.stage_capture("room", "scribe");
+        let purpose = Purpose::Conversation {
+            agent: "scribe".into(),
+            task_id: "task:review".into(),
+            run_epoch: 7,
+        };
+        let before = client.views["scribe"].turns.len();
+        for (epoch, author, kind) in [
+            (0, "agent:scribe", "agent-output"),
+            (8, "agent:scribe", "agent-output"),
+            (7, "agent:other", "agent-output"),
+            (7, "agent:scribe", "direction"),
+        ] {
+            client.settle_invocation(
+                &purpose,
+                &succeeded(serde_json::json!({
+                    "task_id":"task:review", "run_epoch":7, "turns":[{
+                        "task_id":"task:review", "run_epoch":epoch, "revision":0,
+                        "author":author, "kind":kind, "text":"not trusted",
+                        "presentation":{"run":"7:0", "sequence":1, "text":"not trusted"}
+                    }]
+                })),
+            );
+            assert_eq!(client.views["scribe"].turns.len(), before);
+            assert_eq!(client.views["scribe"].receipt, AgentTaskReceipt::Refused);
+        }
     }
 
     #[test]

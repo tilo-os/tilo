@@ -1299,6 +1299,185 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
         .await;
 }
 
+async fn assert_authenticated_presentations_coalesce(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+) {
+    let presentation = |sequence| task_presentation(run, sequence);
+    let update = presentation_update;
+    let before = WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
+    let audits = before
+        .tasks
+        .iter()
+        .find(|task| task.id == f.task)
+        .unwrap()
+        .audit
+        .len();
+    let receipts = before.controls[&f.task].receipts.len();
+    let person = f.channel(99, false);
+    assert!(report(&person, run, update(presentation(0))).await.is_err());
+    let mut wrong_lease = run.clone();
+    wrong_lease.lease.push('x');
+    assert!(
+        report(agent, &wrong_lease, update(presentation(0)))
+            .await
+            .is_err()
+    );
+    for sequence in 0..140 {
+        report(agent, run, update(presentation(sequence)))
+            .await
+            .unwrap();
+    }
+    let snapshot =
+        WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
+    assert_eq!(
+        snapshot
+            .tasks
+            .iter()
+            .find(|task| task.id == f.task)
+            .unwrap()
+            .audit
+            .len(),
+        audits
+    );
+    assert_eq!(snapshot.controls[&f.task].receipts.len(), receipts);
+    assert_eq!(snapshot.controls[&f.task].presentations.len(), 1);
+    assert_ne!(
+        snapshot.controls[&f.task]
+            .presentations
+            .values()
+            .next()
+            .unwrap()
+            .received_at,
+        Some(-100),
+        "sender cannot mint the host's receipt time"
+    );
+    assert_eq!(
+        snapshot.controls[&f.task]
+            .presentations
+            .values()
+            .next()
+            .unwrap()
+            .text,
+        "Reply 139"
+    );
+}
+
+fn task_presentation(
+    run: &runtime_collab::TaskRunEnvelope,
+    sequence: u64,
+) -> runtime_collab::TaskPresentation {
+    runtime_collab::TaskPresentation {
+        run: format!("{}:0", run.run_id),
+        received_at: Some(-100), // Sender cannot backdate the reply.
+        sequence,
+        text: format!("Reply {sequence}"),
+        reasoning: "Provider-exposed summary".into(),
+        finish: None,
+        detail: String::new(),
+    }
+}
+
+fn presentation_update(value: runtime_collab::TaskPresentation) -> runtime_collab::TaskRunUpdate {
+    runtime_collab::TaskRunUpdate::Progress {
+        message: "Working".into(),
+        presentation: Some(value),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustion() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            assert_eq!(run.presentation_version, Some(1));
+            let presentation = |sequence| task_presentation(&run, sequence);
+            let update = presentation_update;
+            assert!(
+                report(&agent, &run, update(presentation(0))).await.is_err(),
+                "presentation requires accepted execution"
+            );
+            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
+                .await
+                .unwrap();
+            assert_authenticated_presentations_coalesce(&f, &agent, &run).await;
+            assert!(
+                report(&agent, &run, update(presentation(138)))
+                    .await
+                    .is_err()
+            );
+            let mut final_turn = presentation(140);
+            final_turn.finish = Some(runtime_collab::TaskPresentationFinish::Complete);
+            report(&agent, &run, update(final_turn)).await.unwrap();
+            assert!(
+                report(&agent, &run, update(presentation(141)))
+                    .await
+                    .is_err()
+            );
+            let mut second = presentation(0);
+            second.run = format!("{}:1", run.run_id);
+            second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
+            let second_id = second.run.clone();
+            report(&agent, &run, update(second)).await.unwrap();
+            let snapshot =
+                WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
+            let retained = &snapshot.controls[&f.task].presentations[&second_id];
+            assert_eq!(
+                retained.finish,
+                Some(runtime_collab::TaskPresentationFinish::Truncated)
+            );
+            assert!(retained.text.len() <= runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
+            assert!(!retained.detail.is_empty());
+            for turn in 2..collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
+                let mut next = presentation(0);
+                next.run = format!("{}:{turn}", run.run_id);
+                report(&agent, &run, update(next)).await.unwrap();
+            }
+            let mut excess = presentation(0);
+            excess.run = format!("{}:overflow", run.run_id);
+            assert!(report(&agent, &run, update(excess)).await.is_err());
+            report(
+                &agent,
+                &run,
+                runtime_collab::TaskRunUpdate::Progress {
+                    message: "Legacy public note".into(),
+                    presentation: None,
+                },
+            )
+            .await
+            .unwrap();
+            report(
+                &agent,
+                &run,
+                runtime_collab::TaskRunUpdate::Succeeded {
+                    message: "Done".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                report(&agent, &run, update(presentation(150)))
+                    .await
+                    .is_err()
+            );
+            let snapshot =
+                WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
+            assert!(
+                snapshot.controls[&f.task]
+                    .presentations
+                    .values()
+                    .all(|p| p.finish.is_some()),
+                "closing authority must not leave interrupted replies working forever"
+            );
+            drop(f);
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
     tokio::task::LocalSet::new()

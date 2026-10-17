@@ -2603,9 +2603,14 @@ impl MailApp {
         let vault = self
             .accounts_persist
             .root()
-            .map_or_else(accounts::SecretVault::open, |root| {
-                accounts::SecretVault::open_in(&root)
+            .map_or_else(accounts::AccountCredentials::open, |root| {
+                accounts::AccountCredentials::open_in(&root)
             });
+        let Ok(vault) = vault else {
+            tracing::error!("mail account credentials could not be opened");
+            *seen = None;
+            return;
+        };
         let mut adopted = AccountStore::from_store(&person.store(), &vault);
         let active_changed = {
             let mut st = self.shared.borrow_mut();

@@ -116,6 +116,11 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
   const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
+  // Model credentials are mount-scoped bootstrap input, never a page global.
+  // The WASM host binds the authenticated transport before each app factory.
+  if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
+  // Administration is opt-in and never borrows the inference session token.
+  if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
   // The desktop offers Invite only when the page takes it.
   config.invite=typeof options.onInvite==='function';delete config.onInvite;
@@ -276,7 +281,7 @@ export async function mountDesktop(target,options={}) {
       // pending_writes also moves the record's unsaved edits into the store.
       const writes=Array.from(runtime.pending_writes(current));
       try{
-        await storage.commit(writes);await storage.flush();await runtime.flush_files();
+        await runtime.flush_files();await storage.commit(writes);await storage.flush();
         report({persistence:'committed',pendingWrites:0,error:null});
       }catch(error){
         persistenceFailed=true;report({persistence:'failed',pendingWrites:storage.status.pendingWrites,error:String(error)});throw error;
@@ -302,8 +307,8 @@ export async function mountDesktop(target,options={}) {
     },
     async settle(){
       await flush.catch(()=>{});
-      if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       await runtime.flush_files();
+      if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       if(storage){await storage.release();storage=undefined;}
       recoveryJobs.delete(cleanup);closures.delete(cleanup);
       report({phase:'closed',persistence:'committed',pendingWrites:0,error:null});

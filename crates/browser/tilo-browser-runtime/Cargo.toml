@@ -24,6 +24,7 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }

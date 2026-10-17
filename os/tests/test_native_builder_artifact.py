@@ -1,5 +1,6 @@
 """Native builder artifact boundary tests; no compiler, registry or image runs."""
 from contextlib import contextmanager
+import hashlib
 import importlib.util
 import json
 import os
@@ -27,6 +28,22 @@ def restart_fixture(test):
     test.__dict__.clear()
     test.__dict__.update(fresh, **keep)
     test.setUp()
+
+
+class HttpArtifactContractTests(unittest.TestCase):
+    def test_http_binary_is_required_and_content_hashed(self):
+        self.assertIn('tilo-model-http', artifact.REQUIRED)
+        with tempfile.TemporaryDirectory(prefix='model-http-artifact-') as temporary:
+            binary = Path(temporary) / 'tilo-model-http'
+            original = b'\x7fELFhttp-binary-placeholder'
+            binary.write_bytes(original)
+            record, header = artifact.file_record(binary)
+            self.assertEqual(header, original)
+            self.assertEqual(record, {'size': len(original),
+                                      'sha256': hashlib.sha256(original).hexdigest()})
+            binary.write_bytes(original + b'changed')
+            changed, _ = artifact.file_record(binary)
+            self.assertNotEqual(changed['sha256'], record['sha256'])
 
 
 class RegistryIOTests(unittest.TestCase):

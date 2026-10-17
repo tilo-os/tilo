@@ -1252,6 +1252,12 @@ impl Action {
             },
         ),
         chrome(
+            "feedback.open",
+            "search-action-feedback-open",
+            "search-action-feedback-open-subtitle",
+            |st, _| crate::shell::feedback_entry::open(st),
+        ),
+        chrome(
             "topbar.editor.open",
             "search-action-topbar-editor",
             "search-action-topbar-editor-subtitle",

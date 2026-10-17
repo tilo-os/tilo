@@ -248,6 +248,15 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
+    /// A room its node stewards: this owner forwards an opening app's
+    /// authorship to that host ([`grant_authorship_at_host`]).
+    fn grants_authorship_at_host(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| {
+            let tree = self.tree.read();
+            tree.requires_native_owner(room) && !tree.commits_native_documents(room)
+        })
+    }
+
     fn health(&self) -> Result<(), String> {
         self.opened_owner("native membership owner unavailable")?
             .health()

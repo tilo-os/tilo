@@ -16,6 +16,11 @@ GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_image_interpreter
 # Content validation needs the complete index, including inherited exceptions.
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 
+# Audit the exact candidate tree, including inherited assets and their pinned
+# exceptions. The filtered index below can remove a newly inherited manifest
+# or restore obsolete binary assets from HEAD; neither represents the commit.
+python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
+
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
 # below read the staged change through the index, so they run against a copy

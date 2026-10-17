@@ -19,6 +19,8 @@ use tilo_desktop_model::{
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
+mod presentation;
+
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
 const MAX_TASK_TITLE_CHARS: usize = 240;
 const MAX_TASK_RECEIPTS: usize = 4096;
@@ -236,6 +238,13 @@ pub enum WorkspaceTaskCommand {
         run_epoch: u64,
         confirmation_id: String,
     },
+    /// Private coalesced model turn; appended to preserve command codec indices.
+    Presentation {
+        task_id: String,
+        run_epoch: u64,
+        sequence: u64,
+        presentation: collab_types::task_presentation::TaskPresentation,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -318,15 +327,19 @@ pub(crate) fn apply(
     let control = controls
         .get_mut(&task_id)
         .ok_or("task command lost its execution control")?;
-    if control.receipts.len() >= MAX_TASK_RECEIPTS {
-        return Err("task command receipt capacity exhausted".into());
+    // Snapshot replacement has its own run/sequence replay fence and no external
+    // effect. Do not spend the finite command receipt budget on streamed text.
+    if !matches!(command, WorkspaceTaskCommand::Presentation { .. }) {
+        if control.receipts.len() >= MAX_TASK_RECEIPTS {
+            return Err("task command receipt capacity exhausted".into());
+        }
+        control.receipts.push(WorkspaceTaskMutationReceipt {
+            device: actor.device(),
+            invocation,
+            request_digest,
+            result: result.clone(),
+        });
     }
-    control.receipts.push(WorkspaceTaskMutationReceipt {
-        device: actor.device(),
-        invocation,
-        request_digest,
-        result: result.clone(),
-    });
     tilo_desktop_model::projection::project_workspace_tasks(doc, &tasks)
         .map_err(|error| error.to_string())?;
     // A task that closed takes the grants given for it with it, in the same
@@ -378,7 +391,8 @@ fn dispatch(
         ),
         WorkspaceTaskCommand::AppliedAck { .. }
         | WorkspaceTaskCommand::ExecutionPhase { .. }
-        | WorkspaceTaskCommand::PublicProgress { .. } => {
+        | WorkspaceTaskCommand::PublicProgress { .. }
+        | WorkspaceTaskCommand::Presentation { .. } => {
             dispatch_agent_report(tasks, controls, context, command)
         }
         WorkspaceTaskCommand::Finish {
@@ -650,6 +664,19 @@ fn dispatch_agent_report(
             );
             Ok(result)
         }
+        WorkspaceTaskCommand::Presentation {
+            task_id,
+            run_epoch,
+            sequence,
+            presentation,
+        } => record_presentation(
+            tasks,
+            controls,
+            context,
+            task_id,
+            (*run_epoch, *sequence),
+            presentation,
+        ),
         _ => Err("command is not an agent report".into()),
     }
 }
@@ -1101,6 +1128,7 @@ fn begin_run(
         approval,
     });
     control.execution = None;
+    control.presentations.clear();
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
     task.audit.push(WorkspaceTaskAuditEvent::new(
@@ -1119,6 +1147,47 @@ fn begin_run(
             epoch,
         },
     ))
+}
+
+fn record_presentation(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    fence: (u64, u64),
+    presentation: &collab_types::task_presentation::TaskPresentation,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let mut presentation = presentation.clone().bounded()?;
+    let control = controls.get(task_id).ok_or("task control is absent")?;
+    presentation.received_at = Some(
+        control
+            .presentations
+            .get(&presentation.run)
+            .and_then(|previous| previous.received_at)
+            .unwrap_or(context.now),
+    );
+    if let Some(previous) = control.presentations.get(&presentation.run) {
+        if previous.sequence >= presentation.sequence || previous.finish.is_some() {
+            return Err("task presentation is stale or already finished".into());
+        }
+    } else if control.presentations.len() >= collab_types::task_presentation::MAX_TASK_PRESENTATIONS
+    {
+        return Err("task presentation retention limit reached".into());
+    }
+    let result = report_execution(
+        tasks,
+        controls,
+        context,
+        task_id,
+        fence,
+        WorkspaceTaskExecutionPhase::Executing,
+    )?;
+    controls
+        .get_mut(task_id)
+        .ok_or("task control is absent")?
+        .presentations
+        .insert(presentation.run.clone(), presentation);
+    Ok(result)
 }
 
 fn report_execution(
@@ -1330,6 +1399,26 @@ fn applied(
     ))
 }
 
+/// Closing task authority must also close any interrupted presentation. A
+/// successful task does not fabricate a model completion after a transport loss.
+fn close_presentations(control: &mut WorkspaceTaskControl, cancelled: bool) {
+    use collab_types::task_presentation::TaskPresentationFinish;
+    for presentation in control
+        .presentations
+        .values_mut()
+        .filter(|p| p.finish.is_none())
+    {
+        presentation.sequence = presentation.sequence.saturating_add(1);
+        presentation.finish = Some(if cancelled {
+            TaskPresentationFinish::Cancelled
+        } else {
+            TaskPresentationFinish::Failed
+        });
+        presentation.detail =
+            "Task ended before this model turn completed; partial output retained".into();
+    }
+}
+
 fn finish(
     tasks: &mut [WorkspaceTask],
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -1366,6 +1455,7 @@ fn finish(
         WorkspaceTaskFinish::Waiting => WorkspaceTaskStatus::Waiting,
         WorkspaceTaskFinish::Cancelled => WorkspaceTaskStatus::Cancelled,
     };
+    close_presentations(control, outcome == WorkspaceTaskFinish::Cancelled);
     control.active_run = None;
     control.execution = None;
     task.updated_at = now;
@@ -1414,6 +1504,7 @@ fn abandon(
     {
         return Err("task abandonment names a stale run".into());
     }
+    close_presentations(control, false);
     control.active_run = None;
     control.execution = None;
     task.status = WorkspaceTaskStatus::Waiting;
@@ -1497,6 +1588,7 @@ fn cancel_for_run(
     {
         return Err("task run or instruction frontier changed; review before cancelling".into());
     }
+    close_presentations(control, true);
     control.active_run = None;
     control.execution = None;
     task.status = WorkspaceTaskStatus::Cancelled;
@@ -1563,10 +1655,23 @@ pub fn controls_of(
         let ScalarValue::Bytes(bytes) = value.as_ref() else {
             return Err("task control entry is not bytes".into());
         };
-        let control: WorkspaceTaskControl =
+        let mut control: WorkspaceTaskControl =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        // A per-task sidecar is authoritative, including an empty one after
+        // retention pruning. Documents predating it still read the legacy blob.
+        if let Some(presentations) = presentation::load(doc, &key)? {
+            control.presentations = presentations;
+        }
         if let Some(budget) = control.execution_budget {
             budget.validate()?;
+        }
+        if control.presentations.len() > collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
+            return Err("task presentation retention limit exceeded".into());
+        }
+        for (run, presentation) in &control.presentations {
+            if run != &presentation.run || presentation.clone().bounded()? != *presentation {
+                return Err("retained task presentation exceeds bounds".into());
+            }
         }
         if let Some(execution) = &control.execution
             && (control
@@ -1598,9 +1703,11 @@ pub(crate) fn project_controls(
             .map_err(|error| error.to_string())?,
     };
     for (task, control) in controls {
-        let bytes = serde_json::to_vec(control).map_err(|error| error.to_string())?;
-        doc.put(&map, task, ScalarValue::Bytes(bytes))
-            .map_err(|error| error.to_string())?;
+        presentation::project(doc, task, &control.presentations)?;
+        let mut metadata = control.clone();
+        metadata.presentations.clear();
+        let bytes = serde_json::to_vec(&metadata).map_err(|error| error.to_string())?;
+        presentation::put_changed(doc, &map, task, ScalarValue::Bytes(bytes))?;
     }
     Ok(())
 }
@@ -1608,6 +1715,231 @@ pub(crate) fn project_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn presentation_is_appended_after_confirmation_commands() {
+        let settled = WorkspaceTaskCommand::SettleConfirmation {
+            task_id: "task-1".into(),
+            run_epoch: 1,
+            confirmation_id: "confirmation-1".into(),
+        };
+        assert_eq!(postcard::to_allocvec(&settled).unwrap()[0], 19);
+        let presentation = WorkspaceTaskCommand::Presentation {
+            task_id: "task-1".into(),
+            run_epoch: 1,
+            sequence: 1,
+            presentation: collab_types::task_presentation::TaskPresentation {
+                run: "turn-1".into(),
+                sequence: 1,
+                received_at: None,
+                text: "Working".into(),
+                reasoning: String::new(),
+                finish: None,
+                detail: String::new(),
+            },
+        };
+        let encoded = postcard::to_allocvec(&presentation).unwrap();
+        assert_eq!(encoded[0], 20);
+        assert!(matches!(
+            postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap(),
+            WorkspaceTaskCommand::Presentation { sequence: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn presentation_history_grows_linearly_and_survives_reload() {
+        use collab_types::task_presentation::TaskPresentation;
+        let (mut doc, task_id) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            7,
+            &agent(),
+            &phase_command(&task_id, 1, 0, WorkspaceTaskExecutionPhase::Accepted),
+        )
+        .unwrap();
+        let mut sequence = 0;
+        let mut sizes = Vec::new();
+        for turn in 0..3 {
+            let mut text = String::new();
+            let mut reasoning = String::new();
+            for update in 1..=128 {
+                // Distinct, poorly compressible chunks expose retained snapshot
+                // copies even when the saved document uses compression.
+                let chunk = blake3::hash(format!("{turn}/{update}").as_bytes())
+                    .to_hex()
+                    .to_string();
+                text.push_str(&chunk);
+                text.push_str(&chunk);
+                reasoning.push_str(&chunk);
+                sequence += 1;
+                run(
+                    &mut doc,
+                    100 + sequence,
+                    7,
+                    &agent(),
+                    &WorkspaceTaskCommand::Presentation {
+                        task_id: task_id.clone(),
+                        run_epoch: 1,
+                        sequence: u64::try_from(sequence).unwrap(),
+                        presentation: TaskPresentation {
+                            run: format!("turn-{turn}"),
+                            sequence: update,
+                            received_at: None,
+                            text: text.clone(),
+                            reasoning: reasoning.clone(),
+                            finish: None,
+                            detail: String::new(),
+                        },
+                    },
+                )
+                .unwrap();
+                if update == 64 || update == 128 {
+                    sizes.push(doc.save().len());
+                }
+            }
+        }
+        // Doubling streamed bytes must not quadruple retained history. Later
+        // turns must not repeatedly serialize the earlier retained turns.
+        assert!(sizes[1] < sizes[0] * 3, "{sizes:?}");
+        assert!(sizes[5] < sizes[1] * 4, "{sizes:?}");
+        assert!(sizes[5] < 900_000, "{sizes:?}");
+        let expected = controls_of(&doc).unwrap();
+        assert_eq!(expected[&task_id].presentations.len(), 3);
+        let mut reloaded = AutoCommit::load(&doc.save()).unwrap();
+        assert_eq!(controls_of(&reloaded).unwrap(), expected);
+        let before = reloaded.get_heads();
+        project_controls(&mut reloaded, &expected).unwrap();
+        assert_eq!(
+            reloaded.get_heads(),
+            before,
+            "unchanged projection must emit no operations"
+        );
+        run(
+            &mut reloaded,
+            999,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 1,
+                text: "Review the output".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            controls_of(&reloaded).unwrap()[&task_id].presentations,
+            expected[&task_id].presentations
+        );
+        assert!(reloaded.save().len() < sizes[5] + 10_000);
+        assert_presentation_fences(&mut reloaded, &task_id);
+    }
+
+    fn assert_presentation_fences(reloaded: &mut AutoCommit, task_id: &str) {
+        let expected = controls_of(reloaded).unwrap();
+        let report = |epoch, sequence, presentation| WorkspaceTaskCommand::Presentation {
+            task_id: task_id.to_owned(),
+            run_epoch: epoch,
+            sequence,
+            presentation,
+        };
+        let mut next = expected[task_id].presentations["turn-2"].clone();
+        next.sequence = next.sequence.checked_add(1).unwrap();
+        let before = reloaded.save();
+        for (actor, command) in [
+            (agent(), report(2, 500, next.clone())),
+            (person(), report(1, 500, next.clone())),
+            (agent(), report(1, 1, next.clone())),
+            (
+                agent(),
+                report(1, 500, expected[task_id].presentations["turn-2"].clone()),
+            ),
+        ] {
+            assert!(run(reloaded, 1000, 7, &actor, &command).is_err());
+            assert_eq!(reloaded.save(), before);
+        }
+        run(
+            reloaded,
+            1001,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::CancelForRun {
+                task_id: task_id.to_owned(),
+                run_epoch: 1,
+                after_revision: 2,
+            },
+        )
+        .unwrap();
+        let terminal = AutoCommit::load(&reloaded.save()).unwrap();
+        assert!(
+            controls_of(&terminal).unwrap()[task_id]
+                .presentations
+                .values()
+                .all(|p| p.finish
+                    == Some(collab_types::task_presentation::TaskPresentationFinish::Cancelled))
+        );
+        assert!(run(reloaded, 1002, 7, &agent(), &report(1, 500, next)).is_err());
+    }
+
+    #[test]
+    fn presentations_migrate_legacy_blobs_merge_and_prune_without_resurrection() {
+        use collab_types::task_presentation::TaskPresentation;
+        let (mut doc, task_id) = task_with_applied_direction();
+        let mut expected = controls_of(&doc).unwrap();
+        expected.get_mut(&task_id).unwrap().presentations.insert(
+            "legacy".into(),
+            TaskPresentation {
+                run: "legacy".into(),
+                sequence: 1,
+                received_at: Some(5),
+                text: "α old suffix".into(),
+                reasoning: "reason".into(),
+                finish: None,
+                detail: String::new(),
+            },
+        );
+        let (_, map) = doc.get(ROOT, TASK_CONTROL_KEY).unwrap().unwrap();
+        doc.put(
+            &map,
+            &task_id,
+            ScalarValue::Bytes(serde_json::to_vec(&expected[&task_id]).unwrap()),
+        )
+        .unwrap();
+        // Simulate a pre-sidecar document, then migrate through the production projection.
+        doc.delete(ROOT, "task_presentations_v1").unwrap();
+        assert_eq!(controls_of(&doc).unwrap(), expected);
+        project_controls(&mut doc, &expected).unwrap();
+        let mut other = doc.fork();
+        let mut changed = expected.clone();
+        changed
+            .get_mut(&task_id)
+            .unwrap()
+            .presentations
+            .get_mut("legacy")
+            .unwrap()
+            .text = "α NEW suffix".into();
+        project_controls(&mut doc, &changed).unwrap();
+        // A non-streaming metadata update must not overwrite the text sidecar.
+        expected.get_mut(&task_id).unwrap().run_epoch += 1;
+        project_controls(&mut other, &expected).unwrap();
+        doc.merge_incoming(&mut other).unwrap();
+        let mut merged = controls_of(&doc).unwrap();
+        assert_eq!(
+            merged[&task_id].presentations["legacy"].text,
+            "α NEW suffix"
+        );
+        assert_eq!(merged[&task_id].run_epoch, expected[&task_id].run_epoch);
+        merged.get_mut(&task_id).unwrap().presentations.clear();
+        project_controls(&mut doc, &merged).unwrap();
+        let restored = AutoCommit::load(&doc.save()).unwrap();
+        assert!(
+            controls_of(&restored).unwrap()[&task_id]
+                .presentations
+                .is_empty()
+        );
+    }
 
     #[test]
     fn manual_commands_append_encoded_positions_and_refuse_malformed_owner_inputs() {

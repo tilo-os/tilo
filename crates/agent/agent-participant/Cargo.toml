@@ -43,6 +43,7 @@ feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
+model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
@@ -82,8 +83,7 @@ blake3.workspace = true
 getrandom.workspace = true
 # An OpenAI-compatible model endpoint, called from the agent's own thread,
 # shaped for its target (a plain provider or Tilo Cloud's metered endpoint).
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
-tilo-model-gateway = { path = "../model-gateway", default-features = false }
+tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
@@ -118,6 +118,7 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true
 # tilo-browser-peer's test support (its HTTPS client), included by path.
+tilo-net = { path = "../../platform/tilo-net" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
@@ -135,7 +136,7 @@ tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]
 workspace = true

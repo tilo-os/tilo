@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::feedback::{Composer, Consent, DeliveryState};
+use crate::feedback::{Composer, Consent, DeliveryState, Subject};
 use crate::i18n::EmbeddedCatalog;
 use crate::prelude::*;
 
@@ -17,8 +17,37 @@ static CATALOG: EmbeddedCatalog =
 #[derive(Clone)]
 pub struct FeedbackServices {
     controller: Rc<RefCell<Composer>>,
-    presentation: Rc<RefCell<Option<LocalState<String>>>>,
+    presentation: Rc<RefCell<Option<Presentation>>>,
     mounted: Rc<Cell<bool>>,
+}
+
+/// What the one mounted composer shows of the controller's state.
+#[derive(Clone)]
+struct Presentation {
+    status: LocalState<String>,
+    subject: LocalState<Option<Subject>>,
+    shown: LocalState<String>,
+    fields: LocalState<Vec<crate::feedback::ContextField>>,
+    pixels: LocalState<Option<Vec<u8>>>,
+}
+
+impl Presentation {
+    /// Show the controller's current review and subject: a review the
+    /// controller discarded must not stay on screen as what would be sent.
+    fn show(&self, composer: &Composer) {
+        self.subject.set(composer.subject().cloned());
+        if let Some(review) = composer.preview() {
+            let feedback = review.feedback();
+            self.shown.set(feedback.text.clone());
+            self.fields.set(feedback.context.clone());
+            self.pixels
+                .set(review.screenshot().map(|image| image.png().to_vec()));
+        } else {
+            self.shown.set(String::new());
+            self.fields.set(Vec::new());
+            self.pixels.set(None);
+        }
+    }
 }
 
 impl FeedbackServices {
@@ -44,6 +73,25 @@ impl FeedbackServices {
         }
     }
 
+    /// Name the window the next report is about, as the desktop chose it
+    /// when the person asked for Feedback there.
+    ///
+    /// # Errors
+    /// Refuses while the controller is busy in an effect.
+    pub fn about(&self, subject: Option<Subject>) -> Result<(), crate::feedback::Error> {
+        let mut controller = self
+            .controller
+            .try_borrow_mut()
+            .map_err(|_| crate::feedback::Error::Invalid("composer busy"))?;
+        controller.about(subject);
+        if let Ok(presentation) = self.presentation.try_borrow()
+            && let Some(presentation) = presentation.as_ref()
+        {
+            presentation.show(&controller);
+        }
+        Ok(())
+    }
+
     /// Pump after a host storage/transport wake, publishing progress to the
     /// current private presentation. Its `LocalState` retains the component's
     /// retirement scope, so a late completion cannot wake a closed component.
@@ -57,12 +105,12 @@ impl FeedbackServices {
             .map_err(|_| crate::feedback::Error::Invalid("composer busy"))
             .and_then(|mut controller| controller.pump());
         if let Ok(presentation) = self.presentation.try_borrow()
-            && let Some(status) = presentation.as_ref()
+            && let Some(presentation) = presentation.as_ref()
         {
             if let Err(error) = &result {
-                status.set(error_label(error).to_owned());
+                presentation.status.set(error_label(error).to_owned());
             } else {
-                restore_progress(self, status);
+                restore_progress(self, &presentation.status);
             }
         }
         result
@@ -211,112 +259,172 @@ impl ResourceApp for FeedbackComposer {
     }
 
     fn view(cx: &mut ViewCx<FeedbackDraft>) -> Element {
-        let shown = LocalState::new(String::new());
-        let fields = LocalState::new(Vec::<crate::feedback::ContextField>::new());
-        let pixels = LocalState::new(None::<Vec<u8>>);
-        let status = LocalState::new("feedback-review-first".to_owned());
-        install_effects(cx, &shown, &status, &fields, &pixels);
-        let fields_view = cx.switch(&fields, |part, fields| {
-            let mut controls = Column::new();
-            for field in fields {
-                controls = controls.push(Box::new(
-                    Text::new("feedback-reviewed-text").with_arg("value", field.value.clone()),
-                ));
-                controls = controls.push(Box::new(part.effect_button(
-                    "feedback-hide-context",
-                    &FeedbackEffect::Redact {
-                        key: field.key.clone(),
-                        start: 0,
-                        end: field.value.len(),
-                    },
-                )));
-            }
-            Box::new(controls)
-        });
-        let preview = cx.switch(&shown, |_, shown| {
+        let presentation = Presentation {
+            status: LocalState::new("feedback-review-first".to_owned()),
+            subject: LocalState::new(None),
+            shown: LocalState::new(String::new()),
+            fields: LocalState::new(Vec::new()),
+            pixels: LocalState::new(None),
+        };
+        let screenshots = install_effects(cx, &presentation);
+        let subject = about(cx, &presentation.subject);
+        let fields_view = reviewed_fields(cx, &presentation.fields);
+        let preview = cx.switch(&presentation.shown, |_, shown| {
             Box::new(
                 Text::new("feedback-reviewed-text")
                     .with_arg("value", shown.clone())
                     .with_id("feedback-preview"),
             )
         });
-        let picture = cx.switch(&pixels, |_, png| {
+        let picture = cx.switch(&presentation.pixels, |_, png| {
             png.as_ref()
                 .and_then(|bytes| crate::widget::Image::from_encoded(bytes).ok())
                 .map_or_else(
-                    || Box::new(Column::new()) as Element,
+                    || Box::new(group()) as Element,
                     |image| Box::new(image.with_alt("feedback-screenshot-preview")) as Element,
                 )
         });
-        Box::new(
-            crate::column![
-                Text::new("feedback-title"),
-                cx.input(FeedbackDraft::paths().issue)
-                    .with_id("feedback-issue")
-                    .with_placeholder("feedback-describe")
-                    .multiline(true),
-                cx.checkbox("feedback-context", FeedbackDraft::paths().include_context),
-                cx.checkbox(
-                    "feedback-screenshot",
-                    FeedbackDraft::paths().include_screenshot
-                ),
-                Text::new("feedback-privacy"),
-                cx.effect_button("feedback-review", &FeedbackEffect::Review),
-            ]
-            .push(preview)
-            .push(fields_view)
-            .push(picture)
-            .push(Box::new(crate::column![
-                cx.effect_button(
-                    "feedback-remove-screenshot",
-                    &FeedbackEffect::RemoveScreenshot
-                ),
+        let mut choices = crate::column![
+            Text::new("feedback-title"),
+            cx.input(FeedbackDraft::paths().issue)
+                .with_id("feedback-issue")
+                .with_placeholder("feedback-describe")
+                .multiline(true),
+        ]
+        .push(subject);
+        // A host that cannot capture is never offered the attachment.
+        if screenshots {
+            choices = choices.push(Box::new(cx.checkbox(
+                "feedback-screenshot",
+                FeedbackDraft::paths().include_screenshot,
+            )));
+        }
+        let mut sending = group().push(picture);
+        if screenshots {
+            sending = sending.push(Box::new(cx.effect_button(
+                "feedback-remove-screenshot",
+                &FeedbackEffect::RemoveScreenshot,
+            )));
+        }
+        let sending = sending
+            .push(Box::new(
                 cx.effect_button("feedback-submit", &FeedbackEffect::Submit),
-                Text::from_state(&status, Clone::clone)
+            ))
+            .push(Box::new(
+                Text::from_state(&presentation.status, Clone::clone)
                     .with_id("feedback-status")
                     .with_live(crate::a11y::Politeness::Polite),
+            ))
+            .push(Box::new(
                 cx.effect_button("feedback-retry", &FeedbackEffect::Retry),
-            ])),
+            ));
+        Box::new(
+            choices
+                .push(Box::new(Text::new("feedback-privacy")))
+                .push(Box::new(
+                    cx.effect_button("feedback-review", &FeedbackEffect::Review),
+                ))
+                .push(preview)
+                .push(fields_view)
+                .push(Box::new(sending)),
         )
     }
 }
 
-fn install_effects(
+/// What the report is about, and the choice to include it; nothing while
+/// Feedback was opened with no window in front.
+fn about(cx: &ViewCx<FeedbackDraft>, subject: &LocalState<Option<Subject>>) -> Element {
+    cx.switch(subject, |part, subject| {
+        let Some(subject) = subject else {
+            return Box::new(group()) as Element;
+        };
+        let name = if subject.name.is_empty() {
+            subject.app.clone()
+        } else {
+            subject.name.clone()
+        };
+        Box::new(
+            group()
+                .push(Box::new(
+                    Text::new("feedback-about")
+                        .with_arg("app", name)
+                        .with_id("feedback-about"),
+                ))
+                .push(Box::new(part.checkbox(
+                    "feedback-context",
+                    FeedbackDraft::paths().include_context,
+                ))),
+        ) as Element
+    })
+}
+
+/// Each reviewed context field with its control to hide it.
+fn reviewed_fields(
     cx: &ViewCx<FeedbackDraft>,
-    shown: &LocalState<String>,
-    status: &LocalState<String>,
     fields: &LocalState<Vec<crate::feedback::ContextField>>,
-    pixels: &LocalState<Option<Vec<u8>>>,
-) {
+) -> Element {
+    cx.switch(fields, |part, fields| {
+        let mut controls = group();
+        for field in fields {
+            controls = controls.push(Box::new(
+                Text::new("feedback-reviewed-text").with_arg("value", field.value.clone()),
+            ));
+            controls = controls.push(Box::new(part.effect_button(
+                "feedback-hide-context",
+                &FeedbackEffect::Redact {
+                    key: field.key.clone(),
+                    start: 0,
+                    end: field.value.len(),
+                },
+            )));
+        }
+        Box::new(controls)
+    })
+}
+
+/// A run of the composer's controls inside its one column: as tall as its
+/// contents and aligned with the rest, not a second full-height column.
+fn group() -> Column {
+    Column::new().with_intrinsic_height().with_no_padding()
+}
+
+/// Wire the effects to the lent controller; true when its host can offer a
+/// screenshot at all.
+fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> bool {
     // Refuse a host accidentally mounting the raw draft in a shared room.
     let services = cx
         .is_private()
         .then(|| cx.take_lent::<FeedbackServices>())
         .flatten();
-    let presentation = cx.take_lent::<PresentationLease>();
+    let lease = cx.take_lent::<PresentationLease>();
+    let mut screenshots = false;
     if let Some(services) = &services {
-        *services.presentation.borrow_mut() = Some(status.clone());
-        restore_progress(services, status);
+        *services.presentation.borrow_mut() = Some(presentation.clone());
+        if let Ok(composer) = services.controller.try_borrow() {
+            screenshots = composer.offers_screenshots();
+            presentation.show(&composer);
+        }
+        restore_progress(services, &presentation.status);
     }
-    let preview = shown.clone();
-    let reviewed_fields = fields.clone();
-    let reviewed_pixels = pixels.clone();
-    let progress = status.clone();
+    let shown = presentation.clone();
     cx.effects(move |effect: FeedbackEffect, effect_cx| {
-        let _presentation = &presentation;
+        let _lease = &lease;
         let Some(services) = &services else {
-            progress.set("feedback-unconfigured".to_owned());
+            shown.status.set("feedback-unconfigured".to_owned());
             return Err("feedback-unconfigured".to_owned());
         };
         let draft = effect_cx.live().with(Clone::clone);
-        let consent = Consent {
-            context: draft.include_context,
-            screenshot: draft.include_screenshot,
-        };
         let mut composer = services
             .controller
             .try_borrow_mut()
             .map_err(|_| "feedback-busy".to_owned())?;
+        // Context is only offered while there is a window to describe; the
+        // review shows exactly what is attached either way. A screenshot the
+        // host cannot take is refused rather than dropped.
+        let consent = Consent {
+            context: draft.include_context && composer.subject().is_some(),
+            screenshot: draft.include_screenshot,
+        };
         let result = match effect {
             FeedbackEffect::Review => composer.review(&draft.issue, consent),
             FeedbackEffect::Submit => {
@@ -332,16 +440,7 @@ fn install_effects(
             FeedbackEffect::Redact { key, start, end } => composer.hide(&key, start, end),
             FeedbackEffect::RemoveScreenshot => composer.remove_screenshot(),
         };
-        if let Some(review) = composer.preview() {
-            let feedback = review.feedback();
-            preview.set(feedback.text.clone());
-            reviewed_fields.set(feedback.context.clone());
-            reviewed_pixels.set(review.screenshot().map(|image| image.png().to_vec()));
-        } else {
-            preview.set(String::new());
-            reviewed_fields.set(Vec::new());
-            reviewed_pixels.set(None);
-        }
+        shown.show(&composer);
         let key = if let Err(error) = &result {
             error_label(error)
         } else {
@@ -353,10 +452,11 @@ fn install_effects(
                 Some(state) => delivery_label(&state),
             }
         };
-        progress.set(key.to_owned());
+        shown.status.set(key.to_owned());
         result.map_err(|_| key.to_owned())?;
         Ok(Effected::done())
     });
+    screenshots
 }
 
 fn error_label(error: &crate::feedback::Error) -> &'static str {
@@ -407,6 +507,9 @@ mod tests {
     }
     struct Host(Rc<RefCell<Transport>>);
     impl FeedbackHost for Host {
+        fn offers_screenshots(&self) -> bool {
+            false
+        }
         fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
             Ok(vec![ReviewText {
                 node: "focused.public.label".into(),
@@ -623,6 +726,12 @@ mod tests {
                 report: "chat.message:m_feedback_test".into()
             })
         );
+        services
+            .about(Some(Subject {
+                app: "so.tilo.books".into(),
+                name: "Books".into(),
+            }))
+            .expect("the desktop names the window feedback is about");
         assert_literal_second_review(&mut frame, &transport);
         frame.close_components();
         assert!(
@@ -676,14 +785,12 @@ mod tests {
         let second = sent.submissions.last().expect("second report");
         assert_ne!(first.id, second.id);
         assert_eq!(second.feedback.text, "feedback-title");
-        assert_eq!(
-            second
-                .feedback
-                .context
-                .first()
-                .expect("approved context")
-                .value,
-            "feedback-privacy"
-        );
+        let context: Vec<_> = second
+            .feedback
+            .context
+            .iter()
+            .map(|field| field.value.as_str())
+            .collect();
+        assert_eq!(context, ["App: Books (so.tilo.books)", "feedback-privacy"]);
     }
 }

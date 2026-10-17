@@ -66,7 +66,7 @@ all_packages="$("$derive" --arch x86_64)"
 for package in dbus-tools harfbuzz-icu libatomic wine wine-dxvk qemu-kvm-core \
   qemu-ui-spice-core qemu-char-spice qemu-audio-spice qemu-device-display-virtio-vga \
   libvirt-client libvirt-daemon-driver-qemu libvirt-daemon-config-nwfilter swtpm swtpm-tools \
-  edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
+  edk2-ovmf virtio-win freerdp xorg-x11-server-Xwayland virt-viewer xorriso \
   genisoimage udftools; do
   grep -Fxq "$package" <<<"$all_packages" \
     && ok "$package is in the derived frozen package set" \

@@ -50,11 +50,12 @@ if (( run_cargo )); then
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
         -p imager -p tilo-relay -p tilo-fs -p legacy-vm \
+        --features tilo-model-gateway/local-models \
         --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
         --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
-        --bin tilo-model-gateway --bin imager \
+        --bin tilo-model-gateway --bin tilo-model-http --bin imager \
         --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
@@ -71,7 +72,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
+           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
            tilo-relay-environment tilo-relay-offers tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
@@ -130,6 +131,7 @@ install -pm 0755 "$rel/tilo-app-package" "$app_stage/bin/tilo-app-package"
 install -pm 0755 "$rel/tilo-runtime-bundle" "$app_stage/bin/tilo-runtime-bundle"
 install -pm 0755 "$rel/tilo-model-manager" "$app_stage/bin/tilo-model-manager"
 install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
+install -pm 0755 "$rel/tilo-model-http" "$app_stage/bin/tilo-model-http"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"

@@ -1,0 +1,427 @@
+//! The Responses wire, driven from recorded bytes.
+//!
+//! The bodies are read out of the cassettes rather than copied into this
+//! file, so a recorded turn and the assertion about it cannot drift. The
+//! cassettes are read-only here.
+
+use super::*;
+use crate::completion::CompletionRequest;
+use crate::message::{self, Message};
+use crate::providers::chatgpt::DIALECT as CHATGPT;
+use crate::providers::xai::DIALECT as XAI;
+use crate::test_utils::json_body;
+use crate::test_utils::{MockStreamingClient, RecordingHttpClient};
+use crate::wire::Mode;
+use bytes::Bytes;
+use futures::StreamExt;
+
+// ── the cassettes, as bytes ─────────────────────────────────────────────
+
+/// One recorded interaction's reply body, read out of a cassette.
+///
+/// The format is one or more `when:`/`then:` documents; the reply body is
+/// either a single-quoted scalar (a JSON body, with `''` for a quote) or a
+/// `|+` literal block (an SSE body). Parsed here rather than with a YAML
+/// dependency, and never written.
+fn cassette_body(path: &str) -> String {
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rig-cassette/fixtures/cassettes")
+        .join(path);
+    let text = std::fs::read_to_string(&file)
+        .unwrap_or_else(|error| panic!("{} should be readable: {error}", file.display()));
+    let reply = text
+        .split_once("\nthen:")
+        .unwrap_or_else(|| panic!("{} should record a reply", file.display()))
+        .1;
+    let body = reply
+        .split_once("  body: ")
+        .unwrap_or_else(|| panic!("{} should record a reply body", file.display()))
+        .1;
+    match body.strip_prefix("|+\n") {
+        // A literal block: four-space-indented lines up to the first line
+        // that is neither blank nor indented.
+        Some(block) => {
+            let mut out = String::new();
+            for line in block.lines() {
+                match line.strip_prefix("    ") {
+                    Some(line) => out.push_str(line),
+                    None if line.trim().is_empty() => {}
+                    None => break,
+                }
+                out.push('\n');
+            }
+            out
+        }
+        // A single-quoted scalar on one line.
+        None => body
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('\'')
+            .trim_end_matches('\'')
+            .replace("''", "'"),
+    }
+}
+
+/// The unary body of the turn a recorded SSE body streams: the response
+/// object the provider itself restates on `response.completed`, which is
+/// byte-for-byte the shape its unary endpoint answers with.
+fn terminal_response_body(sse: &str) -> String {
+    let event = sse
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .find(|event| {
+            matches!(
+                event.get("type").and_then(serde_json::Value::as_str),
+                Some("response.completed") | Some("response.incomplete")
+            )
+        })
+        .expect("the recorded stream ends with a terminal response event");
+    event
+        .get("response")
+        .expect("a terminal event carries its response object")
+        .to_string()
+}
+
+fn prompt() -> CompletionRequest {
+    CompletionRequest::new("say hi")
+}
+
+/// Fold a recorded unary body through the wire, as `Model::call`
+/// does.
+async fn folded_unary(wire: Responses, body: &str) -> completion::CompletionResponse {
+    crate::driver::Model::new(wire, RecordingHttpClient::new(Bytes::from(body.to_owned())))
+        .call(prompt())
+        .await
+        .expect("the recorded body folds")
+}
+
+/// Fold a recorded SSE body through the wire, as `Model::stream`
+/// does, draining every event first.
+async fn folded_stream(wire: Responses, body: &str) -> completion::CompletionResponse {
+    let bound = crate::driver::Model::new(
+        wire,
+        MockStreamingClient {
+            sse_bytes: Bytes::from(body.to_owned()),
+        },
+    );
+    let mut response = bound.stream(prompt()).expect("the stream opens");
+    while response.next().await.is_some() {}
+    response
+        .finish()
+        .await
+        .expect("the stream produced a terminal record")
+}
+
+fn openai() -> Responses {
+    OpenAIConfig::new("test-key").responses("gpt-4o")
+}
+
+// ── the property the model exists for ───────────────────────────────────
+
+/// The recorded stream of one turn and that same turn's unary body — the
+/// response object its `response.completed` event restates — fold to one
+/// answer.
+#[tokio::test]
+async fn a_unary_body_and_the_stream_of_the_same_turn_fold_alike() {
+    let sse = cassette_body("openai/response_identity/responses_streaming_carries_identity.yaml");
+    let unary = terminal_response_body(&sse);
+
+    let buffered = folded_unary(openai(), &unary).await;
+    let streamed = folded_stream(openai(), &sse).await;
+
+    assert_eq!(buffered.choice, streamed.choice);
+    assert_eq!(buffered.usage, streamed.usage);
+    assert_eq!(buffered.finish_reason(), streamed.finish_reason());
+    assert_eq!(buffered.model(), streamed.model());
+    assert_eq!(buffered.response_id(), streamed.response_id());
+    assert_eq!(
+        text_of(&buffered),
+        Some("stream identity probe".to_owned()),
+        "the recorded turn's text must survive both paths"
+    );
+}
+
+/// A recorded tool turn: the call the provider restates in its unary body is
+/// the call its stream assembles from fragments.
+#[tokio::test]
+async fn a_unary_tool_turn_and_its_stream_fold_alike() {
+    let sse = cassette_body("openai/streaming_grammar/tool_then_followup_text.yaml");
+    let unary = terminal_response_body(&sse);
+
+    let buffered = folded_unary(openai(), &unary).await;
+    let streamed = folded_stream(openai(), &sse).await;
+
+    assert_eq!(buffered.choice, streamed.choice);
+    assert_eq!(buffered.usage, streamed.usage);
+    assert_eq!(buffered.finish_reason(), streamed.finish_reason());
+    assert!(
+        buffered
+            .choice
+            .iter()
+            .any(|content| matches!(content, message::AssistantContent::ToolCall(_))),
+        "the recorded turn calls a tool: {:?}",
+        buffered.choice
+    );
+}
+
+/// ChatGPT answers a unary request with a replayed event stream, so the same
+/// recorded bytes go through `call` and through `stream`; both fold to the
+/// same turn.
+#[tokio::test]
+async fn a_chatgpt_replayed_body_folds_the_same_unary_and_streamed() {
+    let sse = cassette_body("chatgpt/codex_tool_args/zero_argument_tool_call_nonstreaming.yaml");
+    let wire = OpenAIConfig::with_key(&CHATGPT, "test-token").responses("gpt-5.4");
+
+    let buffered = folded_unary(wire.clone(), &sse).await;
+    let streamed = folded_stream(wire, &sse).await;
+
+    assert_eq!(buffered.choice, streamed.choice);
+    assert_eq!(buffered.usage, streamed.usage);
+    assert_eq!(buffered.finish_reason(), streamed.finish_reason());
+    assert_eq!(buffered.provider(), "chatgpt");
+    assert!(
+        buffered
+            .choice
+            .iter()
+            .any(|content| matches!(content, message::AssistantContent::ToolCall(_))),
+        "the recorded turn calls a tool: {:?}",
+        buffered.choice
+    );
+}
+
+fn text_of(response: &completion::CompletionResponse) -> Option<String> {
+    response.choice.iter().find_map(|content| match content {
+        message::AssistantContent::Text(text) => Some(text.text.clone()),
+        _ => None,
+    })
+}
+
+// ── what each dialect sends ─────────────────────────────────────────────
+
+/// One request's body, for a turn other than the bare [`prompt`].
+fn encoded_body_of(wire: &Responses, request: CompletionRequest, mode: Mode) -> serde_json::Value {
+    let encoded = wire.encode(request, mode).expect("the request encodes");
+    json_body(&encoded.request)
+}
+
+/// [`encoded_body_of`] for `request` prepared as the driver prepares it.
+fn prepared_body_of(wire: &Responses, request: CompletionRequest) -> serde_json::Value {
+    let request = <crate::operation::Completion as crate::wire::Operation>::prepare(
+        request,
+        &wire.describe(),
+    )
+    .expect("the request prepares");
+    encoded_body_of(wire, request, Mode::Unary)
+}
+
+/// The bare [`prompt`] with a history of its own.
+fn turn(chat_history: Vec<Message>) -> CompletionRequest {
+    CompletionRequest {
+        chat_history,
+        ..prompt()
+    }
+}
+
+fn chatgpt() -> Responses {
+    OpenAIConfig::with_key(&CHATGPT, "test-token").responses("gpt-5.4")
+}
+
+/// The gateway's own instructions lead, the caller's follow: a backend that
+/// expects instructions of its own gets them ahead of the turn's preamble
+/// rather than instead of it.
+#[test]
+fn the_chatgpt_dialect_merges_its_instructions_ahead_of_the_callers() {
+    let body = encoded_body_of(
+        &chatgpt(),
+        turn(vec![
+            Message::system("Respond tersely."),
+            Message::user("say hi"),
+        ]),
+        Mode::Unary,
+    );
+
+    assert_eq!(
+        body.get("instructions").and_then(serde_json::Value::as_str),
+        Some("You are ChatGPT, a helpful AI assistant.\n\nRespond tersely.")
+    );
+}
+
+/// ...and they are not stated twice when the caller's preamble already
+/// carries them, which is what a replayed conversation's history looks like.
+#[test]
+fn the_chatgpt_dialect_does_not_repeat_instructions_the_caller_already_carries() {
+    let carried = "You are ChatGPT, a helpful AI assistant.\n\nRespond tersely.";
+    let body = encoded_body_of(
+        &chatgpt(),
+        turn(vec![Message::system(carried), Message::user("say hi")]),
+        Mode::Unary,
+    );
+
+    assert_eq!(
+        body.get("instructions").and_then(serde_json::Value::as_str),
+        Some(carried)
+    );
+}
+
+fn xai() -> Responses {
+    OpenAIConfig::with_key(&XAI, "test-key").responses("grok-4")
+}
+
+/// xAI's endpoint lives under `/v1` and rejects top-level `instructions`, so
+/// every system message — the leading run and the mid-conversation ones —
+/// stays in `input` where it was, and the turn's documents follow the
+/// preamble as the shared history conversion places them.
+#[test]
+fn the_xai_dialect_keeps_every_system_message_in_input() {
+    let wire = xai();
+    let encoded = wire
+        .encode(prompt(), Mode::Unary)
+        .expect("the request encodes");
+    assert_eq!(encoded.request.uri(), "https://api.x.ai/v1/responses");
+
+    let body = prepared_body_of(
+        &wire,
+        CompletionRequest {
+            documents: vec![crate::completion::Document {
+                id: "doc_1".to_owned(),
+                text: "Definition of glarb-glarb: an ancient tool.".to_owned(),
+                additional_props: Default::default(),
+            }],
+            ..turn(vec![
+                Message::system("System prompt"),
+                Message::assistant("Earlier assistant turn"),
+                Message::system("Mid-conversation instruction"),
+                Message::user("What is glarb-glarb?"),
+            ])
+        },
+    );
+
+    assert_eq!(body.get("instructions"), None, "{body}");
+    let input = body["input"].as_array().expect("input is an array");
+    let roles: Vec<_> = input
+        .iter()
+        .map(|item| item["role"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        roles,
+        ["system", "user", "assistant", "system", "user"],
+        "{body}"
+    );
+    assert_eq!(
+        input
+            .iter()
+            .filter(|item| item.to_string().contains("<file id: doc_1>"))
+            .count(),
+        1,
+        "the document rides one user item, after the preamble: {body}"
+    );
+    assert!(input[1].to_string().contains("<file id: doc_1>"), "{body}");
+}
+
+/// A success carrying the provider's error envelope instead of a response is
+/// the provider's failure, not a decode defect — on the dialects that answer
+/// that way.
+#[tokio::test]
+async fn an_error_envelope_on_a_success_fails_the_xai_call() {
+    let error = crate::driver::Model::new(
+        xai(),
+        RecordingHttpClient::new(Bytes::from_static(
+            br#"{"error":{"message":"no capacity","code":"overloaded"}}"#,
+        )),
+    )
+    .call(prompt())
+    .await
+    .expect_err("an error envelope fails the call");
+
+    assert!(
+        error.to_string().contains("no capacity"),
+        "the provider's own message must survive: {error}"
+    );
+}
+
+/// What each dialect's encoder carries: images as data or URLs, image file
+/// ids only where the endpoint keeps files and its `input_image` takes them,
+/// documents as files or text, and no audio, video or assistant image.
+#[test]
+fn each_dialect_encodes_what_its_endpoint_reads() {
+    use crate::completion::{Media, Place, ReplayTarget};
+    use crate::message::{
+        Audio, AudioMediaType, Document, DocumentMediaType, DocumentSourceKind as Source, Image,
+        ImageMediaType, Video, VideoMediaType,
+    };
+    let image = |data: Source, media_type: Option<ImageMediaType>| Image {
+        data,
+        media_type,
+        ..Image::default()
+    };
+    let document = |data: Source, media_type: Option<DocumentMediaType>| Document {
+        data,
+        media_type,
+        additional_params: None,
+    };
+    let png = image(Source::base64("iVBORw0KGgo="), Some(ImageMediaType::PNG));
+    let untyped = image(Source::base64("AAAA"), None);
+    let url = image(Source::url("https://example.com/a.png"), None);
+    let image_file = image(Source::file_id("file-image"), None);
+    let string = image(Source::string("an image"), None);
+    let pdf = document(Source::base64("JVBERi0="), Some(DocumentMediaType::PDF));
+    let pdf_url = document(Source::url("https://example.com/a.pdf"), None);
+    let text = document(Source::string("plain"), Some(DocumentMediaType::TXT));
+    let csv = document(Source::base64("YSxi"), Some(DocumentMediaType::CSV));
+    let document_file = document(Source::file_id("file-document"), None);
+    let audio = Audio {
+        data: Source::base64("SUQz"),
+        media_type: Some(AudioMediaType::MP3),
+    };
+    let video = Video {
+        data: Source::url("https://example.com/a.mp4"),
+        media_type: Some(VideoMediaType::MP4),
+        additional_params: None,
+    };
+    let copilot = Responses::new(
+        OpenAIConfig::with_key(&crate::providers::copilot::wire::DIALECT, "key"),
+        "gpt-5.3-codex",
+    );
+    // (dialect, image file ids, document file ids)
+    for (wire, image_files, document_files) in [
+        (openai(), true, true),
+        (xai(), false, true),
+        (chatgpt(), false, false),
+        (copilot, false, false),
+    ] {
+        let name = wire.provider.dialect.name;
+        let model = wire.model.clone();
+        let encodes = |media| wire.encodes(&model, media);
+        for place in [Place::User, Place::ToolResult] {
+            assert!(encodes(Media::Image(&png, place)), "{name}: data");
+            assert!(encodes(Media::Image(&url, place)), "{name}: URL");
+            assert_eq!(
+                encodes(Media::Image(&image_file, place)),
+                image_files,
+                "{name}: image file id"
+            );
+            assert!(!encodes(Media::Image(&untyped, place)), "{name}: untyped");
+            assert!(!encodes(Media::Image(&string, place)), "{name}: string");
+        }
+        assert!(!encodes(Media::Image(&png, Place::Assistant)), "{name}");
+        assert!(!encodes(Media::Audio(&audio)), "{name}: audio");
+        assert!(!encodes(Media::Video(&video)), "{name}: video");
+        assert!(encodes(Media::Document(&pdf)), "{name}: PDF data");
+        assert!(encodes(Media::Document(&pdf_url)), "{name}: file URL");
+        assert!(encodes(Media::Document(&text)), "{name}: text");
+        assert!(
+            !encodes(Media::Document(&csv)),
+            "{name}: text data goes as its text"
+        );
+        assert_eq!(
+            encodes(Media::Document(&document_file)),
+            document_files,
+            "{name}: document file id"
+        );
+    }
+}
+
+mod provider_options;

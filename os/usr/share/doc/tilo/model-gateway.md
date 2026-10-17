@@ -10,6 +10,12 @@ authenticated, launcher-passed `model-gateway` service FD in
 preserves its hyphen. Clients never receive the key or direct provider network
 access.
 
+The desktop package builds the gateway with `local-models`, which includes
+`server` and the installed segmentation-model runtime. A hosted HTTP relay
+uses `server` alone. Apps use the empty default feature set: native standalone
+UI builds do not embed provider credentials, inference or C++ model runtimes.
+The `host-backend` feature is reserved for trusted hosts, not sandboxed apps.
+
 The implementation is intentionally a narrow relay, rather than claiming a
 general LiteLLM-compatible provider surface: only the two existing provider
 protocols and the agent planning request are supported. This keeps the

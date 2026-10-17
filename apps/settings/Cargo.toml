@@ -28,6 +28,7 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
@@ -85,9 +86,6 @@ account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
-# Settings uses this only over the launcher-passed service FD to put/remove a
-# key; no vault file or provider network capability is linked into the app.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
@@ -122,6 +120,7 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }
 zip.workspace = true

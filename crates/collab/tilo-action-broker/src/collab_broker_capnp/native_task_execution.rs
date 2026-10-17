@@ -805,7 +805,10 @@ impl CapnpBrokerState {
                 sequence: 0,
                 phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
             },
-            runtime_collab::TaskRunUpdate::Progress { message } => {
+            runtime_collab::TaskRunUpdate::Progress {
+                message,
+                presentation,
+            } => {
                 let snapshot = service.snapshot(&run.cluster_id)?;
                 let execution = snapshot
                     .controls
@@ -813,14 +816,24 @@ impl CapnpBrokerState {
                     .and_then(|control| control.execution.as_ref())
                     .filter(|execution| execution.run_epoch == binding.epoch)
                     .ok_or("public progress requires accepted run")?;
-                WorkspaceTaskCommand::PublicProgress {
-                    task_id,
-                    run_epoch: binding.epoch,
-                    sequence: execution
-                        .sequence
-                        .checked_add(1)
-                        .ok_or("task sequence exhausted")?,
-                    message: bounded_public_task_message(&message)?,
+                let sequence = execution
+                    .sequence
+                    .checked_add(1)
+                    .ok_or("task sequence exhausted")?;
+                if let Some(presentation) = presentation {
+                    WorkspaceTaskCommand::Presentation {
+                        task_id,
+                        run_epoch: binding.epoch,
+                        sequence,
+                        presentation: presentation.bounded()?,
+                    }
+                } else {
+                    WorkspaceTaskCommand::PublicProgress {
+                        task_id,
+                        run_epoch: binding.epoch,
+                        sequence,
+                        message: bounded_public_task_message(&message)?,
+                    }
                 }
             }
             runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {

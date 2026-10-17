@@ -45,7 +45,10 @@ The person's page installs the node with its root (`installNode` in
 The certificate's arrival starts `tilo-node-session@ACCOUNT` (a path unit): a
 headless session with `TILO_IDENTITY_ROOT` on that tree, which joins as one of
 the person's devices. It never starts before, so it never mints a root of its
-own.
+own. On start it completes its side of the join, as any joined device holds
+its person: a public record naming them as its active identity, and a fleet
+that knows it. Those live under `XDG_CONFIG_HOME=/var/lib/tilo-node/ACCOUNT/config`,
+apart from any desktop session the account has.
 
 ## Using it
 

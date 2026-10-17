@@ -45,6 +45,7 @@ feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
+model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }

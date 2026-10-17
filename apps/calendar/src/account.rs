@@ -7,7 +7,7 @@
 //! the Mail app consumes its accounts. The canonical store is the shared
 //! [`accounts`] crate: a single JSON document under
 //! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
-//! credentials sealed in the encrypted [`accounts::SecretVault`], never in the
+//! credentials sealed in the encrypted [`accounts::AccountCredentials`], never in the
 //! plaintext store.
 //!
 //! Historically Calendar and Settings each declared their own store *shape*
@@ -23,7 +23,8 @@
 use std::path::Path;
 
 use accounts::{
-    Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault,
+    Account as StoredAccount, AccountCredentials, AccountId, AccountStore as SharedStore,
+    AccountTypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +35,7 @@ pub const TYPE_ID: &str = "caldav";
 
 /// `CalDAV` connection + identity settings — what Settings' account form
 /// collects and the sync layer consumes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CalDavConfig {
     /// Friendly account name shown in the sidebar header ("Work", "Fastmail").
     #[serde(default)]
@@ -45,7 +46,7 @@ pub struct CalDavConfig {
     pub server_url: String,
     /// Login name for the `CalDAV` server (often the email address).
     pub username: String,
-    /// Held only in memory here and hydrated from the [`accounts::SecretVault`]
+    /// Held only in memory here and hydrated from the [`accounts::AccountCredentials`]
     /// on load; the sync layer uses it at connect time. Never written to the
     /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
     #[serde(skip)]
@@ -53,6 +54,59 @@ pub struct CalDavConfig {
     /// Canonical account ID whose Google calendar grant Custodian refreshes.
     #[serde(skip)]
     pub oauth_account_id: Option<String>,
+}
+
+impl std::fmt::Debug for CalDavConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CalDavConfig").finish_non_exhaustive()
+    }
+}
+
+impl CalDavConfig {
+    /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`
+    /// endpoint for the big providers. Mirrors what a desktop client's
+    /// autoconfig does. Returns true if it recognised the domain.
+    pub fn autofill_from_username(&mut self) -> bool {
+        let Some((_, domain)) = self.username.split_once('@') else {
+            return false;
+        };
+        let url = match domain.to_ascii_lowercase().as_str() {
+            "gmail.com" | "googlemail.com" => "https://apidata.googleusercontent.com/caldav/v2",
+            "icloud.com" | "me.com" => "https://caldav.icloud.com",
+            "fastmail.com" | "fastmail.fm" => "https://caldav.fastmail.com/dav/calendars",
+            "yahoo.com" => "https://caldav.calendar.yahoo.com",
+            other => {
+                self.server_url = format!("https://{other}/.well-known/caldav");
+                return false;
+            }
+        };
+        self.server_url = url.to_string();
+        true
+    }
+
+    /// Field-level validation for the setup form: returns `(field, reason)`
+    /// pairs for anything missing or malformed. Empty vec == valid.
+    pub fn validate(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if self.display_name.trim().is_empty() {
+            out.push(("display_name", "Give the account a name".into()));
+        }
+        if self.server_url.trim().is_empty() {
+            out.push(("server_url", "Server URL is required".into()));
+        } else if !self.server_url.starts_with("http://")
+            && !self.server_url.starts_with("https://")
+        {
+            out.push(("server_url", "Server URL must start with http(s)://".into()));
+        }
+        if self.username.trim().is_empty() {
+            out.push(("username", "Username is required".into()));
+        }
+        out
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_empty()
+    }
 }
 
 /// One remote calendar collection within an account (a `CalDAV` `calendar-home-set`
@@ -155,7 +209,7 @@ impl CalendarAccount {
 
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
-    fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
+    fn from_stored(stored: &StoredAccount, vault: &AccountCredentials) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
             .get("calendar")
@@ -248,30 +302,73 @@ impl AccountStore {
             .flat_map(|a| a.calendars.iter().map(move |c| (a, c)))
     }
 
-    /// Load the `CalDAV` accounts the OS Settings app maintains from the shared
-    /// canonical store, hydrating each password from the secret vault. Returns
-    /// `None` only when no config root is discoverable; an empty store
-    /// otherwise, so the app runs on local + sample data.
+    /// Compatibility loader; reports a sanitized error if custody cannot be opened.
     pub fn load_from_settings() -> Option<Self> {
-        let root = accounts::config_root()?;
-        Some(Self::load_from_settings_in(&root))
+        if let Ok(store) = Self::try_load() {
+            Some(store)
+        } else {
+            tracing::error!("calendar account credentials could not be opened");
+            None
+        }
     }
 
-    /// Load under an explicit config root — the seam tests use.
-    pub fn load_from_settings_in(config_root: &Path) -> Self {
-        Self::from_shared(
-            &SharedStore::load_in(config_root),
-            &SecretVault::open_in(config_root),
+    /// Load accounts, returning credential custody failures to the caller.
+    ///
+    /// # Errors
+    /// Returns an error if the config root or protected credential storage is unavailable.
+    pub fn try_load() -> Result<Self, String> {
+        let root = accounts::config_root().ok_or("no config dir for calendar accounts")?;
+        let credentials = AccountCredentials::open()?;
+        Ok(Self::from_shared(
+            &SharedStore::load_in(&root),
+            &credentials,
+        ))
+    }
+
+    /// Persist Calendar's account projection to the canonical shared store.
+    /// Other account types and their sealed secrets are retained by
+    /// [`Self::persist_in`]; callers receive an error when the real config
+    /// root cannot be resolved or written, rather than claiming a setting was
+    /// saved when it was not.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when no Tilo config root is available or persistence fails.
+    pub fn persist(&self) -> std::io::Result<()> {
+        let root = accounts::config_root()
+            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
+        self.persist_with_vault(
+            &root,
+            AccountCredentials::open().map_err(std::io::Error::other)?,
         )
     }
 
-    /// Calendar-enabled accounts in `shared`, each sign-in from its canonical
-    /// account ID in `vault`.
-    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+    /// Compatibility loader under an explicit recovery/test config root.
+    pub fn load_from_settings_in(config_root: &Path) -> Self {
+        Self::try_load_in(config_root).unwrap_or_else(|_| {
+            tracing::error!("calendar account credentials could not be opened");
+            Self::default()
+        })
+    }
+
+    /// Load accounts under an explicit root, returning custody failures.
+    ///
+    /// # Errors
+    /// Returns an error if the existing credential vault cannot be opened safely.
+    pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
+        let credentials = AccountCredentials::open_in(config_root)?;
+        Ok(Self::from_shared(
+            &SharedStore::load_in(config_root),
+            &credentials,
+        ))
+    }
+
+    /// Project the shared accounts using the trusted account-owner credentials.
+    pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         Self::from_shared(shared, vault)
     }
 
-    fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
+    fn from_shared(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts = shared
             .list(&ty)
@@ -303,8 +400,18 @@ impl AccountStore {
     /// `config_root` (for example, if the directory cannot be created or
     /// written to).
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
+        self.persist_with_vault(
+            config_root,
+            AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?,
+        )
+    }
+
+    fn persist_with_vault(
+        &self,
+        config_root: &Path,
+        mut vault: AccountCredentials,
+    ) -> std::io::Result<()> {
         let mut shared = SharedStore::load_in(config_root);
-        let mut vault = SecretVault::open_in(config_root);
         let mut vault_changed = false;
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
@@ -339,11 +446,10 @@ impl AccountStore {
                 );
             }
         }
-        shared.save_in(config_root)?;
         if vault_changed {
-            vault.save();
+            vault.try_save().map_err(std::io::Error::other)?;
         }
-        Ok(())
+        shared.save_in(config_root)
     }
 
     /// A representative offline store so `--shots` shows real `CalDAV` accounts in
@@ -415,6 +521,38 @@ impl AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use accounts::SecretVault;
+
+    #[test]
+    fn account_credentials_are_never_serialized_or_debugged() {
+        let config = CalDavConfig {
+            password: "private-calendar-password".into(),
+            ..Default::default()
+        };
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("private-calendar-password")
+        );
+        assert!(!format!("{config:?}").contains("private-calendar-password"));
+    }
+
+    #[test]
+    fn damaged_credentials_prevent_publishing_account_changes() {
+        let root = temp_root();
+        let store = AccountStore::sample();
+        store.persist_in(&root).unwrap();
+        let before = std::fs::read(accounts::store_path_in(&root)).unwrap();
+        std::fs::write(accounts::vault_dir_in(&root).join("vault.enc"), b"damaged").unwrap();
+        let mut changed = store;
+        changed.accounts[0].config.display_name = "Must not publish".into();
+        assert!(changed.persist_in(&root).is_err());
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&root)).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn cfg(name: &str, user: &str) -> CalDavConfig {
         CalDavConfig {
@@ -423,6 +561,36 @@ mod tests {
             username: user.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn legacy_account_credentials_load_and_damaged_custody_is_reported() {
+        let root = temp_root();
+        let id = AccountId::from("legacy@example.test");
+        let mut shared = SharedStore::new();
+        let mut account = CalendarAccount::new(cfg("Legacy", "legacy@example.test"));
+        account.id = id.to_string();
+        shared.upsert(account.to_stored());
+        shared.save_in(&root).unwrap();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
+        vault.try_save().unwrap();
+
+        let loaded = AccountStore::try_load_in(&root).unwrap();
+        assert_eq!(
+            loaded.accounts[0].config.password,
+            "legacy-fixture-password"
+        );
+        let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+        let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+        std::fs::write(&vault_path, b"damaged").unwrap();
+        assert!(AccountStore::try_load_in(&root).is_err());
+        assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&root)).unwrap(),
+            metadata
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> std::path::PathBuf {

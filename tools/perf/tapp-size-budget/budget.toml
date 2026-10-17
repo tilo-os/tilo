@@ -177,6 +177,14 @@ aarch64 = 1310720
 x86_64 = 1310720
 aarch64 = 1245184
 
+# Initial ceiling uses web-search: both are portable, host-backed SDK UIs
+# packaged as thin apps against the shared runtime, without a bundled service.
+# Provider administration has no search engine payload. Measure its first
+# release packages on both architectures and ratchet these ceilings down.
+[apps."so.tilo.model-providers"]
+x86_64 = 2097152
+aarch64 = 1966080
+
 [apps."so.tilo.monitor"]
 x86_64 = 1245184
 aarch64 = 1179648

@@ -1076,6 +1076,7 @@ browser-new-workspace-name = Arbeitsbereich { $number }
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer
+tilo-menu-feedback = Feedback geben…
 tilo-about-title = Über diesen Computer
 tilo-about-lead = Das ist Tilo, ein Betriebssystem.
 tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.

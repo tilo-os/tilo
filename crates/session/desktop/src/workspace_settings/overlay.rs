@@ -150,6 +150,20 @@ pub enum MemberSheetKey {
     Cancel,
 }
 
+/// Keyboard operations of the agent access view, mapped from platform
+/// keys by the host like [`MemberSheetKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAccessKey {
+    Previous,
+    Next,
+    /// The answer to the left (Allow side) of the focused control.
+    Left,
+    /// The answer to the right (Deny side) of the focused control.
+    Right,
+    Activate,
+    Back,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MemberSheet {
     Role(UserId),
@@ -200,6 +214,10 @@ pub struct WorkspaceSettingsOverlay {
         Option<tilo_action_policy::agent_answers::AnswerScope>,
     )>,
     agent_access: super::agent_access::AgentAccessLayout,
+    /// How far the agent view's app list is scrolled.
+    agent_access_scroll: f64,
+    /// The agent view's control with the keyboard, once keys have moved it.
+    agent_access_focus: Option<super::agent_access::AccessFocus>,
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
@@ -233,6 +251,8 @@ impl Default for WorkspaceSettingsOverlay {
             agent_control_rects: Vec::new(),
             agent_review: None,
             agent_access: super::agent_access::AgentAccessLayout::default(),
+            agent_access_scroll: 0.0,
+            agent_access_focus: None,
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
@@ -693,12 +713,122 @@ impl WorkspaceSettingsOverlay {
     /// Show `agent`'s answers in the Agents tab instead of the roster.
     pub fn open_agent_review(&mut self, agent: String) {
         self.agent_review = Some((agent, None));
+        self.agent_access_scroll = 0.0;
+        self.agent_access_focus = None;
     }
 
     /// Back to the roster.
     pub fn close_agent_review(&mut self) {
         self.agent_review = None;
         self.agent_access = super::agent_access::AgentAccessLayout::default();
+        self.agent_access_scroll = 0.0;
+        self.agent_access_focus = None;
+    }
+
+    /// Scroll the agent view's app list by `delta`, within what it holds.
+    /// Whether anything moved.
+    pub fn scroll_agent_access(&mut self, delta: f64) -> bool {
+        if !delta.is_finite() || self.agent_review.is_none() {
+            return false;
+        }
+        let old = self.agent_access_scroll;
+        self.agent_access_scroll = (old + delta).clamp(0.0, self.agent_access.max_scroll());
+        (old - self.agent_access_scroll).abs() > f64::EPSILON
+    }
+
+    /// The agent view's keyboard: Tab walks its controls, the arrows change
+    /// the focused Allow / Ask first / Deny answer, Enter or Space presses
+    /// the focused button, and Escape goes back to the roster. `None` when
+    /// the view is not shown or the key changes nothing but focus.
+    pub fn handle_agent_access_key(&mut self, key: AgentAccessKey) -> Option<EventOutcome> {
+        use super::agent_access::{ANSWERS, AccessFocus, KINDS};
+        let (agent, _) = self.agent_review.clone()?;
+        let stops: Vec<AccessFocus> = self
+            .agent_access
+            .stops
+            .iter()
+            .map(|(stop, _)| stop.clone())
+            .collect();
+        let current = self
+            .agent_access_focus
+            .as_ref()
+            .and_then(|focus| stops.iter().position(|stop| stop == focus));
+        let set = |answers| EventOutcome::SetAgentAnswers {
+            agent: agent.clone(),
+            answers,
+        };
+        match key {
+            AgentAccessKey::Next | AgentAccessKey::Previous => {
+                let next = match (current, key == AgentAccessKey::Previous) {
+                    (Some(0) | None, true) => stops.len().checked_sub(1),
+                    (Some(index), true) => index.checked_sub(1),
+                    (Some(index), false) => index.checked_add(1).filter(|next| *next < stops.len()),
+                    (None, false) => None,
+                }
+                .unwrap_or_default();
+                self.agent_access_focus = stops.get(next).cloned();
+                self.reveal_agent_access_focus();
+                None
+            }
+            AgentAccessKey::Back => Some(EventOutcome::CloseAgentReview),
+            AgentAccessKey::Left | AgentAccessKey::Right => {
+                let Some(AccessFocus::Answers(scope, kind)) = self.agent_access_focus.clone()
+                else {
+                    return None;
+                };
+                let now = self.agent_access.answer_shown(&scope, kind)?;
+                let index = ANSWERS.iter().position(|answer| *answer == now)?;
+                let next = if key == AgentAccessKey::Left {
+                    index.checked_sub(1)?
+                } else {
+                    index.checked_add(1)?
+                };
+                let answer = *ANSWERS.get(next)?;
+                Some(set(vec![(scope, kind, Some(answer))]))
+            }
+            AgentAccessKey::Activate => match self.agent_access_focus.clone()? {
+                AccessFocus::Back => Some(EventOutcome::CloseAgentReview),
+                AccessFocus::Expand(scope) => Some(EventOutcome::ToggleAgentApp(scope)),
+                AccessFocus::Answers(..) => None,
+                AccessFocus::Reset(scope) => Some(set(KINDS
+                    .into_iter()
+                    .map(|kind| (scope.clone(), kind, None))
+                    .collect())),
+                AccessFocus::RemoveException(scope, kind) => Some(set(vec![(scope, kind, None)])),
+            },
+        }
+    }
+
+    /// Give `focus` the keyboard, as Tab would reach it.
+    pub fn focus_agent_access(&mut self, focus: super::agent_access::AccessFocus) {
+        self.agent_access_focus = Some(focus);
+        self.reveal_agent_access_focus();
+    }
+
+    /// Scroll the focused control fully into the list's region.
+    fn reveal_agent_access_focus(&mut self) {
+        let Some(rect) = self
+            .agent_access_focus
+            .as_ref()
+            .and_then(|focus| self.agent_access.stop_rect(focus))
+        else {
+            return;
+        };
+        let view = self.agent_access.viewport;
+        if matches!(
+            self.agent_access_focus,
+            Some(super::agent_access::AccessFocus::Back)
+        ) {
+            return;
+        }
+        let delta = if rect.y0 < view.y0 {
+            rect.y0 - view.y0 - 4.0
+        } else if rect.y1 > view.y1 {
+            rect.y1 - view.y1 + 4.0
+        } else {
+            0.0
+        };
+        self.scroll_agent_access(delta);
     }
 
     /// Open `scope`'s answers in the agent view, or close them when open.
@@ -1756,8 +1886,13 @@ impl WorkspaceSettingsOverlay {
                     agent,
                     open: open.as_ref(),
                     editable: is_owner,
+                    scroll: self.agent_access_scroll,
+                    focus: self.agent_access_focus.as_ref(),
                 },
             );
+            // Rows can close or answers go away between frames: keep the
+            // scroll within what the list now holds.
+            self.agent_access_scroll = self.agent_access_scroll.min(self.agent_access.max_scroll());
             Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
             return;
         }
@@ -3230,6 +3365,118 @@ mod general_scroll_tests {
         assert_eq!(
             overlay.hit_test(overlay.delete_rect.center(), WsTab::General),
             EventOutcome::DeleteWorkspace
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_access_key_tests {
+    use super::super::agent_access::{
+        AccessFocus, AgentAccessView, draw_agent_access, set_agent_answers,
+    };
+    use super::*;
+    use tilo_action_policy::agent_answers::AnswerScope;
+    use tilo_action_policy::{ActionKind, Answer};
+
+    const OWNER: &str = "owner-user";
+    const AGENT: &str = "scribe";
+
+    fn ws(apps: usize) -> tilo_desktop_model::Workspace {
+        let mut ws =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::from(32), "access");
+        ws.set_owner(OWNER);
+        super::super::admit_agent(
+            &mut ws,
+            &OWNER.to_string(),
+            AGENT,
+            super::super::AgentPreset::Operator,
+        );
+        let answers: Vec<_> = (0..apps)
+            .map(|index| {
+                (
+                    AnswerScope::app(format!("so.tilo.app{index:02}")),
+                    ActionKind::Read,
+                    Some(Answer::Deny),
+                )
+            })
+            .collect();
+        set_agent_answers(&mut ws, &OWNER.to_string(), AGENT, &answers);
+        ws
+    }
+
+    /// Paint the view as the overlay would, with its scroll and focus.
+    fn paint(
+        overlay: &mut WorkspaceSettingsOverlay,
+        ws: &tilo_desktop_model::Workspace,
+        open: Option<&AnswerScope>,
+    ) {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        overlay.agent_access = draw_agent_access(
+            &mut ui::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 640.0, 520.0),
+            (ws, &super::super::NoAppDirectory),
+            &AgentAccessView {
+                agent: AGENT,
+                open,
+                editable: true,
+                scroll: overlay.agent_access_scroll,
+                focus: overlay.agent_access_focus.as_ref(),
+            },
+        );
+    }
+
+    #[test]
+    fn tab_reaches_every_control_and_scrolls_it_into_view() {
+        let ws = ws(24);
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.open_agent_review(AGENT.into());
+        paint(&mut overlay, &ws, None);
+        assert_eq!(overlay.handle_agent_access_key(AgentAccessKey::Next), None);
+        assert_eq!(overlay.agent_access_focus, Some(AccessFocus::Back));
+        // Shift+Tab from the first control wraps to the last app, which is
+        // below the fold until focus brings it up.
+        overlay.handle_agent_access_key(AgentAccessKey::Previous);
+        let last = AccessFocus::Expand(AnswerScope::app("so.tilo.app23"));
+        assert_eq!(overlay.agent_access_focus, Some(last.clone()));
+        assert!(overlay.agent_access_scroll > 0.0);
+        paint(&mut overlay, &ws, None);
+        let shown = overlay.agent_access.stop_rect(&last).unwrap();
+        assert!(overlay.agent_access.viewport.contains(shown.center()));
+        assert_eq!(
+            overlay.handle_agent_access_key(AgentAccessKey::Activate),
+            Some(EventOutcome::ToggleAgentApp(AnswerScope::app(
+                "so.tilo.app23"
+            )))
+        );
+        assert_eq!(
+            overlay.handle_agent_access_key(AgentAccessKey::Back),
+            Some(EventOutcome::CloseAgentReview)
+        );
+    }
+
+    #[test]
+    fn arrows_change_the_focused_answer_one_step_at_a_time() {
+        let ws = ws(1);
+        let app = AnswerScope::app("so.tilo.app00");
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.open_agent_review(AGENT.into());
+        paint(&mut overlay, &ws, Some(&app));
+        overlay.agent_access_focus = Some(AccessFocus::Answers(app.clone(), ActionKind::Read));
+        // Reading is Deny: there is nothing further right.
+        assert_eq!(overlay.handle_agent_access_key(AgentAccessKey::Right), None);
+        assert_eq!(
+            overlay.handle_agent_access_key(AgentAccessKey::Left),
+            Some(EventOutcome::SetAgentAnswers {
+                agent: AGENT.into(),
+                answers: vec![(app.clone(), ActionKind::Read, Some(Answer::Ask))],
+            })
+        );
+        assert_eq!(
+            overlay.handle_agent_access_key(AgentAccessKey::Activate),
+            None,
+            "Enter on an answer control changes nothing by itself"
         );
     }
 }

@@ -4,7 +4,7 @@
 // RGBA through a 2D canvas (the native backends' frame contract). Audio: an
 // AudioWorklet posts mono Float32 blocks, buffered here up to a bound.
 // Every request is asynchronous (the browser asks the user first); Rust
-// polls `state()`.
+// reads `state()`, and hears through `onChange` when it moves.
 
 const MAX_BUFFERED_SAMPLES = 96000;
 const MAX_WIDTH = 4096;
@@ -54,15 +54,24 @@ class Capture {
     this.kind = '';
     this.message = '';
     this.stream = null;
+    this.changed = null;
+  }
+  // Calls `callback` whenever the status moves: the person answered, the
+  // capture failed or ended.
+  onChange(callback) { this.changed = callback; }
+  setStatus(status) {
+    if (this.status === status) return;
+    this.status = status;
+    this.changed?.();
   }
   fail(error) {
-    this.status = 'failed';
     this.kind = errorKind(error);
     this.message = error?.message || String(error);
+    this.setStatus('failed');
   }
   watchEnd(stream) {
     for (const track of stream.getTracks()) {
-      track.addEventListener('ended', () => { if (this.status === 'live') this.status = 'ended'; });
+      track.addEventListener('ended', () => { if (this.status === 'live') this.setStatus('ended'); });
     }
   }
   state() { return this.status; }
@@ -122,7 +131,7 @@ export class TiloCaptureVideo extends Capture {
       if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(tick);
     };
     video.addEventListener('loadeddata', tick, {once: true});
-    video.play().then(() => { if (this.status === 'starting') this.status = 'live'; }).catch(error => this.fail(error));
+    video.play().then(() => { if (this.status === 'starting') this.setStatus('live'); }).catch(error => this.fail(error));
   }
 
   frame() {
@@ -147,6 +156,7 @@ export class TiloCaptureVideo extends Capture {
   frameHeight() { return this.height; }
 
   close() {
+    this.changed = null;
     this.status = 'closed';
     this.stopStream();
     if (this.video) {
@@ -212,7 +222,7 @@ export class TiloCaptureAudio extends Capture {
       source.connect(tap);
       await context.resume();
       this.rate = context.sampleRate;
-      if (this.status === 'starting') this.status = 'live';
+      if (this.status === 'starting') this.setStatus('live');
     } catch (error) {
       this.fail(error);
     }
@@ -240,6 +250,7 @@ export class TiloCaptureAudio extends Capture {
   sampleRate() { return this.rate; }
 
   close() {
+    this.changed = null;
     this.status = 'closed';
     this.stopStream();
     this.context?.close?.().catch?.(() => {});

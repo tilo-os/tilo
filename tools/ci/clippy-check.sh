@@ -20,6 +20,11 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root" || exit 2
 
+# Verify the gateway server only when that package itself is selected.
+feature_flags=$(python3 tools/ci/package_features.py "$@") || exit 2
+read -r -a features <<<"$feature_flags"
+set -- "$@" "${features[@]}"
+
 # Let sccache cache Clippy's workspace crates. Cargo runs them as
 # `$RUSTC_WRAPPER clippy-driver $RUSTC ...`, and sccache recognises that shape
 # only when the compiler argument is literally `rustc`: under rustup Cargo

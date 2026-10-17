@@ -124,29 +124,6 @@ pub fn turn_key(run: &[u8], turn: u32, body: &Value) -> String {
     idempotency_key(&[run, &turn.to_le_bytes(), body.to_string().as_bytes()])
 }
 
-/// Anthropic-shaped tool definitions (`name`, `description`,
-/// `input_schema`) as chat-completions function tools.
-#[must_use]
-pub fn functions(definitions: &Value) -> Value {
-    Value::Array(
-        definitions
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.get("name").cloned().unwrap_or(Value::Null),
-                        "description": tool.get("description").cloned().unwrap_or(Value::Null),
-                        "parameters": tool.get("input_schema").cloned().unwrap_or_else(|| json!({"type": "object"})),
-                    }
-                })
-            })
-            .collect(),
-    )
-}
-
 /// One function call the model made.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
@@ -154,7 +131,7 @@ pub struct ToolCall {
     pub id: String,
     /// The function named.
     pub name: String,
-    /// Its arguments, decoded; `{}` when absent or unreadable.
+    /// Its validated JSON object arguments; malformed calls are rejected.
     pub input: Value,
 }
 
@@ -193,18 +170,37 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
         .pointer("/choices/0/message")
         .filter(|message| message.is_object())
         .ok_or("the model's answer had no message")?;
+    if message.get("role").is_some_and(|role| role != "assistant")
+        || message
+            .get("content")
+            .is_some_and(|content| !content.is_null() && !content.is_string())
+    {
+        return Err("invalid model assistant message".into());
+    }
     let text = message
         .get("content")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if response
+        .pointer("/choices/0/finish_reason")
+        .is_some_and(|reason| {
+            !matches!(
+                reason.as_str(),
+                Some("stop" | "tool_calls" | "length" | "content_filter")
+            )
+        })
+    {
+        return Err("invalid model finish reason".into());
+    }
     let mut calls = Vec::new();
     let mut echoed = Vec::new();
-    for call in message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+    let mut ids = std::collections::BTreeSet::new();
+    let fragments = match message.get("tool_calls") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(calls)) => calls.as_slice(),
+        _ => return Err("invalid model tool calls".into()),
+    };
+    for call in fragments {
         let id = call
             .get("id")
             .and_then(Value::as_str)
@@ -216,11 +212,16 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
         let arguments = call
             .pointer("/function/arguments")
             .and_then(Value::as_str)
-            .unwrap_or("{}");
+            .ok_or("a tool call had no arguments")?;
+        let input: Value =
+            serde_json::from_str(arguments).map_err(|_| "invalid model tool arguments")?;
+        if id.trim().is_empty() || name.trim().is_empty() || !input.is_object() || !ids.insert(id) {
+            return Err("invalid or duplicate model tool call".into());
+        }
         calls.push(ToolCall {
             id: id.to_owned(),
             name: name.to_owned(),
-            input: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
+            input,
         });
         let mut replay = json!({
             "id": id,
@@ -257,14 +258,6 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
     })
 }
 
-/// A tool result message answering `call`.
-#[must_use]
-pub fn tool_result(call: &ToolCall, content: &str) -> Value {
-    json!({ "role": "tool", "tool_call_id": call.id, "content": content })
-}
-
-/// What went wrong with a completion, as far as retrying and telling a
-/// person are concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// The machine's included credit cannot cover the request (HTTP 402).
@@ -281,6 +274,12 @@ pub enum Kind {
     Pending,
     /// The credential was refused (HTTP 401/403).
     Unauthorized,
+    PermissionDenied,
+    ContextLimit,
+    TimedOut,
+    /// Connection failed before dispatch; unlike interrupted transport, safe to retry.
+    Connection,
+    Transport,
     /// The endpoint is switched off or unconfigured.
     Unavailable,
     /// The request itself was refused (other 4xx).
@@ -301,20 +300,48 @@ pub struct Failure {
 }
 
 impl Failure {
+    /// Convert only typed classifications, never provider-controlled prose.
+    pub fn model_error(&self) -> agent_provider_config::protocol::ModelError {
+        use agent_provider_config::protocol::{ErrorKind, ModelError};
+        ModelError::new(match self.kind {
+            Kind::OutOfCredits | Kind::SubscriptionRequired => ErrorKind::CreditsExhausted,
+            Kind::Unauthorized => ErrorKind::Authentication,
+            Kind::PermissionDenied => ErrorKind::PermissionDenied,
+            Kind::ContextLimit => ErrorKind::ContextLimit,
+            Kind::TimedOut => ErrorKind::TimedOut,
+            Kind::Connection | Kind::Transport => ErrorKind::Transport,
+            Kind::RateLimited => ErrorKind::RateLimited,
+            Kind::Unavailable => ErrorKind::Unavailable,
+            Kind::Rejected => ErrorKind::InvalidRequest,
+            Kind::Busy | Kind::Pending => ErrorKind::Provider,
+        })
+    }
+
     /// Whether asking again with the same idempotency key may succeed.
     #[must_use]
     pub const fn retryable(&self) -> bool {
-        matches!(self.kind, Kind::RateLimited | Kind::Busy)
+        matches!(
+            self.kind,
+            Kind::RateLimited | Kind::Busy | Kind::TimedOut | Kind::Connection
+        )
+    }
+
+    /// Whether HTTP refusal proves no inference was admitted. Billing failures
+    /// never authorize replay, regardless of their HTTP status.
+    pub fn refused_unprocessed(&self, status: u16) -> bool {
+        matches!(status, 429 | 529) && matches!(self.kind, Kind::RateLimited | Kind::Busy)
     }
 
     /// A transport failure before any answer arrived.
     #[must_use]
     pub fn transport(timed_out: bool, connect: bool) -> Self {
         Self {
-            kind: if timed_out || connect {
-                Kind::Busy
+            kind: if timed_out {
+                Kind::TimedOut
+            } else if connect {
+                Kind::Connection
             } else {
-                Kind::Rejected
+                Kind::Transport
             },
             code: None,
             detail: if timed_out {
@@ -332,33 +359,53 @@ impl Failure {
     #[must_use]
     pub fn from_http(status: u16, body: &str, retry_after: Option<&str>) -> Self {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-        let (code, message) = match parsed.get("error") {
-            Some(Value::String(message)) => (
-                parsed
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                Some(message.chars().take(200).collect::<String>()),
-            ),
-            Some(Value::Object(error)) => (
-                error
-                    .get("code")
-                    .or_else(|| error.get("type"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                None,
-            ),
-            _ => (None, None),
-        };
+        let error = parsed.get("error").unwrap_or(&parsed);
+        // Provider-controlled strings are never diagnostics, including "code".
+        // Keep only recognized, fixed machine codes.
+        let codes = [error.get("code"), error.get("type"), parsed.get("code")];
+        // Billing wins even if a provider also labels the envelope rate-limited.
+        let code = codes
+            .iter()
+            .filter_map(|value| value.and_then(Value::as_str))
+            .find(|code| billing_code(code))
+            .or_else(|| {
+                codes
+                    .iter()
+                    .filter_map(|value| value.and_then(Value::as_str))
+                    .find(|code| recognized_code(code))
+            })
+            .map(str::to_owned);
+        // Some compatible endpoints omit machine codes. Recognize only fixed
+        // billing/context phrases here, never repeat the provider's prose.
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(4096)
+            .collect::<String>()
+            .to_ascii_lowercase();
         let kind = match (status, code.as_deref()) {
-            (402, Some("subscription_required")) => Kind::SubscriptionRequired,
-            (402, _)
-            | (_, Some("insufficient_credit" | "credit_exhausted" | "insufficient_quota")) => {
+            _ if message.contains("credit balance is too low")
+                || message.contains("insufficient credits") =>
+            {
                 Kind::OutOfCredits
             }
+            (_, Some("subscription_required")) => Kind::SubscriptionRequired,
+            (402, _) => Kind::OutOfCredits,
+            (_, Some(code)) if billing_code(code) => Kind::OutOfCredits,
+            (
+                _,
+                Some("context_length_exceeded" | "context_window_exceeded" | "prompt_too_long"),
+            )
+            | (413, _) => Kind::ContextLimit,
+            (_, Some("authentication_error" | "invalid_api_key")) => Kind::Unauthorized,
+            (_, Some("permission_error")) => Kind::PermissionDenied,
+            (_, Some("overloaded_error")) => Kind::Busy,
             (409, Some("request_pending")) => Kind::Pending,
-            (429, _) => Kind::RateLimited,
-            (401 | 403, _) => Kind::Unauthorized,
+            (_, Some("rate_limit_error" | "rate_limit_exceeded")) | (429, _) => Kind::RateLimited,
+            (401, _) => Kind::Unauthorized,
+            (403, _) => Kind::PermissionDenied,
             (
                 503,
                 Some(
@@ -368,7 +415,13 @@ impl Failure {
                     | "provider_unavailable",
                 ),
             ) => Kind::Unavailable,
-            (408 | 500 | 502 | 503 | 504 | 529, _) => Kind::Busy,
+            _ if message.contains("prompt is too long")
+                || message.contains("maximum context length") =>
+            {
+                Kind::ContextLimit
+            }
+            (408 | 504, _) => Kind::TimedOut,
+            (500 | 502 | 503 | 529, _) => Kind::Busy,
             _ => Kind::Rejected,
         };
         let detail = match kind {
@@ -382,7 +435,7 @@ impl Failure {
             Kind::Pending => "the model call's outcome is pending reconciliation; \
                  it was not retried so it cannot be charged twice"
                 .into(),
-            _ => message.unwrap_or_else(|| format!("the model endpoint answered HTTP {status}")),
+            _ => format!("the model endpoint answered HTTP {status}"),
         };
         Self {
             kind,
@@ -393,6 +446,39 @@ impl Failure {
                 .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok()),
         }
     }
+}
+
+fn recognized_code(code: &str) -> bool {
+    matches!(
+        code,
+        "request_pending"
+            | "service_disabled"
+            | "pricing_unavailable"
+            | "pricing_disabled"
+            | "provider_unavailable"
+            | "context_length_exceeded"
+            | "context_window_exceeded"
+            | "invalid_api_key"
+            | "prompt_too_long"
+            | "authentication_error"
+            | "permission_error"
+            | "rate_limit_error"
+            | "rate_limit_exceeded"
+            | "overloaded_error"
+    )
+}
+fn billing_code(code: &str) -> bool {
+    matches!(
+        code,
+        "subscription_required"
+            | "insufficient_credit"
+            | "insufficient_credits"
+            | "credit_exhausted"
+            | "credits_exhausted"
+            | "insufficient_quota"
+            | "credit_balance_too_low"
+            | "billing_hard_limit_reached"
+    )
 }
 
 impl fmt::Display for Failure {
@@ -476,6 +562,10 @@ mod tests {
         let pending = Failure::from_http(409, r#"{"error":"x","code":"request_pending"}"#, None);
         assert_eq!(pending.kind, Kind::Pending);
         assert!(!pending.retryable());
+        // An interrupted exchange may already have been billed; do not turn
+        // better error classification into a newly retryable paid operation.
+        assert!(!Failure::transport(false, false).retryable());
+        assert!(Failure::transport(true, false).retryable());
         let limited = Failure::from_http(429, "", Some("2"));
         assert!(limited.retryable());
         assert_eq!(limited.retry_after, Some(Duration::from_secs(2)));

@@ -306,7 +306,24 @@ fn current_reads_filter_the_exact_agent_and_keep_private_directions_out() {
 
 #[test]
 fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
-    let snapshot = snapshot();
+    let mut snapshot = snapshot();
+    snapshot
+        .controls
+        .get_mut("task:model")
+        .unwrap()
+        .presentations
+        .insert(
+            "7:0".into(),
+            collab_types::task_presentation::TaskPresentation {
+                run: "7:0".into(),
+                received_at: Some(1),
+                sequence: 1,
+                text: "Private reply".into(),
+                reasoning: "Provider-exposed summary".into(),
+                finish: None,
+                detail: String::new(),
+            },
+        );
     let private = envelope(
         "desktop:task:model",
         "read-conversation",
@@ -320,7 +337,24 @@ fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
         Some("scribe")
     );
     let conversation = inspect(&snapshot, &private).unwrap();
-    assert_eq!(conversation["turns"].as_array().unwrap().len(), 3);
+    assert_eq!(conversation["turns"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        conversation["turns"][3]["presentation"]["reasoning"],
+        "Provider-exposed summary"
+    );
+    let stable_id = conversation["turns"][3]["id"].clone();
+    snapshot
+        .controls
+        .get_mut("task:model")
+        .unwrap()
+        .presentations
+        .get_mut("7:0")
+        .unwrap()
+        .sequence = 2;
+    assert_eq!(
+        inspect(&snapshot, &private).unwrap()["turns"][3]["id"],
+        stable_id
+    );
     assert_eq!(
         conversation["turns"][0]["text"],
         "Private full task instruction"
@@ -331,6 +365,8 @@ fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
         let public = inspect(&snapshot, &envelope("desktop:task:model", action, None)).unwrap();
         assert!(!public.to_string().contains("Private full task instruction"));
         assert!(!public.to_string().contains("Direction 2"));
+        assert!(!public.to_string().contains("Private model reasoning"));
+        assert!(!public.to_string().contains("Private reply"));
     }
     for query in [
         serde_json::json!({"run_epoch":8}),
