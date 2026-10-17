@@ -85,6 +85,8 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
+    /* A workspace that turned this browser away for good: only its card shows. */
+    [data-refusal] #surface, [data-refusal] #bar { visibility: hidden; }
     @media (prefers-reduced-motion: reduce) {
       #arrival { transition: none; }
       #arrival > svg { animation: none; }
