@@ -1,0 +1,4 @@
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.
+en-US installer-storage-alongside-capacity narration
+en-US installer-storage-linux-ready narration

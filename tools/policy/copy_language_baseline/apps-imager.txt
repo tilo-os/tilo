@@ -1,0 +1,12 @@
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.
+en-US imager-folder-cloud-unavailable narration
+en-US imager-setup-detail-root chain
+en-US imager-setup-detail-selection chain
+en-US imager-setup-error-download-review-only narration
+en-US imager-setup-internal-plan-free narration
+en-US installer-accounts-dav-saved-intro narration
+en-US installer-migration-state-unavailable narration
+en-US installer-original-boot-step narration
+en-US installer-preview-new-recovery narration
+en-US installer-service-source-needs-access instruction

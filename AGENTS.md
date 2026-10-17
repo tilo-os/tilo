@@ -144,6 +144,11 @@ There is no message-passing layer. Consequences:
 - Focus is 2D and directional — `App::focusable_order` in `crates/sdk/ui-core/src/app.rs`, not tab order.
 - **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
   to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
+- **Copy says state, outcome or next step**, in the person's words: no narration ("Tilo
+  checks…", "X appears here"), no implementation ("compositor", "certified", a job or surface
+  number, `{:?}` output), no all caps, at most one " · ", buttons named by outcome, and one
+  name per thing (`tools/policy/copy_glossary.toml`). See HIG §4;
+  `tools/policy/check_copy_language.py` checks every catalogue.
 - **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
   carries correctness, accessibility and theming that a local copy will not.
 - **Apps start empty.** No seeded feeds, messages, events or documents on the live path.

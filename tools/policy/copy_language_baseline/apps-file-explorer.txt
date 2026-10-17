@@ -1,0 +1,17 @@
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.
+de-DE files-certified-devices implementation
+de-DE files-nearby-choose-device implementation
+de-DE files-nearby-failed-device implementation
+de-DE files-nearby-loading-devices implementation
+de-DE files-nearby-no-devices implementation
+de-DE files-share-recipient-unreachable implementation
+en-US files-airdrop-action-detail implementation
+en-US files-certified-devices implementation
+en-US files-empty-recent narration
+en-US files-merge-review-guard narration
+en-US files-nearby-choose-device implementation
+en-US files-nearby-failed-device implementation
+en-US files-nearby-loading-devices implementation
+en-US files-nearby-no-devices implementation
+en-US files-share-recipient-unreachable implementation
