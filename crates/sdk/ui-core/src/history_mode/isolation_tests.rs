@@ -123,6 +123,8 @@ struct MutableContinuationIdentity {
     handler: Cell<u64>,
     supported: Cell<bool>,
     duplicate_resource: Cell<bool>,
+    /// The action is declared housekeeping.
+    housekeeping: Cell<bool>,
 }
 
 fn mutable_identity_resources(
@@ -133,7 +135,7 @@ fn mutable_identity_resources(
     let target = identity.target.get();
     let handler = identity.handler.get();
     let supported = identity.supported.get();
-    let spec = tilo_actions::ActionSpec::operation(
+    let mut spec = tilo_actions::ActionSpec::operation(
         "export",
         "Export",
         tilo_actions::OperationKind::Effect,
@@ -169,6 +171,11 @@ fn mutable_identity_resources(
             },
         })
     });
+    if identity.housekeeping.get() {
+        spec.contract
+            .tags
+            .push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
+    }
     let resource = tilo_actions::Resource::new(id, "fixture", "Live owner").with_action(spec);
     if identity.duplicate_resource.get() {
         vec![
@@ -641,6 +648,7 @@ fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity
             handler: Cell::new(1),
             supported: Cell::new(true),
             duplicate_resource: Cell::new(false),
+            housekeeping: Cell::new(false),
         });
         let (mut driver, starts, _emitter) = retained_identity_fixture(identity.clone());
         driver.click_named("history-open").unwrap();
@@ -661,6 +669,30 @@ fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity
     }
 }
 
+/// A person confirms each held action they asked for; housekeeping an app
+/// emits while History shows a past version is never held, announced or
+/// confirmed, and does not run then: the app does it again on its own.
+#[test]
+fn housekeeping_is_never_held_for_review() {
+    let identity = Rc::new(MutableContinuationIdentity {
+        target: Cell::new(1),
+        handler: Cell::new(1),
+        supported: Cell::new(true),
+        duplicate_resource: Cell::new(false),
+        housekeeping: Cell::new(true),
+    });
+    let (mut driver, starts, _emitter) = retained_identity_fixture(identity);
+    driver.click_named("history-open").unwrap();
+    assert!(
+        driver.pending_history_controls().is_empty(),
+        "housekeeping is not held while History shows"
+    );
+    driver.click_named("history-open").unwrap();
+    assert!(driver.pending_history_controls().is_empty());
+    assert!(!driver.targets().contains_key("history-pending-cancel-1"));
+    assert_eq!(starts.get(), 0, "dropped, not run behind the person's back");
+}
+
 #[test]
 fn actual_cancel_callback_removes_retained_item_and_future_live_control_runs() {
     let identity = Rc::new(MutableContinuationIdentity {
@@ -668,6 +700,7 @@ fn actual_cancel_callback_removes_retained_item_and_future_live_control_runs() {
         handler: Cell::new(1),
         supported: Cell::new(true),
         duplicate_resource: Cell::new(false),
+        housekeeping: Cell::new(false),
     });
     let (mut driver, starts, emitter) = retained_identity_fixture(identity);
     driver.click_named("history-open").unwrap();

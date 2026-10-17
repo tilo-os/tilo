@@ -169,6 +169,13 @@ pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
 /// not that it sends something away.
 pub const COMPENSATED_UNDO_TAG: &str = "undo:compensated";
 
+/// Contract tag on the declaration of a housekeeping verb: a change about the
+/// record rather than to it (`#[action(housekeeping)]`, such as marking a
+/// channel read). An app does these on its own, so nobody is asked to review
+/// or confirm one: one an app emits while History shows a past version is
+/// dropped, and the app does it again once the person is back.
+pub const HOUSEKEEPING_TAG: &str = "change:housekeeping";
+
 /// What one invocation of an action is, for the grants deciding it: its kind,
 /// the one field of its resource it writes when it writes only one (a reply
 /// writes the `comments`), which places it below that field in the tree, and

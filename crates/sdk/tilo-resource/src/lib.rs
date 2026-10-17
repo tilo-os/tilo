@@ -278,6 +278,9 @@ pub mod __private {
         pub kind: ActionKind,
         pub field: Option<&'static str>,
         pub destructive: bool,
+        /// A change about the record rather than to it
+        /// (`#[action(housekeeping)]`).
+        pub housekeeping: bool,
         pub answer: VerbAnswer,
         /// It records a message someone received (`#[action(incoming_message)]`).
         pub incoming_message: bool,
@@ -427,6 +430,9 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        if verb.housekeeping {
+            decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
+        }
         if verb.incoming_message {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());

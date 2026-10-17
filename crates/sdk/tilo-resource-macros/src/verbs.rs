@@ -1226,6 +1226,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
+        let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
             quote!(Made)
         } else if outboxes.is_empty() {
@@ -1308,6 +1309,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 kind: #krate::ActionKind::#action_kind,
                 field: #field,
                 destructive: #destructive,
+                housekeeping: #housekeeping,
                 answer: #krate::__private::VerbAnswer::#answer,
                 incoming_message: #incoming_message,
                 compensated: #compensated,
