@@ -23,7 +23,7 @@ use tilo_desktop_model::{
 use tilo_peer_state::workspace_task::WorkspaceTaskCommand;
 
 use super::native_task_execution::ChildReask;
-use super::{CapnpBrokerState, PendingTaskRun};
+use super::{CapnpBrokerState, PendingTaskRun, PublishedAction};
 
 /// How a native task's child may start.
 pub(super) enum NativeGate {
@@ -49,9 +49,9 @@ impl CapnpBrokerState {
         reask: &ChildReask<'_>,
     ) -> Result<NativeGate, String> {
         let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
-        let Some(binding) = run.native.clone() else {
+        if run.native.is_none() {
             return Ok(NativeGate::Proceed);
-        };
+        }
         let target = reask.target;
         let (surface, offered) = self
             .surfaces
@@ -61,19 +61,47 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(target.resource, target.action))
             .ok_or("the task action is no longer published in this workspace")?;
+        self.native_confirmation_for(
+            &run,
+            reask.lease,
+            (&surface.app_id, &offered),
+            (target.resource, target.action),
+            target.argument,
+        )
+        .await
+    }
+
+    /// [`Self::native_confirmation_gate`] for `offered`, an action of `app`
+    /// on `resource`, whether it is published by the running application or
+    /// retained from a closed one: a task action that asks first on its way
+    /// to an application being launched pauses at a reviewable draft too.
+    ///
+    /// # Errors
+    /// As [`Self::native_confirmation_gate`].
+    pub(super) async fn native_confirmation_for(
+        &self,
+        run: &PendingTaskRun,
+        lease: &str,
+        (app, offered): (&str, &PublishedAction),
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+    ) -> Result<NativeGate, String> {
+        let Some(binding) = run.native.clone() else {
+            return Ok(NativeGate::Proceed);
+        };
         // An agent sends its arguments in the wire form every caller uses,
         // JSON behind `ARGUMENTS_JSON_PREFIX`; a bare object is read the same.
-        let prefixed = target
-            .argument
-            .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
-        let json = prefixed.or(target.argument);
+        let prefixed =
+            argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
+        let json = prefixed.or(argument);
         let arguments = match json {
             Some(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
                 .map_err(|_| "task action arguments are not a JSON object")?,
             None => serde_json::Map::new(),
         };
         let digest = tilo_actions::draft::arguments_digest(&arguments);
-        let id = WorkspaceTaskConfirmation::id_for(target.resource, target.action, &digest);
+        let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
+        let id = WorkspaceTaskConfirmation::id_for(resource, action, &digest);
         let service = self
             .native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?;
@@ -85,10 +113,9 @@ impl CapnpBrokerState {
             .filter(|held| held.id == id && held.run_epoch == binding.epoch);
         if let Some(held) = held {
             return self
-                .held_answer(&run, held, &arguments, prefixed.is_some())
+                .held_answer(run, held, &arguments, prefixed.is_some())
                 .await;
         }
-        let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
         let contract_argument =
             json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
         let consequential = !matches!(
@@ -98,14 +125,14 @@ impl CapnpBrokerState {
             tilo_actions::ConfirmationPolicy::None
         );
         let mut current = binding.clone();
-        current.revision = runtime_collab::native_task_revision(reask.lease)
+        current.revision = runtime_collab::native_task_revision(lease)
             .ok_or("invalid native lease")?
             .1;
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: Some(current),
-            app: surface.app_id.clone(),
+            app: app.to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
-            resource: target.resource.into(),
+            resource: resource.into(),
             action: descriptor.address.action.clone(),
             need: descriptor.contract.need(),
             consequential,
@@ -121,9 +148,9 @@ impl CapnpBrokerState {
                     asking: uuid::Uuid::new_v4(),
                     run_epoch: binding.epoch,
                     agent_id: run.agent_id.clone(),
-                    app: surface.app_id.clone(),
+                    app: app.to_owned(),
                     resource_kind: descriptor.resource_kind.clone(),
-                    resource: target.resource.into(),
+                    resource: resource.into(),
                     action: descriptor.address.action.clone(),
                     kind: descriptor.contract.kind,
                     risk: descriptor.contract.risk,
@@ -132,7 +159,7 @@ impl CapnpBrokerState {
                     requested_at: unix_seconds(),
                     state: WorkspaceTaskConfirmationState::Waiting,
                 };
-                Err(self.ask_native_confirmation(&run, confirmation).await)
+                Err(self.ask_native_confirmation(run, confirmation).await)
             }
             Err(error) => Err(error),
         }
