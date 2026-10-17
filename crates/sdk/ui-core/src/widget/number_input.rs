@@ -720,7 +720,7 @@ impl NumberInput {
     fn commit_local(&mut self) {
         if let Some(parsed) = self.parse_text(self.field.value()) {
             let clamped = parsed.clamp(self.min, self.max);
-            if !clamped.is_nan() && clamped != self.value {
+            if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
                 self.value = clamped;
                 self.record_user_value(clamped);
             }
@@ -734,7 +734,7 @@ impl NumberInput {
     /// Records a change + pending write when it actually moves.
     fn step_by(&mut self, delta: f64) {
         let next = (self.value + delta).clamp(self.min, self.max);
-        if !next.is_nan() && next != self.value {
+        if !next.is_nan() && next.total_cmp(&self.value).is_ne() {
             self.value = next;
             self.record_user_value(next);
         }
@@ -809,7 +809,7 @@ impl Widget for NumberInput {
             && let Pulled::Value(v) = binding.pull(state, root)
         {
             let clamped = v.clamp(self.min, self.max);
-            if !clamped.is_nan() && clamped != self.value {
+            if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
                 self.value = clamped;
                 self.sync_field();
             }
@@ -1131,7 +1131,7 @@ impl Widget for NumberInput {
                     return false;
                 };
                 let clamped = parsed.clamp(self.min, self.max);
-                if !clamped.is_nan() && clamped != self.value {
+                if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
                     self.value = clamped;
                     self.record_user_value(clamped);
                 }
