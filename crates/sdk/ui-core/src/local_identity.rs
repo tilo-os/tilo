@@ -42,10 +42,7 @@ pub trait LocalIdentitySource: Send + Sync {
 /// and email addresses are never interpreted as the local person.
 #[cfg(feature = "local-daemons")]
 pub(crate) fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
-    let source = SOURCE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let source = SOURCE.read_recover().clone();
     match source {
         Some(source) => photo_from(source.as_ref(), identity),
         None => photo_from(&RuntimeIdentity, identity),
@@ -218,7 +215,7 @@ mod photo_tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Some((
                 [0x12; 32],
-                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).unwrap(),
+                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
             ))
         }
     }

@@ -252,12 +252,11 @@ impl CapnpChannelHandle {
         let duplicate = self.clipboard_descriptor_source().map_err(failed)?;
         let route = self.route();
         let workspace = route.cluster_id.clone();
-        let state = Arc::downgrade(&self.state);
         let peer = self.peer_id;
         let expected = request.clone();
         let custody = SelectedOpenCustody {
             local,
-            state,
+            state: Arc::downgrade(&self.state),
             original,
             expected,
             v2: None,
@@ -320,12 +319,11 @@ impl CapnpChannelHandle {
         let duplicate = self.clipboard_descriptor_source().map_err(failed)?;
         let route = self.route();
         let workspace = route.cluster_id.clone();
-        let state = Arc::downgrade(&self.state);
         let peer = self.peer_id;
         let expected = request.clone();
         let custody = SelectedOpenCustody {
             local,
-            state,
+            state: Arc::downgrade(&self.state),
             original,
             expected: expected.navigation(),
             v2: Some(expected),
@@ -558,6 +556,7 @@ impl SelectedOpenCustody {
                 Ok(())
             })?
             .map_err(str::to_owned)?;
+        drop(state);
         Ok(())
     }
 }

@@ -98,7 +98,7 @@ impl Client {
         self.next = self
             .next
             .checked_add(1)
-            .ok_or(t("files-open-with-launch-unavailable"))?;
+            .ok_or_else(|| t("files-open-with-launch-unavailable"))?;
         self.pending = Some(Pending {
             id: self.next,
             request_id: command.request_id().to_owned(),
@@ -207,8 +207,8 @@ impl FileExplorerWidget {
         if discovered.is_none() {
             self.refuse_while_answering()?;
         }
-        let invocation = invocation.ok_or(t("files-open-with-action-unavailable"))?;
-        if access.is_some_and(|access| access.editable())
+        let invocation = invocation.ok_or_else(|| t("files-open-with-action-unavailable"))?;
+        if access.is_some_and(open_selected::v2::SelectedAccess::editable)
             && !self.dispatcher.as_ref().is_some_and(|dispatcher| {
                 dispatcher.may(&ui::tilo_actions::ActionNeed::of(
                     ui::tilo_actions::ActionKind::Undoable,
@@ -223,7 +223,7 @@ impl FileExplorerWidget {
         }
         let path = self
             .visible_entry_path(entry)
-            .ok_or(t("files-open-with-selection-changed"))?;
+            .ok_or_else(|| t("files-open-with-selection-changed"))?;
         if path.parent() != Some(self.current_path.as_path()) {
             return Err(t("files-open-with-selection-changed"));
         }
@@ -277,14 +277,25 @@ impl FileExplorerWidget {
         if !fresh_scope && self.open_with_candidates(&path).find(app).is_none() {
             return Err(t("files-open-with-launch-unavailable"));
         }
-        self.select_entry(&path)
+        self.start_selected_open_custody(entry, app, invocation, access, &path)
+    }
+
+    fn start_selected_open_custody(
+        &mut self,
+        entry: &str,
+        app: &str,
+        invocation: InvocationId,
+        access: Option<open_selected::v2::SelectedAccess>,
+        path: &Path,
+    ) -> Result<Ran, String> {
+        self.select_entry(path)
             .map_err(|_| t("files-open-with-selection-changed"))?;
         let selected = self
             .shown_selection
             .objects
-            .get(&path)
+            .get(path)
             .and_then(|(_, object)| object.clone())
-            .ok_or(t("files-open-with-selection-changed"))?;
+            .ok_or_else(|| t("files-open-with-selection-changed"))?;
         if !selected
             .metadata()
             .map_err(|_| t("files-open-with-launch-unavailable"))?
@@ -295,7 +306,7 @@ impl FileExplorerWidget {
         let parent = self
             .shown_folder
             .clone()
-            .ok_or(t("files-open-with-selection-changed"))?;
+            .ok_or_else(|| t("files-open-with-selection-changed"))?;
         if !parent
             .metadata()
             .map_err(|_| t("files-open-with-launch-unavailable"))?
@@ -306,15 +317,15 @@ impl FileExplorerWidget {
         let proof = Proof::start().map_err(|_| t("files-open-with-launch-unavailable"))?;
         let selected_descriptor = selected
             .descriptor()
-            .ok_or(t("files-open-with-selection-changed"))?;
+            .ok_or_else(|| t("files-open-with-selection-changed"))?;
         let parent_descriptor = parent
             .descriptor()
-            .ok_or(t("files-open-with-selection-changed"))?;
+            .ok_or_else(|| t("files-open-with-selection-changed"))?;
         let proof_descriptor = proof
             .descriptor()
             .map_err(|_| t("files-open-with-launch-unavailable"))?;
         let request_id = uuid::Uuid::new_v4().to_string();
-        let components = components(&path)?;
+        let components = components(path)?;
         let command = match access {
             Some(access) => Command::Explicit(open_selected::v2::Request {
                 protocol: open_selected::v2::PROTOCOL.into(),
@@ -389,7 +400,7 @@ impl FileExplorerWidget {
             return;
         };
         if let Some(reply) = self.effect_reply.take() {
-            reply.answer(open_with_outcome(result));
+            reply.answer(open_with_outcome(result).map_err(|failure| *failure));
         }
     }
 }
@@ -420,10 +431,10 @@ fn validate_completion(
 }
 
 /// Only the host's typed namespace + ordinary launch-readiness completion
-/// fulfills OpenWith. Legacy admission remains an honest unavailable result.
+/// fulfills `OpenWith`. Legacy admission remains an honest unavailable result.
 fn open_with_outcome(
     result: Result<Completion, String>,
-) -> Result<ui::tilo_actions::ActionOutput, ui::tilo_actions::ActionFailure> {
+) -> Result<ui::tilo_actions::ActionOutput, Box<ui::tilo_actions::ActionFailure>> {
     let (code, message) = match result {
         Ok(Completion::Observed(observed)) => {
             return serde_json::to_value(observed)
@@ -431,11 +442,13 @@ fn open_with_outcome(
                     value: Some(value),
                     ..Default::default()
                 })
-                .map_err(|_| ui::tilo_actions::ActionFailure {
-                    code: "files.selected_open_result_invalid".into(),
-                    message: t("files-open-with-launch-unavailable"),
-                    details: None,
-                    retryable: false,
+                .map_err(|_| {
+                    Box::new(ui::tilo_actions::ActionFailure {
+                        code: "files.selected_open_result_invalid".into(),
+                        message: t("files-open-with-launch-unavailable"),
+                        details: None,
+                        retryable: false,
+                    })
                 });
         }
         Ok(Completion::Admission(_)) => (
@@ -447,12 +460,12 @@ fn open_with_outcome(
             t("files-open-with-launch-unavailable"),
         ),
     };
-    Err(ui::tilo_actions::ActionFailure {
+    Err(Box::new(ui::tilo_actions::ActionFailure {
         code: code.into(),
         message,
         details: None,
         retryable: false,
-    })
+    }))
 }
 
 #[cfg(test)]

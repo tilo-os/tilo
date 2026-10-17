@@ -8716,10 +8716,10 @@ fn delegate_browser_service_session_command(
     if !reply.matches(&command) {
         return Err(refused());
     }
-    if let runtime_collab::BrowserServiceSessionReply::Resolved { session } = &reply {
-        if session.identity_public_key != context.identity_public_key() {
-            return Err(refused());
-        }
+    if let runtime_collab::BrowserServiceSessionReply::Resolved { session } = &reply
+        && session.identity_public_key != context.identity_public_key()
+    {
+        return Err(refused());
     }
     reply.encode().map_err(|_| refused())
 }

@@ -196,10 +196,6 @@ pub enum AccountsEffect {
 /// Answer `effect` on the area's model; a connection check runs on a
 /// worker, and what changes the credential vault answers once the vault
 /// took it, in turn with the account changes under way (`vault_lane`).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one short arm per account effect, each routing to the pane"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AccountsEffect,
@@ -281,31 +277,7 @@ fn answer_model(
             model.changed = true;
         }
         AccountsEffect::CommitThunderbirdImport { revision } => {
-            // No account work under way: answered at once, as before.
-            if model.lane.is_idle() {
-                let root = model.account_root.clone();
-                let result = model.import_review.commit(&root, revision)?;
-                model.queue_reload();
-                model.changed = true;
-                return Ok(Effected::value(result));
-            }
-            // Otherwise in turn with the account mutations under way, which
-            // journal the stores this changes.
-            let reply = cx.reply();
-            model.run_in_lane(move |pane| {
-                let root = pane.account_root.clone();
-                let result = pane.import_review.commit(&root, revision);
-                if result.is_ok() {
-                    pane.queue_reload();
-                    pane.changed = true;
-                }
-                reply.finish(result.map(|status| ui::tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(status)),
-                    resources: Vec::new(),
-                }));
-                Step::Done
-            });
-            return Ok(Effected::Pending);
+            return commit_thunderbird_import(&mut model, revision, cx);
         }
         AccountsEffect::CancelThunderbirdImport => {
             model.import_review.cancel()?;
@@ -386,6 +358,38 @@ fn answer_model(
         AccountsEffect::TestAccount { account } => return test_account(model, &account, cx),
     }
     Ok(Effected::done())
+}
+
+fn commit_thunderbird_import(
+    model: &mut AccountsPane,
+    revision: u64,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    // No account work under way: answered at once, as before.
+    if model.lane.is_idle() {
+        let root = model.account_root.clone();
+        let result = model.import_review.commit(&root, revision)?;
+        model.queue_reload();
+        model.changed = true;
+        return Ok(Effected::value(result));
+    }
+    // Otherwise in turn with the account mutations under way, which
+    // journal the stores this changes.
+    let reply = cx.reply();
+    model.run_in_lane(move |pane| {
+        let root = pane.account_root.clone();
+        let result = pane.import_review.commit(&root, revision);
+        if result.is_ok() {
+            pane.queue_reload();
+            pane.changed = true;
+        }
+        reply.finish(result.map(|status| ui::tilo_actions::ActionOutput {
+            value: Some(serde_json::Value::String(status)),
+            resources: Vec::new(),
+        }));
+        Step::Done
+    });
+    Ok(Effected::Pending)
 }
 
 fn recover_mode(
@@ -2104,6 +2108,11 @@ impl AccountsPane {
                 ));
             }
         }
+        let label = self.account_row_label(view, &mut details);
+        item_row(&label, marks, &details, actions)
+    }
+
+    fn account_row_label(&self, view: &AccountView, details: &mut Vec<String>) -> String {
         // Keep the service name on the primary line and the account identity
         // on a secondary line, rather than joining metadata into the label.
         // The configured service identifies Gmail, never an email-domain guess.
@@ -2120,7 +2129,7 @@ impl AccountsPane {
         } else {
             None
         };
-        let label = if let Some(service) = service {
+        if let Some(service) = service {
             if view.label != view.summary
                 && view.label != "Google"
                 && view.label != AccountKind::GoogleDrive.label()
@@ -2130,8 +2139,7 @@ impl AccountsPane {
             service
         } else {
             view.label.clone()
-        };
-        item_row(&label, marks, &details, actions)
+        }
     }
 
     fn account_maintenance_actions(&self, view: &AccountView, needs_sign_in: bool) -> Vec<Button> {

@@ -1127,6 +1127,8 @@ impl BrowserServiceSessionRequestContext {
     pub fn read_context(&self) -> &crate::collab_broker_capnp::NativeDocumentReadContext {
         &self.read
     }
+    /// # Errors
+    /// Refuses a retired route or a caller that no longer has read permission.
     pub fn revalidate(&self) -> Result<(), String> {
         self.read.revalidate()
     }
@@ -1134,8 +1136,14 @@ impl BrowserServiceSessionRequestContext {
 /// Private credential custody, independent of replicated collaboration state.
 pub trait BrowserServiceSessionServices: Send + Sync {
     /// Recheck current route Read permission and the session's own person.
+    ///
+    /// # Errors
+    /// Refuses stale route authority or a session belonging to another person.
     fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String>;
     /// Mutations require a provider's explicit live Admin authorization.
+    ///
+    /// # Errors
+    /// Refuses unauthorized commands, including mutations without live Admin authority.
     fn authorize_command(
         &self,
         context: &BrowserServiceSessionRequestContext,
@@ -1149,6 +1157,10 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         }
         self.authorize(context)
     }
+    /// Execute an authorized website session command.
+    ///
+    /// # Errors
+    /// Refuses unavailable sessions, stale authority or credential storage failures.
     fn command(
         &self,
         context: &BrowserServiceSessionRequestContext,
@@ -1235,7 +1247,7 @@ impl OpenSelectedContext {
         &self.executing
     }
     /// # Errors
-    /// Refuses cancelled, revoked or retired OpenWith custody.
+    /// Refuses cancelled, revoked or retired `OpenWith` custody.
     pub fn authorize(&self) -> Result<(), String> {
         (self.check)()?;
         if !self.executing.current() {
@@ -1269,7 +1281,7 @@ pub type OpenSelectedV2Future = std::pin::Pin<
     >,
 >;
 /// Read-only discovery context sealed to the same admitted native Files task.
-/// The context cannot admit a selection or stand in for an original OpenWith.
+/// The context cannot admit a selection or stand in for an original `OpenWith`.
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct SelectedDiscoveryContext {
@@ -1293,6 +1305,8 @@ impl SelectedDiscoveryContext {
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         &self.certificate
     }
+    /// # Errors
+    /// Refuses stale caller authority, changed original custody or a retired process.
     pub fn authorize(&self) -> Result<(), String> {
         self.clipboard.authorize(self.needed)?;
         if let Some(original) = &self.original

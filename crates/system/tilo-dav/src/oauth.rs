@@ -80,7 +80,12 @@ impl Service {
         username: &str,
         google: bool,
     ) -> Result<Vec<CalendarCollection>, String> {
-        let binding = self.binding(server_url, google)?;
+        let binding = Self::binding(
+            server_url,
+            google,
+            #[cfg(feature = "test-support")]
+            self.fixture.as_ref(),
+        )?;
         let credentials = if google {
             self.google_credential(id)?
         } else {
@@ -118,7 +123,12 @@ impl Service {
         password: &str,
         target: &str,
     ) -> Result<AuthorisedClient, String> {
-        let binding = self.binding(server_url, id.is_some())?;
+        let binding = Self::binding(
+            server_url,
+            id.is_some(),
+            #[cfg(feature = "test-support")]
+            self.fixture.as_ref(),
+        )?;
         binding.check(target)?;
         let credentials = match id {
             Some(id) => self.google_credential(&AccountId::from(id))?,
@@ -131,15 +141,15 @@ impl Service {
         Ok(AuthorisedClient { client, binding })
     }
 
-    fn binding(&self, server: &str, google: bool) -> Result<Binding, String> {
+    fn binding(
+        server: &str,
+        google: bool,
+        #[cfg(feature = "test-support")] fixture: Option<&Url>,
+    ) -> Result<Binding, String> {
         let base = Url::parse(server).map_err(|_| "invalid calendar server URL")?;
         discovery::safe_url(&base, server)?;
         #[cfg(feature = "test-support")]
-        let google = google
-            && !self
-                .fixture
-                .as_ref()
-                .is_some_and(|fixture| fixture.origin() == base.origin());
+        let google = google && !fixture.is_some_and(|fixture| fixture.origin() == base.origin());
         let binding = Binding { base, google };
         binding.check(server)?;
         Ok(binding)

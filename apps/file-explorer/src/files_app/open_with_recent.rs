@@ -447,14 +447,25 @@ impl FileExplorerWidget {
         open_with.id = OPEN_WITH_ACTION.into();
         open_with.label = t("files-menu-open-with");
         resource.actions.push(open_with);
-        if self.app_chooser_target.as_deref() != Some(entry.path.as_path()) {
-            return;
+        if self.app_chooser_target.as_deref() == Some(entry.path.as_path()) {
+            self.append_open_with_chooser_actions(entry, resource_id, resource, &candidates);
         }
+    }
+
+    fn append_open_with_chooser_actions(
+        &self,
+        entry: &Entry,
+        resource_id: &str,
+        resource: &mut Resource,
+        candidates: &OpenWithCandidates,
+    ) {
         for app in &candidates.apps {
             let access = self
                 .retained_open_target_access(&entry.path, &app.id)
                 .map(|_| ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly);
-            let permission = if access.is_some_and(|value| value.editable()) {
+            let permission = if access
+                .is_some_and(ui::collaboration::open_selected::v2::SelectedAccess::editable)
+            {
                 ui::tilo_actions::ActionKind::Undoable
             } else {
                 ui::tilo_actions::ActionKind::Read
@@ -504,8 +515,8 @@ impl FileExplorerWidget {
                         // optional constant also describes the bound intent to the
                         // original host custody, without a second permission UI.
                         spec.input = immediate;
-                        spec.id = format!("{prefix}{}", app.id).into();
-                        spec.label = label.into();
+                        spec.id = format!("{prefix}{}", app.id);
+                        spec.label = label;
                         spec
                     } else {
                         crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)

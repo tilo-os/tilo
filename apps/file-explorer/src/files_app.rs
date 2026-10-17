@@ -8972,7 +8972,17 @@ impl Collaborative for FileExplorerWidget {
         }
         self.selected_open.event(event);
         self.poll_selected_open();
-        let mut changed = self.handle_shortcut_event(event);
+        let changed = self.handle_shortcut_event(event);
+        let nearby_changed = self.handle_nearby_event(event);
+        if changed || nearby_changed {
+            self.structure_dirty = true;
+        }
+    }
+}
+
+impl FileExplorerWidget {
+    fn handle_nearby_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
+        let mut changed = false;
         for effect in self.nearby_send.handle_event(event) {
             match effect {
                 crate::nearby_send::NearbyUiEffect::AvailabilityChanged => {
@@ -9063,9 +9073,7 @@ impl Collaborative for FileExplorerWidget {
                 }
             }
         }
-        if changed {
-            self.structure_dirty = true;
-        }
+        changed
     }
 }
 

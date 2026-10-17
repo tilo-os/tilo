@@ -361,7 +361,7 @@ impl AccountsPane {
             .and_then(|(_, secret)| secret.clone())
             .unwrap_or_default();
         if !draft.password.trim().is_empty() {
-            secret.password = draft.password.trim().to_owned();
+            draft.password.trim().clone_into(&mut secret.password);
         }
         Ok((
             account,
@@ -406,8 +406,10 @@ impl AccountsPane {
         if let Err(error) = self.validate_calendar_review() {
             return settle(self, Err(error));
         }
-        let (original, credential) = self.calendar_baseline.clone().expect("validated review");
-        let id = original
+        let Some((original, credential)) = self.calendar_baseline.clone() else {
+            return settle(self, Err(t("accounts-calendar-details-changed")));
+        };
+        let Some(id) = original
             .as_ref()
             .map(|account| account.id.clone())
             .or_else(|| {
@@ -415,7 +417,9 @@ impl AccountsPane {
                     .as_ref()
                     .and_then(|draft| draft.assigned_id.clone())
             })
-            .expect("validated review ID");
+        else {
+            return settle(self, Err(t("accounts-calendar-details-changed")));
+        };
         let round = self.form_round;
         Step::vault(
             move |vault| {
