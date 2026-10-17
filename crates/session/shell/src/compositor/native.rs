@@ -6371,11 +6371,19 @@ fn pump_test_control_conn(
                             Vec::new(),
                         )
                     }
-                    Ok(request) if conn.admin && frame_builder.host().onboarding_active()
-                        && !super::admin_control::first_use_permitted(&request.command) => (
-                            test_control::Response::Err { code: "not_permitted".into(), message: test_control::ADMIN_CONTROL_FIRST_USE_ONLY.into() },
+                    Ok(request)
+                        if conn.admin
+                            && frame_builder.host().onboarding_active()
+                            && !super::admin_control::first_use_permitted(&request.command) =>
+                    {
+                        (
+                            test_control::Response::Err {
+                                code: "not_permitted".into(),
+                                message: test_control::ADMIN_CONTROL_FIRST_USE_ONLY.into(),
+                            },
                             Vec::new(),
-                        ),
+                        )
+                    }
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
@@ -6421,7 +6429,11 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
-                        if conn.admin && agent.is_none() && !session.is_locked() && !frame_builder.host().onboarding_active() {
+                        if conn.admin
+                            && agent.is_none()
+                            && !session.is_locked()
+                            && !frame_builder.host().onboarding_active()
+                        {
                             if let test_control::Command::ActionsEnumerate { query, .. } =
                                 &request.command
                             {
@@ -8216,6 +8228,8 @@ fn install_session_peer_sync(
     let net = Arc::new(handle);
     net.join_at_boot();
     net.follow_host_rooms();
+    net.follow_community();
+    crate::shell::link_open::attach_network(&net);
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));

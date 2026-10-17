@@ -958,6 +958,13 @@ pub struct ChromeState {
     /// Banners pointing at a task whose run waits for the person's answer,
     /// by banner, to the task they open.
     task_confirmation_toasts: BTreeMap<u64, String>,
+    /// Notifications of new devices asking to be the person, with the
+    /// request each answers and the code it shows.
+    device_asking_toasts: BTreeMap<u64, ([u8; 32], String)>,
+    /// Requests a notification was raised for, so it is raised once.
+    device_asking_seen: std::collections::BTreeSet<[u8; 32]>,
+    /// The person's answers to devices asking, for the network.
+    device_answers: Vec<([u8; 32], bool)>,
 }
 
 #[derive(Debug)]
@@ -1127,6 +1134,9 @@ impl ChromeState {
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
             task_confirmation_toasts: BTreeMap::new(),
+            device_asking_toasts: BTreeMap::new(),
+            device_asking_seen: std::collections::BTreeSet::new(),
+            device_answers: Vec::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -2234,6 +2244,76 @@ impl ChromeState {
         self.push_notification_full(toast)
     }
 
+    /// Ask the person about a new device asking to be them, once: what it
+    /// is, when and from where it asked, and the code it shows, with
+    /// Approve and Decline (see [`Self::device_asking_actions`]).
+    pub fn push_device_asking(
+        &mut self,
+        device: &crate::shell::peer_sync_overlay::DeviceAskingSummary,
+    ) -> Option<u64> {
+        if !self.device_asking_seen.insert(device.digest) {
+            return None;
+        }
+        let from = device
+            .country
+            .as_deref()
+            .map_or_else(String::new, |country| {
+                crate::shell::i18n::t_args(
+                    "pairing-asks-from",
+                    &[("country", country.to_owned().into())],
+                )
+            });
+        let secs_ago = tilo_clock::unix_now_ms().saturating_sub(device.requested_at_ms) / 1000;
+        let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
+        let body = crate::shell::i18n::t_args(
+            "pairing-asks-body",
+            &[
+                ("device", device.label.clone().into()),
+                ("from", from.into()),
+                ("when", when.into()),
+                ("code", device.code.clone().into()),
+            ],
+        );
+        let mut toast = Notification::new(crate::shell::i18n::t("pairing-asks-title"), body)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Permission)
+            .with_addressed(tilo_desktop::notifications::Addressed::Ask);
+        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+        self.device_asking_toasts
+            .insert(toast.id, (device.digest, device.code.clone()));
+        Some(self.push_notification_full(toast))
+    }
+
+    /// The buttons of notification `id` when it asks about a new device:
+    /// Approve (naming the code) and Decline.
+    pub fn device_asking_actions(&self, id: u64) -> Option<Vec<(String, String)>> {
+        let (_, code) = self.device_asking_toasts.get(&id)?;
+        Some(vec![
+            (
+                "approve".into(),
+                crate::shell::i18n::t_args("pairing-approve", &[("code", code.clone().into())]),
+            ),
+            ("decline".into(), crate::shell::i18n::t("pairing-decline")),
+        ])
+    }
+
+    /// The person answered notification `id` about a new device. Returns
+    /// whether it was one.
+    pub fn answer_device_asking(&mut self, id: u64, approve: bool) -> bool {
+        let Some((digest, _)) = self.device_asking_toasts.remove(&id) else {
+            return false;
+        };
+        self.device_answers.push((digest, approve));
+        self.dismiss_notification(id);
+        self.bump();
+        true
+    }
+
+    /// The person's answers to devices asking, since the last call.
+    pub fn take_device_answers(&mut self) -> Vec<([u8; 32], bool)> {
+        std::mem::take(&mut self.device_answers)
+    }
+
     /// The deletion toast's Undo: put the workspace back where it was, on
     /// screen. The person's other devices get it back with the next list.
     pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
@@ -2969,6 +3049,7 @@ impl ChromeState {
             return;
         }
         self.task_confirmation_toasts.remove(&n.id);
+        self.device_asking_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 

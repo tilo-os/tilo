@@ -1816,6 +1816,10 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 "42".repeat(32)
             ))),
             PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::LeaveSite(_)
+            | PeerSyncRequest::InviteDevice
+            | PeerSyncRequest::DevicesAsking
+            | PeerSyncRequest::AnswerDevice { .. }
             | PeerSyncRequest::PollEnrollment(_)
             | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {

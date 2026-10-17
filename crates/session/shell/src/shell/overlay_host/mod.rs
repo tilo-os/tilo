@@ -866,6 +866,15 @@ pub struct ShellOverlayHost {
     /// nor worker in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync: peer_sync_dispatch::PeerSyncDispatch,
+    /// Until when (Unix-epoch milliseconds) a pairing link of this
+    /// computer's admits a device, so its host is asked for one.
+    pairing_until_ms: u64,
+    /// When the host was last asked for the devices asking.
+    pairing_polled_at: Option<std::time::Instant>,
+    /// Rooms a screenshot scene stands in as held through the web.
+    site_rooms_for_shots: Option<Vec<crate::shell::network::SiteRoom>>,
+    /// What each device asking calls itself, for the answer's notice.
+    device_labels: std::collections::HashMap<[u8; 32], String>,
     /// Privileged in-process access to the compositor's bounded clipboard
     /// history. Absent in screenshots and embedders.
     clipboard_manager_bridge: Option<ClipboardManagerBridge>,
@@ -1205,6 +1214,10 @@ pub enum PeerSyncAction {
     /// Open the invite composer, before anything is minted. What the
     /// collaborators panel's Invite button emits.
     PromptInvite,
+    /// Leave the site's workspace `room` (the overview's Leave).
+    LeaveSite { room: crate::shell::state::RoomId },
+    /// Open "Pair a new device" and make its link.
+    PairDevice,
     /// User invoked `/connect`. Opens the token-input prompt
     /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
@@ -1233,6 +1246,9 @@ const PALETTE_LIST_SHARE: f64 = 0.55;
 /// 100 % text: twelve two-line rows. Past that it scrolls; a card standing
 /// over most of a 4K screen would cover the desktop the search is about.
 const PALETTE_LIST_MAX: f64 = 504.0;
+
+/// How often the host is asked for the devices asking under a pairing link.
+const PAIRING_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
@@ -2535,6 +2551,10 @@ impl ShellOverlayHost {
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync: peer_sync_dispatch::PeerSyncDispatch::default(),
+            pairing_until_ms: 0,
+            pairing_polled_at: None,
+            site_rooms_for_shots: None,
+            device_labels: std::collections::HashMap::new(),
             clipboard_manager_bridge: None,
             device_fabric_bridge: None,
             realtime_continuity_bridge: None,
@@ -4246,8 +4266,109 @@ impl ShellOverlayHost {
                 });
                 self.complete_peer_sync_action(request_id, output);
             }
+            FollowUp::Pairing { request } => self.apply_pairing(&request, outcome),
             FollowUp::Ignore => {}
         }
+    }
+
+    /// Carry out one pairing request on the worker.
+    /// Open "Pair a new device" and ask the network for its link.
+    pub(super) fn open_pairing(&mut self) {
+        self.peer_sync_overlay.prompt_pair();
+        self.dispatch_pairing(PeerSyncRequest::InviteDevice);
+    }
+
+    fn dispatch_pairing(&mut self, request: PeerSyncRequest) {
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: request.clone(),
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Pairing { request },
+        );
+    }
+
+    /// Show what a pairing request answered: the link on the sheet, a
+    /// notification for each device newly asking, the answer's outcome.
+    fn apply_pairing(
+        &mut self,
+        request: &PeerSyncRequest,
+        outcome: Result<PeerSyncResponse, String>,
+    ) {
+        match (request, outcome) {
+            (
+                PeerSyncRequest::InviteDevice,
+                Ok(PeerSyncResponse::PairingInvite {
+                    link,
+                    expires_at_ms,
+                }),
+            ) => {
+                self.peer_sync_overlay.show_pairing(link);
+                self.pairing_until_ms = expires_at_ms;
+            }
+            (PeerSyncRequest::InviteDevice, Err(error)) => {
+                self.peer_sync_overlay.pairing_failed(&error);
+            }
+            (PeerSyncRequest::DevicesAsking, Ok(PeerSyncResponse::DevicesAsking(asking))) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    for device in &asking {
+                        self.device_labels
+                            .insert(device.digest, device.label.clone());
+                        state.push_device_asking(device);
+                    }
+                }
+            }
+            (PeerSyncRequest::AnswerDevice { digest, approve }, Ok(_)) => {
+                let label = self.device_labels.remove(digest).unwrap_or_default();
+                if *approve {
+                    self.peer_sync_overlay.pairing_done(&label);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_notification(
+                            t_args("pairing-done", &[("device", label.into())]),
+                            String::new(),
+                        );
+                    }
+                }
+                self.pairing_until_ms = 0;
+            }
+            (PeerSyncRequest::AnswerDevice { .. }, Err(error)) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().push_warning_notification(
+                        t_args("pairing-answer-failed", &[("error", error.into())]),
+                        String::new(),
+                    );
+                }
+            }
+            (PeerSyncRequest::DevicesAsking, Err(error)) => {
+                tracing::debug!(%error, "the devices asking could not be read");
+            }
+            _ => {}
+        }
+    }
+
+    /// While a pairing link of this computer's admits a device, ask its host
+    /// for the devices asking under it now and then; and send the person's
+    /// answers to them.
+    fn pump_pairing(&mut self) {
+        let answers = self
+            .chrome
+            .as_ref()
+            .map_or_else(Vec::new, |chrome| chrome.borrow_mut().take_device_answers());
+        for (digest, approve) in answers {
+            self.dispatch_pairing(PeerSyncRequest::AnswerDevice { digest, approve });
+        }
+        if self.pairing_until_ms <= tilo_clock::unix_now_ms()
+            || self.peer_sync.in_flight(&PeerSyncRequest::DevicesAsking)
+            || self
+                .pairing_polled_at
+                .is_some_and(|at| at.elapsed() < PAIRING_POLL_INTERVAL)
+        {
+            return;
+        }
+        self.pairing_polled_at = Some(std::time::Instant::now());
+        self.dispatch_pairing(PeerSyncRequest::DevicesAsking);
     }
 
     /// The workspace a peer-sync request made now is for.
@@ -4291,6 +4412,7 @@ impl ShellOverlayHost {
         if !polling && let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
             self.run_peer_sync_request(&request, false);
         }
+        self.pump_pairing();
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
@@ -4313,6 +4435,21 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptConnect => {
                     self.peer_sync_overlay.prompt_connect();
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::PairDevice => {
+                    self.open_pairing();
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::LeaveSite { room } => {
+                    self.dispatch_peer_sync(
+                        peer_sync_dispatch::Job {
+                            request: PeerSyncRequest::LeaveSite(room),
+                            require_pending: false,
+                            workspace: self.active_workspace_id(),
+                        },
+                        peer_sync_dispatch::FollowUp::Ignore,
+                    );
                     self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::Network { workspace, request } => {
@@ -10777,6 +10914,73 @@ impl ShellOverlayHost {
         self.palette.set_query(q);
     }
 
+    /// The rooms held through the web, which the overview offers to leave:
+    /// the network's, or what a screenshot scene stood in.
+    fn site_rooms(&self) -> Vec<crate::shell::network::SiteRoom> {
+        self.site_rooms_for_shots
+            .clone()
+            .unwrap_or_else(|| self.peer_sync.site_rooms())
+    }
+
+    /// What the switcher says under workspace `idx` when it is a site's:
+    /// the site it comes from (named as the community's when it is this
+    /// computer's community), then how many people are here when presence
+    /// knows. A site's workspace keeps no roster here, so its access line
+    /// would say no one has access.
+    fn overview_site_line(&self, idx: usize) -> Option<String> {
+        let (room, here) = {
+            let state = self.chrome.as_ref()?.borrow();
+            let tree = state.tree();
+            let workspace = tree.desktop.workspaces.get(idx)?;
+            let mut here: Vec<&str> = workspace
+                .collaborators
+                .iter()
+                .map(|person| person.id.as_str())
+                .filter(|id| *id != state.local_user_id)
+                .collect();
+            here.sort_unstable();
+            here.dedup();
+            (workspace.room, here.len())
+        };
+        let site = self
+            .site_rooms()
+            .into_iter()
+            .find(|site| site.room == room)?;
+        let host = site.site.unwrap_or_else(|| t("overview-site-web"));
+        let origin = if site.community {
+            t_args("overview-site-community", &[("site", host.into())])
+        } else {
+            host
+        };
+        Some(if here == 0 {
+            origin
+        } else {
+            let here = t_args("overview-site-here", &[("count", here.into())]);
+            format!("{origin} · {here}")
+        })
+    }
+
+    /// Stand `rooms` in as the rooms held through the web, for a screenshot
+    /// scene without a network.
+    pub fn set_site_rooms_for_shots(&mut self, rooms: Vec<crate::shell::network::SiteRoom>) {
+        self.site_rooms_for_shots = Some(rooms);
+    }
+
+    /// Open the join field with `typed` in it, as a person typing a site.
+    pub fn prompt_join_for_shots(&mut self, typed: &str) {
+        self.peer_sync_overlay.prompt_connect();
+        let mut snapshot = self.peer_sync_overlay.snapshot();
+        snapshot.connect_input = Some(typed.to_owned());
+        snapshot.status = Some(crate::shell::i18n::t("peer-sync-paste-token"));
+        self.peer_sync_overlay.set_snapshot_for_shots(snapshot);
+    }
+
+    /// Open "Pair a new device" showing `link`.
+    pub fn show_pairing_for_shots(&mut self, link: &str) {
+        self.peer_sync_overlay.prompt_pair();
+        self.peer_sync_overlay.show_pairing(link.to_owned());
+    }
+
     /// Fast-forwards the overview crossfade so a headless single-frame
     /// render sees the settled layer, not the alpha-zero start.
     pub fn force_overview_settled(&mut self, target: bool) {
@@ -12889,7 +13093,7 @@ impl ShellOverlayHost {
     fn overview_list_slots(&self) -> usize {
         let n = self.overview_cards().len();
         n.saturating_sub(usize::from(self.overview_here_index().is_some()))
-            .saturating_add(1)
+            .saturating_add(2)
     }
 
     /// Height the list would take if nothing clipped it.
@@ -13071,6 +13275,75 @@ impl ShellOverlayHost {
     fn overview_add_workspace_rect_for(&self, ws_count: usize) -> Rect {
         let slot = ws_count.saturating_sub(usize::from(self.overview_here_index().is_some()));
         self.overview_list_slot_rect(slot)
+    }
+
+    /// Rect of the "Join a workspace…" row, after "New workspace".
+    fn overview_join_workspace_rect_for(&self, ws_count: usize) -> Rect {
+        let slot = ws_count.saturating_sub(usize::from(self.overview_here_index().is_some()));
+        self.overview_list_slot_rect(slot.saturating_add(1))
+    }
+
+    /// The "Leave" control on the row of workspace `idx` when it is a
+    /// site's workspace, at the row's trailing edge; zero otherwise.
+    fn overview_leave_rect(
+        &self,
+        idx: usize,
+        site_rooms: &[crate::shell::network::SiteRoom],
+    ) -> Rect {
+        let leavable = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .workspaces
+                .get(idx)
+                .is_some_and(|workspace| site_rooms.iter().any(|site| site.room == workspace.room))
+        });
+        if !leavable {
+            return Rect::ZERO;
+        }
+        let row = self.overview_row_rect(idx);
+        // Wide enough for "Leave" in every language the shell speaks.
+        let w = 112.0;
+        let h = 28.0_f64;
+        if self.overview_slot_of(idx).is_none() {
+            // The room you are in: on its access line, at the panel's edge.
+            let x1 = self.overview_content_rect().x1;
+            return Rect::new(x1 - w, row.y1 - h, x1, row.y1);
+        }
+        let pad = self.overview_metrics.row_pad;
+        let h = h.min(row.height() - 8.0).max(0.0);
+        let cy = row.center().y;
+        Rect::new(row.x1 - pad - w, cy - h / 2.0, row.x1 - pad, cy + h / 2.0)
+    }
+
+    /// The join row's hit area, from geometry as the "New workspace" row's.
+    fn join_workspace_hit_rect(&self) -> Rect {
+        let add = self.add_workspace_hit_rect();
+        if add.area() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let content = self.overview_content_rect();
+        let top = self.overview_list_top().max(content.y0);
+        let band = Rect::new(content.x0, top, content.x1, content.y1);
+        let row = self
+            .overview_join_workspace_rect_for(self.overview_cards().len())
+            .intersect(band);
+        if row.width() > 0.0 && row.height() > 0.0 {
+            row
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// Open the join field and close the overview.
+    fn open_join_field(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.overlays.overview = false;
+            state.push_peer_sync_request(PeerSyncAction::PromptConnect);
+            state.bump();
+        }
     }
 
     /// Pan the room list so the keyboard's selection is on screen —
@@ -15494,7 +15767,7 @@ impl ShellOverlayHost {
                 self.activate_overview_selection(count);
             }
             Key::Named(NamedKey::Home) => self.overview_selection = self.overview_here_index(),
-            Key::Named(NamedKey::End) => self.overview_selection = Some(count),
+            Key::Named(NamedKey::End) => self.overview_selection = Some(count.saturating_add(1)),
             _ => self.step_overview_selection(logical_key, shift, count),
         }
         self.scroll_overview_selection_into_view();
@@ -15506,7 +15779,7 @@ impl ShellOverlayHost {
     fn step_overview_selection(&mut self, key: &Key, shift: bool, count: usize) {
         let tab = matches!(key, Key::Named(NamedKey::Tab));
         let back = matches!(key, Key::Named(NamedKey::ArrowUp)) || (tab && shift);
-        let focus_count = if tab { count.saturating_add(1) } else { count };
+        let focus_count = if tab { count.saturating_add(2) } else { count };
         let mut current = self
             .overview_selection
             .or_else(|| self.overview_here_index())
@@ -15527,6 +15800,11 @@ impl ShellOverlayHost {
             .or_else(|| self.overview_here_index());
         if target == Some(count) {
             self.create_overview_workspace();
+            self.settle_keyboard_overview();
+            return;
+        }
+        if target == Some(count.saturating_add(1)) {
+            self.open_join_field();
             self.settle_keyboard_overview();
             return;
         }
@@ -18560,6 +18838,27 @@ impl ShellOverlayHost {
             self.create_overview_workspace();
             return;
         }
+        let join = self.join_workspace_hit_rect();
+        if join.area() > 0.0 && join.contains(p) {
+            self.open_join_field();
+            return;
+        }
+        let site_rooms = self.site_rooms();
+        if !site_rooms.is_empty() {
+            let leaving = (0..self.overview_cards().len()).find_map(|idx| {
+                let leave = self.overview_leave_rect(idx, &site_rooms);
+                (leave.area() > 0.0 && leave.contains(p)).then_some(idx)
+            });
+            if let (Some(idx), Some(chrome)) = (leaving, self.chrome.as_ref()) {
+                let mut state = chrome.borrow_mut();
+                let room = state.tree().desktop.workspaces.get(idx).map(|ws| ws.room);
+                if let Some(room) = room {
+                    state.push_peer_sync_request(PeerSyncAction::LeaveSite { room });
+                    state.bump();
+                }
+                return;
+            }
+        }
         let hit = self.hit_test_overview(p);
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
@@ -21086,6 +21385,29 @@ impl Widget for ShellOverlayHost {
                                     && self.overview_window_selection.is_none(),
                             )),
                     );
+                    overview.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(t("overview-join-workspace"))
+                            .with_bounds(self.overview_join_workspace_rect_for(cards.len()))
+                            .with_state(AccessState::new().focusable(true).focused(
+                                self.overview_selection == Some(cards.len().saturating_add(1))
+                                    && self.overview_window_selection.is_none(),
+                            )),
+                    );
+                    let site_rooms = self.site_rooms();
+                    for idx in 0..cards.len() {
+                        let leave = self.overview_leave_rect(idx, &site_rooms);
+                        if leave.area() > 0.0 {
+                            overview.children.push(
+                                AccessNode::new(Role::Button)
+                                    .with_name(t_args(
+                                        "a11y-leave-workspace",
+                                        &[("name", cards[idx].name.clone().into())],
+                                    ))
+                                    .with_bounds(leave),
+                            );
+                        }
+                    }
                     root.children.push(overview);
                 }
                 LayerId::WorkspaceSettings => {
@@ -22166,6 +22488,7 @@ impl ShellOverlayHost {
             || osd_frame
             || acknowledgement_frame
             || self.window_previews.changed()
+            || self.peer_sync_overlay.needs_animation_frame()
     }
 }
 
@@ -24983,7 +25306,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// One room row in the "go to" list.
+    /// One room row in the "go to" list; `trailing` is kept free at its end
+    /// for a control of the row's own (a site workspace's Leave).
     fn draw_overview_room_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -24991,6 +25315,7 @@ impl ShellOverlayHost {
         idx: usize,
         card: &tilo_desktop::overview::RoomCard,
         selected: bool,
+        trailing: f64,
     ) {
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -25028,7 +25353,7 @@ impl ShellOverlayHost {
 
         let pad = m.row_pad;
         let x0 = rect.x0 + pad;
-        let x1 = rect.x1 - pad;
+        let x1 = rect.x1 - pad - trailing;
 
         // Faces first: the name elides against what's left rather than
         // running underneath them.
@@ -25052,8 +25377,10 @@ impl ShellOverlayHost {
         let sub_style = tokens.typography.style(TextRole::Caption);
         // Who's in the room now outranks who could be; access is what
         // the line says when it's empty.
-        let mut sub = tilo_desktop::overview::room_presence_label(card)
-            .unwrap_or_else(|| tilo_desktop::overview::room_access_label(card));
+        let mut sub = self.overview_site_line(idx).unwrap_or_else(|| {
+            tilo_desktop::overview::room_presence_label(card)
+                .unwrap_or_else(|| tilo_desktop::overview::room_access_label(card))
+        });
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
@@ -25215,6 +25542,7 @@ impl ShellOverlayHost {
 
         self.draw_overview_go_to_list(scene, transform, text_renderer, theme, &cards, band);
         self.draw_overview_add_room_row(scene, transform, text_renderer, theme, cards.len());
+        self.draw_overview_join_room_row(scene, transform, text_renderer, theme, cards.len());
         self.draw_overview_scroll_fade(scene, transform, theme, if whole { content } else { band });
 
         scene.pop_layer();
@@ -25449,6 +25777,17 @@ impl ShellOverlayHost {
                 card,
                 name_size,
             );
+            let leave = self.overview_leave_rect(hi, &self.site_rooms());
+            if leave.area() > 0.0 {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(leave, &t("overview-leave-workspace"))
+                        .hovered(self.last_cursor.is_some_and(|p| leave.contains(p))),
+                );
+            }
         } else {
             // No room is marked current. Saying which one you are in
             // would be an invention, so the panel says what is true.
@@ -25542,7 +25881,9 @@ impl ShellOverlayHost {
         .style(ChipStyle::Neutral)
         .paint(scene, transform, text_renderer, theme);
 
-        let access = tilo_desktop::overview::room_access_label(card);
+        let access = self
+            .overview_site_line(hi)
+            .unwrap_or_else(|| tilo_desktop::overview::room_access_label(card));
         text_renderer.draw_style(
             scene,
             &access,
@@ -25872,6 +26213,7 @@ impl ShellOverlayHost {
     ) {
         // A carried window shows the room it would land in as chosen.
         let drop_target = self.overview_drop_target();
+        let site_rooms = self.site_rooms();
         for (idx, card) in cards.iter().enumerate() {
             let Some(_slot) = self.overview_slot_of(idx) else {
                 continue;
@@ -25880,13 +26222,30 @@ impl ShellOverlayHost {
             if rect.y1 < band.y0 || rect.y0 > band.y1 {
                 continue;
             }
+            let leave = self.overview_leave_rect(idx, &site_rooms);
+            let trailing = if leave.area() > 0.0 {
+                leave.width() + f64::from(theme.tokens.spacing.s3)
+            } else {
+                0.0
+            };
             self.draw_overview_room_row(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 idx,
                 card,
                 self.overview_selection == Some(idx) || drop_target == Some(idx),
+                trailing,
             );
+            if leave.area() > 0.0 {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(leave, &t("overview-leave-workspace"))
+                        .hovered(self.last_cursor.is_some_and(|p| leave.contains(p))),
+                );
+            }
         }
     }
 
@@ -25920,6 +26279,35 @@ impl ShellOverlayHost {
                 add_rect,
             );
         self.add_workspace_rect = add_rect;
+    }
+
+    /// "Join a workspace…": the one field a site, a workspace link or an
+    /// invitation is joined through, beside creating one.
+    fn draw_overview_join_room_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        cards_len: usize,
+    ) {
+        use ui::widget::{Interaction, ListRowFace, RowLeading};
+        let rect = self.overview_join_workspace_rect_for(cards_len);
+        let focused = self.overview_selection == Some(cards_len.saturating_add(1))
+            && self.overview_window_selection.is_none();
+        let label = t("overview-join-workspace");
+        ListRowFace::new(&label)
+            .leading(RowLeading::Icon(ui::icons::Icon::Link))
+            .selected(focused)
+            .interaction(Interaction {
+                hovered: self.last_cursor.is_some_and(|cursor| rect.contains(cursor)),
+                focused,
+                ..Interaction::default()
+            })
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+            );
     }
 
     /// Overflow cue: a bottom fade over the scrollable band, only when

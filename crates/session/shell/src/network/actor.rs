@@ -300,6 +300,16 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
+/// The HTTPS routes of a host that publishes no iroh address
+/// ([`NetCmd::NativeConnect`]).
+#[derive(Clone)]
+pub struct HttpsRoute(pub Arc<dyn tilo_relay_client::HttpClient>);
+impl std::fmt::Debug for HttpsRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HttpsRoute")
+    }
+}
+
 /// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
 #[derive(Clone)]
 pub struct LoopWake(pub crate::session_runtime::Wake);
@@ -324,7 +334,9 @@ pub enum NetCmd {
         ws: WorkspaceId,
         frame: Vec<u8>,
     },
-    NativeConnect(native_ingress::Connect),
+    /// Hold an enrolled room's relay session, over its host's HTTPS routes
+    /// when given, else over the iroh endpoint its hint names.
+    NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
     /// Ask a governed room's governor, on its room's native relay session.
     GovernorAction {
         ws: u64,
@@ -995,7 +1007,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
 fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
-        NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
+        NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
@@ -1504,7 +1516,7 @@ impl ActorState {
                         native_ingress::native_session(sessions, ws)
                     });
             }
-            Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
+            Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
             }

@@ -107,6 +107,12 @@ pub struct CaptureScene {
     /// A room bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
     pub linked_account: Option<ui::linked_accounts::LinkState>,
+    /// Where the person stands with a stand-in community workspace, for
+    /// the devices & sync capture.
+    pub community: Option<ui::tilo_actions::remote::community::CommunityStatus>,
+    /// The person's trusted devices, as a stand-in for the host's device
+    /// list, for the devices & sync capture.
+    pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
 }
 
 /// A capture's room bridged to Discord, its person's account standing as
@@ -182,7 +188,55 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             )),
             _ => None,
         },
+        community: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
+            .then(community_fixture),
+        fleet_devices: if fixture.scenario() == Some(Category::DeviceMesh.slug()) {
+            fleet_fixture()
+        } else {
+            Vec::new()
+        },
     });
+}
+
+/// The person's trusted devices: the laptop in use, a phone just paired
+/// from its browser, and a home server.
+fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice> {
+    use ui::tilo_actions::remote::identity_admin::FleetDevice;
+    let device = |label: &str, key: &str, fingerprint: &str, current, can_host| FleetDevice {
+        label: label.into(),
+        key_hex: key.repeat(8),
+        fingerprint: fingerprint.into(),
+        current,
+        revoked: false,
+        can_host,
+    };
+    vec![
+        device(
+            "Ada's MacBook",
+            "4f2a9c1e",
+            "4F 2A 9C 1E 7B D3",
+            true,
+            false,
+        ),
+        device(
+            "Safari on iPhone",
+            "b81d03e6",
+            "B8 1D 03 E6 5A 92",
+            false,
+            false,
+        ),
+        device("Home server", "6c47f2a0", "6C 47 F2 A0 E1 38", false, true),
+    ]
+}
+
+/// A computer in its site's community workspace, as the host's status
+/// answers it.
+fn community_fixture() -> ui::tilo_actions::remote::community::CommunityStatus {
+    ui::tilo_actions::remote::community::CommunityStatus {
+        site: Some("https://tilo.coffee/".into()),
+        joined: true,
+        left: false,
+    }
 }
 
 /// Three devices of one person: a laptop holding work nothing else has

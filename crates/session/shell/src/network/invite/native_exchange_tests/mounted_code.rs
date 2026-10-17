@@ -221,6 +221,7 @@ impl Mounted {
             .send(NetCmd::NativeConnect(
                 crate::network::actor::native_ingress::Connect::new(device.owner.clone(), room)
                     .unwrap(),
+                None,
             ))
             .await
             .unwrap();

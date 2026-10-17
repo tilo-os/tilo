@@ -69,6 +69,7 @@ pub mod resource;
 pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
+mod community;
 mod continuity;
 mod device_fleet;
 pub(crate) mod device_read;

@@ -338,6 +338,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         .send(crate::network::actor::NetCmd::NativeConnect(
             crate::network::actor::native_ingress::Connect::new(receiving_owner.clone(), room)
                 .unwrap(),
+            None,
         ))
         .await
         .unwrap();

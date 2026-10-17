@@ -1602,6 +1602,11 @@ impl ShellDriver {
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
+            "overview-lounge" => self.scene_overview_lounge(),
+            "join-field" => self.scene_join_field(),
+            "pairing-sheet" => self.scene_pairing_sheet(),
+            "device-asking" => self.scene_device_asking(),
+            "lounge-open" => self.scene_lounge_open(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
             "emoji-picker" => self.scene_emoji_picker(),
@@ -1651,6 +1656,104 @@ impl ShellDriver {
     fn scene_overview(&mut self) {
         self.with_chrome(|st| st.overlays.overview = true);
         self.fb.host_mut().force_overview_settled(true);
+    }
+
+    /// The community workspace a computer is in by default, among the
+    /// person's own: the overview offers to leave it, and to join another.
+    fn scene_overview_lounge(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb
+            .host_mut()
+            .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
+        // People at their desks in the community workspace, as its
+        // presence reports them.
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            if let Some(ws) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == lounge)
+            {
+                for (id, name) in [("mira", "Mira"), ("jonas", "Jonas"), ("li", "Li")] {
+                    ws.collaborators
+                        .push(shell::shell::state::Collaborator::new(id, name));
+                }
+            }
+        });
+        self.with_chrome(|st| st.overlays.overview = true);
+        self.fb.host_mut().force_overview_settled(true);
+    }
+
+    /// Append the community workspace, as joining it through its site does,
+    /// and answer its room.
+    fn seed_lounge(&mut self) -> shell::shell::state::RoomId {
+        let mut lounge = None;
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            let id = tree.append_empty_workspace("Lounge");
+            lounge = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)
+                .map(|workspace| workspace.room);
+        });
+        lounge.expect("the Lounge was appended")
+    }
+
+    /// "Join a workspace…" with a site typed in it.
+    fn scene_join_field(&mut self) {
+        self.fb.host_mut().prompt_join_for_shots("tilo.coffee");
+        self.step_frames(2);
+    }
+
+    /// "Pair a new device": the link as a QR code, the link and what to do.
+    fn scene_pairing_sheet(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb.host_mut().show_pairing_for_shots(&format!(
+            "https://tilo.coffee/#/@eu1.tilo.coffee/w/{lounge}?pair={}{}",
+            "a1".repeat(32),
+            "5c".repeat(16)
+        ));
+        self.step_frames(2);
+    }
+
+    /// The notification a new device asking to be the person raises.
+    fn scene_device_asking(&mut self) {
+        let asking = shell::shell::peer_sync_overlay::DeviceAskingSummary {
+            digest: [7; 32],
+            label: "Safari on iPhone".into(),
+            code: "482 917".into(),
+            requested_at_ms: tilo_clock::unix_now_ms(),
+            country: Some("NL".into()),
+        };
+        self.with_chrome(|st| {
+            st.push_device_asking(&asking);
+        });
+        self.step_frames(8);
+    }
+
+    /// The community workspace in front, as opening one of its links does.
+    fn scene_lounge_open(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb
+            .host_mut()
+            .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
+        self.with_chrome(|st| {
+            let id = st
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == lounge)
+                .map(|workspace| workspace.id);
+            if let Some(id) = id {
+                st.tree_mut().set_active(id);
+            }
+            st.bump();
+        });
+        self.step_frames(4);
     }
 
     /// The same panel with the room actually shared: members on this room
@@ -2937,6 +3040,11 @@ impl ShellDriver {
         "launchpad",
         "launchpad-notes-card",
         "peer-sync",
+        "overview-lounge",
+        "join-field",
+        "pairing-sheet",
+        "device-asking",
+        "lounge-open",
         "projection",
         "window-switcher",
         "emoji-picker",
@@ -3475,5 +3583,14 @@ mod tests {
             "both groups laid out before body click"
         );
         (files_tab_id, files_rect)
+    }
+}
+
+/// The community workspace as the network names it: tilo.coffee's.
+fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::SiteRoom {
+    shell::shell::network::SiteRoom {
+        room,
+        site: Some("tilo.coffee".into()),
+        community: true,
     }
 }

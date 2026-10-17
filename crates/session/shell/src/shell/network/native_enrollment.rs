@@ -222,6 +222,17 @@ impl ShellNetwork {
         local: WorkspaceId,
         token: &str,
     ) -> Result<PeerSyncResponse, String> {
+        self.accept_invitation_via(local, token, enrollment_driver::Via::Iroh)
+    }
+
+    /// [`Self::accept_peer_invitation`], reaching the issuing host `via` its
+    /// iroh endpoint or its HTTPS routes.
+    pub(crate) fn accept_invitation_via(
+        &self,
+        local: WorkspaceId,
+        token: &str,
+        via: enrollment_driver::Via,
+    ) -> Result<PeerSyncResponse, String> {
         if let Ok(legacy) = crate::network::invite::validate_invite_token(token) {
             let replica = self
                 .replica
@@ -286,7 +297,8 @@ impl ShellNetwork {
         if attempts.len() >= 8 || attempts.values().any(|attempt| attempt.local() == local) {
             return Err("native enrollment already pending or quota reached".into());
         }
-        let (command, attempt) = enrollment_driver::command(owner, local, topic, token.to_owned())?;
+        let (command, attempt) =
+            enrollment_driver::command(owner, local, topic, token.to_owned(), via)?;
         let id = attempt.id();
         self.cmd_tx
             .try_send(NetCmd::NativeEnrollment(command))

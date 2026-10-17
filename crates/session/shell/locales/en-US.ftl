@@ -735,6 +735,17 @@ overview-share-with-many = { $count ->
     }
 overview-share-can-edit = { $with } · can edit
 overview-new-workspace = New workspace
+overview-join-workspace = Join a workspace…
+overview-leave-workspace = Leave
+# A site's workspace in the switcher: the community this computer follows, or
+# the site it came from.
+overview-site-community = Community · { $site }
+overview-site-web = On the web
+overview-site-here = { $count ->
+    [one] 1 person here
+   *[other] { $count } people here
+}
+a11y-leave-workspace = Leave { $name }
 
 # Following someone's view
 follow-label = Following { $person }
@@ -1349,8 +1360,10 @@ search-action-room-activity-open = Show workspace activity
 search-action-room-activity-open-subtitle = History of this workspace: changes, permissions, who did what and when
 search-action-peer-invite = Invite a collaborator…
 search-action-peer-invite-subtitle = Review an invite before creating it
-search-action-peer-connect = Open join-workspace prompt
-search-action-peer-connect-subtitle = Enter and review an invite from a collaborator
+search-action-peer-connect = Join a workspace…
+search-action-peer-connect-subtitle = A site like tilo.coffee, a workspace link or an invitation
+search-action-pair-device = Pair a new device
+search-action-pair-device-subtitle = Make your phone, a browser or another computer one of your devices
 search-action-tab-new-terminal-here = New terminal tab here
 search-action-tab-new-terminal-here-subtitle = Open a terminal as a tab in the focused window group
 search-action-window-new-terminal = New terminal window
@@ -1875,7 +1888,7 @@ peer-sync-title-review = Review invitation
 peer-sync-title-invite = Invite someone
 peer-sync-title-join = Join a workspace
 peer-sync-title-workspace-invite = Workspace invite
-peer-sync-paste-token = Paste or type the invite token
+peer-sync-paste-token = Type a site, or paste a workspace or invitation link
 peer-sync-identity-copied = Copied
 peer-sync-invite-failed = Invite failed: { $error }
 peer-sync-identity-unavailable = Identity unavailable: { $error }
@@ -1972,12 +1985,15 @@ peer-sync-identity-remembered = Verified remembered identity: { $fingerprint }
 peer-sync-identity-new = New identity bound: { $fingerprint }
 peer-sync-invite-anyone = Anyone with this invite
 peer-sync-invite-received = Invite received
-peer-sync-paste-invite-hint = Paste the invite they sent you.
+peer-sync-paste-invite-hint = Like tilo.coffee, or a link someone sent you.
+peer-sync-join-site = Joins the workspace at { $host }
+peer-sync-join-invitation-link = An invitation to a workspace at { $host }
+peer-sync-join-invitation = An invitation to a workspace
 peer-sync-token-characters = { $token }, { $count ->
     [one] 1 character
    *[other] { $count } characters
 }
-peer-sync-token-incomplete = Not a whole invite yet
+peer-sync-token-incomplete = Not a site or link yet
 
 # Leftover shell notices: document opens, host app provenance, quiet status, collaboration
 doc-open-failed = Couldn't open { $name }
@@ -2972,3 +2988,36 @@ strip-switcher-rename = Rename strip
 strip-switcher-name-placeholder = Strip name
 strip-switcher-lounge-placeholder = Lounge
 strip-switcher-refused = Couldn't change the strip
+
+
+## The community workspace's steps (Settings).
+community-resource = Community workspace
+community-status = Community workspace
+community-status-subtitle = Whether this computer is in its community workspace
+community-join = Join the community workspace again
+community-join-subtitle = Join the workspace you left, as you
+community-leave = Leave the community workspace
+community-leave-subtitle = Leave it on this computer; you can join it again in Settings
+
+## Pairing a new device of the person.
+pairing-title = Pair a new device
+pairing-making = Making a link…
+pairing-waiting = Waiting for your new device…
+pairing-copy-link = Copy link
+pairing-done-button = Done
+pairing-copied = Copied
+pairing-way-phone = Phone
+pairing-way-phone-how = Scan with the camera
+pairing-way-computer = Tilo computer
+pairing-way-computer-how = Paste the link into Join a workspace…
+pairing-way-browser = Browser
+pairing-way-browser-how = Open the link
+pairing-safe = This computer asks you first and shows a matching code. The link works once, for 10 minutes.
+pairing-qr-alt = Pairing link for your new device
+pairing-done = { $device } is now one of your devices.
+pairing-asks-title = A device asks to be you
+pairing-asks-body = { $device }{ $from } · { $when } · Approving lets it act as you. Only approve if it shows { $code }.
+pairing-asks-from = {" "}({ $country })
+pairing-approve = Approve { $code }
+pairing-decline = Decline
+pairing-answer-failed = The device was not answered: { $error }

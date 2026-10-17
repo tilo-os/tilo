@@ -622,6 +622,7 @@ pub(super) async fn restart_after_offline_edits(
     commands
         .send(NetCmd::NativeConnect(
             crate::network::actor::native_ingress::Connect::new(owner.clone(), room).unwrap(),
+            None,
         ))
         .await
         .unwrap();
