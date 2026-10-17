@@ -80,6 +80,46 @@ fn required_agent<'de, D: serde::Deserializer<'de>>(
 }
 
 impl InvocationOwner {
+    pub(super) fn verified_actor(&self) -> Option<crate::action_evidence::VerifiedActor> {
+        use crate::action_evidence::VerifiedActor as Actor;
+        Some(match self {
+            Self::Local { .. } => return None,
+            Self::Certified { root, device } => Actor::Certified {
+                root: *root,
+                device: *device,
+            },
+            Self::AuthenticatedLocal {
+                root,
+                device,
+                agent,
+            } => Actor::AuthenticatedLocal {
+                root: *root,
+                device: *device,
+                agent: agent.clone(),
+            },
+            Self::Enrolled {
+                root,
+                device,
+                task,
+                run,
+                channel,
+            } => Actor::Enrolled {
+                root: *root,
+                device: *device,
+                task: task.clone(),
+                run: run.clone(),
+                channel: channel.clone(),
+            },
+            Self::NativeTask { agent, task, epoch } => Actor::NativeTask {
+                // Filled from original LocalCaller custody before signing.
+                root: [0; 32],
+                device: [0; 32],
+                agent: agent.clone(),
+                task: task.clone(),
+                epoch: *epoch,
+            },
+        })
+    }
     pub(super) fn validate(&self) -> Result<(), String> {
         if let Self::NativeTask { agent, task, epoch } = self
             && (agent.is_empty()
@@ -139,6 +179,8 @@ pub(crate) struct DurableInvocation {
     pub cancellation_requested: bool,
     guarded: Option<guarded::State>,
     pub(crate) prepared_effect: Option<PreparedEffect>,
+    pub(crate) admission: Option<crate::action_evidence::AdmissionEvidence>,
+    pub(crate) terminal: Option<crate::action_evidence::TerminalReceipt>,
 }
 
 impl DurableInvocation {
@@ -333,7 +375,7 @@ impl Loaded {
         guarded::preflight(&mut &*head)?;
         let snapshot: Snapshot = serde_json::from_slice(head)
             .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
-        if !matches!(snapshot.version, 1..=6) || snapshot.host.is_nil() {
+        if !matches!(snapshot.version, 1..=7) || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut loaded = Self {
@@ -379,7 +421,7 @@ impl Loaded {
     }
 
     fn replay(&mut self, entry: Entry) -> Result<(), String> {
-        if !matches!(entry.version, 1..=6) {
+        if !matches!(entry.version, 1..=7) {
             return Err("invocation journal entry version unsupported".into());
         }
         // The floor only rises. Earlier writers stamped every entry after an
@@ -414,8 +456,82 @@ impl Loaded {
 }
 
 /// Every check one stored row must pass under the writer floor `version`.
+pub(super) fn evidence_facts(
+    key: &InvocationKey,
+    intent: &serde_json::Value,
+) -> Result<crate::action_evidence::AdmissionFacts, String> {
+    let text = |field| {
+        intent
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| format!("admission {field} missing"))
+    };
+    Ok(crate::action_evidence::AdmissionFacts {
+        host: key.host,
+        room: key.room.clone(),
+        invocation: key.invocation,
+        actor: key
+            .owner
+            .verified_actor()
+            .ok_or("legacy actor cannot attest a user")?,
+        actor_id: text("actor")?,
+        app_id: text("app_id")?,
+        record_id: text("record_id")?,
+        resource: text("resource")?,
+        action: text("action")?,
+        revision: intent
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn check_evidence(
+    key: &InvocationKey,
+    intent: &serde_json::Value,
+    evidence: &crate::action_evidence::AdmissionEvidence,
+) -> Result<(), String> {
+    let mut expected = evidence_facts(key, intent)?;
+    if let (
+        crate::action_evidence::VerifiedActor::NativeTask { root, device, .. },
+        crate::action_evidence::VerifiedActor::NativeTask {
+            root: held_root,
+            device: held_device,
+            ..
+        },
+    ) = (&mut expected.actor, &evidence.receipt.facts.actor)
+    {
+        if *held_root == [0; 32] || *held_device == [0; 32] {
+            return Err("task admission lacks original caller identity".into());
+        }
+        *root = *held_root;
+        *device = *held_device;
+    }
+    evidence.validate(&expected)?;
+    evidence.validate_retained(intent)
+}
+
 fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> Result<(), String> {
     record.key.owner.validate()?;
+    if let Some(evidence) = &record.admission {
+        if version < 7 {
+            return Err("signed admission requires journal version 7".into());
+        }
+        check_evidence(&record.key, &record.intent, evidence)?;
+    }
+    if let Some(terminal) = &record.terminal {
+        let admission = record
+            .admission
+            .as_ref()
+            .ok_or("terminal lacks admission")?;
+        crate::action_evidence::verify_terminal(terminal, admission.public_receipt())?;
+        if Some(terminal.category)
+            != crate::action_evidence::terminal_category(&record.update, record.uncertain)
+        {
+            return Err("terminal category differs from retained outcome".into());
+        }
+    }
     if version < 6 && matches!(record.key.owner, InvocationOwner::NativeTask { .. }) {
         return Err("native task replay ownership requires journal version 6".into());
     }
@@ -704,7 +820,25 @@ impl InvocationJournal {
         intent: serde_json::Value,
         wire_id: u64,
     ) -> Result<bool, String> {
+        self.admit_with_evidence(key, intent, wire_id, None)
+    }
+
+    /// The evidence and admission share the original append and data barrier.
+    pub(super) fn admit_with_evidence(
+        &mut self,
+        key: InvocationKey,
+        intent: serde_json::Value,
+        wire_id: u64,
+        admission: Option<crate::action_evidence::AdmissionEvidence>,
+    ) -> Result<bool, String> {
         self.check()?;
+        if let Some(evidence) = &admission {
+            check_evidence(&key, &intent, evidence)?;
+            evidence
+                .opening_for_owner(&evidence.receipt.facts.actor)?
+                .verify(&evidence.receipt, &intent)?;
+            self.snapshot.version = self.snapshot.version.max(7);
+        }
         key.owner.validate()?;
         if let Some(existing) = self.position(&key) {
             if !self
@@ -751,6 +885,8 @@ impl InvocationJournal {
                 cancellation_requested: false,
                 guarded: None,
                 prepared_effect: None,
+                admission,
+                terminal: None,
             },
         )?;
         self.commit(at)?;
@@ -870,6 +1006,19 @@ impl InvocationJournal {
     /// Makes record `at` durable as it now stands: one appended entry, or a
     /// compaction once the entries would outgrow the snapshot.
     fn commit(&mut self, at: usize) -> Result<(), String> {
+        if let Some(record) = self.snapshot.records.get_mut(at)
+            && let Some(admission) = &record.admission
+            && record.terminal.is_none()
+            && record.guarded.is_none()
+            && let Some(category) =
+                crate::action_evidence::terminal_category(&record.update, record.uncertain)
+        {
+            // Losing signing identity must not lose an application's outcome.
+            // No receipt is preferable to falsely certifying a completion;
+            // recovery uncertainty is never retroactively signed as success.
+            record.terminal =
+                crate::action_evidence::mint_terminal(admission.public_receipt(), category).ok();
+        }
         let outcome = self.write_entry(at);
         if outcome.is_err() {
             self.poison();

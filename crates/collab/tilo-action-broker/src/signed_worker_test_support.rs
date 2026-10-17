@@ -338,6 +338,9 @@ pub struct OriginalRoom {
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
+    // Restore the environment before removing the identity and journal files.
+    _identity_env: tilo_test_env::ScopedEnv,
+    _root: tempfile::TempDir,
 }
 
 impl OriginalRoom {
@@ -372,6 +375,21 @@ impl OriginalRoom {
             Option<tilo_desktop_model::RoomId>,
         )>,
     ) -> Self {
+        let fixture_root =
+            tempfile::tempdir().expect("private host identity and journal directory");
+        // ScopedEnv's lock is reentrant on this thread: record-content tests
+        // keep two rooms alive together. Keep the scopes in nesting order.
+        let mut identity_env = tilo_test_env::ScopedEnv::new();
+        identity_env
+            .set("XDG_CONFIG_HOME", fixture_root.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", fixture_root.path().join("identity"))
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &fixture_root.path().join("config/tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(&fixture_root.path().join("identity")),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision real host receipt signer");
         let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
@@ -404,7 +422,8 @@ impl OriginalRoom {
         );
         let mut tree = crate::test_support::WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        tree.persist_path = persist_path;
+        tree.persist_path =
+            Some(persist_path.unwrap_or_else(|| fixture_root.path().join("workspace.json")));
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
@@ -436,6 +455,8 @@ impl OriginalRoom {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
+            _identity_env: identity_env,
+            _root: fixture_root,
         }
     }
 

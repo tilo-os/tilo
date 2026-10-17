@@ -2867,7 +2867,19 @@ mod directory_patience_tests {
     }
 }
 
+struct EagerActionInvokeRequest {
+    caller: tilo_actions::remote::Caller,
+    own_peer: Option<u64>,
+    launch: Option<LaunchScope>,
+    origin: InvocationCaller,
+    request: tilo_actions::remote::InvokeRequest,
+    reply: tilo_actions::remote::Completer<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    >,
+}
+
 enum ActionDirectoryBridgeRequest {
+    InvokeEager(Box<EagerActionInvokeRequest>),
     Query {
         actor: BrokerActor,
         cluster_id: String,
@@ -4669,6 +4681,28 @@ impl CapnpBrokerState {
             let directories = Rc::clone(directories);
             tokio::task::spawn_local(async move {
                 match request {
+                    ActionDirectoryBridgeRequest::InvokeEager(invoke) => {
+                        let EagerActionInvokeRequest {
+                            caller,
+                            own_peer,
+                            launch,
+                            origin,
+                            request,
+                            reply,
+                        } = *invoke;
+                        if reply.is_abandoned() {
+                            return;
+                        }
+                        // Enter admission directly, never the routing method that
+                        // would enqueue again. Dispatch checks the original custody.
+                        reply.complete(state.invoke_eager(
+                            &caller,
+                            own_peer,
+                            launch.as_ref(),
+                            Some(&origin),
+                            &request,
+                        ));
+                    }
                     ActionDirectoryBridgeRequest::Query {
                         actor,
                         cluster_id,
@@ -5645,12 +5679,46 @@ impl CapnpBrokerState {
             retained_time,
         } = provenance;
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
-        let owner = durable.map_or_else(
-            || InvocationOwner::Local {
-                actor: actor.id.clone(),
+        let owner = match durable {
+            Some(context) => context.owner(),
+            None => match &origin {
+                Some(InvocationCaller::Certified { caller, .. }) => caller.owner(),
+                Some(InvocationCaller::NativePerson { certificate, .. }) => {
+                    InvocationOwner::AuthenticatedLocal {
+                        root: certificate.user_public_key,
+                        device: certificate.device_public_key,
+                        agent: None,
+                    }
+                }
+                Some(InvocationCaller::Local { route, admitted }) => {
+                    let current = self
+                        .revalidate_admission(route, admitted)
+                        .map_err(|error| error.to_string())?;
+                    let certificate = current
+                        .certificate
+                        .as_ref()
+                        .ok_or("original caller certificate missing")?;
+                    let expected = current.agent_id.as_ref().map_or_else(
+                        || principal_id_for_root(certificate.user_public_key),
+                        |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
+                    );
+                    if route.cluster_id != offered.0.route.cluster_id
+                        || actor.id != expected
+                        || actor.is_agent != current.agent_id.is_some()
+                    {
+                        return Err("original local caller does not match invocation actor".into());
+                    }
+                    InvocationOwner::AuthenticatedLocal {
+                        root: certificate.user_public_key,
+                        device: certificate.device_public_key,
+                        agent: current.agent_id.clone(),
+                    }
+                }
+                None => InvocationOwner::Local {
+                    actor: actor.id.clone(),
+                },
             },
-            DurableContext::owner,
-        );
+        };
         owner.validate()?;
         // In native rooms an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
@@ -5821,8 +5889,8 @@ impl CapnpBrokerState {
             .lock()
             .map_err(|_| "invocation journal unavailable")?;
         let journal = journal_guard.as_mut().map_err(|error| error.clone())?;
-        if durable.is_some() && journal.is_none() {
-            return Err("durable admission unavailable".into());
+        if (durable.is_some() || owner.verified_actor().is_some()) && journal.is_none() {
+            return Err("action_evidence_unavailable: admission journal unavailable".into());
         }
         // Where the room's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
@@ -5942,6 +6010,7 @@ impl CapnpBrokerState {
                     None => serde_json::json!({
                         "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
                         "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                        "original_request": original_request,
                     }),
                 }
             };
@@ -5954,7 +6023,30 @@ impl CapnpBrokerState {
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
             }
-            if !journal.admit(key.clone(), intent, id)? {
+            let admission = if owner.verified_actor().is_some() {
+                let mut facts = invocation_journal::evidence_facts(&key, &intent)?;
+                if let Some(DurableContext::Task { caller, .. }) = durable {
+                    let admitted = caller.current(self)?;
+                    let certificate = admitted
+                        .certificate
+                        .as_ref()
+                        .ok_or("task caller certificate missing")?;
+                    if let crate::action_evidence::VerifiedActor::NativeTask {
+                        root, device, ..
+                    } = &mut facts.actor
+                    {
+                        *root = certificate.user_public_key;
+                        *device = certificate.device_public_key;
+                    }
+                }
+                Some(crate::action_evidence::mint(facts, &intent).map_err(|_| {
+                    "action_evidence_unavailable: host signing identity unavailable".to_string()
+                })?)
+            } else {
+                // Actor-only legacy/system work is never upgraded into a certified person.
+                None
+            };
+            if !journal.admit_with_evidence(key.clone(), intent, id, admission)? {
                 return Err("invocation already admitted".into());
             }
             Some(key)
@@ -14302,6 +14394,8 @@ pub mod tests {
     )]
     use super::*;
     include!("certified_person_fixture.rs");
+    #[cfg(test)]
+    include!("eager_bridge_tests.rs");
     #[cfg(test)]
     use crate::test_support::WorkspaceTree;
     use crate::test_support::WorkspaceTreeHandle;

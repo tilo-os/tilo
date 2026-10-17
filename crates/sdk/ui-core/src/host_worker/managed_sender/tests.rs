@@ -174,7 +174,7 @@ fn managed_sender_codec_observation_barrier_payload_and_terminal_consumption() {
     let bytes = pending_payload(&[pending_row(8, None)]);
     let view = NativeSenderOutboxV1::decode(&bytes).unwrap();
     assert!(view.consumption_bytes(&[8; 16]).is_err());
-    let response=PublishedInvocationResult{id:4,update_json:r#"{"state":"succeeded","invocation":"08080808-0808-0808-0808-080808080808","output":{"value":{"secret":"retained"}}}"#.into(),uncertain:false,cancellation_requested:false};
+    let response=PublishedInvocationResult{ admission_json: None, terminal_json: None,id:4,update_json:r#"{"state":"succeeded","invocation":"08080808-0808-0808-0808-080808080808","output":{"value":{"secret":"retained"}}}"#.into(),uncertain:false,cancellation_requested:false};
     let needed = view.observation_bytes(&[8; 16], &response).unwrap();
     let recorded = view.with_observation(&[8; 16], &response).unwrap();
     assert_eq!(recorded.bytes().len(), needed);
@@ -201,6 +201,8 @@ fn managed_sender_codec_uncertain_and_sanitized_rows_cannot_be_consumed() {
         ("action_read_payload_unavailable", false),
     ] {
         let response = PublishedInvocationResult {
+            admission_json: None,
+            terminal_json: None,
             id: 4,
             update_json: format!(
                 r#"{{"state":"failed","invocation":"08080808-0808-0808-0808-080808080808","error":{{"code":"{code}","message":"unavailable"}}}}"#

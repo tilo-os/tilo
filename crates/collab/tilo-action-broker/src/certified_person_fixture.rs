@@ -8,6 +8,8 @@ pub struct CertifiedPersonFixture {
     pub host: tilo_identity_host::custody::HostIdentity,
     pub origin: crate::peer_actions::PolicyOrigin,
     pub current: Arc<std::sync::atomic::AtomicBool>,
+    _evidence_env: tilo_test_env::ScopedEnv,
+    _evidence_home: tilo_test_env::TestHome,
 }
 struct FixturePersonAuthority {
     certificate: tilo_user_identity::DeviceCert,
@@ -42,6 +44,22 @@ pub fn certified_person_fixture_for_seeds(
     root_seed: u8,
     device_seed: u8,
 ) -> CertifiedPersonFixture {
+    let evidence_home = tilo_test_env::TestHome::new().unwrap();
+    let identity_paths =
+        tilo_user_identity::IdentityPaths::under(&evidence_home.root().join("system-identity"));
+    let mut evidence_env = tilo_test_env::ScopedEnv::new();
+    evidence_env
+        .set(
+            "TILO_IDENTITY_ROOT",
+            evidence_home.root().join("system-identity"),
+        )
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        &evidence_home.config().join("tilo/identity"),
+        &identity_paths,
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[root_seed; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
     let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
@@ -65,6 +83,7 @@ pub fn certified_person_fixture_for_seeds(
     workspace.set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
+    tree.persist_path = Some(evidence_home.root().join("workspace.json"));
     tree.set_active(crate::test_support::WorkspaceId(71));
     let fanout = Arc::new(FanoutState::new());
     let (state, _) = CapnpBrokerState::new(
@@ -113,6 +132,8 @@ pub fn certified_person_fixture_for_seeds(
         caller,
         origin,
         current,
+        _evidence_env: evidence_env,
+        _evidence_home: evidence_home,
         host: tilo_identity_host::custody::HostIdentity {
             device_cert: certificate,
             device_signing_key: device,

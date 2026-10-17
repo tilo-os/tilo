@@ -139,6 +139,8 @@ fn managed_sender_attempt_all_backings_are_released_after_last_result_drop() {
             host: [3; 16],
             invocation: [8; 16],
             result: Some(runtime_collab::PublishedInvocationResult {
+                admission_json: None,
+                terminal_json: None,
                 id: 4,
                 update_json:
                     r#"{"state":"accepted","invocation":"08080808-0808-0808-0808-080808080808"}"#

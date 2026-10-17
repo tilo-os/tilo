@@ -288,6 +288,10 @@ async fn store_native_certified_directory_discloses_children_after_actual_histor
                     Ok(store_genesis(room))
                 })
             });
+            let ProvisionedEnvironment {
+                environment: env,
+                _identity_env: _identity,
+            } = env;
             tokio::task::spawn_blocking(move || prove_store_directory(env))
                 .await
                 .unwrap();

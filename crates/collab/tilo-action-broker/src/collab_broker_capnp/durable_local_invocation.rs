@@ -622,12 +622,41 @@ fn write_observation(
                 "invocation observation exceeds byte budget".into(),
             ));
         }
+        // All callers reached this helper through exact-owner lookup and live
+        // authorization; never send this private opening on progress streams.
+        let admission = record
+            .admission
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| capnp::Error::failed("admission observation encoding failed".into()))?;
+        let terminal = record
+            .terminal
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| capnp::Error::failed("terminal observation encoding failed".into()))?;
+        if admission
+            .as_ref()
+            .is_some_and(|value| value.len() > 32 * 1024)
+            || terminal
+                .as_ref()
+                .is_some_and(|value| value.len() > 32 * 1024)
+        {
+            return Err(capnp::Error::failed(
+                "evidence observation exceeds byte budget".into(),
+            ));
+        }
+        out.set_admission_json(admission.as_deref().unwrap_or_default());
+        out.set_terminal_json(terminal.as_deref().unwrap_or_default());
         out.set_found(true);
         out.set_id(record.wire_id);
         out.set_update_json(&update);
         out.set_uncertain(record.uncertain);
         out.set_cancellation_requested(record.cancellation_requested);
     } else {
+        out.set_admission_json("");
+        out.set_terminal_json("");
         out.set_found(false);
         out.set_id(0);
         out.set_update_json("");

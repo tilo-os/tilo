@@ -1524,7 +1524,27 @@ impl CapnpBrokerState {
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, request));
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
+        if let Some(origin) = origin {
+            // Admission can sign and durably record an invocation. Keep only
+            // inert custody on the UI turn; the broker revalidates it at dispatch.
+            let (reply, response) = pending();
+            return match self.action_directory_request_queue().enqueue(
+                super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
+                    super::EagerActionInvokeRequest {
+                        caller: caller.clone(),
+                        own_peer,
+                        launch: launch.cloned(),
+                        origin: origin.clone(),
+                        request: request.clone(),
+                        reply,
+                    },
+                )),
+            ) {
+                Ok(()) => response,
+                Err(error) => Pending::ready(Err(bridge_error(error))),
+            };
+        }
+        Pending::ready(self.invoke_eager(caller, own_peer, launch, None, request))
     }
 
     /// Invoke an action retained from a closed application: launch the app,
@@ -2043,7 +2063,7 @@ impl CapnpBrokerState {
             .min()
     }
 
-    fn invoke_eager(
+    pub(super) fn invoke_eager(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,

@@ -182,8 +182,8 @@ impl InvocationJournal {
         }
         record.update = prepared.update.clone();
         record.uncertain = false;
-        let record = record.clone();
         self.commit(at)?;
-        Ok(record)
+        self.lookup(key)?
+            .ok_or_else(|| "prepared invocation disappeared".into())
     }
 }
