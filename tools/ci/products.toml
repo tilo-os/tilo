@@ -639,6 +639,10 @@ cost = "heavy"
 # peak at several GiB each, and the guest is OOM-killed beyond what it reserves.
 cpus = 8
 memory = "32G"
+# The tilo registry's owner public key, which the packages install as the trust root for
+# system app updates (dist/rpm/stage-app-store.sh). Public, but server configuration: t gives it
+# to trusted runs of main, stable and tags only, so a working tree's run builds no Fedora RPMs.
+secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 default = false
 
 [[matrix.check]]
