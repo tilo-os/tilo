@@ -790,7 +790,7 @@ impl MailState {
     }
 
     /// Say `text` with an Undo beside it.
-    fn say_undoable(&mut self, text: &str) {
+    pub(crate) fn say_undoable(&mut self, text: &str) {
         self.status = Some(text.to_owned());
         self.status_undo = true;
     }
