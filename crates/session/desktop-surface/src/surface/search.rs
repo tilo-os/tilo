@@ -57,6 +57,10 @@ pub struct HostAction {
     /// offer it.
     #[serde(default)]
     pub source: Option<HostActionSource>,
+    /// What a menu listing it calls it, when that differs from `title`
+    /// (the workspace menu lists "Lounge", search says "Open Lounge").
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// The part of the system a host action belongs to, in the desktop's
@@ -68,6 +72,10 @@ pub enum HostActionSource {
     Identity,
     /// The person's other devices: pairing one.
     Devices,
+    /// Another of the person's workspaces, to go to.
+    Workspaces,
+    /// Workspaces themselves: joining one, leaving this one, a new one.
+    Workspace,
 }
 
 impl HostActionSource {
@@ -75,6 +83,7 @@ impl HostActionSource {
         crate::i18n::t(match self {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
+            Self::Workspaces | Self::Workspace => "host-action-source-workspace",
         })
     }
 }
@@ -151,6 +160,11 @@ impl DesktopHandle {
             .collect();
         shared.host_actions = actions;
         withdrawn
+    }
+
+    /// The host actions offered now, in the host's order.
+    pub fn host_actions(&self) -> Vec<HostAction> {
+        self.shared.borrow().host_actions.clone()
     }
 
     /// Whether the host offers the action `id` (see [`Self::set_host_actions`]).

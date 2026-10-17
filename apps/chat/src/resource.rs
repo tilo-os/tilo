@@ -172,6 +172,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "compact",
     "starter",
     "people",
+    "namesakes",
     "thread-narrow",
     "collaboration",
     "live-context",

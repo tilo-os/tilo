@@ -1320,6 +1320,28 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
             }
+            "namesakes" => {
+                // Two people in the room go by one name: everyone sees them
+                // numbered alike, in the timeline and the people list.
+                let mut presence = PresenceCtx::empty();
+                presence.set_self_participant(
+                    ui::permissions::UserId(self.me.id.clone()),
+                    self.me.name.clone(),
+                );
+                for (id, name) in [
+                    ("u_aria", "Aria Chen"),
+                    ("u_sora", "aria chen"),
+                    ("u_milo", "Milo Park"),
+                    ("u_devon", "Devon Reyes"),
+                    ("u_iris", "Iris Wolfe"),
+                ] {
+                    presence.set_display_name(ui::permissions::UserId(id.into()), name);
+                }
+                self.capture_agent_presence = Some(presence);
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
             "agent-task"
             | "agent-task-compact"
             | "agent-task-queued"

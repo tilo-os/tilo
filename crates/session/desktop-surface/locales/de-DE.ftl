@@ -102,6 +102,19 @@ topbar-strips-more = { $count ->
    *[other] { $count } weitere Leisten
 }, zu { $name } wechseln
 topbar-strip-name-placeholder = Leiste benennen
+topbar-workspace-name-placeholder = Arbeitsbereich benennen
+topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Schreibtische
+topbar-profile = { $name }: dein Profil
+workspace-menu-hosted-by = Gehostet von { $host }
+workspace-menu-rename = Arbeitsbereich umbenennen
+workspace-menu-overview = Übersicht
+workspace-menu-new-desk = Neuer Schreibtisch
+profile-card = Dein Profil
+profile-name = Dein Name
+profile-name-placeholder = Dein Name
+profile-name-hint = So sehen dich alle hier
+profile-section-identity = Deine Identität
+profile-section-devices = Geräte
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -576,6 +589,7 @@ history-notification-description-sourced = { $severity }. Von { $source }. { $ti
 history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
 host-action-source-identity = Identität
 host-action-source-devices = Geräte
+host-action-source-workspace = Arbeitsbereich
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen

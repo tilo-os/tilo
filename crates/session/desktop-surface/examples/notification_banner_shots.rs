@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 title: "Keep with passkey".into(),
                 subtitle: None,
                 source: None,
+                label: None,
             }
             .notice(
                 "Keep this identity?",

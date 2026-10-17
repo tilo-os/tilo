@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, initialRoute, readEntry} from './entry.mjs';
+import {boot, chosenRoute, initialRoute, readEntry, scopeHost} from './entry.mjs';
 import {UNAVAILABLE, openTarget, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -174,6 +174,15 @@ test('the home workspace opens through its host door under its listed name, and 
   assert.equal(mounts[0].workspaceName, 'Commons');
   assert.equal(mounts[0].host, 'rooms.example');
   page.router.stop?.();
+});
+
+test('a room on the site the page came from, or on its machines, is hosted by that site', () => {
+  const room = host => ({kind: 'room', host, room: 'R'});
+  assert.equal(scopeHost(room('https://eu1.tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
+  assert.equal(scopeHost(room('https://tilo.coffee'), 'tilo.coffee'), 'tilo.coffee');
+  assert.equal(scopeHost(room('https://rooms.example'), 'tilo.coffee'), 'rooms.example');
+  assert.equal(scopeHost(room('https://notilo.coffee'), 'tilo.coffee'), 'notilo.coffee');
+  assert.equal(scopeHost({kind: 'own'}, 'tilo.coffee'), null);
 });
 
 test('the entry offers only the web About links the host set', async () => {
