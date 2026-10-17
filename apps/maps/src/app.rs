@@ -5162,7 +5162,7 @@ impl Widget for MapsApp {
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.navigation_placement.is_dragging()
-            || (!self.motion_reduced && self.navigation_placement.is_handoff_animating())
+            || self.navigation_placement.is_handoff_animating()
             || self.map_controls.needs_frame()
             || self.status_bubble.needs_frame(ui::time::now())
     }
@@ -5180,6 +5180,7 @@ impl Widget for MapsApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
+        self.navigation_placement.set_reduce_motion(reduced);
     }
 }
 

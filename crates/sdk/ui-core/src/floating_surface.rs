@@ -1133,6 +1133,9 @@ pub struct FloatingPlacement {
     /// Production interaction always leaves this unset and follows the clock.
     handoff_progress_override: Option<f64>,
     settle_motion: Option<SettleMotion>,
+    /// Reduced motion: a return lands home at once and the ownership
+    /// flourish is not played ([`Self::set_reduce_motion`]).
+    reduce_motion: bool,
 }
 
 impl FloatingPlacement {
@@ -1160,6 +1163,19 @@ impl FloatingPlacement {
             handoff_motion: None,
             handoff_progress_override: None,
             settle_motion: None,
+            reduce_motion: false,
+        }
+    }
+
+    /// Apply the person's reduced-motion setting (`Theme::motion`). The
+    /// owner forwards it from `Widget::set_motion_reduced`; under it a
+    /// return to the app lands home at once and any motion in flight
+    /// settles now.
+    pub fn set_reduce_motion(&mut self, reduced: bool) {
+        self.reduce_motion = reduced;
+        if reduced {
+            self.settle_motion = None;
+            self.handoff_motion = None;
         }
     }
 
@@ -1266,6 +1282,11 @@ impl FloatingPlacement {
         self.drag = None;
         self.desktop_coordinate_offset = Vec2::ZERO;
         self.handoff_progress_override = None;
+        if self.reduce_motion {
+            self.settle_motion = None;
+            self.handoff_motion = None;
+            return;
+        }
         let started = crate::time::now();
         self.settle_motion = (from != home).then_some(SettleMotion {
             started: std::cell::Cell::new(None),
@@ -1376,6 +1397,9 @@ impl FloatingPlacement {
     }
 
     pub fn is_handoff_animating(&self) -> bool {
+        if self.reduce_motion {
+            return false;
+        }
         (self.handoff_progress_override.is_none()
             && self
                 .handoff_motion
@@ -1410,7 +1434,7 @@ impl FloatingPlacement {
         let Some(motion) = self.handoff_motion else {
             return transform;
         };
-        if reduce_motion {
+        if reduce_motion || self.reduce_motion {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
@@ -1440,6 +1464,9 @@ impl FloatingPlacement {
             Attachment::App { offset } => self.attached_home_rect(app) + offset,
             Attachment::Desktop { rect } => clamp_rect(rect, desktop, 64.0),
         };
+        if self.reduce_motion {
+            return resolved;
+        }
         self.settle_motion.as_ref().map_or(resolved, |motion| {
             let Some(started) = motion.started.get() else {
                 motion.started.set(Some(crate::time::now()));
@@ -2026,6 +2053,27 @@ mod tests {
             );
             p.end_drag(desktop);
             assert!(!p.is_dragging());
+        }
+
+        // Case `reduced_motion_lands_a_declined_handoff_home_at_once`.
+        {
+            let app = Rect::new(200.0, 100.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            let home = p.rect(app, desk);
+            p.set_reduce_motion(true);
+            p.begin_drag(Point::new(600.0, 150.0), app, desk);
+            let _ = p.update_drag(Point::new(1_050.0, 200.0), app, desk);
+            p.reattach_to_app(app, desk);
+            assert_eq!(p.rect(app, desk), home, "no snap-back under reduced motion");
+            assert!(!p.is_handoff_animating(), "nothing asks for motion frames");
+            let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+            p.detach_to_desktop(Rect::new(500.0, 180.0, 820.0, 360.0));
+            assert_eq!(
+                p.presentation_transform(Affine::IDENTITY, rect, false),
+                Affine::IDENTITY,
+                "the ownership flourish is not played"
+            );
         }
 
         // Case `declined_handoff_animates_back_without_a_first_frame_jump`.

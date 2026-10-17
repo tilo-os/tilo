@@ -3517,7 +3517,8 @@ impl GroupRow {
         };
         let claimed = drag.moved;
         if drag.held {
-            if drag.moved {
+            // Under reduced motion the held group is back in place at once.
+            if drag.moved && !self.reduce_motion {
                 let pull = resisted(self.last_cursor - drag.start);
                 self.group_resist_back = Some((drag.group_id, pull, crate::time::now()));
             }
@@ -7323,6 +7324,45 @@ mod tests {
         assert_eq!(row.take_pending_group_reorder(), None);
         assert!(row.group_pull(100).is_some(), "it springs back");
         assert!(row.needs_animation_frame());
+    }
+
+    /// Under reduced motion a held window is back in place at once: no
+    /// spring-back, and nothing asks for frames.
+    #[test]
+    fn a_held_window_lands_back_at_once_under_reduced_motion() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.reduce_motion = true;
+        row.groups[0].set_tab_holder(
+            1,
+            Some(crate::widget::TabHolder {
+                name: "Ben".into(),
+                rgb: (200, 80, 40),
+            }),
+        );
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        let past = Point::new(row.groups[2].get_rect().center().x + 60.0, grab.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(past.x, past.y),
+            },
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(row.group_pull(100), None, "no spring-back");
+        assert!(!row.needs_animation_frame());
     }
 
     #[test]

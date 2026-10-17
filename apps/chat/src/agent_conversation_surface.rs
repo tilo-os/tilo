@@ -43,6 +43,7 @@ impl AgentConversationSurface {
         view.rect = source;
         let mut placement = FloatingPlacement::attached(source.size());
         placement.set_attached_region(Some(source));
+        placement.set_reduce_motion(parent.motion_reduced);
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),

@@ -301,21 +301,27 @@ impl Widget for OpeningCard {
     }
 
     /// The indicator moves for as long as the card stands. Under reduced
-    /// motion it is still, but the card keeps waking until its slow line
-    /// is due, and draws again whenever its line or indicator has changed.
+    /// motion it is still: the card draws again only when its line or
+    /// indicator has changed, and waits for the slow line on a deadline.
     fn needs_animation_frame(&self) -> bool {
-        let now = ui::time::now();
-        if !self.reduce_motion || now.saturating_duration_since(self.since) < SLOW_AFTER {
+        if !self.reduce_motion {
             return true;
         }
+        let now = ui::time::now();
         let (status, indicator) = self.status_at(now);
         status != self.drawn || self.indicator_alphas(indicator, now) != self.drawn_indicator
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        (self.reduce_motion && matches!(self.wait, Wait::Installing { .. }))
-            .then(|| ui::time::now().checked_add(PROGRESS_WAKE))
-            .flatten()
+        if !self.reduce_motion {
+            return None;
+        }
+        let now = ui::time::now();
+        let slow_line = self.since.checked_add(SLOW_AFTER).filter(|due| *due > now);
+        let progress = matches!(self.wait, Wait::Installing { .. })
+            .then(|| now.checked_add(PROGRESS_WAKE))
+            .flatten();
+        slow_line.into_iter().chain(progress).min()
     }
 }
 
@@ -417,6 +423,30 @@ mod tests {
             theme,
             &PresenceCtx::default(),
         );
+    }
+
+    #[test]
+    fn a_reduced_motion_card_waits_for_its_slow_line_on_a_deadline() {
+        let mut still = Theme::dark();
+        still.reduce_motion = true;
+        let mut card = OpeningCard::new("Slides", Wait::Opening);
+        draw(&mut card, &still);
+        assert!(
+            !card.needs_animation_frame(),
+            "a still card asks for no frames"
+        );
+        let due = card
+            .next_wake_deadline()
+            .expect("the slow line is due later");
+        assert!(due > ui::time::now() && due <= card.since + SLOW_AFTER);
+        card.backdate_for_test(SLOW_AFTER);
+        assert!(
+            card.needs_animation_frame(),
+            "the slow line is drawn when due"
+        );
+        draw(&mut card, &still);
+        assert!(!card.needs_animation_frame());
+        assert_eq!(card.next_wake_deadline(), None, "nothing more to wait for");
     }
 
     #[test]

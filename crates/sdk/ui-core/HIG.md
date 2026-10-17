@@ -1292,7 +1292,23 @@ All chrome animation reads `tokens.motion.durations` and nothing else:
 Panels open with the **one** entrance: opacity 0→1, y −10→0, scale 0.95→1,
 `Curve::EaseOut` over `base`, and reverse to close. Bespoke per-surface
 constants (the shell previously carried eight near-but-unequal ones) are a
-defect. Reduced-motion collapses every duration to 0 and keeps the end state.
+defect.
+
+**Reduced motion** is one rule, read through `Theme::motion()`
+(`tokens::EffectiveMotion`) and nowhere else:
+
+- Movement — a slide, a scale, a spring, a snap, an overshoot — lands at once
+  (`EffectiveMotion::movement` is zero).
+- A change of what is shown may cross-fade, at most `fast`
+  (`EffectiveMotion::fade`, `replacement_fade`): opacity carries the change
+  without anything moving.
+- A looping indicator (spinner, busy arc, sweeping bar) shows its resting mark
+  (`EffectiveMotion::loops`).
+- It never stops the frame pump. Progress, status, a worker's reply and the
+  replacement fade keep painting; a widget with nothing to show asks for no
+  frames.
+
+The same rule is in [design-language.md § Motion](../../../docs/design-language.md#motion).
 
 **Motion follows the input.** A drag, swipe or pinch moves continuously and
 hands its velocity to the settle; a click may animate at `fast` or `base`; a
