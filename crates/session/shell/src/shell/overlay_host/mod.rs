@@ -3030,6 +3030,7 @@ impl ShellOverlayHost {
             let row: &mut GroupRow = unsafe { &mut *ptr };
             for group in &mut row.groups {
                 group.set_top_overlay_inset(inset);
+                group.set_fills_display(presence != tilo_desktop::chrome::TopBarPresence::Docked);
             }
         }
     }

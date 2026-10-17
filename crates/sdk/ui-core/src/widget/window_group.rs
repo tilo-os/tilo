@@ -167,7 +167,8 @@ impl WindowGroup {
         }
     }
 
-    #[cfg(test)]
+    /// Where the group draws this frame: its layout rect, or the spring's
+    /// while it moves there.
     pub(crate) fn drawn_rect(&self) -> Rect {
         self.rect_spring
             .as_ref()
@@ -258,6 +259,10 @@ pub struct WindowGroup {
     /// bar shown over a window under an auto-hiding top bar): the window's
     /// bar stands below it.
     top_overlay_inset: f64,
+    /// Nothing of the desktop's stands beside a maximized window on its
+    /// display (the top bar is not docked above it): maximized, it fills the
+    /// display and draws edge to edge ([`Widget::set_full_bleed`]).
+    fills_display: bool,
     last_cursor: Point,
     spawned_at: Option<Instant>,
     /// Drawn rect in flight between the tiled slot and the work area.
@@ -497,6 +502,7 @@ impl WindowGroup {
             bar_slot: None,
             chrome_fade: Duration::ZERO,
             top_overlay_inset: 0.0,
+            fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
@@ -881,6 +887,12 @@ impl WindowGroup {
     /// desktop's top bar while it shows over a window that reaches under an
     /// auto-hiding top bar — so the window's bar stands below it instead of
     /// under it. Zero while the desktop's bar stands above the window.
+    /// Whether a maximized window here fills its display: nothing of the
+    /// desktop's (a docked top bar) stands beside it.
+    pub fn set_fills_display(&mut self, fills: bool) {
+        self.fills_display = fills;
+    }
+
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.top_overlay_inset - inset).abs() > f64::EPSILON {
@@ -1468,6 +1480,7 @@ impl WindowGroup {
             bar_slot: None,
             chrome_fade: Duration::ZERO,
             top_overlay_inset: 0.0,
+            fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
@@ -3417,6 +3430,9 @@ impl Widget for WindowGroup {
                 h.set_opening_name(name);
             }
             h.set_focused(focused);
+            // A maximized window filling its display draws edge to edge;
+            // under a docked bar, or mid-fade, it is still a card.
+            h.set_full_bleed(self.maximized && self.fills_display && !spawn_active);
             let source_is_lifted = dragged_tab == Some(active_id);
             if source_is_lifted {
                 scene.push_layer(

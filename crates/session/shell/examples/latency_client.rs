@@ -9,8 +9,11 @@
 //! `--damage line` it damages only the text line the cell is on, as a terminal
 //! or a text editor reports a typed character. It draws at once, without waiting
 //! for a frame callback, so the compositor's own scheduling is what the harness
-//! measures. It prints `READY <width>x<height>` once its first frame is
-//! committed and exits when the window is closed.
+//! measures. With `--scale N` it draws N buffer pixels per surface pixel
+//! (`wl_surface.set_buffer_scale`), as a client on a 200 % panel does, so its
+//! buffer can match the display pixel for pixel. It prints
+//! `READY <width>x<height>` once its first frame is committed and exits when
+//! the window is closed.
 
 #![allow(
     clippy::unwrap_used,
@@ -78,6 +81,8 @@ struct Client {
     typed: u32,
     damage: Damage,
     dmabuf: Option<Dmabufs>,
+    /// Buffer pixels per surface pixel.
+    scale: u32,
 }
 
 /// LINEAR dma-bufs the client draws into with the CPU through GBM.
@@ -114,6 +119,7 @@ fn main() {
     let mut app_id = "so.tilo.latency-client".to_owned();
     let mut damage = Damage::Full;
     let mut dmabufs = false;
+    let mut scale = 1_u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--buffers" {
@@ -122,6 +128,12 @@ fn main() {
                 Some("shm") => false,
                 other => panic!("--buffers takes `shm` or `dmabuf`, not {other:?}"),
             };
+        } else if arg == "--scale" {
+            scale = args
+                .next()
+                .and_then(|value| value.parse().ok())
+                .filter(|scale| *scale >= 1)
+                .expect("--scale takes a whole number of buffer pixels per surface pixel");
         } else if arg == "--damage" {
             damage = match args.next().as_deref() {
                 Some("line") => Damage::Line,
@@ -139,6 +151,7 @@ fn main() {
     let xdg_shell = XdgShell::bind(&globals, &qh).expect("xdg_wm_base");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm");
     let surface = compositor.create_surface(&qh);
+    surface.set_buffer_scale(i32::try_from(scale).expect("scale"));
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
     window.set_title("latency client");
     window.set_app_id(app_id);
@@ -172,6 +185,7 @@ fn main() {
         typed: 0,
         damage,
         dmabuf,
+        scale,
     };
     while !client.exit {
         queue.blocking_dispatch(&mut client).expect("dispatch");
@@ -237,10 +251,16 @@ fn paint_cells(
 }
 
 impl Client {
+    /// The buffer's size: the surface's, in buffer pixels.
+    fn buffer_size(&self) -> (u32, u32) {
+        (self.width * self.scale, self.height * self.scale)
+    }
+
     /// The grid cell the `index`th typed key fills, as `(column, line)`.
     fn cell(&self, index: u32) -> (u32, u32) {
-        let columns = (self.width / CELL_W).max(1);
-        let lines = (self.height / CELL_H).max(1);
+        let (width, height) = self.buffer_size();
+        let columns = (width / CELL_W).max(1);
+        let lines = (height / CELL_H).max(1);
         (index % columns, (index / columns) % lines)
     }
 
@@ -249,7 +269,7 @@ impl Client {
     /// buffer is drawn whole, so whichever one the pool hands out shows the
     /// same grid; only the reported damage differs between the modes.
     fn draw(&mut self, qh: &QueueHandle<Self>, key: bool) {
-        let (width, height) = (self.width, self.height);
+        let (width, height) = self.buffer_size();
         let stride = i32::try_from(width.saturating_mul(4)).expect("stride");
         let (w, h) = (
             i32::try_from(width).expect("w"),

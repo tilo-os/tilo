@@ -57,6 +57,8 @@ UPLOAD_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bshm_upload_bytes=(\d+)")
 # rendered the whole output.
 PAINT_LINE = re.compile(
     r"CPU-FRAME serial=\d+ .*?\bdamage_px=(\d+) raster_px=(\d+) dense=([01])")
+# Frames the simulated display showed as the client's own buffer, rendering nothing.
+SCANOUT_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bscanout=1\b")
 
 
 def _bench():
@@ -115,7 +117,10 @@ def session_env(root: Path, args: argparse.Namespace, ctl: Path) -> dict[str, st
     run = root / "run"
     env.update({
         "TILO_TEST_CONTROL": str(ctl),
-        "TILO_HEADLESS_SIZE": f"{args.width}x{args.height}",
+        # One panel at its scale and refresh (`--outputs`, e.g. the laptop's
+        # `2944x1840@2~90`), or a bare size at scale 1.
+        **({"TILO_HEADLESS_OUTPUTS": args.outputs} if args.outputs
+           else {"TILO_HEADLESS_SIZE": f"{args.width}x{args.height}"}),
         "TILO_HEADLESS_VBLANK_HZ": str(args.hz),
         "TILO_PROFILE_PRESENTATION": "1",
         "TILO_FRAME_TRACE": str((args.out / f"{args.label}.trace.csv").resolve()),
@@ -180,6 +185,12 @@ def measure(args: argparse.Namespace) -> dict:
     (root / "run").mkdir(mode=0o700)
     ctl_path = root / "run" / "control.sock"
     env = session_env(root, args, ctl_path)
+    if args.hide_top_bar:
+        # The desktop's bar over the windows instead of above them, so a
+        # maximized window fills the display (Settings, Appearance, Desktop).
+        settings = root / "config" / "tilo" / "session" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"desktop_controls": {"hide_top_bar": True}}))
     log = args.out / f"{args.label}.log"
     proc = client_proc = control = None
     try:
@@ -209,11 +220,20 @@ def measure(args: argparse.Namespace) -> dict:
                     sys.exit(f"{app} did not open: {why}")
             else:
                 client_proc = subprocess.Popen(
-                    [str(client), app, "--damage", args.damage, "--buffers", args.buffers],
+                    [str(client), app, "--damage", args.damage, "--buffers", args.buffers,
+                     "--scale", str(args.client_scale)],
                     env={**env, "WAYLAND_DISPLAY": wayland},
                     stdout=subprocess.PIPE, text=True)
                 window = wait_client_ready(client_proc, args.startup_timeout)
                 print(f"[key-latency] client window {window}", flush=True)
+            if args.maximize:
+                # Super+Up, as a person maximizes the window they type in.
+                for request in ({"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True},
+                                {"op": "key", "key": "ArrowUp"},
+                                {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}):
+                    reply = control.send(request)
+                    if "err" in reply:
+                        sys.exit(f"maximize refused: {reply}")
             time.sleep(args.settle)
             rng = random.Random(args.seed)
             keys = "abcdefghijklmnopqrstuvwxyz"
@@ -258,10 +278,15 @@ def measure(args: argparse.Namespace) -> dict:
                  "kept_frames": len(painted) - len(rendered),
                  "damage_px": pixel_distribution([d for d, _, _ in rendered]),
                  "raster_px": pixel_distribution([r for _, r, _ in rendered])}
+    paint["scanout_frames"] = sum(1 for _ in SCANOUT_LINE.finditer(text))
+    if "kept_frames" in paint:
+        paint["kept_frames"] -= paint["scanout_frames"]
     uploads = [int(m[1]) for m in UPLOAD_LINE.finditer(text)]
     if uploads:
         paint["shm_upload_bytes"] = pixel_distribution(uploads)
-    result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
+    result = {"label": args.label, "app": app,
+              "size": args.outputs or f"{args.width}x{args.height}",
+              "maximized": args.maximize, "hide_top_bar": args.hide_top_bar,
               "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input,
               "buffers": args.buffers, **paint,
               # Rendered frames per key sent: a key answered by one commit should cost one.
@@ -296,6 +321,9 @@ def table(results: list[dict]) -> str:
                 f"output, {r.get('kept_frames', 0)} more kept the image unchanged; "
                 f"damage p50 {r['damage_px']['p50']} px, "
                 f"rasterised p50 {r['raster_px']['p50']} px p90 {r['raster_px']['p90']} px")
+        if r.get("scanout_frames"):
+            lines.append(f"{r['label']}: {r['scanout_frames']} frames showed the client's own "
+                         "buffer (direct scanout), rendering nothing")
         if "shm_upload_bytes" in r:
             up = r["shm_upload_bytes"]
             lines.append(f"{r['label']}: wl_shm bytes uploaded per frame p50 {up['p50']} "
@@ -313,6 +341,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--width", type=int, default=2944)
     parser.add_argument("--height", type=int, default=1840)
     parser.add_argument("--hz", type=float, default=60.0, help="the simulated panel's refresh rate")
+    parser.add_argument("--outputs", help="a headless output spec instead of --width/--height, "
+                        "e.g. 2944x1840@2~90 for the laptop panel at 200 %% and 90 Hz")
+    parser.add_argument("--client-scale", type=int, default=1,
+                        help="buffer pixels per surface pixel the synthetic client draws "
+                        "(2 on a 200 %% panel, so its buffer matches the display)")
+    parser.add_argument("--hide-top-bar", action="store_true",
+                        help="the person's setting that hides the desktop's bar until the "
+                        "pointer is near it, so a maximized window covers the display")
+    parser.add_argument("--maximize", action="store_true",
+                        help="maximize the typed-into window (Super+Up) before timing")
     parser.add_argument("--keys", type=int, default=300, help="keys timed")
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--interval-ms", type=float, default=100.0)

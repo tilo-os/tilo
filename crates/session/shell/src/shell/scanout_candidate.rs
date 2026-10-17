@@ -70,6 +70,11 @@ impl DrawnOnTop {
         })
     }
 
+    /// The image drawn.
+    pub(crate) fn image(&self) -> &ImageData {
+        &self.image
+    }
+
     /// Nothing was drawn into its scene after it.
     pub(crate) fn still_last_in(&self, scene: &Scene) -> bool {
         scene.encoding().draw_tags.len() == self.draws

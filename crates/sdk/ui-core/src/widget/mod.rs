@@ -1711,6 +1711,14 @@ pub trait Widget {
 
     fn set_focus(&mut self, _focused: bool) {}
 
+    /// The window holding this content fills its display (a maximized
+    /// window): it has nothing beside it to round its corners against or
+    /// to set it apart from, so content that frames or clips itself to the
+    /// window's shape draws edge to edge instead. A client surface drawn
+    /// that way, last and unclipped, is one the display can scan out
+    /// directly. Content that frames nothing ignores it.
+    fn set_full_bleed(&mut self, _full_bleed: bool) {}
+
     /// The form's validation verdict for this control, set by
     /// [`Field::with_error`]: an invalid control edges itself in danger ink
     /// and reports `invalid` to assistive technology. Controls without a

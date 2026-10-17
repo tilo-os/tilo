@@ -2718,8 +2718,12 @@ impl FrameBuilder {
                 separable.then_some(cache),
             )
         } else {
-            let (scene, scanout) =
-                self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
+            let (scene, scanout) = self.screen_space_scene(
+                &sections,
+                fullscreen_on_top,
+                &foreign_images,
+                global_filter,
+            );
             (scene, scanout, None)
         };
         phases.mark("compose");
@@ -2958,6 +2962,7 @@ impl FrameBuilder {
         &self,
         sections: &crate::shell::overlay_host::ShellSceneSections,
         fullscreen_on_top: Option<crate::shell::scanout_candidate::DrawnOnTop>,
+        foreign_images: &[super::foreign_damage::DrawnImage],
         global_filter: bool,
     ) -> (
         Scene,
@@ -2975,9 +2980,41 @@ impl FrameBuilder {
         scene.append(&sections.above_quick_settings, None);
         // A popup, the on-screen keyboard or anything else drawn above the
         // fullscreen client in its section leaves it not on top.
-        let fullscreen_on_top =
-            fullscreen_on_top.filter(|drawn| drawn.still_last_in(&sections.above_quick_settings));
+        let fullscreen_on_top = fullscreen_on_top
+            .filter(|drawn| drawn.still_last_in(&sections.above_quick_settings))
+            .and_then(|drawn| {
+                let (surface, _) = self.fullscreen_overlay.as_ref()?;
+                Some((*surface, drawn))
+            });
+        // Otherwise a client frame drawn last of all (a maximized window's,
+        // drawn edge to edge) is on top of everything on its display.
         let draws_below_filters = scene.encoding().draw_tags.len();
+        let client_on_top = fullscreen_on_top.or_else(|| {
+            let drawn = crate::shell::scanout_candidate::DrawnOnTop::last_in(
+                &scene,
+                draws_below_filters.checked_sub(1)?,
+            );
+            if drawn.is_none() {
+                // Why the display composites rather than scans a client out:
+                // what each section drew, backdrop first.
+                tracing::trace!(
+                    target: "tilo::scanout",
+                    draws = ?[
+                        &sections.backdrop,
+                        &sections.workspace,
+                        &sections.workspace_overlays,
+                        &sections.topbar,
+                        &sections.quick_settings,
+                        &sections.above_quick_settings,
+                    ]
+                    .map(|section| section.encoding().draw_tags.len()),
+                    "no client frame is the last thing drawn"
+                );
+            }
+            let drawn = drawn?;
+            let surface = super::foreign_damage::surface_of(foreign_images, drawn.image())?;
+            Some((surface, drawn))
+        });
         if self.watch_configured_theme && self.night_light {
             let (w, h) = self.viewport;
             let bounds = Rect::new(0.0, 0.0, w, h);
@@ -3002,10 +3039,11 @@ impl FrameBuilder {
         }
         // Night light, a colour filter and the magnifier change every pixel
         // of the output; the magnifier does it without drawing anything more.
-        let fullscreen_on_top = fullscreen_on_top
+        let client_on_top = client_on_top
             .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
-        let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
+        let scanout = client_on_top
+            .and_then(|(surface, drawn)| self.scanout_candidate(surface, drawn, &scene));
         (scene, scanout)
     }
 
@@ -3016,6 +3054,7 @@ impl FrameBuilder {
     /// not overlap, or another display's copy could be drawn over it.
     fn scanout_candidate(
         &self,
+        surface: super::foreign::SurfaceId,
         drawn: crate::shell::scanout_candidate::DrawnOnTop,
         scene: &Scene,
     ) -> Option<crate::shell::scanout_candidate::ScanoutCandidate> {
@@ -3033,8 +3072,17 @@ impl FrameBuilder {
             }
             _ => drawn,
         };
-        let (surface, _) = self.fullscreen_overlay.as_ref()?;
-        crate::shell::scanout_candidate::ScanoutCandidate::new(*surface, placed, scene)
+        let bounds = placed.bounds();
+        let candidate =
+            crate::shell::scanout_candidate::ScanoutCandidate::new(surface, placed, scene);
+        tracing::trace!(
+            target: "tilo::scanout",
+            surface,
+            ?bounds,
+            pixel_exact = candidate.is_some(),
+            "a client frame is on top of everything drawn"
+        );
+        candidate
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -7153,6 +7201,39 @@ mod tests {
         fb.set_fullscreen_surface(None);
         assert!(fb.paint_with_damage().scanout.is_none(), "fullscreen left");
         store.forget(FULLSCREEN);
+        store.forget(POPUP);
+    }
+
+    /// Not only the fullscreen overlay: any client frame drawn last of all,
+    /// unclipped, is on top of everything on its display (a maximized
+    /// window drawn edge to edge is one; a surface floating over the whole
+    /// desktop is the simplest). The frame names that client's surface, and
+    /// the proof goes as soon as anything is drawn above it.
+    #[test]
+    fn a_client_frame_drawn_last_of_all_is_a_scanout_candidate() {
+        const SURFACE: u64 = 9_900_708;
+        const POPUP: u64 = 9_900_709;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(SURFACE, &pixels, SIZE.0, SIZE.1);
+        store.publish_rgba(POPUP, &[0, 0, 0, 255], 1, 1);
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+        fb.set_floating_surfaces_with_input(&[(SURFACE, "org.alacritty".to_owned(), output, None)]);
+        let frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("the client frame drawn last of all is a candidate");
+        assert_eq!(candidate.surface, SURFACE);
+        assert!(candidate.covers((0, 0), SIZE));
+
+        fb.set_transient_surfaces(&[(POPUP, Rect::new(10.0, 10.0, 40.0, 40.0))]);
+        assert!(fb.paint_with_damage().scanout.is_none(), "a popup above it");
+        fb.set_transient_surfaces(&[]);
+        fb.set_floating_surfaces_with_input(&[]);
+        store.forget(SURFACE);
         store.forget(POPUP);
     }
 

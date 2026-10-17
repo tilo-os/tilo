@@ -335,6 +335,9 @@ pub struct TileHost {
     /// Adjacent canvas windows own exactly their layout rectangle, including
     /// their border; neither outlines nor shadows may spill into a sibling.
     flush_edges: bool,
+    /// The window fills its display ([`Widget::set_full_bleed`]): square,
+    /// unclipped and without an edge.
+    full_bleed: bool,
     /// `None` by default, matching the "animations only fire for runtime
     /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
@@ -653,6 +656,7 @@ impl TileHost {
             focused: false,
             pointer: None,
             flush_edges: false,
+            full_bleed: false,
             spawned_at: None,
             opening_name: String::new(),
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
@@ -2378,6 +2382,12 @@ impl Widget for TileHost {
             }
         }
     }
+    fn set_full_bleed(&mut self, full_bleed: bool) {
+        self.full_bleed = full_bleed;
+        if let TileContent::App(app) = &mut self.content {
+            app.set_full_bleed(full_bleed);
+        }
+    }
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2968,6 +2978,10 @@ impl TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.full_bleed {
+            self.draw_full_bleed(scene, transform, tr, theme, presence);
+            return;
+        }
         // A tile casts no shadow: it is separated by the ground and its
         // window edge. Only floating things cast one.
         let radius = f64::from(theme.tokens.radii.tile);
@@ -3007,6 +3021,33 @@ impl TileHost {
             .collect();
         crate::scene_parts::part(scene, edge, bounds, |scene| {
             self.draw_edge(scene, transform, theme, radius);
+        });
+    }
+
+    /// A tile filling its display: the content edge to edge, square and
+    /// with no clip or edge around it. Nothing beside it needs setting
+    /// apart, and a client surface the content draws stays the last,
+    /// unclipped thing drawn there, which the display can scan out.
+    fn draw_full_bleed(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.rect,
+        );
+        let shape = RoundedRect::from_rect(self.rect, 0.0);
+        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let bounds = vec![transform.transform_rect_bbox(self.rect)];
+        crate::scene_parts::part(scene, content, bounds, |scene| {
+            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
         });
     }
 
@@ -3648,6 +3689,50 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("P")
         }
+    }
+
+    /// A tile filling its display draws its content edge to edge: no
+    /// rounded clip around it and no edge over it, so the content's own
+    /// drawing (a client's frame) is the last and unclipped thing it draws.
+    /// A tile beside others keeps both.
+    #[test]
+    fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
+        let rect = Rect::new(0.0, 0.0, 160.0, 100.0);
+        let draw = |full_bleed: bool| {
+            let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
+            host.rect = rect;
+            host.set_full_bleed(full_bleed);
+            let mut scene = Scene::new();
+            host.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::default(),
+                &PresenceCtx::empty(),
+            );
+            scene
+        };
+        let framed = draw(false);
+        assert!(
+            framed.encoding().n_clips > 0,
+            "a tile beside others clips to its rounded card"
+        );
+        let full = draw(true);
+        let encoding = full.encoding();
+        assert_eq!(
+            encoding.n_clips, 0,
+            "nothing clips a tile filling its display"
+        );
+        assert_eq!(
+            encoding.draw_tags.last().map(|tag| tag.0),
+            Some(vello_encoding::DrawTag::COLOR.0),
+            "the content's fill is the last draw: no edge over it"
+        );
+        assert_eq!(
+            encoding.draw_tags.len(),
+            2,
+            "the card's ground under the content, then the content"
+        );
     }
 
     #[test]
