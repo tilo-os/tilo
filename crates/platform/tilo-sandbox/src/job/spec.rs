@@ -136,16 +136,22 @@ pub enum MountKind {
     ReadWrite(PathBuf),
     /// A tmpfs of at most `size` bytes (the job's cgroup pays for it).
     Tmpfs { size: Option<u64> },
-    /// `lower`, read-only, with what the job writes going to `upper`
+    /// `lowers`, read-only and stacked (the first on top, as overlayfs's
+    /// `lowerdir` lists them), with what the job writes going to `upper`
     /// (`work` is overlayfs's scratch, on the same filesystem as `upper`).
-    /// Mounted `volatile`, never synced: `upper` and `work` serve one job,
-    /// and are thrown away after it (overlayfs refuses to mount a `work`
-    /// a volatile mount used again).
+    /// Mounted `volatile`, never synced: `upper` and `work` serve one job
+    /// (overlayfs refuses to mount a `work` a volatile mount used again).
+    /// A caller keeping `upper` after the job makes it durable itself.
     Overlay {
-        lower: PathBuf,
+        lowers: Vec<PathBuf>,
         upper: PathBuf,
         work: PathBuf,
     },
+    /// `lowers` stacked as in [`MountKind::Overlay`], read-only: what one
+    /// layer holds hides the same path in the layers below it, and its
+    /// whiteouts and opaque directories hide theirs. At least two; one alone
+    /// is a [`MountKind::ReadOnly`] bind.
+    Layers { lowers: Vec<PathBuf> },
 }
 
 impl Mount {
@@ -170,16 +176,36 @@ impl Mount {
         }
     }
 
+    /// `lowers` stacked (the first on top) at `dst`, what the job writes
+    /// going to `upper`; see [`MountKind::Overlay`].
+    pub fn overlay(
+        lowers: Vec<PathBuf>,
+        upper: impl Into<PathBuf>,
+        work: impl Into<PathBuf>,
+        dst: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            dst: dst.into(),
+            kind: MountKind::Overlay {
+                lowers,
+                upper: upper.into(),
+                work: work.into(),
+            },
+        }
+    }
+
     /// Whether the job may write beneath the destination.
     pub fn writable(&self) -> bool {
-        !matches!(self.kind, MountKind::ReadOnly(_))
+        !matches!(self.kind, MountKind::ReadOnly(_) | MountKind::Layers { .. })
     }
 
     /// The host path the mount shows, if it shows one.
     pub fn source(&self) -> Option<&std::path::Path> {
         match &self.kind {
             MountKind::ReadOnly(p) | MountKind::ReadWrite(p) => Some(p),
-            MountKind::Overlay { lower, .. } => Some(lower),
+            MountKind::Overlay { lowers, .. } | MountKind::Layers { lowers } => {
+                lowers.first().map(PathBuf::as_path)
+            }
             MountKind::Tmpfs { .. } => None,
         }
     }
