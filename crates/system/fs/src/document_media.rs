@@ -14,6 +14,11 @@
 //! exchange is the collaboration broker's — content travels on the record's
 //! route (`tilo_action_broker::record_content`), never between daemons.
 //!
+//! A host can also offer an explicit owner action through
+//! [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
+//! room references, without claiming historical ownership. That host-only
+//! authority is not exposed on the ordinary blob capability or socket.
+//!
 //! Reachability is per room, not per app, because apps in a room hand content
 //! to one another by hash (a typed action's content resource, a launch). Bytes
 //! that happen to be in the store for another reason (a file, another room)
@@ -49,6 +54,13 @@ use runtime_fs::blobs::{
 
 use crate::store::ContentStore;
 
+mod import;
+pub use import::{
+    LegacyImportApproval, LegacyImportAuthority, LegacyImportPermit, LegacyImportRequest,
+    LegacyMediaImportHost, MAX_LEGACY_IMPORT_BYTES, MAX_LEGACY_IMPORT_ITEMS,
+    MAX_LEGACY_IMPORT_LIFETIME,
+};
+
 const TAG_PREFIX: &str = "tilo/media/v1/";
 
 fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
@@ -64,10 +76,14 @@ async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool
 }
 
 async fn record_reference(store: &ContentStore, scope: &BlobScope, hash: Hash) -> Result<()> {
+    record_reference_tag(store, reference_tag(scope, hash), hash).await
+}
+
+async fn record_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> Result<()> {
     store
         .store()
         .tags()
-        .set(reference_tag(scope, hash), HashAndFormat::raw(hash))
+        .set(tag, HashAndFormat::raw(hash))
         .await?;
     store.store().sync_db().await?;
     Ok(())

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Hardware-profile validation and inherited UKI section preservation fixtures."""
 
-import contextlib
 import hashlib
 import importlib.util
-import io
 import json
 import os
 import stat
@@ -29,7 +27,6 @@ def load(name, path):
 
 
 profile = load("uki_hardware_profile", REPO / "os/dev/uki-hardware-profile.py")
-cmdline = load("uki_cmdline", REPO / "os/dev/uki-cmdline.py")
 
 
 def dtb_fixture():
@@ -124,38 +121,6 @@ class HardwareProfileTests(unittest.TestCase):
             self.write_profile()
             with self.assertRaises(ValueError):
                 self.resolve()
-        restart_fixture(self)
-        with self.subTest(phase="installer_and_reseal_edits_preserve_embedded_device_tree"):
-            # A small PE with real section geometry: cmdline edits must preserve
-            # .dtb bytes and section metadata when making live/target UKI variants.
-            pe, optional_size, raw = 0x80, 0xF0, 0x400
-            table = pe + 24 + optional_size
-            data = bytearray(0xA00)
-            data[:2] = b"MZ"
-            struct.pack_into("<I", data, 0x3C, pe)
-            data[pe:pe + 4] = b"PE\0\0"
-            struct.pack_into("<H", data, pe + 6, 2)
-            struct.pack_into("<H", data, pe + 20, optional_size)
-            command = b"tilo.generation=1 tilo.install root=tilo-auto composefs=" + b"0" * 128
-            for index, (name, payload, location, address) in enumerate((
-                    (b".cmdline", command, raw, 0x1000),
-                    (b".dtb", self.dtb.read_bytes(), 0x800, 0x2000))):
-                header = table + index * 40
-                data[header:header + len(name)] = name
-                struct.pack_into("<IIII", data, header + 8, len(payload), address, 0x200, location)
-                data[location:location + len(payload)] = payload
-            live = self.root / "live.efi"
-            target = self.root / "target.efi"
-            live.write_bytes(data)
-            target.write_bytes(data)
-            cmdline.remove_cmdline(target, "tilo.install")
-            cmdline.append_cmdline(live, "rd.luks.options=tpm2-device=auto,fido2-device=auto")
-            for image in (live, target):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    cmdline.main(["uki-cmdline.py", "set", "composefs=" + "a" * 128, str(image)])
-                changed = image.read_bytes()
-                self.assertEqual(changed[table + 40:table + 80], data[table + 40:table + 80])
-                self.assertEqual(changed[0x800:], data[0x800:])
 
     def test_installer_origin_binding(self):
         with self.subTest(phase="installer_uses_bound_origin_and_rejects_conflicting_override"):

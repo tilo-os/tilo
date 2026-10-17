@@ -19,12 +19,12 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from acceptance import gpu  # noqa: E402
-from acceptance.vm import VmError  # noqa: E402
+from acceptance.vm import TiloVm, VmError  # noqa: E402
 from acceptance.checks import apps, daily_apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
                                     first_textured, lingering, parse_procs)
-from acceptance.checks.startup import (ATSPI_PROBE, first_frame_budget, judge_listing,  # noqa: E402
-                                       kpi_p95_target, open_segments, p95, parse_launch_latencies,
+from acceptance.checks.startup import (ATSPI_CLIENT, ATSPI_PROBE, GUEST_ATSPI_CLIENT,  # noqa: E402
+                                       first_frame_budget, judge_listing, kpi_p95_target, open_segments, p95, parse_launch_latencies,
                                        parse_launch_latency, parse_startup_marks, segment_series)
 import gpu_check  # noqa: E402
 import run  # noqa: E402
@@ -645,9 +645,8 @@ class GuestAtspiProbeTests(unittest.TestCase):
         return json.loads(proc.stdout)
 
     def test_the_guest_probe_loads_the_real_client(self):
-        client = Path(__file__).resolve().parents[2] / "tools/atspi_external_client.py"
         with tempfile.TemporaryDirectory() as empty:
-            probe = self.probe(client, empty)
+            probe = self.probe(ATSPI_CLIENT, empty)
         self.assertTrue(probe["error"].startswith("no AT-SPI bus:"), probe)
         self.assertIn("gdbus", probe["error"])
         self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
@@ -673,6 +672,25 @@ class GuestAtspiProbeTests(unittest.TestCase):
             probe = self.probe(client, empty)
         self.assertIn("failed to load: FileNotFoundError:", probe["error"])
         self.assertNotIn("no AT-SPI client", probe["error"])
+
+
+class GuestClientCopyTests(unittest.TestCase):
+    def test_the_client_reaches_the_guest_whole_in_commands_the_kernel_accepts(self):
+        # The image ships no test tooling: A14 copies the checkout's client into the guest.
+        with tempfile.TemporaryDirectory() as home:
+            scripts = []
+
+            class Vm(TiloVm):
+                def exec(self, script, timeout=120, check=True):
+                    scripts.append(script)
+                    return subprocess.run(["sh", "-c", script], env={**os.environ, "HOME": home},
+                                          check=True, capture_output=True, text=True).stdout
+
+            Vm("tilo-vm", "test-vm", "test-slot", Path(home) / "log").write_home_file(
+                GUEST_ATSPI_CLIENT, ATSPI_CLIENT.read_bytes())
+            self.assertEqual((Path(home) / GUEST_ATSPI_CLIENT).read_bytes(), ATSPI_CLIENT.read_bytes())
+            self.assertFalse(list(Path(home).rglob("*.acc-tmp")))
+        self.assertTrue(all(len(script.encode()) < 128 * 1024 for script in scripts))
 
 
 def adapter_line(app, kind, name="llvmpipe (LLVM 19.1.7, 256 bits)", backend="Vulkan", driver="llvmpipe"):

@@ -67,6 +67,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+# Remembered NTFS drives: the mount service's protocol (panes::drives).
+tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
 # Public identity summaries, as the host's identity actions answer them. The
 # identity store itself is the host's: no record or secret enters Settings.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
@@ -131,6 +133,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tempfile.workspace = true
 # Prove that discovered selections are consumed by Calendar, not just valid JSON.
 calendar = { path = "../calendar", default-features = false }
+tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount" }
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../crates/dev/test-env" }

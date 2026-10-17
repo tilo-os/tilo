@@ -210,10 +210,10 @@ fi
 if [ "$(grep -Fc 'TILO_VM_DISPLAY' "$workflow")" -eq 3 ] \
    && grep -Fq 'echo "TILO_VM_DISPLAY=$display" >> "$GITHUB_ENV"' "$workflow" \
    && ! grep -Fq 'OS publication requires a readable/writable DRI render node' "$workflow" \
-   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions' "$workflow" \
-   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh' "$workflow" \
-   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop' "$workflow" \
-   && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock' "$workflow" \
+   && grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh oobe-actions' "$workflow" \
+   && grep -Fq './os/dev/vm.sh test installed-atspi-apps.sh' "$workflow" \
+   && grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh desktop' "$workflow" \
+   && grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh lock' "$workflow" \
    && grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$workflow"; then
   ok 'installed compositor, OOBE and AT-SPI gates run in both the virgl and 2D display modes'
 else

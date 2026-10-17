@@ -346,4 +346,7 @@ or repeatedly poll a queued job. Use automatic completion notifications and
 investigate concrete failures. Infrastructure maintenance coordination is a
 bounded operator task, never a prerequisite for ordinary development.
 
-After a successful normal `git push`, final CI status is automatically sent to this task when its runs finish. Keep relevant CI green before merging; use `fgj actions` to investigate failures.
+After pushing, use `t inbox` for failures traced to your commits and `t main` for the
+main failure board. Inspect a check with `t log <check>` or follow a run with
+`t follow <run>`. Fix regressions you caused forward and rerun the affected checks;
+unrelated failures on `main` do not gate your next push. See `docs/t.md`.

@@ -194,8 +194,7 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
-skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
+skrifa = { version = "0.44" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -434,8 +433,7 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
-skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
+skrifa = { version = "0.44" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }

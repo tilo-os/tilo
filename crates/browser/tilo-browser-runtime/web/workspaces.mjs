@@ -52,7 +52,8 @@
  * behind.
  */
 import {AdmissionError} from './admission.mjs';
-import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice} from './peer.mjs';
+import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, withCustody} from './peer.mjs';
+import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {memberText} from './json-text.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
@@ -327,6 +328,10 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
   return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
+/** This browser's device key for `profile`: the first one no other tab
+ * holds, a new one when they all are (`device-custody.mjs`). */
+const browserCustody = profile => openDeviceCustody({profile, storage: idbStorage()});
+
 /**
  * Join `workspace` as `identity` (the person, created and kept by the
  * caller) through its host's admission door; resolves to the peer. When
@@ -334,57 +339,44 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
  * the new one as themselves: nothing about hosts is theirs to decide, and
  * what this browser kept for the previous host stays on this device in a
  * namespace of its own.
+ *
+ * Each tab is a device of its own (`openCustody`, one device key per tab
+ * open at once): a tab that takes a key no host has seen yet is a new
+ * device of the person. The room admits each device once, so a new device
+ * of a person whose root this page holds is admitted through the door; one
+ * of a person paired from elsewhere pairs first, approved on one of their
+ * devices, as on any new browser.
  */
 export async function joinViaHost({
   workspace, identity, displayName = randomDisplayName(), fetch = globalThis.fetch, memberships = globalThis.localStorage,
-  join = joinWorkspace, connect = connectPeer, onProgress, ...connectOptions
+  join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, onProgress,
+  ...connectOptions
 }) {
   admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
+  /** The host's door, for the person `userPublicKey`. */
+  const door = userPublicKey => ask({workspace, path: 'join', fetch, body: {userPublicKey, displayName: fitDisplayName(displayName)}});
   if (known?.paired) {
     // A device paired to a person kept elsewhere: only that person's
     // devices can let it in again, so a failure is the page's to show.
-    return connect({...connectOptions, origin: known.origin, room: known.room, userPublicKey: known.userPublicKey,
-      profile: identityProfile(known, known.origin), displayName});
+    const profile = identityProfile(known, known.origin);
+    const custody = await openCustody(profile);
+    const common = {...connectOptions, origin: known.origin, room: known.room, userPublicKey: known.userPublicKey, profile, custody, displayName};
+    return withCustody(custody, () => (custody.created
+      // A tab with a key of its own: a new device of that person, which
+      // only their root can certify. It pairs as a new browser would.
+      ? pair({...common, admission: () => door(known.userPublicKey)})
+      : connect(common)), connectOptions.signal);
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
-  /** Whether the host refused the membership this browser kept. */
-  let refused = false;
-  if (known?.userPublicKey === identity.userPublicKey) {
-    let peer;
-    try {
-      peer = await connect({...connectOptions, origin: known.origin, room: known.room, identity, displayName});
-      // A host refuses a membership it no longer has once the session
-      // starts, not when connecting: wait for its answer here.
-      await peer?.whenReady?.();
-      return peer;
-    } catch (error) {
-      await peer?.dispose?.().catch(() => {});
-      // This browser could not use its own device key (another tab holds
-      // it), or the host has not answered yet: nothing the host refused,
-      // so the membership stays, and joining again would spend a seat and
-      // a join to fail the same way.
-      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
-      if (error?.code === 'host-changed') {
-        // Another host answers at this origin now: join it as the same
-        // person. What this browser kept stays pinned to the previous host.
-        console.info('host admission: the host was set up again, joining it anew');
-      } else {
-        // The membership is gone (pruned after a long absence, or the host
-        // started its room anew): ask the host to admit the same person
-        // again rather than stop at an error.
-        console.warn('host admission: reconnecting failed, asking to join again', error);
-        refused = true;
-      }
-      keepMembership(memberships, workspace, null);
-    }
-  }
-  const throughDoor = async () => {
+  /** Ask the door to admit the person, then join with what it hands out.
+   * `custody` (this tab's device key for `known`'s host) goes on where the
+   * door names the same host. `refused`: the host refused the membership
+   * this browser kept. */
+  const throughDoor = async (custody, refused) => {
     let admitted;
     try {
-      admitted = await ask({
-        workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
-      });
+      admitted = await door(identity.userPublicKey);
     } catch (error) {
       // The host no longer has the person, and its door turns away the
       // address they joined from because someone was removed: they were taken
@@ -394,28 +386,69 @@ export async function joinViaHost({
       throw error;
     }
     const {invitation, admissionToken, origin} = admitted;
+    const sameHost = custody && known && originOf(origin) === originOf(known.origin);
+    if (custody && !sameHost) await custody.close();
     let room = null;
     const peer = await join({
-      ...connectOptions, origin, invitation, admissionToken, identity, displayName,
+      ...connectOptions, origin, invitation, admissionToken, identity, displayName, ...(sameHost ? {custody} : {}),
       onProgress: event => { if (event.phase === 'admitted') room = event.room; onProgress?.(event); },
     });
     keepMembership(memberships, workspace, {origin, room: room ?? peer.room, userPublicKey: identity.userPublicKey});
     return peer;
   };
-  try {
-    return await throughDoor();
-  } catch (error) {
-    if (error?.code !== 'refused') throw error;
-    // The door handed out this invitation a moment ago, so the person has
-    // none of their own to renew: ask it once more for a fresh one.
-    console.warn('host admission: the host refused the door\'s invitation, asking again', error.reason);
+  const admitAnew = async (custody, refused = false) => {
     try {
-      return await throughDoor();
-    } catch (again) {
-      if (again?.code !== 'refused') throw again;
-      throw Object.assign(new AdmissionError('refused', doorRefused(workspace.name)), {reason: again.reason});
+      return await throughDoor(custody, refused);
+    } catch (error) {
+      if (error?.code !== 'refused') throw error;
+      // The door handed out this invitation a moment ago, so the person has
+      // none of their own to renew: ask it once more for a fresh one.
+      console.warn('host admission: the host refused the door\'s invitation, asking again', error.reason);
+      try {
+        return await throughDoor(custody, refused);
+      } catch (again) {
+        if (again?.code !== 'refused') throw again;
+        throw Object.assign(new AdmissionError('refused', doorRefused(workspace.name)), {reason: again.reason});
+      }
     }
-  }
+  };
+  if (known?.userPublicKey !== identity.userPublicKey) return admitAnew();
+  // Other tabs of this browser may hold every device key it has for this
+  // host (`custody-busy`): nothing the host refused, so the membership stays
+  // and the door is not asked, which would spend a seat to fail the same way.
+  const custody = await openCustody(identityProfile(identity, known.origin));
+  return withCustody(custody, async () => {
+    // A key no host has seen yet is a new device of the person: the room
+    // admits it through the door, as it admitted the person's first.
+    if (custody.created) return admitAnew(custody);
+    let peer;
+    try {
+      peer = await connect({...connectOptions, origin: known.origin, room: known.room, identity, custody, displayName});
+      // A host refuses a membership it no longer has once the session
+      // starts, not when connecting: wait for its answer here.
+      await peer?.whenReady?.();
+      return peer;
+    } catch (error) {
+      await peer?.dispose?.().catch(() => {});
+      // The host has not answered yet: nothing the host refused, so the
+      // membership stays, and joining again would spend a seat and a join
+      // to fail the same way.
+      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
+      if (error?.code === 'host-changed') {
+        // Another host answers at this origin now: join it as the same
+        // person. What this browser kept stays pinned to the previous host.
+        console.info('host admission: the host was set up again, joining it anew');
+        keepMembership(memberships, workspace, null);
+        return admitAnew(custody);
+      }
+      // The membership is gone (pruned after a long absence, or the host
+      // started its room anew), or this device was never admitted: ask the
+      // host to admit the same person again rather than stop at an error.
+      console.warn('host admission: reconnecting failed, asking to join again', error);
+      keepMembership(memberships, workspace, null);
+      return admitAnew(custody, true);
+    }
+  }, connectOptions.signal);
 }
 
 /** What a person is told when a host's open door still could not let them

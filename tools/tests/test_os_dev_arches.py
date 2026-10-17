@@ -38,7 +38,7 @@ class OsDevArchesTests(unittest.TestCase):
         for path in host:
             self.assertFalse(selected(path), path)
         payload = ["os/Containerfile", "os/Containerfile.dev", "os/Containerfile.installer",
-                   "os/usr/libexec/tilo-installer-code-refresh.py",
+                   "os/usr/lib/systemd/system/tilo-installer-code-refresh.service",
                    "os/dev/windows_provider.py", "os/dev/uki.sh",
                    "os/dev/prepare-hardware-profile.py", "os/kernel/config/aarch64",
                    "os/hardware/profiles/lenovo-83ed.toml",

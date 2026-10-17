@@ -98,7 +98,7 @@ fi
 # shellcheck source=lib/containerfile.sh
 . "$repo/os/tests/lib/containerfile.sh"
 if containerfile_has_copy "$repo/os/Containerfile" os/usr/libexec/tilo-recovery /usr/libexec/tilo-recovery \
-   && containerfile_has_copy "$repo/os/Containerfile" os/dev/uki-cmdline.py /usr/libexec/tilo-uki-cmdline; then
+   && grep -Fq '{ link = "tilo-esp-write", to = "/usr/libexec/tilo-uki-cmdline" }' "$repo/os/components.toml"; then
   ok "installed repair mode includes the recovery backend"
 else
   bad "base image does not install the recovery backend used by repair mode"

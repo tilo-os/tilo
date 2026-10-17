@@ -98,10 +98,17 @@ enum Cmd {
     },
 }
 
+/// Logs go to stderr: a persistent room's stdout is the line protocol its
+/// room service reads, which dropped every log line, so a hosted relay's
+/// refusals and errors were never seen anywhere.
 fn install_logging() {
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
         .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,warn"));
-    fmt().with_env_filter(filter).with_target(true).init();
+    fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn load_or_default(path: &std::path::Path) -> anyhow::Result<RelayConfig> {

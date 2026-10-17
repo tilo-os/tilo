@@ -55,7 +55,7 @@ takes whichever UKI `bootc install` wrote, copies it, and rewrites
 `tilo.mode=normal` to `tilo.mode=repair` **in place**. Both values are 15 bytes, so
 the `.cmdline` section keeps its size, every following PE section keeps its file
 offset, and the image still loads — the same length-preserving edit
-`os/dev/uki-cmdline.py` already performs to close the composefs seal.
+`tilo-uki-cmdline` (`crates/system/esp-write/src/uki.rs`) already performs to close the composefs seal.
 `tilo-uki-cmdline` refuses a length-changing replacement, so a future rename of
 either value fails loudly here instead of producing a UKI that will not boot.
 

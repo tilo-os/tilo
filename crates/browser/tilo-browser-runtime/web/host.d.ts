@@ -170,6 +170,12 @@ export interface DesktopMount {
    * window's app (`window`, else the focused window).
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
+  /**
+   * Who the desktop shows as here, as its People list does: one row per
+   * person however many devices (tabs) they are here from, never this page's
+   * own person. `null` for a single application.
+   */
+  people(): {id: string; label: string; agent: boolean}[] | null;
   /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
   publications(): ActionDescriptor[];
   /** At most 32 exact targets. No locus until a subsequent successful presentation. */

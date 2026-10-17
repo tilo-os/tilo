@@ -270,6 +270,15 @@ impl Harness {
         self.lay_out();
     }
 
+    /// One frame as the shell runs it after input: the per-frame
+    /// reconcilers, then layout, with no time passing.
+    fn frame(&mut self) {
+        self.host.run_requested_shortcut_actions();
+        self.host.flush_active_tab_writeback();
+        self.host.tick_scroll_active_into_view_for_tests();
+        self.lay_out();
+    }
+
     fn click(&mut self, p: Point) {
         self.event(&ui::synthetic_input::cursor_moved(p.x, p.y));
         self.event(&ui::synthetic_input::mouse_press());
@@ -1695,7 +1704,11 @@ fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
         .host
         .group_row_mut_for_tests(h.strip)
         .expect("retained strip");
-    assert!(row.scroll_group_into_view_animated(h.groups[4], Instant::now()));
+    assert!(row.scroll_group_into_view_animated(
+        h.groups[4],
+        Instant::now(),
+        ui::tokens::MotionSource::Pointer
+    ));
     h.chrome.borrow_mut().request_axis_gather();
     h.host.run_requested_shortcut_actions();
     h.lay_out();
@@ -1893,4 +1906,96 @@ fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
     assert_eq!(plane(&h).1, upper, "restoring does not change strip");
     h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
     assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
+}
+
+/// Motion follows the input. A chord or an action is a known result asked
+/// for often, so what it changes is on screen the first frame after it:
+/// groups in their new slots, at their new widths, maximized or restored,
+/// with nothing left springing or fading. Only the viewport may still move,
+/// sliding an off-screen target into view, and it is there within `fast`.
+#[test]
+fn the_first_frame_after_a_chord_shows_the_final_layout() {
+    let fast = Theme::dark().tokens.motion.durations.fast();
+    let (mut tree, strip, groups, tabs) = strip_tree();
+    // The local person owns the desk, so the action door may rearrange it.
+    tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+    tree.seed_doc_from_cache();
+    let mut h = Harness::with_tree(&tree, strip, groups, tabs);
+    // After at most `fast`, nothing in the strip is moving and the pan is
+    // where it rests.
+    let settles_within_fast = |h: &mut Harness, what: &str| {
+        let strip = h.strip;
+        let row = h
+            .host
+            .group_row_mut_for_tests(strip)
+            .expect("the strip is live");
+        for &group in &row.group_ids() {
+            assert!(
+                row.shift_offset_for(group).abs() < 0.5,
+                "{what}: group {group} is still drawn away from its slot on the first frame"
+            );
+        }
+        row.tick_snap_at(Instant::now().checked_add(fast).expect("instant in range"));
+        assert!(
+            !Widget::needs_animation_frame(&*row),
+            "{what}: something still animates `fast` after the first frame"
+        );
+        let shown = row.drawn_scroll_x();
+        h.tick();
+        assert!(
+            (h.scroll_x() - shown).abs() < 0.5,
+            "{what}: the viewport rests at {} but showed {shown} after `fast`",
+            h.scroll_x()
+        );
+    };
+
+    // Super+Right walks onto windows off the right edge: focus moves on the
+    // first frame and the strip follows within `fast`.
+    let mut slid = false;
+    for window in 1..5 {
+        let before = h.scroll_x();
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.frame();
+        assert_eq!(
+            h.active_window(),
+            (h.groups[window / 2], h.tabs[window / 2][window % 2]),
+            "Super+Right focuses on the first frame"
+        );
+        settles_within_fast(&mut h, "Super+Right");
+        slid |= (h.scroll_x() - before).abs() > 0.5;
+    }
+    assert!(slid, "the walk must reach a window that was off screen");
+
+    let chords: [(&str, Key, ModifiersState); 5] = [
+        (
+            "Super+Shift+Left",
+            Key::Named(NamedKey::ArrowLeft),
+            ModifiersState::SUPER | ModifiersState::SHIFT,
+        ),
+        ("Super+=", Key::Character("=".into()), ModifiersState::SUPER),
+        ("Super+M", Key::Character("m".into()), ModifiersState::SUPER),
+        (
+            "Super+M again",
+            Key::Character("m".into()),
+            ModifiersState::SUPER,
+        ),
+        (
+            "Ctrl+Tab",
+            Key::Named(NamedKey::Tab),
+            ModifiersState::CONTROL,
+        ),
+    ];
+    for (what, key, mods) in chords {
+        h.key(key, mods);
+        h.frame();
+        settles_within_fast(&mut h, what);
+    }
+
+    // An action takes the keyboard's path: agents and scripts act on the
+    // result at once.
+    let order = plane(&h).0[0].1.clone();
+    invoke(&h, "group.move-right", &serde_json::json!({})).unwrap();
+    h.frame();
+    assert_ne!(plane(&h).0[0].1, order, "the action reordered the strip");
+    settles_within_fast(&mut h, "group.move-right");
 }

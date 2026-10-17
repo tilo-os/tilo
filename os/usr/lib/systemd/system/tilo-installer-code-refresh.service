@@ -13,7 +13,7 @@ Type=notify
 NotifyAccess=main
 TimeoutStartSec=60
 UMask=0077
-ExecStart=/usr/bin/python3 /usr/libexec/tilo-installer-code-refresh.py
+ExecStart=/usr/libexec/tilo-vm-install-proof code-refresh
 # Bind overrides must be visible to PID1's later installer transient unit.
 PrivateMounts=no
 NoNewPrivileges=no

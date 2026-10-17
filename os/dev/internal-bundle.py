@@ -42,7 +42,6 @@ installer. Schema validation establishes consistency, never release
 authenticity.
 """
 import argparse
-import importlib.util
 from contextlib import contextmanager
 import hashlib
 import json
@@ -459,7 +458,7 @@ def inspect_bundle(path):
 
 
 def inspect_uki(data):
-    """Read bounded PE sections, reusing the existing UKI reader after validation."""
+    """Read bounded PE sections after validating the headers."""
     require(type(data) is bytes and 512 <= len(data) <= 256*1024*1024, 'UKI size outside bounds')
     require(data[:2] == b'MZ', 'not a DOS/PE executable')
     pe = struct.unpack_from('<I', data, 0x3c)[0]
@@ -472,11 +471,11 @@ def inspect_uki(data):
     require(optional_size >= 112 and base+40*count <= len(data), 'truncated PE headers')
     require(struct.unpack_from('<H', data, pe+24)[0] == 0x20b and
             struct.unpack_from('<H', data, pe+24+68)[0] == 10, 'not a PE32+ EFI application')
-    spec = importlib.util.spec_from_file_location('tilo_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
-    uki = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(uki)
     sections, ranges, virtual = {}, [], []
-    for _header, name, address, size, raw_size, offset in uki.section_table(data):
+    for index in range(count):
+        header = base + index*40
+        name = data[header:header+8].rstrip(b'\0').decode('ascii', 'replace')
+        size, address, raw_size, offset = struct.unpack_from('<IIII', data, header+8)
         require(name not in sections, 'duplicate PE section')
         require(size > 0 and raw_size >= size and offset >= base+40*count, 'invalid PE section size')
         sections[name] = (offset, size)
@@ -487,8 +486,6 @@ def inspect_uki(data):
     require({'.linux', '.initrd', '.osrel', '.cmdline'} <= sections.keys(), 'required UKI section missing')
     offset, size = sections['.cmdline']
     require(size <= 4097, 'UKI command line exceeds limit')
-    offset_existing, size_existing = uki.find_cmdline(data)
-    require((offset, size) == (offset_existing, size_existing), 'UKI reader section disagreement')
     sealed = data[offset:offset+size].rstrip(b'\0')
     try:
         cmdline = sealed.decode('ascii')

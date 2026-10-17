@@ -3234,6 +3234,31 @@ pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
     })
 }
 
+/// Who the desktop shows as here, as its People list does: `[{id, label,
+/// agent}]`, one row per person however many devices they are here from,
+/// never this page's own person. `None` for a single application.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_here_people(id: u64) -> Result<Option<String>, JsValue> {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| {
+                let tree = d.handle.read(Clone::clone);
+                let people: Vec<serde_json::Value> = crate::shell::here_people(&d.here, &d.shared, &tree)
+                    .into_iter()
+                    .map(|person| serde_json::json!({"id": person.id, "label": person.label, "agent": person.agent}))
+                    .collect();
+                serde_json::to_string(&people).map_err(error)
+            })
+            .transpose()
+    })
+}
+
 /// The host's answer to `/here` (`peer.here`): each person's line.
 ///
 /// # Errors

@@ -26,6 +26,7 @@ tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
+anyhow.workspace = true
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.

@@ -469,8 +469,7 @@ print(json.dumps({'signed_rootfs_id': identity}))
             self.stage_alongside_bootc_inputs()
             self.write("os/Containerfile.installer", (REPO / "os/Containerfile.installer").read_text())
             for path in (
-                "os/tilo-installer", "os/dev/uki-cmdline.py",
-                "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml",
+                "os/tilo-installer", "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml",
                 "os/usr/share/tilo/fixture",
             ):
                 self.write(path, "fixture only\n")
@@ -507,8 +506,7 @@ exit {BUILD_INTERCEPTED}
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
             self.stage_alongside_bootc_inputs()
-            for path in ("os/dev/uki-cmdline.py", "os/etc/greetd/config.toml",
-                         "os/etc/greetd/config.installer.toml"):
+            for path in ("os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
             # Both stale binary sources must be ignored in image reuse mode.
             self.write("os/tilo-installer", "stale host binary\n")
@@ -544,8 +542,8 @@ exit 0
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
             self.stage_alongside_bootc_inputs()
-            for path in ("os/usr/share/tilo/fixture", "os/dev/uki-cmdline.py",
-                         "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml"):
+            for path in ("os/usr/share/tilo/fixture", "os/etc/greetd/config.toml",
+                         "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
             disk_args = self.root / "disk-arguments"
             self.write("os/dev/disk-image.sh", """\

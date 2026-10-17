@@ -372,6 +372,9 @@ participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
 participant-bot = { $name } · Bot
+# Zwei oder mehr Personen im Raum tragen denselben Namen: jede wird
+# nummeriert, für alle im Raum gleich.
+participant-numbered = { $name } ({ $number })
 # Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
 participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent

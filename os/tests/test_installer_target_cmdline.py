@@ -12,7 +12,6 @@ import re
 import shlex
 import struct
 import subprocess
-import sys
 import tempfile
 import tomllib
 import unittest
@@ -20,7 +19,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTAINERFILE = ROOT / "os/Containerfile.installer"
-HELPER = ROOT / "os/dev/uki-cmdline.py"
+# The UKI editor under test: tilo-esp-write run as tilo-uki-cmdline. Its
+# Cargo test (crates/system/esp-write/tests/uki_cmdline.rs) builds it and
+# names the link here.
+HELPER = os.environ["TILO_UKI_CMDLINE"]
 INSTALLED_HELPER = "/usr/libexec/tilo-uki-cmdline"
 TARGET = "/boot/tilo-target/tilo-target.efi"
 ROOT_TOKEN = "root=tilo-auto"
@@ -152,7 +154,7 @@ class TargetCmdlineTests(unittest.TestCase):
         self.base += ["tilo.generation=42", "composefs=" + "a" * 128]
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, "-B", str(HELPER), *map(str, args)],
+        return subprocess.run([HELPER, *map(str, args)],
                               capture_output=True, text=True, check=False)
 
     def run_commands(self, commands):
@@ -172,11 +174,10 @@ class TargetCmdlineTests(unittest.TestCase):
                     command = command.replace(" | ", f" {shlex.quote(str(self.live))} | ", 1)
                 else:
                     command += " " + shlex.quote(str(self.live))
-            command = command.replace(INSTALLED_HELPER,
-                                      shlex.join([sys.executable, "-B", str(HELPER)]))
+            command = command.replace(INSTALLED_HELPER, shlex.quote(HELPER))
             mapped.append(command)
         return subprocess.run(["bash", "-c", "set -x\n" + " &&\n".join(mapped)],
-                              cwd=self.directory, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+                              cwd=self.directory, env=os.environ,
                               capture_output=True, text=True, check=False)
 
     def prepare_live(self, tokens=None):

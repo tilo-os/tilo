@@ -74,8 +74,7 @@ TILO_DISK="$DISK" TILO_TPM=1 "$VM" boot --2d --tpm || die "the VM did not start"
 wait_ssh || { warn "ssh never came up"; "$VM" serial | tail -60; exit 1; }
 
 say "the command line the UKI sealed, read back out of the PE on the ESP"
-g 'cat > /tmp/uki-cmdline.py' < "$HERE/uki-cmdline.py" || die "could not copy the reader in"
-groot "python3 /tmp/uki-cmdline.py show" | tee "$OUT/sealed-cmdline.txt"
+groot "/usr/libexec/tilo-uki-cmdline show" | tee "$OUT/sealed-cmdline.txt"
 
 say "what the kernel was actually given"
 g 'cat /proc/cmdline' | tee "$OUT/proc-cmdline.txt"
@@ -87,7 +86,7 @@ cat "$OUT/check-positive.txt"
 
 # --- negative run -------------------------------------------------------------
 say "blank tilo.generation= out of the UKI, in place, at the same length"
-groot "python3 /tmp/uki-cmdline.py blank tilo.generation" | tee "$OUT/blank.txt"
+groot "/usr/libexec/tilo-uki-cmdline blank tilo.generation" | tee "$OUT/blank.txt"
 grep -q '^blanked tilo.generation' "$OUT/blank.txt" \
   || { warn "the generation was not blanked; the negative run would prove nothing"; exit 1; }
 
@@ -98,7 +97,6 @@ wait_ssh || { warn "the guest did not come back — a UKI edited at the wrong le
   changes the PE layout and does not load. Serial:"; "$VM" serial | tail -40; exit 1; }
 
 say "boot-side checks, generation absent"
-g 'cat > /tmp/uki-cmdline.py' < "$HERE/uki-cmdline.py"
 groot /usr/libexec/tilo-rollback-boot-check > "$OUT/check-negative.txt" 2>&1
 negative_rc=$?
 cat "$OUT/check-negative.txt"

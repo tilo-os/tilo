@@ -3070,6 +3070,32 @@ impl CollaboratorsOverlay {
 /// Rows the dropdown and the presence publisher agree are in the room, with
 /// `local_user` the principal this device speaks as.
 pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
+    collaborator_roster_rows_named(desktop, local_user, None).0
+}
+
+/// [`collaborator_roster_rows`], with people who share a name numbered
+/// ([`ui::presence::ParticipantLabels`]) — `own_name`, this person's own,
+/// among them — and what this person is shown as.
+pub fn collaborator_roster_rows_named(
+    desktop: &DesktopTree,
+    local_user: &str,
+    own_name: Option<&str>,
+) -> (Vec<RosterRow>, Option<String>) {
+    let mut rows = unnumbered_roster_rows(desktop, local_user);
+    let own_name = own_name.map(str::trim).filter(|name| !name.is_empty());
+    let labels = ui::presence::ParticipantLabels::new(
+        rows.iter()
+            .filter(|row| !row.is_agent && row.id != local_user)
+            .map(|row| (row.id.as_str(), row.label.as_str()))
+            .chain(own_name.map(|name| (local_user, name))),
+    );
+    for row in rows.iter_mut().filter(|row| !row.is_agent) {
+        row.label = labels.label(&row.id, &row.label);
+    }
+    (rows, own_name.map(|name| labels.label(local_user, name)))
+}
+
+fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
     // Presence publication updates the active workspace and the legacy
     // tree-wide mirror together, but readers can observe one side of that
     // handoff before the other (and old control clients still update only

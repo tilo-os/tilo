@@ -152,6 +152,9 @@ pub enum FileCommand {
     /// Open what is wrong with the cloud account with this id (chosen from
     /// the places list, where its folder is not mounted).
     ShowRemoteAccount(String),
+    /// Open the NTFS drive with this id (chosen from the places list): the
+    /// shell asks the person before it opens, unless they remembered it.
+    OpenDrive(String),
     /// Read the cloud account with this id again (after the person signed in
     /// elsewhere) and open its folder if it is now available.
     RecheckRemoteAccount(String),

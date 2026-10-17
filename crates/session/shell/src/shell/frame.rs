@@ -9736,7 +9736,8 @@ mod tests {
                 switched = st.switch_workspace(step);
             });
             assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut().start_workspace_switch_frames();
+            fb.host_mut()
+                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
             for _ in 0..2 {
                 let frame = fb.paint_with_damage();
                 assert!(
@@ -9785,7 +9786,8 @@ mod tests {
             });
             assert!(switched, "the demo tree has a second workspace");
             // Latch on the host before update, as Super+PageDown does.
-            fb.host_mut().start_workspace_switch_frames();
+            fb.host_mut()
+                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
             assert!(
                 fb.animation_owners()
                     .iter()
@@ -9914,7 +9916,8 @@ mod tests {
             switched = st.switch_workspace(1);
         });
         assert!(switched, "the demo tree has a second workspace");
-        fb.host_mut().start_workspace_switch_frames();
+        fb.host_mut()
+            .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
         for index in 0..8 {
             let frame = fb.paint_with_damage();
             assert!(
@@ -9941,7 +9944,8 @@ mod tests {
                 switched = st.switch_workspace(step);
             });
             assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut().start_workspace_switch_frames();
+            fb.host_mut()
+                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
             for index in 0..8 {
                 let frame = fb.paint_with_damage();
                 assert!(

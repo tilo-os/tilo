@@ -531,6 +531,9 @@ mod image_worker_impl {
         rich_pending: Option<PendingRich>,
         plain_pending: Option<PendingPlain>,
         rich_read_budget: tilo_clock::Duration,
+        /// Dispatched claims must be settled even when the shared display
+        /// retains their callback userdata after this worker stops.
+        pending_publications: HashMap<usize, (Arc<PublicationClaim>, SharedSettle)>,
         exit: bool,
     }
 
@@ -612,6 +615,7 @@ mod image_worker_impl {
             rich_pending: None,
             plain_pending: None,
             rich_read_budget,
+            pending_publications: HashMap::new(),
             exit: false,
         };
         let fence_connection = connection.clone();
@@ -620,6 +624,10 @@ mod image_worker_impl {
                 match command {
                     ClipboardCommand::Publish(publication) => {
                         let pending = PendingPublication::new(publication);
+                        state.pending_publications.insert(
+                            Arc::as_ptr(&pending.settle) as usize,
+                            (Arc::clone(&pending.claim), Arc::clone(&pending.settle)),
+                        );
                         state.arm_publication_deadline(&pending);
                         fence_connection
                             .display()
@@ -651,6 +659,10 @@ mod image_worker_impl {
             }
         }
         state.invalidate_rich();
+        for (_, (claim, settle)) in state.pending_publications.drain() {
+            claim.abandon();
+            settle_once(&settle, claim.taken());
+        }
     }
 
     struct PendingPublication {
@@ -709,19 +721,19 @@ mod image_worker_impl {
         /// At the deadline, refuse a copy the focus check has not taken. One
         /// it took already set the selection: give the compositor's
         /// confirmation one more budget, then report it copied either way.
-        fn arm_publication_deadline(&self, pending: &PendingPublication) {
+        fn arm_publication_deadline(&mut self, pending: &PendingPublication) {
             let claim = Arc::clone(&pending.claim);
             let settle = Arc::clone(&pending.settle);
             let mut confirming = false;
             let armed = self.loop_handle.insert_source(
                 calloop::timer::Timer::from_deadline(pending.deadline),
-                move |_, (), _| {
+                move |_, (), state| {
                     if confirming {
-                        settle_once(&settle, true);
+                        state.finish_publication(&settle, true);
                         return calloop::timer::TimeoutAction::Drop;
                     }
                     if claim.abandon() || !claim.taken() {
-                        settle_once(&settle, false);
+                        state.finish_publication(&settle, false);
                         return calloop::timer::TimeoutAction::Drop;
                     }
                     confirming = true;
@@ -731,8 +743,16 @@ mod image_worker_impl {
             if armed.is_err() {
                 // Without a deadline the copy could stay pending for good.
                 pending.claim.abandon();
-                settle_once(&pending.settle, false);
+                self.finish_publication(&pending.settle, false);
             }
+        }
+
+        fn finish_publication(&mut self, settle: &SharedSettle, copied: bool) {
+            // The allocation's identity stays unique while callback userdata
+            // retains it; remove settled claims rather than retaining a history.
+            self.pending_publications
+                .remove(&(Arc::as_ptr(settle) as usize));
+            settle_once(settle, copied);
         }
     }
 
@@ -791,7 +811,7 @@ mod image_worker_impl {
                 let _ = connection.flush();
             } else {
                 pending.claim.abandon();
-                settle_once(&pending.settle, false);
+                state.finish_publication(&pending.settle, false);
             }
         }
     }
@@ -800,14 +820,14 @@ mod image_worker_impl {
         for State
     {
         fn event(
-            _: &mut Self,
+            state: &mut Self,
             _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
             _: sctk::reexports::client::protocol::wl_callback::Event,
             published: &PublishedSelection,
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            settle_once(&published.settle, true);
+            state.finish_publication(&published.settle, true);
         }
     }
 

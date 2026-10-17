@@ -28,6 +28,7 @@ pub mod device_mesh;
 pub mod disk_unlock;
 pub mod display;
 pub mod display_arrangement;
+pub mod drives;
 pub mod keyboard_shortcuts;
 pub mod model;
 pub mod mouse_keyboard;

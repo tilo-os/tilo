@@ -210,12 +210,12 @@ test('an address the host turns away after a removal is told why and that trying
   assert.doesNotMatch(failureMessage(cooling), /HTTP|connection/);
 });
 
-test('a page whose device key another tab holds says to use that tab', () => {
-  const busy = Object.assign(new Error('Another tab holds this device key'), {name: 'CustodyError', code: 'custody-busy'});
+test('a page that could not become a device of its own says other tabs hold every one', () => {
+  const busy = Object.assign(new Error('Every device key is held by another tab'), {name: 'CustodyError', code: 'custody-busy'});
   assert.equal(failureMessage(busy, {workspace: 'Lounge'}),
-    'Lounge is already open in another tab of this browser. Use that tab, or close it and try again.');
+    'Every device this browser keeps for Lounge is open in another tab. Close one of those tabs, then try again.');
   assert.equal(failureMessage(busy),
-    'The workspace is already open in another tab of this browser. Use that tab, or close it and try again.');
+    'Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.');
 });
 
 test('a tip reads after its label, a joke bare', () => {

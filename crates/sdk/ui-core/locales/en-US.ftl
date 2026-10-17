@@ -375,6 +375,9 @@ participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
 participant-app = { $name } · App
 participant-bot = { $name } · Bot
+# Two or more people in a room go by the same name: each is numbered, the
+# same numbers for everyone in it.
+participant-numbered = { $name } ({ $number })
 # An agent, a Shortcut or an app acting for a person.
 participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent

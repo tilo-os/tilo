@@ -481,7 +481,11 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
             test.surface_mut()
                 .row_mut(StripId(2))
                 .unwrap()
-                .scroll_group_into_view_animated(4, ui::time::Instant::now());
+                .scroll_group_into_view_animated(
+                    4,
+                    ui::time::Instant::now(),
+                    ui::tokens::MotionSource::Pointer,
+                );
             std::thread::sleep(std::time::Duration::from_millis(16));
             test.frame.poll_frame().unwrap();
             false

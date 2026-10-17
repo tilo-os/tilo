@@ -262,8 +262,8 @@ TILO_SEAL_GENERATION=0 ./os/dev/build-image.sh
 # On an installed machine: blank the generation out of the UKI in place. Same
 # length, so the PE layout is untouched and the boot still measures — into a
 # different PCR 11, which is the point.
-sudo ./os/dev/uki-cmdline.py show
-sudo ./os/dev/uki-cmdline.py blank tilo.generation
+sudo /usr/libexec/tilo-uki-cmdline show
+sudo /usr/libexec/tilo-uki-cmdline blank tilo.generation
 ```
 
 Either way the check must fail on the generation assertions specifically, not on

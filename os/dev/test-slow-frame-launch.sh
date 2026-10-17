@@ -51,7 +51,6 @@ done
 [[ $hold =~ ^[0-9]+$ ]] || { echo "--hold must be whole seconds" >&2; exit 2; }
 stall_min="${stall%%-*}"
 pass="${TILO_PASS:-tilo}"
-atspi=/usr/libexec/tilo/installed-atspi-apps.sh
 session_logs='$HOME/.local/state/tilo/session-logs'
 mkdir -p "$out"
 
@@ -117,7 +116,7 @@ note "the display is ${out_w}x${out_h}"
 # --- open the apps one after another, each beside the ones before ---------------
 opened=()
 for app in "${apps[@]}"; do
-  reply="$("$vm" ssh "$atspi open '$app'")" || die "$app did not open"
+  reply="$("$vm" test installed-atspi-apps.sh "open '$app'")" || die "$app did not open"
   read -r bus pid <<<"$reply"
   [[ -n $bus && $pid =~ ^[0-9]+$ ]] || die "$app opened, but the client printed '$reply'"
   note "$app opened (bus $bus, pid $pid); holding ${hold}s"
@@ -127,7 +126,7 @@ for app in "${apps[@]}"; do
     IFS='|' read -r name each_bus each_pid <<<"$entry"
     "$vm" ssh "kill -0 $each_pid" 2>/dev/null \
       || die "$name (pid $each_pid) exited after $app opened"
-    "$vm" ssh "$atspi names '$each_bus' >/dev/null" \
+    "$vm" test installed-atspi-apps.sh "names '$each_bus' >/dev/null" \
       || die "$name (pid $each_pid) left the accessibility bus after $app opened"
   done
 done

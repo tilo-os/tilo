@@ -417,6 +417,9 @@ pub struct TabBar {
     /// The host's reduced-motion setting ([`Widget::set_motion_reduced`]),
     /// which holds whatever the theme says.
     host_reduced_motion: bool,
+    /// A shortcut or action is being laid out: chips and pills take their
+    /// new places at once.
+    motion_source: crate::tokens::MotionSource,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
     /// the same reason: the pointer target of a maximize/search chip is
     /// derived from its glyph rect at hit-test time (see
@@ -546,6 +549,7 @@ impl TabBar {
             reveal_px: Vec::new(),
             reduce_motion: false,
             host_reduced_motion: false,
+            motion_source: crate::tokens::MotionSource::default(),
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
@@ -612,9 +616,18 @@ impl TabBar {
         self.drag_overlay_owned_by_parent = owned;
     }
 
+    /// What starts the changes laid out next; see
+    /// [`GroupRow::set_motion_source`](super::GroupRow::set_motion_source).
+    pub(crate) fn set_motion_source(&mut self, source: crate::tokens::MotionSource) {
+        self.motion_source = source;
+        if source.lands_at_once() {
+            self.layout_anim_started = None;
+        }
+    }
+
     /// No-op before the first layout pass — nothing to spring from yet.
     fn snapshot_layout_for_spring(&mut self) {
-        if self.tab_rects.len() != self.tabs.len() {
+        if self.tab_rects.len() != self.tabs.len() || self.motion_source.lands_at_once() {
             return;
         }
         let mut snap: HashMap<u64, Rect> = HashMap::with_capacity(self.tabs.len());
@@ -1748,7 +1761,7 @@ impl TabBar {
             );
             return to;
         };
-        if self.reduce_motion {
+        if self.reduce_motion || self.motion_source.lands_at_once() {
             self.reveal_anim.insert(
                 id,
                 RevealAnim {

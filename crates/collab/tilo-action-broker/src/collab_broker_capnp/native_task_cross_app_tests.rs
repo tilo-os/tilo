@@ -171,7 +171,8 @@ fn permission(f: &Fixture, app: &str, allow: bool) {
     put_grant(
         f,
         Grant::new(
-            format!("acceptance-{app}-{}", if allow { "allow" } else { "deny" }),
+            // One answer per app: setting it again replaces it.
+            format!("acceptance-{app}"),
             Subject::agent("scribe"),
             TreePath::room(room().to_string()).app(app),
             KindSet::UNDOABLE,
@@ -303,7 +304,9 @@ async fn writer_journey(
     settings_args: &serde_json::Map<String, serde_json::Value>,
 ) {
     permission(f, writer.app, true);
-    // Approval did not grant the other app's mutation: nothing reaches it.
+    // The person told the agent it may not change Settings: approving the
+    // run does not lift that, and nothing reaches it.
+    permission(f, settings.app, false);
     assert!(
         plan_step(
             agent,

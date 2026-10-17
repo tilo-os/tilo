@@ -64,6 +64,8 @@ pub mod display_identify;
 pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
+#[cfg(target_os = "linux")]
+pub mod drives;
 pub mod durable_writer;
 pub mod emoji_recents;
 pub mod fabric_clock;

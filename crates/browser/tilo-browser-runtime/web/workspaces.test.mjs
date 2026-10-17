@@ -14,8 +14,16 @@ const reply = ({status = 200, headers = {}, body = {}}) => ({
   text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
 });
 
-function harness({person = identity(0x22), membership = null, joinReply = {status: 200, body: {invitation: 'INV', admissionToken: 'TOKEN', origin: 'https://rooms.example'}}, connectFails = false} = {}) {
-  const calls = {posted: [], joined: [], connected: []};
+/** A device key of `profile` as `openDeviceCustody` gives it: `created` for
+ * one no host has seen yet (a new tab's). */
+const custodyOf = (calls, created) => async profile => {
+  const custody = {profile, slot: created ? 1 : 0, created, closed: false, close: async () => { custody.closed = true; }};
+  calls.custodies.push(custody);
+  return custody;
+};
+
+function harness({person = identity(0x22), membership = null, joinReply = {status: 200, body: {invitation: 'INV', admissionToken: 'TOKEN', origin: 'https://rooms.example'}}, connectFails = false, created = false} = {}) {
+  const calls = {posted: [], joined: [], connected: [], paired: [], custodies: []};
   const store = new Map(membership ? [[KEY, JSON.stringify({'https://rooms.example': membership})]] : []);
   return {
     calls,
@@ -28,8 +36,10 @@ function harness({person = identity(0x22), membership = null, joinReply = {statu
         calls.posted.push({url: String(url), body: JSON.parse(init.body)});
         return reply(joinReply);
       },
-      join: async options => { calls.joined.push(options); options.onProgress?.({phase: 'admitted', room: 'ROOM'}); return {room: 'ROOM'}; },
+      join: async options => { calls.joined.push(options); options.onProgress?.({phase: 'admitted', room: 'ROOM'}); return {room: 'ROOM', dispose: async () => {}}; },
       connect: async options => { calls.connected.push(options); if (connectFails) throw new Error('refused: not a member'); return {room: options.room}; },
+      pair: async options => { calls.paired.push(options); calls.offer = await options.admission(); return {room: options.room}; },
+      openCustody: custodyOf(calls, created),
     },
     store,
   };
@@ -87,7 +97,7 @@ test('a person who joined the host before reconnects without asking it', async (
 });
 
 test('a person who was pruned is pre-admitted again as the same person', async () => {
-  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'o', room: 'ROOM', userPublicKey: '11'.repeat(32)}, connectFails: true});
+  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)}, connectFails: true});
   await joinViaHost(options);
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
 });
@@ -147,13 +157,43 @@ test('a host that has not answered a kept membership yet keeps it and is not ask
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 
-test('another tab holding the device key keeps the membership and asks the host nothing', async () => {
-  // Not the host's refusal: a second tab of this browser while the first is
-  // open. Joining again would spend a seat and the address's join window,
+test('a second tab is a new device of the person, admitted through the door once', async () => {
+  // Its device key is one no host has seen: the room admits each device
+  // once, so it asks the door for the same person rather than fail to connect.
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership, created: true});
+  const peer = await joinViaHost(options);
+  assert.equal(calls.connected.length, 0, 'no connection the room would refuse');
+  assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), ['11'.repeat(32)]);
+  assert.equal(calls.joined[0].custody, calls.custodies[0], 'joined with the new tab\u2019s own key');
+  assert.equal(calls.custodies[0].profile, `tilo-identity:${'11'.repeat(32)}@rooms.example`);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {...membership, room: 'ROOM'});
+  // The tab's key is let go with its peer.
+  assert.equal(calls.custodies[0].closed, false);
+  await peer.dispose();
+  assert.equal(calls.custodies[0].closed, true);
+});
+
+test('a second tab of a paired device pairs as a new device, approved on one of the person\u2019s devices', async () => {
+  const person = '33'.repeat(32);
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: person, paired: true};
+  const {calls, options} = harness({membership, created: true});
+  await joinViaHost({...options, identity: undefined, onPairingCode: () => {}});
+  assert.equal(calls.connected.length, 0);
+  assert.equal(calls.paired[0].userPublicKey, person);
+  assert.equal(calls.paired[0].custody, calls.custodies[0]);
+  assert.equal(typeof calls.paired[0].onPairingCode, 'function');
+  assert.deepEqual(calls.posted, [{url: 'https://rooms.example/join', body: {userPublicKey: person, displayName: 'Brave Otter'}}],
+    'the new device joins the person\u2019s workspace through the door once paired');
+});
+
+test('every device key held by other tabs keeps the membership and asks the host nothing', async () => {
+  // Not the host's refusal: this browser has as many tabs open as device
+  // keys. Joining again would spend a seat and the address's join window,
   // then fail the same way.
   const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
-  options.connect = async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); };
+  options.openCustody = async () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
   await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
   assert.equal(calls.posted.length, 0);
   assert.equal(calls.joined.length, 0);

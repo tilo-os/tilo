@@ -6,7 +6,7 @@ ConditionPathExists=%S/tilo/files/namespace.bin
 
 [Service]
 Type=simple
-ExecStart=/usr/libexec/tilo-files-workspace
+ExecStart=/usr/bin/fs serve-primary
 # Tickets remain in the existing private Files cache, never in the journal.
 StandardOutput=null
 Restart=on-failure

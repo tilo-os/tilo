@@ -24,13 +24,10 @@ the wrong kernel, or no kernel, must not build.
 
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import shutil
+import struct
 import sys
 from pathlib import Path
-
-UKI_TOOL = "usr/libexec/tilo-uki-cmdline"
 
 
 def fail(message: str) -> None:
@@ -45,18 +42,29 @@ def only_kernel(root: Path) -> str:
     return versions[0]
 
 
-def uki_sections(root: Path, uki: Path) -> dict[str, bytes]:
-    """The UKI's sections by name, parsed by the image's own UKI tool."""
-    tool = root / UKI_TOOL
-    if not tool.is_file():
-        fail(f"{uki} needs {tool} to read its sections, and the image has no such file")
-    loader = importlib.machinery.SourceFileLoader("tilo_uki_cmdline", str(tool))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+def pe_sections(data: bytes):
+    """Yield (name, file_offset, raw_size, virtual_size) for each PE section."""
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise ValueError("not a PE image: no PE signature at e_lfanew")
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    base = pe + 24 + struct.unpack_from("<H", data, pe + 20)[0]
+    for index in range(count):
+        header = base + index * 40
+        name = data[header:header + 8].rstrip(b"\0").decode("ascii", "replace")
+        size, _address, raw_size, offset = struct.unpack_from("<IIII", data, header + 8)
+        yield name, offset, raw_size, size
+
+
+def uki_sections(uki: Path) -> dict[str, bytes]:
+    """The UKI's sections by name."""
     data = uki.read_bytes()
     found: dict[str, bytes] = {}
-    for name, offset, raw_size, size in module.sections(data):
+    try:
+        table = list(pe_sections(data))
+    except (ValueError, struct.error) as error:
+        fail(f"{uki}: {error}")
+    for name, offset, raw_size, size in table:
         if name in found:
             fail(f"{uki} has two {name} sections")
         if not size or size > raw_size or offset + size > len(data):
@@ -75,7 +83,7 @@ def restore_pair(root: Path, split: Path, ukis: list[Path]) -> tuple[bytes, byte
         fail(f"no kernel to restore: usr/lib/modules/{split.name} has no vmlinuz + initramfs.img, "
              f"{split} does not hold both, and there are {len(ukis)} UKIs under /boot/EFI/Linux "
              f"(need exactly one)")
-    sections = uki_sections(root, ukis[0])
+    sections = uki_sections(ukis[0])
     restored, origins = [], []
     for name, section in (("vmlinuz", ".linux"), ("initramfs.img", ".initrd")):
         if files[name].is_file():

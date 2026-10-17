@@ -36,7 +36,6 @@ if (( primary_files )); then
     install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
     install -pm 0755 "$bin_dir/tilo-relay-admin" "$stage/bin/tilo-relay-admin"
     install -pm 0755 "$bin_dir/tilo-enroll" "$stage/bin/tilo-enroll"
-    install -pm 0755 "$repo_root/dist/session/tilo-files-workspace.py" "$stage/libexec/tilo-files-workspace"
     install -pm 0644 "$repo_root/dist/session/tilo-files-workspace.service" "$stage/systemd-user/tilo-files-workspace.service"
 fi
 install -pm 0755 "$bin_dir/tilo-launcher"      "$stage/bin/tilo-launcher"

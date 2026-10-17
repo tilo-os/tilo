@@ -539,9 +539,26 @@ files = [
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
 ]
 
+# Consent-gated NTFS access: the root service the shell asks to open a drive
+# after the person agreed, and the library its confined userspace driver is
+# started with. Socket-activated, so a swap takes effect at its next start.
+[[component]]
+name = "ntfs-mount"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-ntfs-mount"]
+bins = ["tilo-ntfs-mount"]
+units = ["tilo-ntfs-mount.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-ntfs-mount", to = "/usr/libexec/tilo-ntfs-mount", mode = "0755" },
+  { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755" },
+]
+
 # The one writer of the read-only ESP, started on demand as
 # tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
-# boot and on the way down; a swap takes effect at its next start.
+# boot and on the way down; a swap takes effect at its next start. Also
+# /usr/libexec/tilo-uki-cmdline, which edits a UKI's sealed command line.
 [[component]]
 name = "esp-write"
 kind = "userspace"
@@ -551,6 +568,9 @@ bins = ["tilo-esp-write"]
 layer = "recovery-files"
 files = [
   { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
+  # Run under this name it is the in-place UKI command-line and .osrel editor
+  # the repair entry, the installer and the image build use.
+  { link = "tilo-esp-write", to = "/usr/libexec/tilo-uki-cmdline" },
 ]
 
 # First-boot account files: tilo-firstboot-user runs the copy beside it, this

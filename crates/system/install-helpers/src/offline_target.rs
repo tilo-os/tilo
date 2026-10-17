@@ -909,8 +909,8 @@ fn check_development_mount(host: &dyn Host, mounted: &Path) -> Result<()> {
         let image_root = mounted.to_string_lossy().into_owned();
         host.run(
             &[
-                "python3",
-                "/usr/libexec/tilo-installer-dev-target-uki.py",
+                "/usr/libexec/tilo-installer-offline-target",
+                "dev-target-uki",
                 "validate-image",
                 "--image-root",
                 &image_root,
@@ -927,6 +927,8 @@ Authenticate and import the separately signed, offline installer target.
 
 The live medium is transport, not the installed image.  `verify` runs before
 any disk mutation; `import` rechecks the manifest after Podman loads it.
+`dev-target-uki validate-image|promote` projects a CI development target into
+its unsigned target UKI, in the development installer VM only.
 
 positional arguments:
   {verify,import}
@@ -936,8 +938,15 @@ options:
 ";
 
 /// The command line: `verify` prints the verified facts, `import` the image
-/// ID; a refusal exits 1, a usage error 2.
+/// ID, `dev-target-uki` is [`crate::dev_target_uki::main`]; a refusal exits
+/// 1, a usage error 2.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
+    if let Some(("dev-target-uki", rest)) = args
+        .split_first()
+        .map(|(first, rest)| (first.to_str().unwrap_or_default(), rest))
+    {
+        return crate::dev_target_uki::main(&crate::dev_target_uki::System, rest);
+    }
     let words: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())

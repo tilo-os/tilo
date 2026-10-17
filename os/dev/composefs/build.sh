@@ -58,9 +58,6 @@ for f in usr/libexec/tilo-rollback-common \
 done
 cp -f "$TILO_OS_DIR/tests/rollback-boot-check.sh" "$TREE/usr/libexec/tilo-rollback-boot-check"
 cp -f "$TILO_OS_DIR/tests/recovery-boot-check.sh" "$TREE/usr/libexec/tilo-recovery-boot-check"
-# The repair entry is derived from the installed UKI by rewriting its sealed
-# command line in place, so the tool that does that has to be on the machine.
-cp -f "$TILO_OS_DIR/dev/uki-cmdline.py" "$TREE/usr/libexec/tilo-uki-cmdline"
 
 # The rollback binary. Built here rather than shipped, because the boot-side check
 # asserts the tool the image carries — a stale copy would pass a check about a
@@ -73,6 +70,14 @@ CRYPTO_BIN="${CRYPTO_BIN:-$TILO_REPO/target/release/tilo-crypto}"
 [ -x "$CRYPTO_BIN" ] || die "no tilo-crypto binary at $CRYPTO_BIN
   Remedy: cargo build -p tilo-crypto --release"
 cp -f "$CRYPTO_BIN" "$TREE/usr/bin/tilo-crypto"
+# The repair entry is derived from the installed UKI by rewriting its sealed
+# command line in place, so the tool that does that has to be on the machine:
+# tilo-esp-write, run under the name tilo-uki-cmdline as the image links it.
+ESP_WRITE_BIN="${ESP_WRITE_BIN:-$TILO_REPO/target/release/tilo-esp-write}"
+[ -x "$ESP_WRITE_BIN" ] || die "no tilo-esp-write binary at $ESP_WRITE_BIN
+  Remedy: cargo build -p tilo-esp-write --release"
+cp -f "$ESP_WRITE_BIN" "$TREE/usr/libexec/tilo-esp-write"
+ln -sf tilo-esp-write "$TREE/usr/libexec/tilo-uki-cmdline"
 
 sb_key="$TILO_CFS_RUN/sb/db.key"
 sb_crt="$TILO_CFS_RUN/sb/db.crt"

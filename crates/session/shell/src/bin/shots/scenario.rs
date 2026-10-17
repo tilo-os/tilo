@@ -400,6 +400,15 @@ pub enum Action {
     /// `pump_file_picker` the compositor turns every frame. The queue's
     /// downstream path is the same one used by the compositor.
     SeedFilePicker(&'static str),
+    /// Raise the sheet asking how to open an NTFS drive, by preset
+    /// (`windows`: the Windows partition beside Tilo; `stick`: an unknown
+    /// external drive).
+    ///
+    /// The trigger is the drive worker hearing from the root mount service,
+    /// which a `--shots` render has neither of. This queues the request the
+    /// worker builds ([`shell::shell::drives::consent_request`]) on the same
+    /// portal dialog queue the compositor pumps.
+    SeedDriveConsent(&'static str),
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -1229,6 +1238,8 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
 /// split out of [`apply`] to keep that dispatcher short.
 fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) {
     match action {
+        #[cfg(target_os = "linux")]
+        Action::SeedDriveConsent(preset) => seed_drive_consent(driver, preset),
         Action::SeedStatus(preset) => {
             let status = status_preset(preset);
             driver.with_chrome(|st: &mut ChromeState| {
@@ -1305,6 +1316,47 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
         }
         _ => {}
     }
+}
+
+/// `Action::SeedDriveConsent`: the sheet the drive worker raises.
+#[cfg(target_os = "linux")]
+fn seed_drive_consent(driver: &mut ShellDriver, preset: &str) {
+    use ntfs_mount::protocol::{Drive, Mode, Placement};
+    let windows = preset == "windows";
+    let drive = Drive {
+        id: if windows { "nvme0n1p3:1" } else { "sdb1:7" }.into(),
+        label: if windows { "Windows" } else { "" }.into(),
+        size_bytes: if windows {
+            475_000_000_000
+        } else {
+            64_000_000_000
+        },
+        placement: if windows {
+            Placement::Internal
+        } else {
+            Placement::External
+        },
+        hot_added: !windows,
+        remembered: None,
+        needs_consent: true,
+        preselect: if windows {
+            Mode::Open
+        } else {
+            Mode::OpenSafely
+        },
+        can_remember: if windows {
+            ntfs_mount::protocol::RememberOffer::AnyMode
+        } else {
+            ntfs_mount::protocol::RememberOffer::OpenSafely
+        },
+        mounted: None,
+    };
+    let queue = shell::shell::portal_dialog::PortalDialogQueue::default();
+    driver.host_mut().set_portal_dialog_queue(queue.clone());
+    let request = shell::shell::drives::consent_request(&drive, format!("shots-{preset}"));
+    // Nobody answers a screenshot; the dropped receiver reads as "Not now".
+    let _ = queue.enqueue_drive_consent(request);
+    driver.host_mut().pump_portal_dialogs();
 }
 
 /// Fill the picker's fixture folder like a person's home — the usual
@@ -4242,6 +4294,18 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedWifiPrompt("rejected"),
                 Action::Wait(4),
                 Action::Snapshot("03-rejected"),
+            ],
+        },
+        Scenario {
+            name: "drive_consent_sheet",
+            description: "The sheet asking how to open an NTFS drive: the Windows partition and an unknown stick.",
+            actions: vec![
+                Action::SeedDriveConsent("windows"),
+                Action::Wait(6),
+                Action::Snapshot("01-windows"),
+                Action::SeedDriveConsent("stick"),
+                Action::Wait(4),
+                Action::Snapshot("02-stick"),
             ],
         },
         Scenario {

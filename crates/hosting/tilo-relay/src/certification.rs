@@ -359,15 +359,19 @@ impl CertificationProtocol {
 
     /// Wait up to `wait` for the answer to request `digest`, for requesters
     /// that poll (HTTPS). `Pending` means not decided yet: poll again. A
-    /// delivered answer is removed.
+    /// delivered answer is removed. A request that expires within `wait`
+    /// is answered `Expired` when it expires, not a whole poll later.
     pub async fn wait(&self, digest: &[u8; 32], wait: Duration) -> CertifyReply {
-        let Some(receiver) = self
+        let Some((receiver, expires_at_ns)) = self
             .lock()
             .get(digest)
-            .map(|entry| entry.answer.subscribe())
+            .map(|entry| (entry.answer.subscribe(), entry.entry.request.expires_at_ns))
         else {
             return CertifyReply::Expired;
         };
+        let wait = wait.min(Duration::from_nanos(
+            expires_at_ns.saturating_sub(unix_now_ns()),
+        ));
         let reply = answered(receiver, wait).await;
         if matches!(reply, CertifyReply::Expired) {
             let pairing_code = self.lock().get(digest).map(|entry| {
@@ -705,6 +709,34 @@ mod confirmation_tests {
             request,
             signature: member.sign(&message).to_bytes(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_polling_requester_hears_of_expiry_when_its_request_expires() {
+        let protocol = protocol();
+        let device = ed25519_dalek::SigningKey::from_bytes(&[14; 32]);
+        let now = unix_now_ns();
+        let request = CertificationRequest {
+            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: protocol.identity.user_public_key,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Phone".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [4; 16],
+            issued_at_ns: now,
+            expires_at_ns: now.checked_add(200_000_000).unwrap(),
+            signature: [0; 64],
+        }
+        .sign(&device)
+        .unwrap();
+        let (digest, _, _) = protocol.enqueue(request, now).unwrap();
+        let reply = tokio::time::timeout(
+            Duration::from_secs(20),
+            protocol.wait(&digest, Duration::from_secs(60)),
+        )
+        .await
+        .expect("the poll ends when the request expires");
+        assert_eq!(reply, CertifyReply::Expired);
     }
 
     #[tokio::test]

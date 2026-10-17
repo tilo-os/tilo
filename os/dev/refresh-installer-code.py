@@ -14,7 +14,7 @@ import subprocess
 import time
 
 REPO = Path(__file__).resolve().parents[2]
-MODULE = REPO / 'os/usr/libexec/tilo-installer-code-protocol.py'
+MODULE = REPO / 'os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py'
 spec = importlib.util.spec_from_file_location('installer_code_protocol', MODULE)
 protocol = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(protocol)

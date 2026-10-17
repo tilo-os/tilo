@@ -8,13 +8,15 @@ import re
 import shlex
 import struct
 import subprocess
-import sys
 import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-HELPER = ROOT / "os/dev/uki-cmdline.py"
+# The UKI editor under test: tilo-esp-write run as tilo-uki-cmdline. Its
+# Cargo test (crates/system/esp-write/tests/uki_cmdline.rs) builds it and
+# names the link here.
+HELPER = os.environ["TILO_UKI_CMDLINE"]
 INSTALLER = ROOT / "os/usr/libexec/tilo-install"
 INSTALLED_HELPER = "/usr/libexec/tilo-uki-cmdline"
 START_MARKER = "  # bootc stores SHA256(.linux + .initrd) in deployment origin metadata."
@@ -155,8 +157,7 @@ def guard_statements(source):
 class BootDigestCliTests(unittest.TestCase):
     def cli(self, *arguments):
         return subprocess.run(
-            [sys.executable, "-B", str(HELPER), *map(str, arguments)],
-            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+            [HELPER, *map(str, arguments)],
             capture_output=True,
             text=True,
             check=False,
@@ -240,7 +241,7 @@ class InstallerBootDigestGuardTests(unittest.TestCase):
         cls.guard = guard_statements(INSTALLER.read_text())
 
     def run_real_guard(self, installed, variant):
-        invocation = shlex.join([sys.executable, "-B", str(HELPER)])
+        invocation = shlex.quote(HELPER)
         snippet = self.guard.replace(INSTALLED_HELPER, invocation)
         script = """set -euo pipefail
 die() { printf '%s\n' "$*" >&2; exit 1; }

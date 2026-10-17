@@ -1265,12 +1265,22 @@ All chrome animation reads `tokens.motion.durations` and nothing else:
 - `base` (210 ms) — a Panel opening or closing, a tab in/out, a strip change,
   a reflow.
 - `slow` (400 ms) — whole-view changes: overview, workspace switch, window
-  spawn.
+  spawn, when a pointer or gesture starts them.
 
 Panels open with the **one** entrance: opacity 0→1, y −10→0, scale 0.95→1,
 `Curve::EaseOut` over `base`, and reverse to close. Bespoke per-surface
 constants (the shell previously carried eight near-but-unequal ones) are a
 defect. Reduced-motion collapses every duration to 0 and keeps the end state.
+
+**Motion follows the input.** A drag, swipe or pinch moves continuously and
+hands its velocity to the settle; a click may animate at `fast` or `base`; a
+keyboard shortcut, an agent or a script lands its result on the next frame,
+and only spatial context (an off-screen target sliding into view, a direction
+cue) may move, at `fast` at most. Tag a transition with its
+`tokens::MotionSource` and take its duration from `Motion::result` (what
+changes what is shown) or `Motion::context` (what only says where something
+went). The shell's table is in
+[window-management.md § Motion](../../../docs/architecture/window-management.md#motion).
 
 ### 9.8 Chrome may not block the frame
 

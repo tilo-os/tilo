@@ -586,6 +586,21 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
+            // The room holds the agent to the changes it is given app by app,
+            // so beyond the one-use grant its run may not open Writer.
+            put_grant(
+                &f,
+                tilo_action_policy::Grant::new(
+                    "cold-writer-room-held",
+                    tilo_action_policy::Subject::agent("scribe"),
+                    tilo_action_policy::TreePath::room(room().to_string()),
+                    tilo_action_policy::KindSet::UNDOABLE,
+                    tilo_action_policy::Answer::Deny,
+                    tilo_action_policy::Subject::person(hex::encode(
+                        f.native.certificate.user_public_key,
+                    )),
+                ),
+            );
             once_permission(&f);
             f.approve();
             let agent = f.channel(100, true);

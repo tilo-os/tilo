@@ -525,8 +525,20 @@ impl DispatchCore {
     }
 
     /// The context of an action of this resource, attributed to whoever the
-    /// edit is applied for.
+    /// edit is applied for, and owned by this dispatcher's app. Without the
+    /// app, the executor guessed one from the action type (`org.tilo.Chat` of
+    /// `chat.workspace`), and every receiver checking the change against the
+    /// record's app refused it as a verb that app does not publish.
     fn context(&self) -> ActionContext {
+        let context = self.resource_context();
+        if self.app_id.is_empty() {
+            context
+        } else {
+            context.with_app(self.app_id, self.label)
+        }
+    }
+
+    fn resource_context(&self) -> ActionContext {
         match self.applied_as {
             // As `ActionSpec::history_context` names an action a nested
             // resource re-encodes: the enclosing kind, the nested resource
