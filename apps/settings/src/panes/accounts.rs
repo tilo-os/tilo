@@ -311,17 +311,7 @@ fn answer_model(
             model.select_calendar(&href, selected)?;
             app.request_pane(crate::categories::Category::ExternalAccounts);
         }
-        AccountsEffect::SaveAccountForm => {
-            if !model.calendar_choices.is_empty()
-                && !model.calendar_choices.iter().any(|(_, selected)| *selected)
-            {
-                return Err(t("accounts-calendars-empty"));
-            }
-            if !model.calendar_choices.is_empty() {
-                model.validate_calendar_review()?;
-            }
-            model.command(AccountViewCommand::Submit);
-        }
+        AccountsEffect::SaveAccountForm => submit_account_form(&mut model)?,
         AccountsEffect::ConnectGoogleMail => model.connect_google_mail()?,
         AccountsEffect::SelectAccountServices {
             files,
@@ -360,6 +350,19 @@ fn answer_model(
         AccountsEffect::TestAccount { account } => return test_account(model, &account, cx),
     }
     Ok(Effected::done())
+}
+
+fn submit_account_form(model: &mut AccountsPane) -> Result<(), String> {
+    if !model.calendar_choices.is_empty()
+        && !model.calendar_choices.iter().any(|(_, selected)| *selected)
+    {
+        return Err(t("accounts-calendars-empty"));
+    }
+    if !model.calendar_choices.is_empty() {
+        model.validate_calendar_review()?;
+    }
+    model.command(AccountViewCommand::Submit);
+    Ok(())
 }
 
 fn commit_thunderbird_import(
