@@ -122,6 +122,94 @@ impl DirectoryWatch {
     }
 }
 
+/// A watch on a directory that may not exist yet, such as the trusted-identity
+/// projection's, which the launcher binds into Files' sandbox only when there
+/// is a projection to show.
+///
+/// While the directory is missing, its nearest existing ancestor is watched
+/// instead, and every change there looks again for a closer directory, so
+/// the directory's creation is seen as an event rather than found by polling
+/// a path that is not there. A missing directory therefore costs an idle
+/// window nothing, while one created later is still read at once.
+pub(crate) struct AwaitedDirectoryWatch {
+    target: Option<PathBuf>,
+    nearest: DirectoryWatch,
+}
+
+impl AwaitedDirectoryWatch {
+    pub(crate) fn new(wake: ui::WakeHandle) -> Self {
+        Self {
+            target: None,
+            nearest: DirectoryWatch::new(wake),
+        }
+    }
+
+    /// Await `dir`, or nothing for `None`. Pointing at the directory already
+    /// awaited keeps its watch. Returns `true` when `dir` itself became
+    /// watched: changes made before that are not reported, so the caller
+    /// reads it once more.
+    pub(crate) fn point_at(&mut self, dir: Option<&Path>) -> bool {
+        if self.target.as_deref() == dir {
+            return false;
+        }
+        self.target = dir.map(Path::to_path_buf);
+        self.settle()
+    }
+
+    /// How much of the change the watch now held reports: that of the
+    /// directory itself, or of the ancestor its creation will appear in.
+    pub(crate) fn coverage(&self) -> Coverage {
+        self.nearest.coverage()
+    }
+
+    /// Whether the awaited directory itself, not an ancestor, is watched.
+    #[cfg(test)]
+    pub(crate) fn watches_target(&self) -> bool {
+        self.nearest.watch.is_some() && self.nearest.target == self.target
+    }
+
+    /// Drain every queued change and re-arm the wake. `true` when anything
+    /// changed. A change also moves the watch to the closest existing
+    /// directory on the way to the target, or back up to the nearest one
+    /// left when the watched directory's own removal is reported (inotify
+    /// reports it; `FSEvents` need not, and there the coverage is
+    /// [`Coverage::Partial`], so the caller polls anyway).
+    pub(crate) fn take_changes(&mut self) -> bool {
+        let changed = self.nearest.take_changes();
+        if changed {
+            let _ = self.settle();
+        }
+        changed
+    }
+
+    /// Watch the target, or its nearest existing ancestor. `true` when the
+    /// target itself became watched by this call.
+    fn settle(&mut self) -> bool {
+        let Some(target) = self.target.clone() else {
+            let _ = self.nearest.point_at(None);
+            return false;
+        };
+        let mut started = false;
+        // Each pass either moves the watch, or finds the directory it looked
+        // at gone and looks further up, so the depth of the path bounds the
+        // passes. Another pass also catches a directory created between the
+        // look and the watch.
+        for _ in target.ancestors() {
+            let nearest = target
+                .ancestors()
+                .find(|dir| !dir.as_os_str().is_empty() && dir.is_dir());
+            if self.nearest.point_at(nearest) {
+                started = nearest == Some(target.as_path());
+            } else if self.nearest.watch.is_some() || nearest.is_none_or(Path::is_dir) {
+                // Already watching it, or it cannot be watched for good.
+                break;
+            }
+            // Otherwise it was removed before the watch was set up.
+        }
+        started
+    }
+}
+
 fn coverage_of(dir: &Path) -> Coverage {
     if tilo_files::native::watch_sees_every_change(dir) {
         Coverage::Complete
@@ -168,6 +256,57 @@ mod tests {
         assert!(!watch.point_at(Some(dir.path())));
         assert!(!watch.point_at(None));
         assert_eq!(watch.coverage(), Coverage::None);
+    }
+
+    #[test]
+    fn a_missing_directory_is_awaited_on_its_nearest_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("a/b");
+        let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
+        assert!(!watch.point_at(Some(&target)), "the target is missing");
+        assert!(!watch.watches_target());
+        assert_ne!(watch.coverage(), Coverage::None, "its ancestor is watched");
+        assert!(
+            !watch.point_at(Some(&target)),
+            "the same target keeps its watch"
+        );
+
+        // Each change on the way moves the watch closer, one level created
+        // at a time or several at once.
+        std::fs::create_dir_all(&target).unwrap();
+        tilo_test_env::wait_until("the watch reaches the created directory", || {
+            let _ = watch.take_changes();
+            watch.watches_target()
+        });
+        std::fs::write(target.join("projection.json"), b"{}").unwrap();
+        tilo_test_env::wait_until("a file in the directory is reported", || {
+            watch.take_changes()
+        });
+
+        // Removed again, the watch falls back to the ancestor still there.
+        // Only inotify reports a watched directory's own removal.
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::remove_dir_all(root.path().join("a")).unwrap();
+            tilo_test_env::wait_until("the watch falls back to an ancestor", || {
+                let _ = watch.take_changes();
+                !watch.watches_target() && watch.coverage() != Coverage::None
+            });
+        }
+        assert!(!watch.point_at(None));
+        assert_eq!(watch.coverage(), Coverage::None);
+    }
+
+    #[test]
+    fn an_existing_directory_is_awaited_by_watching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
+        assert!(
+            watch.point_at(Some(dir.path())),
+            "the target itself is watched"
+        );
+        assert!(watch.watches_target());
+        assert!(!watch.take_changes(), "nothing changed yet");
     }
 
     #[test]

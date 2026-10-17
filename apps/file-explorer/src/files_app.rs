@@ -572,8 +572,9 @@ pub struct FileExplorerWidget {
     next_metadata_refresh: Option<Instant>,
     /// Reports changes to the open directory's entries and wakes the window.
     directory_watch: crate::directory_watch::DirectoryWatch,
-    /// Reports changes to the trusted-identity projection's directory.
-    identity_watch: crate::directory_watch::DirectoryWatch,
+    /// Reports changes to the trusted-identity projection's directory, or,
+    /// while it does not exist, its creation.
+    identity_watch: crate::directory_watch::AwaitedDirectoryWatch,
     /// The directory watch reported a change that has not been read yet
     /// (held while a rename or pin drag defers the read).
     directory_changed: bool,
@@ -1594,7 +1595,9 @@ impl FileExplorerWidget {
             // Scheduled by the first sync, once the watches exist.
             next_metadata_refresh: None,
             directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
-            identity_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
+                ui::WakeHandle::new(),
+            ),
             directory_changed: false,
             last_directory_read: ui::time::now(),
             renaming: None,
