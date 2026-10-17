@@ -177,9 +177,10 @@ else
   bad "installer can record an update origin outside the signature-required policy"
 fi
 
-if grep -Fq 'TILO_TARGET_IMGREF="$(python3 /usr/lib/tilo/hardware_profile.py' "$backend" \
-   && grep -Fq -- '--install-update-origin "${TILO_TARGET_IMGREF:-}")" || exit 1' "$backend" \
-   && grep -Fq 'install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py' "$production_containerfile" \
+if grep -Fq 'TILO_TARGET_IMGREF="$(/usr/libexec/tilo-board-successor' "$backend" \
+   && grep -Fq -- 'install-update-origin "${TILO_TARGET_IMGREF:-}")" || exit 1' "$backend" \
+   && grep -Fq '{ from = "tilo-board-successor", to = "/usr/libexec/tilo-board-successor", mode = "0755" }' \
+      "$repo_root/os/components.toml" \
    && grep -Fq -- '--target-update-ref "$TILO_TARGET_IMGREF"' "$production_containerfile"; then
   ok "installer resolves the image-owned hardware update origin and stops on conflicts"
 else
@@ -232,31 +233,30 @@ else
   bad "installer target identity is not bound across discovery and destructive execution"
 fi
 
+# The backend resolves its update origin with the compiled hardware-profile
+# reader; the fixture runs this checkout's build of it.
+cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-board-successor \
+  || bad "could not build tilo-board-successor"
+board_successor="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-board-successor"
+
 installer_identity_fixture() (
   id() { printf 0; }
   local generation
   generation="$(mktemp -d)"
   trap 'rm -rf -- "$generation"' EXIT
   export generation
+  export -f id
   # Hardware selection still executes from this checkout. Generation selection
   # is outside this disk-identity fixture; native transport has its own tests.
-  python3() {
-    if [ "$1" = /usr/lib/tilo/hardware_profile.py ]; then
-      shift
-      command python3 "$repo_root/os/dev/hardware_profile.py" "$@"
-    else
-      command python3 "$@"
-    fi
-  }
-  export -f id python3
-  export repo_root
-  python3 - "$backend" "$generation/backend" <<'PY'
+  python3 - "$backend" "$generation/backend" "$board_successor" <<'PY'
 from pathlib import Path
 import sys
 source = Path(sys.argv[1]).read_text()
 selection = '$(/usr/libexec/tilo-installer-prepared-setup-extract selected-generation)'
-assert source.count(selection) == 1
-Path(sys.argv[2]).write_text(source.replace(selection, '$generation'))
+resolver = '$(/usr/libexec/tilo-board-successor \\\n  install-update-origin'
+assert source.count(selection) == 1 and source.count(resolver) == 1
+source = source.replace(selection, '$generation')
+Path(sys.argv[2]).write_text(source.replace(resolver, resolver.replace('/usr/libexec/tilo-board-successor', sys.argv[3])))
 PY
   TILO_INSTALL_TRANSIENT=1 bash "$generation/backend" "$@"
 )

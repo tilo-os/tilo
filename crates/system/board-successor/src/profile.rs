@@ -3,9 +3,11 @@
 //! it: `read_profile`, `development_origin`, `validate_target_imgref`,
 //! `trusted_path` and `resolve_profile` with what they call.
 //!
-//! The installer still reads profiles through that module. A change to what
-//! it accepts must be made here too; `tests/profile.rs` holds both to the
-//! same fixtures.
+//! The installer resolves its update origin here too
+//! (`tilo-board-successor install-update-origin`); the module stays for the
+//! image builders. A change to what it
+//! accepts must be made in both; `tests/profile.rs` holds both to the same
+//! fixtures.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -921,6 +923,41 @@ pub fn resolve_profile(root: &Root, kver: &str, architecture: &str) -> Result<Op
         "hardware profile device tree does not match its pinned SHA-256",
     )?;
     Ok(Some(dtb))
+}
+
+/// The update origin an installer records when no image pins one.
+pub const DEFAULT_TARGET_IMGREF: &str = "registry.tilo.so/tilo/tilo:latest";
+
+/// `install_update_origin(root, override)`: the origin the installed system
+/// follows. A hardware profile's reviewed reference wins and an `override`
+/// may only repeat it; without a profile, the override, the development
+/// image's bound origin or the official default, validated against `root`.
+///
+/// # Errors
+/// A profile or origin the reader refuses, or an override that conflicts
+/// with the profile.
+pub fn install_update_origin(root: &Root, override_ref: &str) -> Result<String> {
+    let bound_development = development_origin(root)?;
+    let Some(profile) = read_profile(root)? else {
+        let selected = if override_ref.is_empty() {
+            bound_development.unwrap_or_else(|| Value::String(DEFAULT_TARGET_IMGREF.into()))
+        } else {
+            Value::String(override_ref.into())
+        };
+        validate_target_imgref(&selected, root)?;
+        return as_str(&selected)
+            .map(str::to_owned)
+            .ok_or_else(|| Error::value("development origin is not a string"));
+    };
+    let bound = profile
+        .get("target_update_ref")
+        .and_then(as_str)
+        .unwrap_or_default();
+    require(
+        override_ref.is_empty() || override_ref == bound,
+        "TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference",
+    )?;
+    Ok(bound.to_owned())
 }
 
 #[cfg(test)]

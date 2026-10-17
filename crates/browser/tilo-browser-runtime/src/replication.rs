@@ -422,6 +422,7 @@ impl Room {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
+        let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
@@ -453,8 +454,20 @@ impl Room {
                 PeerEvent::DocumentRejected(reason) => {
                     warn(&format!("dropped a document: {reason}"));
                 }
+                PeerEvent::CommitRefused {
+                    route,
+                    changes,
+                    reason,
+                } if route.cluster_id == self.uuid => {
+                    refusals.push((route, changes, reason));
+                }
                 _ => {}
             }
+        }
+        // Withdrawn before what arrived since is merged: a peer's change can
+        // never build on one the room refused.
+        for (route, changes, reason) in refusals {
+            self.withdraw(&route, &changes, &reason, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
         batches.sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
@@ -487,6 +500,61 @@ impl Room {
                 Arc::clone(&mounted.attachment.notify)
             })
             .collect()
+    }
+
+    /// Withdraw what the host refused of `route` from the open record that
+    /// sent it, which tells its app, and move the record's replication
+    /// frontier back to what it keeps. The raw `reason` is for the log; the
+    /// app shows a person its plain form.
+    fn withdraw(
+        &mut self,
+        route: &DocumentRoute,
+        changes: &[[u8; 32]],
+        reason: &str,
+        woken: &mut HashSet<u64>,
+    ) {
+        warn(&format!(
+            "{}/{}: the room refused a change: {reason}",
+            route.app_id, route.record
+        ));
+        if changes.is_empty() || route.app_id == DESKTOP_APP {
+            return;
+        }
+        let refused: Vec<ui::automerge::ChangeHash> = changes
+            .iter()
+            .map(|hash| ui::automerge::ChangeHash(*hash))
+            .collect();
+        let plain = tilo_relay_protocol::refusal::plain_reason(reason);
+        for (&id, mounted) in &mut self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                else {
+                    continue;
+                };
+                match store.withdraw_refused(&checkout.id, &refused, plain) {
+                    Ok(withdrawn) => {
+                        if let Some(heads) = withdrawn
+                            && let Some(replica) = mounted
+                                .records
+                                .get_mut(&(route.app_id.clone(), route.record.clone()))
+                        {
+                            replica.frontier.advance(heads);
+                        }
+                        woken.insert(id);
+                    }
+                    Err(error) => warn(&format!(
+                        "{}/{}: a refused change stays: {error}",
+                        route.app_id, route.record
+                    )),
+                }
+            }
+        }
     }
 
     /// The route's document as this page holds it, for a host compaction

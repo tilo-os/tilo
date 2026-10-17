@@ -10,7 +10,7 @@
 //! the document, decides when to commit, and stamps history.
 //!
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
-//! members: {person → json role}, grants: {id → json}, sandbox: {id → json},
+//! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
 //! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
@@ -29,7 +29,10 @@ use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::projection::{ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_SCHEDULE_CLAIMS_KEY};
+use crate::projection::{
+    ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_MEMBERS_JOINED_KEY,
+    ROOM_SCHEDULE_CLAIMS_KEY,
+};
 use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
@@ -320,6 +323,15 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     sync_blob_map(
         doc,
         entry,
+        ROOM_MEMBERS_JOINED_KEY,
+        ws.policy
+            .joined
+            .iter()
+            .map(|(person, at)| (person.clone(), at)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
         GRANTS_KEY,
         ws.policy
             .grants
@@ -554,6 +566,10 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             ws.policy.owner = Some(owner);
         }
         ws.policy.members = members.into_iter().collect();
+        ws.policy.joined = read_keyed_blob_map(doc, entry, ROOM_MEMBERS_JOINED_KEY)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         if let Some(grants) = grants {
             ws.policy.grants = grants;
         } else {
@@ -807,6 +823,19 @@ pub fn set_member(
 /// Remove a member.
 pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
     delete_blob(doc, workspace_id, MEMBERS_KEY, person)
+}
+
+/// Record when a member was admitted, Unix milliseconds; `None` forgets it.
+pub fn set_member_joined(
+    doc: &mut AutoCommit,
+    workspace_id: WorkspaceId,
+    person: &str,
+    joined: Option<u64>,
+) -> bool {
+    match joined {
+        Some(at) => upsert_blob(doc, workspace_id, ROOM_MEMBERS_JOINED_KEY, person, &at),
+        None => delete_blob(doc, workspace_id, ROOM_MEMBERS_JOINED_KEY, person),
+    }
 }
 
 /// Record a sandbox capability.

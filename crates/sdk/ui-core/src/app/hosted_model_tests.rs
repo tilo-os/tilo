@@ -660,6 +660,48 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     assert_ne!(app.action_directory_revision(), page.revision);
 }
 
+/// Namesakes are numbered by when the room admitted them, as the roster
+/// says, not by id: a newcomer whose id sorts first still takes the next
+/// number, and nobody already in the room is renumbered.
+#[test]
+fn a_later_namesake_from_the_roster_never_takes_an_earlier_number() {
+    fn person(id: &str, joined_at: u64, is_self: bool) -> crate::collaboration::Collaborator {
+        crate::collaboration::Collaborator {
+            id: id.into(),
+            name: "Ada".into(),
+            colour: None,
+            is_agent: false,
+            is_self,
+            joined_at: Some(joined_at),
+        }
+    }
+    let mut app = hosted_directory_fixture();
+    let first = crate::permissions::UserId("person:m".into());
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            person("person:m", 2_000, true),
+            person("person:z", 5_000, false),
+        ],
+        permissions: vec![],
+    });
+    let second = crate::permissions::UserId("person:z".into());
+    assert_eq!(app.presence_ctx.self_label().as_deref(), Some("Ada (1)"));
+    assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            person("person:a", 9_000, false),
+            person("person:m", 2_000, true),
+            person("person:z", 5_000, false),
+        ],
+        permissions: vec![],
+    });
+    let newcomer = crate::permissions::UserId("person:a".into());
+    assert_eq!(app.presence_ctx.display_name(&first), "Ada (1)");
+    assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
+    assert_eq!(app.presence_ctx.display_name(&newcomer), "Ada (3)");
+}
+
 #[test]
 fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() {
     let mut app = hosted_directory_fixture();
@@ -671,6 +713,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
                 colour: None,
                 is_agent: false,
                 is_self: true,
+                joined_at: None,
             },
             crate::collaboration::Collaborator {
                 id: "opaque-member".into(),
@@ -678,6 +721,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
                 colour: None,
                 is_agent: true,
                 is_self: false,
+                joined_at: None,
             },
             crate::collaboration::Collaborator {
                 id: "agent:spoof".into(),
@@ -685,6 +729,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
                 colour: None,
                 is_agent: false,
                 is_self: false,
+                joined_at: None,
             },
         ],
         permissions: vec![],
@@ -707,6 +752,7 @@ fn complete_context_replaces_certified_people_without_inferring_kind_from_ids() 
             colour: None,
             is_agent: false,
             is_self: true,
+            joined_at: None,
         }],
         permissions: vec![],
     });

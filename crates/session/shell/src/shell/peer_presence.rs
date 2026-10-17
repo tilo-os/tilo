@@ -2342,6 +2342,7 @@ mod two_sessions {
             colour: None,
             is_agent: true,
             is_self: false,
+            joined_at: None,
         };
         relay.set_certified_people(&room.to_string(), vec![row.clone()]);
         relay.pump(&mut presence, &[]);

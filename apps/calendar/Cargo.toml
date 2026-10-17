@@ -13,6 +13,12 @@ path = "src/lib.rs"
 name = "calendar"
 path = "src/main.rs"
 
+# Live CalDAV sync refreshes its credentials through account-custody's
+# custodian (vault, daemon handoff, blocking refresh), which is native-only:
+# the page's calendar keeps its events in the browser without it.
+[package.metadata.tilo]
+web-features = []
+
 [dependencies]
 fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

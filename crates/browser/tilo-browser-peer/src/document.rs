@@ -379,6 +379,19 @@ pub fn coalesce(mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
     out
 }
 
+/// The changes a signed document body (a [`SignedDocumentFrame`]'s) claims
+/// to carry, as their Automerge hashes: what its author withdraws when the
+/// host refuses it. A snapshot claims none.
+#[must_use]
+pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
+    match postcard::from_bytes::<NeighbourMsg>(body) {
+        Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+            envelope.claims.iter().map(|claim| claim.change).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Stable `NeighbourMsg` peer handle of a device.
 pub fn peer_id(device: &[u8; 32]) -> u64 {
     neighbour_wire::peer_handle(device)

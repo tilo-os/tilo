@@ -224,6 +224,8 @@ pub struct RouteStatus {
     pub pending_operations: usize,
     /// Commits the host acknowledged this session.
     pub durable_operations: u64,
+    /// Commits the host refused this session ([`PeerEvent::CommitRefused`]).
+    pub refused_operations: u64,
     /// Host order of the latest acknowledged commit.
     pub last_seq: Option<u64>,
     /// Local store state, as reported with [`PeerHandle::set_local_state`].
@@ -282,6 +284,21 @@ pub enum PeerEvent {
         route: DocumentRoute,
         /// Host order.
         seq: u64,
+    },
+    /// The host refused a commit of this device: nothing of it was kept
+    /// or passed on, and it is no longer outstanding. Its changes are
+    /// shared state nowhere but in this device's replica, and every later
+    /// local change depends on them, so the record's owner withdraws them
+    /// and tells whoever made them.
+    CommitRefused {
+        /// Its route.
+        route: DocumentRoute,
+        /// The Automerge hashes of the changes it carried, as its claims
+        /// name them; empty for a snapshot.
+        changes: Vec<[u8; 32]>,
+        /// The host's reason, for logs
+        /// ([`tilo_relay_protocol::refusal::plain_reason`] tells a person).
+        reason: String,
     },
     /// A live frame another member published, opened with its record's
     /// channel keys.
@@ -2437,10 +2454,10 @@ impl Task {
                     record,
                 },
             ),
-            Envelope::Committed { op, seq, .. } => self.acknowledge(op, Some(seq)),
+            Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
-                self.fail("protocol-rejected", reason);
-                self.acknowledge(op, None);
+                self.fail("protocol-rejected", reason.clone());
+                self.acknowledge(op, Err(reason));
             }
             Envelope::Live {
                 workspace_id,
@@ -2892,8 +2909,9 @@ impl Task {
     }
 
     /// Retire outbox entry `op`: acknowledged at host order `seq`, or refused
-    /// (`None`, it can never become durable).
-    fn acknowledge(&mut self, op: [u8; 16], seq: Option<u64>) {
+    /// (`Err` with the host's reason; it can never become durable).
+    fn acknowledge(&mut self, op: [u8; 16], outcome: Result<u64, String>) {
+        let seq = outcome.as_ref().ok().copied();
         let Some(index) = self.outbox.iter().position(|entry| entry.op == op) else {
             return;
         };
@@ -2907,16 +2925,28 @@ impl Task {
             status.outgoing_pending = status.outgoing_pending.saturating_sub(1);
             let route_status = status.routes.entry(route).or_default();
             route_status.pending_operations = route_status.pending_operations.saturating_sub(1);
-            if let Some(seq) = seq {
-                route_status.durable_operations = route_status.durable_operations.saturating_add(1);
-                route_status.last_seq = Some(seq);
+            match seq {
+                Some(seq) => {
+                    route_status.durable_operations =
+                        route_status.durable_operations.saturating_add(1);
+                    route_status.last_seq = Some(seq);
+                }
+                None => {
+                    route_status.refused_operations =
+                        route_status.refused_operations.saturating_add(1);
+                }
             }
         });
-        if let Some(seq) = seq {
-            self.emit(&PeerEvent::Committed {
+        match outcome {
+            Ok(seq) => self.emit(&PeerEvent::Committed {
                 route: emitted,
                 seq,
-            });
+            }),
+            Err(reason) => self.emit(&PeerEvent::CommitRefused {
+                route: emitted,
+                changes: crate::document::claimed_changes(&entry.body),
+                reason,
+            }),
         }
         let outstanding: BTreeSet<[u8; 16]> = self.outbox.iter().map(|entry| entry.op).collect();
         let result = seq

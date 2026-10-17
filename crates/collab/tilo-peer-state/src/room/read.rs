@@ -68,6 +68,7 @@ pub(crate) enum GovernanceEntry<'a> {
     Owner(&'a str),
     Grant { key: &'a str, bytes: &'a [u8] },
     Member { key: &'a str, bytes: &'a [u8] },
+    MemberJoined { key: &'a str, bytes: &'a [u8] },
     Sandbox { key: &'a str, bytes: &'a [u8] },
     Peer { key: &'a str, name: &'a str },
     Identity { key: &'a str, bytes: &'a [u8] },
@@ -97,6 +98,7 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
         ("peer_identities_v1", 2),
         ("members", 3),
         ("sandbox", 4),
+        ("members_joined_v1", 5),
     ] {
         let values = read
             .visit_property(&root, field, Selection::Winner, |value| {
@@ -119,6 +121,9 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
                                     }
                                     (4, RoomValue::Bytes(bytes)) => {
                                         visitor(GovernanceEntry::Sandbox { key, bytes })
+                                    }
+                                    (5, RoomValue::Bytes(bytes)) => {
+                                        visitor(GovernanceEntry::MemberJoined { key, bytes })
                                     }
                                     (1, RoomValue::Str(name)) => {
                                         visitor(GovernanceEntry::Peer { key, name })
@@ -354,6 +359,7 @@ mod tests {
             usize::from(expected.owner.is_some()),
             expected.grants.len(),
             expected.members.len(),
+            expected.members_joined.len(),
             expected.sandbox.len(),
             expected.peers.len(),
             expected.identities.len(),
@@ -377,6 +383,12 @@ mod tests {
                 }
                 GovernanceEntry::Member { key, bytes } => {
                     assert_eq!(expected.members.get(key).map(Vec::as_slice), Some(bytes));
+                }
+                GovernanceEntry::MemberJoined { key, bytes } => {
+                    assert_eq!(
+                        expected.members_joined.get(key).map(Vec::as_slice),
+                        Some(bytes)
+                    );
                 }
                 GovernanceEntry::Sandbox { key, bytes } => {
                     assert_eq!(expected.sandbox.get(key).map(Vec::as_slice), Some(bytes));

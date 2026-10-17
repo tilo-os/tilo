@@ -525,7 +525,8 @@ fn the_command_line_is_one_argument() {
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "tilo-board-successor: usage: tilo-board-successor applicable|NOW_NS\n"
+            "tilo-board-successor: usage: tilo-board-successor \
+             applicable|NOW_NS|install-update-origin OVERRIDE\n"
         );
     }
 }

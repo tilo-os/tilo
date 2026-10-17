@@ -26,6 +26,9 @@
 //!   installed target. `BootOrder` is never written except to undo
 //!   efibootmgr's own insertion when it had to create the target entry.
 //!
+//! It also carries the installer backend's small checks and writes
+//! ([`backend_commands`]), so its shell scripts need no interpreter.
+//!
 //! The firmware variables, the staging ESP, lsblk and efibootmgr are reached
 //! through [`Host`]; the shipped binary takes them from the system only. The
 //! `staging-handoff-fixture` example takes the old `TILO_STAGING_*` test
@@ -47,6 +50,7 @@ use serde_json::{Map, Value, json};
 use crate::args::{self, Arg, Command};
 use crate::py::Dumps;
 
+pub mod backend_commands;
 mod retained_commands;
 mod user_commands;
 
@@ -1759,12 +1763,12 @@ const COMMANDS: [&str; 9] = [
     "deliver-user-plan",
 ];
 const USAGE: &str = "usage: tilo-staging-handoff [-h]
-                            {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan}
+                            {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan,check-device-label,write-machine-info,check-prepared-choices,guided-geometry,gpt,unpack-setup-handoff}
                             ...
 ";
 const HELP: &str = "
 positional arguments:
-  {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan}
+  {detect,check-install,check-mounts,write-reclaim-record,firmware-finalize,preflight-retained,deliver-retained,required-user-id,deliver-user-plan,check-device-label,write-machine-info,check-prepared-choices,guided-geometry,gpt,unpack-setup-handoff}
 
 options:
   -h, --help            show this help message and exit
@@ -2110,6 +2114,9 @@ pub fn run(host: &dyn Host, args: &[OsString]) -> Outcome {
             stdout: format!("{USAGE}{HELP}"),
             stderr: String::new(),
         };
+    }
+    if backend_commands::COMMANDS.contains(&first.as_str()) {
+        return backend_commands::run(first, args.get(1..).unwrap_or_default());
     }
     if !COMMANDS.contains(&first.as_str()) {
         let message = if first.starts_with('-') {
