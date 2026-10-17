@@ -80,6 +80,68 @@ fn recurring_fold_import_materializes_next_wall_interval_on_the_timeline() {
 }
 
 #[test]
+fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:drag-fold@example.com\r\nSUMMARY:Fold drag\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new_detached();
+    app.model = replica.state().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+    let id = app.model.events[0].id;
+    app.show_calendar();
+    app.view = View::Day;
+    app.anchor = day;
+    let mut h = Harness::mount(app, 1200, 1900);
+    h.relayout();
+    let spans = h.app.timeline_spans(&[day]);
+    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+    let days = [day];
+    let rendered = h.app.timeline_render_events(&days);
+    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
+    assert_eq!(
+        rendered[0].clock_end_min, 170,
+        "label retains 02:50, not 03:50"
+    );
+    let area = h.app.view_rect();
+    let g = h.app.timeline.test_layout_geometry(area);
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 230);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    // Move within the repeated hour: the end must still choose the later fold.
+    h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let event = saved.event(id).unwrap();
+    assert_eq!(
+        event.start,
+        day.and_hms_opt(2, 30, 0).unwrap(),
+        "status={:?}, selection={:?}, dispatched={:?}",
+        h.app.status,
+        h.app.selection,
+        h.app.last_dispatched()
+    );
+    assert_eq!(event.end, day.and_hms_opt(2, 35, 0).unwrap());
+    assert!(event.end_later_fold);
+    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(event.timezone, "Europe/Berlin");
+    assert_eq!(event.recurrence, Recurrence::Weekly);
+    // Then leave the fold, retaining the elapsed interval through persistence.
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let event = saved.event(id).unwrap();
+    assert_eq!(event.start, day.and_hms_opt(4, 30, 0).unwrap());
+    assert_eq!(event.end, day.and_hms_opt(5, 35, 0).unwrap());
+    assert!(!event.end_later_fold);
+    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(event.timezone, "Europe/Berlin");
+    assert!(h.app.last_dispatched().is_some());
+}
+
+#[test]
 fn readonly_sync_observes_pending_actions_without_committing_document() {
     let mut app = CalendarApp::new_demo();
     let mut doc = demo_document(&app);

@@ -41,6 +41,8 @@ pub(super) struct TimelineRenderEvent<'a> {
     pub color: Palette,
     pub start_min: i64,
     pub end_min: i64,
+    /// Authored wall endpoint, unlike the elapsed-time geometry endpoint.
+    pub clock_end_min: i64,
     pub all_day: bool,
 }
 
@@ -687,7 +689,7 @@ impl TimelineInteraction {
                 let time = format!(
                     "{}–{}",
                     fmt_event_min(event.start_min),
-                    fmt_event_min(event.end_min)
+                    fmt_event_min(event.clock_end_min)
                 );
                 for line in [time.as_str(), event.location] {
                     if line.is_empty() || y + subtitle_h > block.y1 - s1 + 0.5 {
@@ -860,6 +862,11 @@ impl TimelineInteraction {
     #[cfg(test)]
     pub(super) fn test_set_offset_y(&mut self, offset: f32) {
         self.viewport.set_offset_y(offset);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_layout_geometry(&self, area: Rect) -> TimelineGeom {
+        self.geometry(area)
     }
 
     #[cfg(test)]
