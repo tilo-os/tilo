@@ -1673,6 +1673,7 @@ impl CalendarApp {
             Some(e) if !e.all_day && (e.start != start || e.end != end) => {
                 e.start = start;
                 e.end = end;
+                e.end_later_fold = false;
                 true
             }
             _ => false,
@@ -2421,6 +2422,11 @@ impl CalendarApp {
         {
             let before = e.clone();
             f(e);
+            if (e.start, e.end, e.all_day, &e.timezone)
+                != (before.start, before.end, before.all_day, &before.timezone)
+            {
+                e.end_later_fold = false;
+            }
             let after = e.clone();
             if self.submit_event_change(doc, &before, &after) {
                 self.dirty = true;
@@ -2585,11 +2591,9 @@ impl CalendarApp {
         let start = override_for_date
             .and_then(|override_| override_.start)
             .unwrap_or_else(|| occurrence_date.and_time(event.start.time()));
-        let duration = (event.end - event.start).max(Duration::minutes(1));
         let end = override_for_date
             .and_then(|override_| override_.end)
-            .unwrap_or(start + duration)
-            .max(start + Duration::minutes(1));
+            .unwrap_or_else(|| event.occurrence_end(start));
         (start, end)
     }
 
@@ -3200,9 +3204,9 @@ impl CalendarApp {
                 if event.all_day {
                     continue;
                 }
-                let start_min =
-                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
-                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                let (start, end) = Self::event_interval(event, *day);
+                let start_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
+                let end_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
                     .max(start_min + TIMELINE_SNAP_MIN);
                 spans.push(TimelineSpan {
                     id: event.id,
@@ -3222,9 +3226,9 @@ impl CalendarApp {
         let mut events = Vec::new();
         for day in days {
             for event in self.visible_events_on(*day) {
-                let start_min =
-                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
-                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                let (start, end) = Self::event_interval(event, *day);
+                let start_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
+                let end_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
                     .max(start_min + TIMELINE_SNAP_MIN);
                 events.push(TimelineRenderEvent {
                     id: event.id,

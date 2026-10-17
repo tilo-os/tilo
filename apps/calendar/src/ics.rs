@@ -57,6 +57,13 @@ pub fn export(model: &Calendar) -> String {
                 "DTEND;VALUE=DATE",
                 &e.all_day_end_exclusive().format(D_ONLY).to_string(),
             );
+        } else if e.end_later_fold {
+            emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
+            raw(
+                &mut out,
+                "DURATION",
+                &format!("PT{}S", e.elapsed_duration().num_seconds()),
+            );
         } else if e.timezone == "UTC" {
             raw(
                 &mut out,
@@ -124,7 +131,11 @@ pub fn export(model: &Calendar) -> String {
             if edit.cancelled {
                 raw(&mut out, "STATUS", "CANCELLED");
             }
-            if let Some(start) = edit.start {
+            let edit_start = edit.start.or_else(|| {
+                edit.end_later_fold
+                    .then(|| edit.original_date.and_time(e.start.time()))
+            });
+            if let Some(start) = edit_start {
                 if e.all_day {
                     raw(
                         &mut out,
@@ -150,6 +161,18 @@ pub fn export(model: &Calendar) -> String {
                         "DTEND;VALUE=DATE",
                         &exclusive.format(D_ONLY).to_string(),
                     );
+                } else if edit.end_later_fold {
+                    if let Some(start) = edit_start
+                        && let Some(((start, _), end)) =
+                            crate::timezone::wall_to_utc(&e.timezone, start)
+                                .zip(crate::timezone::endpoint_utc(&e.timezone, end, true))
+                    {
+                        raw(
+                            &mut out,
+                            "DURATION",
+                            &format!("PT{}S", (end - start).num_seconds()),
+                        );
+                    }
                 } else {
                     emit_datetime(&mut out, "DTEND", end, &e.timezone);
                 }
@@ -272,7 +295,8 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
                                 cancelled,
                                 start: (ev.start.date() != original_date || !cancelled)
                                     .then_some(ev.start),
-                                end: (ev.end != ev.start).then_some(ev.end),
+                                end: (ev.end != ev.start || ev.end_later_fold).then_some(ev.end),
+                                end_later_fold: ev.end_later_fold,
                                 title: (!ev.title.is_empty()).then_some(ev.title),
                                 location: (!ev.location.is_empty()).then_some(ev.location),
                             },
@@ -421,16 +445,14 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     }) else {
         return (None, i);
     };
+    let mut end_later_fold = false;
     let mut end = match (end, duration) {
         (Some(end), _) => end,
         (None, Some((days, time))) => {
-            let Some((duration_start, end, duration_zone)) =
-                duration_span(start, &timezone, days, time)
-            else {
+            let Some((end, later_fold)) = duration_span(start, &timezone, days, time) else {
                 return (None, i);
             };
-            start = duration_start;
-            timezone = duration_zone;
+            end_later_fold = later_fold;
             end
         }
         (None, None) => start,
@@ -460,6 +482,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                 start,
                 end,
                 all_day,
+                end_later_fold,
                 location,
                 color,
                 recurrence: Recurrence::from_rrule(&rrule),
@@ -731,27 +754,20 @@ fn duration_span(
     zone: &str,
     days: i64,
     time: chrono::Duration,
-) -> Option<(NaiveDateTime, NaiveDateTime, String)> {
+) -> Option<(NaiveDateTime, bool)> {
     // Days are nominal calendar days; hours/minutes/seconds are elapsed
     // time. They differ when the event crosses a daylight-saving change.
     let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
     if zone == "floating" {
-        return Some((start, wall.checked_add_signed(time)?, zone.into()));
+        return Some((wall.checked_add_signed(time)?, false));
     }
     let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
     let end = instant.checked_add_signed(time)?;
     let end_wall = end
         .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
         .naive_local();
-    if crate::timezone::wall_to_utc(zone, end_wall)?.0 != end {
-        // The wall-time model always resolves a fold to its earlier instant.
-        // A duration can end in the later fold, even before its local start.
-        // Store both endpoints in UTC rather than lose the elapsed interval
-        // when the event passes through validation, reminders or export.
-        let start = crate::timezone::wall_to_utc(zone, start)?.0;
-        return Some((start.naive_utc(), end.naive_utc(), "UTC".into()));
-    }
-    Some((start, end_wall, zone.into()))
+    let later_fold = crate::timezone::wall_to_utc(zone, end_wall)?.0 != end;
+    Some((end_wall, later_fold))
 }
 
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
@@ -1018,6 +1034,7 @@ mod tests {
                     cancelled: true,
                     start: None,
                     end: None,
+                    end_later_fold: false,
                     title: None,
                     location: None,
                 });

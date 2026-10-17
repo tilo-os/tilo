@@ -226,6 +226,7 @@ impl Calendar {
             .ok_or_else(|| Refusal::new("that event is gone"))?;
         event.start = start;
         event.end = end;
+        event.end_later_fold = false;
         Ok(())
     }
 

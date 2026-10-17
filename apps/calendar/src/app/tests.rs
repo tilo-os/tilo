@@ -61,6 +61,25 @@ fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
 }
 
 #[test]
+fn recurring_fold_import_materializes_next_wall_interval_on_the_timeline() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:timeline-fold@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new();
+    app.model = replica.state().unwrap();
+    let next = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let spans = app.timeline_spans(&[next]);
+    assert_eq!(spans.len(), 1);
+    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+    let days = [next];
+    let rendered = app.timeline_render_events(&days);
+    assert_eq!(rendered.len(), 1);
+    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
+}
+
+#[test]
 fn readonly_sync_observes_pending_actions_without_committing_document() {
     let mut app = CalendarApp::new_demo();
     let mut doc = demo_document(&app);
