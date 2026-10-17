@@ -24,6 +24,12 @@ const MAX_IN_FLIGHT_FRAMES: usize = 16;
 /// Bounds the answers waiting for a submitted frame.
 const MAX_UNSUBMITTED_ANSWERS: usize = 64;
 
+/// How often the session log gets one line summing the keys typed since the
+/// last: the latency people feel, as a number a regression moves.
+const SUMMARY_EVERY: Duration = Duration::from_secs(600);
+/// The bar key-to-photon latency is held to.
+const KEY_TO_PRESENT_BAR_US: u128 = 20_000;
+
 /// evdev keycodes that change no text by themselves.
 const MODIFIER_KEYCODES: [u32; 10] = [29, 42, 54, 56, 58, 97, 100, 125, 126, 127];
 
@@ -61,6 +67,66 @@ pub struct KeyLatency {
     answered: Vec<Answered>,
     /// Submitted frames carrying answers: serial, submit time, answers.
     in_flight: VecDeque<(u64, Instant, Vec<Answered>)>,
+    /// Key-to-present times since the last summary line.
+    window: LatencyWindow,
+}
+
+/// Key-to-present times gathered for one `KEY-LATENCY-SUMMARY` line.
+#[derive(Debug, Default)]
+struct LatencyWindow {
+    started: Option<Instant>,
+    present_us: Vec<u128>,
+}
+
+impl LatencyWindow {
+    fn note(&mut self, at: Instant, present_us: u128) {
+        self.started.get_or_insert(at);
+        self.present_us.push(present_us);
+    }
+
+    /// The summary of the keys since the window opened, once it has been
+    /// open [`SUMMARY_EVERY`]; the next window opens with the next key.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "microsecond latencies and key counts, far below f64's exact range, shown to a tenth"
+    )]
+    fn summary(&mut self, at: Instant) -> Option<String> {
+        let started = self.started?;
+        let open = at.saturating_duration_since(started);
+        if open < SUMMARY_EVERY {
+            return None;
+        }
+        let mut samples = std::mem::take(&mut self.present_us);
+        self.started = None;
+        samples.sort_unstable();
+        let percentile = |p: usize| -> f64 {
+            let rank = samples
+                .len()
+                .saturating_mul(p)
+                .div_ceil(100)
+                .saturating_sub(1)
+                .min(samples.len().saturating_sub(1));
+            samples.get(rank).copied().unwrap_or_default() as f64 / 1000.0
+        };
+        let under = samples
+            .iter()
+            .filter(|&&us| us < KEY_TO_PRESENT_BAR_US)
+            .count();
+        let under_pct = if samples.is_empty() {
+            0.0
+        } else {
+            under as f64 * 100.0 / samples.len() as f64
+        };
+        Some(format!(
+            "KEY-LATENCY-SUMMARY window_s={} n={} p50_ms={:.1} p90_ms={:.1} p99_ms={:.1} max_ms={:.1} under_20ms_pct={under_pct:.1}",
+            open.as_secs(),
+            samples.len(),
+            percentile(50),
+            percentile(90),
+            percentile(99),
+            percentile(100),
+        ))
+    }
 }
 
 impl KeyLatency {
@@ -139,7 +205,15 @@ impl KeyLatency {
                 }
             }));
         }
+        for sample in &samples {
+            self.window.note(at, sample.key_to_present_us);
+        }
         samples
+    }
+
+    /// One line summing the keys of the last ten minutes, when they are due.
+    pub fn summary(&mut self, at: Instant) -> Option<String> {
+        self.window.summary(at)
     }
 }
 
@@ -196,5 +270,34 @@ mod tests {
             latency.frame_submitted(2, ms(6_002));
             assert!(latency.frames_retired(2, ms(6_003)).is_empty());
         }
+    }
+
+    /// Ten minutes of typing become one line of percentiles and the share
+    /// under the 20 ms bar; no line until the window is full, and none for
+    /// a window with no keys.
+    #[test]
+    fn the_log_sums_ten_minutes_of_keys_in_one_line() {
+        let t0 = Instant::now();
+        let mut window = LatencyWindow::default();
+        assert_eq!(window.summary(t0 + SUMMARY_EVERY), None, "no keys, no line");
+        for (index, ms) in [10_u128, 15, 30, 60].into_iter().enumerate() {
+            window.note(
+                t0 + Duration::from_secs(u64::try_from(index).unwrap_or_default()),
+                ms.saturating_mul(1000),
+            );
+        }
+        assert_eq!(window.summary(t0 + Duration::from_secs(60)), None);
+        let line = window
+            .summary(t0 + SUMMARY_EVERY)
+            .expect("a full window sums its keys");
+        assert_eq!(
+            line,
+            "KEY-LATENCY-SUMMARY window_s=600 n=4 p50_ms=15.0 p90_ms=60.0 p99_ms=60.0 max_ms=60.0 under_20ms_pct=50.0"
+        );
+        assert_eq!(
+            window.summary(t0 + SUMMARY_EVERY + SUMMARY_EVERY),
+            None,
+            "the next window starts empty"
+        );
     }
 }

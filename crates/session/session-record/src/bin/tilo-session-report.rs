@@ -11,7 +11,8 @@ use tilo_session_record::report::{self, RenderBudgets};
 
 const USAGE: &str = "usage: tilo-session-report [-h] [--root ROOT] [--previous] [--output OUTPUT] \
 [--render-gate] [--require-direct] [--key-latency] [--render-budget-ms RENDER_BUDGET_MS] \
-[--frame-work-budget-ms FRAME_WORK_BUDGET_MS]";
+[--frame-work-budget-ms FRAME_WORK_BUDGET_MS] [--key-budget-ms KEY_BUDGET_MS] \
+[--min-damage-limited-percent PERCENT]";
 
 const HELP: &str = "
 Summarise private Tilo session flight records without controlling the desktop.
@@ -25,7 +26,12 @@ options:
   --require-direct      with --render-gate: direct GPU scanout must present even if it never started
   --key-latency         print key-to-present latency of typing, per app (from KEY-LATENCY records)
   --render-budget-ms RENDER_BUDGET_MS
-  --frame-work-budget-ms FRAME_WORK_BUDGET_MS";
+  --frame-work-budget-ms FRAME_WORK_BUDGET_MS
+  --key-budget-ms KEY_BUDGET_MS
+                        with --render-gate: typed keys show within this at the median, per app
+  --min-damage-limited-percent PERCENT
+                        with --render-gate: this share of direct frames repairs only its damage
+                        or scans a client out";
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -40,6 +46,8 @@ struct Options {
     key_latency: bool,
     render_budget_ms: i64,
     frame_work_budget_ms: i64,
+    key_budget_ms: Option<i64>,
+    min_damage_limited_percent: Option<i64>,
 }
 
 fn default_root() -> PathBuf {
@@ -70,6 +78,8 @@ fn parse(args: &[String]) -> Result<Options, ExitCode> {
         key_latency: false,
         render_budget_ms: 33,
         frame_work_budget_ms: 16,
+        key_budget_ms: None,
+        min_damage_limited_percent: None,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -102,6 +112,15 @@ fn parse(args: &[String]) -> Result<Options, ExitCode> {
             "--frame-work-budget-ms" => {
                 options.frame_work_budget_ms =
                     number("--frame-work-budget-ms", value("--frame-work-budget-ms")?)?;
+            }
+            "--key-budget-ms" => {
+                options.key_budget_ms = Some(number("--key-budget-ms", value("--key-budget-ms")?)?);
+            }
+            "--min-damage-limited-percent" => {
+                options.min_damage_limited_percent = Some(number(
+                    "--min-damage-limited-percent",
+                    value("--min-damage-limited-percent")?,
+                )?);
             }
             "--previous" if inline.is_none() => options.previous = true,
             "--render-gate" if inline.is_none() => options.render_gate = true,
@@ -152,6 +171,10 @@ fn main() -> ExitCode {
                 require_direct: options.require_direct,
                 render_us: options.render_budget_ms.saturating_mul(1000),
                 frame_work_us: options.frame_work_budget_ms.saturating_mul(1000),
+                key_to_present_us: options
+                    .key_budget_ms
+                    .map(|budget| budget.saturating_mul(1000)),
+                min_damage_limited_percent: options.min_damage_limited_percent,
             },
         );
         let flight = report.get("flight");

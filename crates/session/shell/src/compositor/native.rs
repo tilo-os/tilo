@@ -10649,9 +10649,18 @@ pub fn run() {
                 .flip_queued_at
                 .and(retired.display.vblank)
                 .unwrap_or(retired.at);
-            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, shown_at);
+            let (keys, summary) = {
+                let mut tracker = crate::compositor::key_latency::tracker();
+                (
+                    tracker.frames_retired(serial, shown_at),
+                    tracker.summary(shown_at),
+                )
+            };
             for sample in keys {
                 eprintln!("{sample}");
+            }
+            if let Some(summary) = summary {
+                eprintln!("{summary}");
             }
             if let Some(switch) = frame_builder
                 .host_mut()
