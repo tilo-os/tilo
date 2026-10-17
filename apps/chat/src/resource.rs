@@ -162,6 +162,9 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "floating-call-hover",
     "floating-call-returning",
     "floating-call-returned",
+    "channels",
+    "mention",
+    "new-channel",
 ];
 
 /// The draft the `composer` scenario shows mid-compose.
@@ -231,7 +234,8 @@ impl ResourceApp for ChatShell {
     }
 
     /// `composer`: a multi-line draft typed in the composer, the person's
-    /// own until sent.
+    /// own until sent. `mention`: someone typing `@a` in the composer, the
+    /// editor's `@` list open under it.
     fn scenario_input(
         name: Option<&str>,
         input: &mut ui::headless::FrameHarness,
@@ -246,6 +250,12 @@ impl ResourceApp for ChatShell {
                 input.type_text(line);
             }
             input.relayout();
+        }
+        if name == Some("mention") {
+            input.type_text("Could you take a look, @a");
+            for _ in 0..3 {
+                input.relayout();
+            }
         }
         Ok(())
     }
@@ -336,6 +346,9 @@ pub(crate) fn part_scenario(scenario: Option<&str>) -> Vec<(&'static str, Invoke
         .collect();
     match scenario {
         Some("bridged") => staged.extend(Invoke::edit(&bridged_post()).map(|invoke| (me, invoke))),
+        Some("channels") => {
+            staged.extend(Invoke::edit(&mention_post()).map(|invoke| (me, invoke)));
+        }
         Some(
             scenario @ ("agent-streaming" | "agent-failed" | "agent-reasoning"
             | "agent-long-thread"),
@@ -411,6 +424,29 @@ pub(crate) fn demo_part_invokes() -> Vec<Invoke<ChatPart>> {
         .iter()
         .filter_map(|edit| Invoke::edit(edit).ok())
         .collect()
+}
+
+/// `channels`: a message elsewhere that mentions the reader, which the
+/// sidebar badges on its channel.
+fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
+    let text = "@You could you check the hover states on the new sidebar before standup?";
+    let post = crate::record::Message {
+        channel: Id::from_raw("c_frontend"),
+        author: ui::tilo_resource::Atom("u_aria".to_owned()),
+        ts: crate::demo::NOW - 30,
+        text: text.into(),
+        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+            user: crate::model::ME.into(),
+            start: 0,
+            len: "@You".len(),
+            is_agent: false,
+        }]),
+        ..crate::record::Message::default()
+    };
+    let at = crate::demo::demo_part(crate::model::ME).messages.len();
+    ChatPart::paths()
+        .messages
+        .insert_as(&Id::from_raw("m_mention"), at, &post)
 }
 
 /// The bridge the `bridged` scenario's post is by.

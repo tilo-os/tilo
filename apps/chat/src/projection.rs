@@ -84,6 +84,7 @@ impl Chat {
                 kind: channel.kind,
                 order: u32::try_from(order).unwrap_or(u32::MAX),
                 unread: 0,
+                mentions: 0,
                 archived: channel.archived,
                 conversation_with: channel
                     .conversation_with

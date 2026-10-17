@@ -147,6 +147,7 @@ params = [
   { name = "name", required = true, schema = { type = "string" } },
   { name = "category", required = false, schema = { type = ["string", "null"] } },
   { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
+  { name = "topic", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
