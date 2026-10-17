@@ -247,6 +247,22 @@ fn open_tool(
     )
 }
 
+/// The Storage pane: this device's storage, then the drives the person
+/// chose to remember ([`crate::panes::drives`]), which say nothing when
+/// there are none.
+pub(crate) fn build_with_drives(
+    storage: crate::widgets::El,
+    drives: crate::widgets::El,
+) -> Box<dyn Widget> {
+    Box::new(
+        ui::widget::Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Group)
+            .push(storage)
+            .push(drives),
+    )
+}
+
 /// What Storage measured of this device: what each app keeps, and the
 /// caches it could remove.
 #[derive(Clone, Debug, Default)]

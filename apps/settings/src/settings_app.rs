@@ -111,6 +111,7 @@ pub struct SettingsApp {
     updates: panes::updates::UpdatesArea,
     storage: panes::storage::StorageArea,
     disk_unlock: panes::disk_unlock::DiskUnlockArea,
+    drives: panes::drives::DrivesArea,
     /// This device's privacy switches, protection and secret store.
     permissions: panes::permissions::PermissionsArea,
     printers: panes::printers::PrintersArea,
@@ -177,6 +178,7 @@ impl SettingsApp {
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx, device_mesh.remote()),
             disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
+            drives: panes::drives::DrivesArea::new(&cx),
             permissions: panes::permissions::PermissionsArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users,
@@ -406,6 +408,7 @@ impl SettingsApp {
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
         self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
+        self.drives = panes::drives::DrivesArea::new(&cx);
         self.permissions = panes::permissions::PermissionsArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
@@ -529,6 +532,11 @@ impl SettingsApp {
 
     pub(crate) fn disk_unlock(&self) -> &panes::disk_unlock::DiskUnlockArea {
         &self.disk_unlock
+    }
+
+    /// The NTFS drives the person chose to remember.
+    pub(crate) fn drives(&self) -> &panes::drives::DrivesArea {
+        &self.drives
     }
 
     /// This device's privacy switches, protection and secret store.
@@ -683,9 +691,14 @@ impl SettingsApp {
                 self.cx.clone(),
                 &self.default_apps,
             )),
-            Category::Storage => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
-                self.storage.model(),
-            ))),
+            Category::Storage => panes::storage::build_with_drives(
+                Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                    self.storage.model(),
+                ))),
+                Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                    self.drives.model(),
+                ))),
+            ),
             Category::ExternalAccounts => Box::new(panes::model::ModelPane::new(
                 std::rc::Rc::clone(self.accounts.model()),
             )),
@@ -902,6 +915,7 @@ impl Widget for SettingsApp {
         self.updates.poll();
         self.storage.poll();
         self.disk_unlock.poll();
+        self.drives.poll();
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
