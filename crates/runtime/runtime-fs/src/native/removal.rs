@@ -3,6 +3,7 @@ use super::{
     Arc, Dir, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, GrantedEntry,
     MetadataExt, NativeIdentity, NativeLocator, OFlags, io_error, lock,
 };
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt as StdMetadataExt;
@@ -166,6 +167,9 @@ impl FsSession {
         drop(table);
         Ok(())
     }
+    /// Bind retained source authority only on supported hosts.
+    /// # Errors
+    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_retained_source_owner(
         &self,
@@ -246,6 +250,9 @@ impl FsSession {
         drop(table);
         Ok(())
     }
+    /// Bind retained history authority only on supported hosts.
+    /// # Errors
+    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_retained_history_verifier(
         &self,
