@@ -792,7 +792,7 @@ pub fn draw_lock_osd(
         Affine::IDENTITY,
         text,
         theme,
-        viewport,
+        crate::shell::osd::OsdArea::on(viewport),
         osd.alpha_in(theme, now),
     );
 }
