@@ -576,9 +576,10 @@ mod tests {
     #[test]
     fn rows_carry_canonical_chords_and_labels_in_the_active_layout() {
         let config = ShortcutConfig::default();
-        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", "nodeadkeys"));
-        let list = list_json(&config);
-        ui::keycaps::set_active(ui::Keycaps::US);
+        let list = {
+            let _german = ui::keycaps::scoped(ui::Keycaps::from_xkb("de", "nodeadkeys"));
+            list_json(&config)
+        };
         let row = |id: &str| {
             list["shortcuts"]
                 .as_array()

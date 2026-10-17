@@ -408,16 +408,19 @@ mod tests {
     #[test]
     fn display_names_follow_the_active_keyboard_layout() {
         let display = |action| entry_for(action).map(FixedChordEntry::display);
-        ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
-        let german = [
-            display(FixedChordAction::ChangeWorkspace),
-            display(FixedChordAction::ToggleMouseKeys),
-            display(FixedChordAction::Screenshot),
-            display(FixedChordAction::CloseTab),
-        ];
-        ui::keycaps::set_active(ui::Keycaps::from_xkb("us", "mac"));
-        let mac = display(FixedChordAction::CaptureScreenshot);
-        ui::keycaps::set_active(ui::Keycaps::US);
+        let german = {
+            let _german = ui::keycaps::scoped(ui::Keycaps::from_xkb("de", ""));
+            [
+                display(FixedChordAction::ChangeWorkspace),
+                display(FixedChordAction::ToggleMouseKeys),
+                display(FixedChordAction::Screenshot),
+                display(FixedChordAction::CloseTab),
+            ]
+        };
+        let mac = {
+            let _mac = ui::keycaps::scoped(ui::Keycaps::from_xkb("us", "mac"));
+            display(FixedChordAction::CaptureScreenshot)
+        };
         assert_eq!(
             german.map(Option::unwrap_or_default),
             [

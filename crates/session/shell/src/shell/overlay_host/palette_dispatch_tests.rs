@@ -1121,6 +1121,9 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
 )]
 fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_covers_every_production_essential() {
+        // The rows spell chords in the US keycaps they are compared with,
+        // whatever layout another test or the process last published.
+        let _us = ui::keycaps::scoped(ui::Keycaps::US);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let visible = rows
             .iter()
@@ -1315,10 +1318,14 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
             .expect("guide description")
     };
 
-    ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
-    let german_rows = shortcut_reference_rows(&host.shortcut_config);
-    let german = guide_description(&host);
-    ui::keycaps::set_active(ui::Keycaps::US);
+    let (german_rows, german) = {
+        let _german = ui::keycaps::scoped(ui::Keycaps::from_xkb("de", ""));
+        (
+            shortcut_reference_rows(&host.shortcut_config),
+            guide_description(&host),
+        )
+    };
+    let _english = ui::keycaps::scoped(ui::Keycaps::US);
     let english = guide_description(&host);
 
     assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
