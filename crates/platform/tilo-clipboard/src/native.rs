@@ -251,21 +251,9 @@ impl ClipboardBackend for NativeClipboard {
         let Some(wayland) = wayland() else {
             return crate::copy_now(self, content);
         };
-        // A plain copy the compositor refused still pastes in this process,
-        // as `set_text` does; shared, secret and image copies never fall back.
-        let crate::CopyContent::Text(text) = content else {
-            return wayland.copy(content);
-        };
-        let (copy, settler) = crate::ClipboardCopy::pending();
-        let (local, text) = (std::sync::Arc::clone(&self.local), text.to_owned());
-        wayland.copy(content).on_settled(move |copied| {
-            let copied = copied || {
-                warn_fallback_once("copy");
-                local.set_text(ClipboardTarget::Clipboard, &text)
-            };
-            settler.settle(copied);
-        });
-        copy
+        // The attached connection remains authoritative after close. A local
+        // fallback would report success for text this handle cannot read.
+        wayland.copy(content)
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
