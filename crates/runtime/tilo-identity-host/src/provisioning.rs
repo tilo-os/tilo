@@ -1981,10 +1981,16 @@ mod tests {
         );
         let record: serde_json::Value =
             serde_json::from_slice(&std::fs::read(target_record).unwrap()).unwrap();
-        assert_eq!(
-            record["threshold_identity"]["secret_bytes"],
-            serde_json::json!([])
+        // Public records omit the empty signing-share field entirely.
+        assert!(
+            record["threshold_identity"]
+                .as_object()
+                .unwrap()
+                .get("secret_bytes")
+                .is_none()
         );
+        let public_record: IdentityRecord = serde_json::from_value(record.clone()).unwrap();
+        assert!(public_record.threshold_identity.secret_bytes.is_empty());
         assert!(record.get("secret_ref").is_none());
     }
     fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
