@@ -164,12 +164,14 @@ impl Journey {
             DestinationChoice::Another => Destination::Another,
             DestinationChoice::Desktop => Destination::Desktop,
         });
+        if self.destination == Some(Destination::Desktop) {
+            self.reset_for_destination(Destination::Desktop);
+            self.page = Page::Review;
+            self.history = vec![Page::Destination];
+            return;
+        }
         self.migrate = choices.migrate;
         self.categories = choices.categories;
-        if self.destination == Some(Destination::Desktop) {
-            self.categories[0] = false;
-            self.categories[1] = false;
-        }
         self.browser_domains = choices.browser_domains;
         self.excluded_flatpak_apps
             .clone_from(&choices.excluded_flatpak_apps);
@@ -199,15 +201,34 @@ impl Journey {
         ];
     }
 
+    fn reset_for_destination(&mut self, destination: Destination) {
+        *self = Self::new(String::new());
+        self.destination = Some(destination);
+        if destination == Destination::Desktop {
+            self.categories = [false; 3];
+        }
+    }
+
     pub fn choose(&mut self, choice: &str, linux: bool) -> Result<(), &'static str> {
-        match (self.page, choice) {
-            (Page::Destination, "computer") => self.destination = Some(Destination::Computer),
-            (Page::Destination, "another") => self.destination = Some(Destination::Another),
-            (Page::Destination, "desktop") if linux => {
-                self.destination = Some(Destination::Desktop);
-                self.categories[0] = false;
-                self.categories[1] = false;
+        if self.page == Page::Destination {
+            let destination = match choice {
+                "computer" => Destination::Computer,
+                "another" => Destination::Another,
+                "desktop" if linux => Destination::Desktop,
+                _ => return Err("installer-preview-invalid-choice"),
+            };
+            if self.destination != Some(destination) {
+                if destination == Destination::Desktop
+                    || self.destination == Some(Destination::Desktop)
+                {
+                    self.reset_for_destination(destination);
+                } else {
+                    self.destination = Some(destination);
+                }
             }
+            return Ok(());
+        }
+        match (self.page, choice) {
             (Page::Purpose, "computer" | "server") => self.purpose = choice.into(),
             (Page::Migration, "migrate") => self.migrate = Some(true),
             (Page::Migration, "fresh") => self.migrate = Some(false),
@@ -228,6 +249,18 @@ impl Journey {
     }
 
     pub fn next(&mut self) -> Result<(), &'static str> {
+        if self.destination == Some(Destination::Desktop) && self.page == Page::Destination {
+            self.editing = None;
+            self.history = vec![Page::Destination];
+            self.page = Page::Review;
+            return Ok(());
+        }
+        if self.destination == Some(Destination::Desktop)
+            && self.page == Page::Review
+            && self.identity.is_none()
+        {
+            return Err("installer-preview-wrong-page");
+        }
         let mut next = match self.page {
             Page::Destination if self.destination.is_some() => Page::Migration,
             Page::Migration if self.migrate.is_some() => Page::Identity,
@@ -329,6 +362,9 @@ impl Journey {
     pub fn edit(&mut self, section: &str) -> Result<(), &'static str> {
         if self.page != Page::Review {
             return Err("installer-preview-wrong-page");
+        }
+        if self.destination == Some(Destination::Desktop) && section != "destination" {
+            return Err("installer-preview-invalid-choice");
         }
         let (section, start) = match section {
             "destination" => (ReviewSection::Destination, Page::Destination),
