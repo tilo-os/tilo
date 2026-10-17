@@ -10952,6 +10952,11 @@ pub fn run() {
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
+                    // Strip layers warming at rest stop at their next step:
+                    // the frame this input makes is about to need the GPU.
+                    if let Some(pipe) = present_pipe.as_ref() {
+                        pipe.note_input();
+                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());

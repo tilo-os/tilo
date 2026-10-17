@@ -258,8 +258,11 @@ fn area(rect: FineDamageRect) -> u64 {
 }
 
 /// Most pixels a warm at rest rasterises in one render: a frame that comes
-/// while the layers warm waits for one band, not for a whole layer.
-const WARM_BAND_PIXELS: u64 = 4 << 20;
+/// while the layers warm waits for one band, not for a whole layer. A band
+/// of a million pixels is a fifth of the 2944x1840 panel, a few
+/// milliseconds of raster on its GPU, so a keystroke arriving mid-warm
+/// waits that long rather than for half a dense frame.
+const WARM_BAND_PIXELS: u64 = 1 << 20;
 
 /// Rows of a warm band are a multiple of vello's tile height, so no tile is
 /// drawn by two bands.
@@ -1532,12 +1535,12 @@ mod tests {
         );
     }
 
-    /// A whole layer is warmed in bands of at most about four million
-    /// pixels, a whole number of tile rows each, that cover the output once.
+    /// A whole layer is warmed in bands of at most about a million pixels,
+    /// a whole number of tile rows each, that cover the output once.
     #[test]
     fn warm_bands_cover_the_output_once_in_tile_rows() {
-        assert_eq!(warm_bands((1920, 1080)), None);
-        for size in [(3840, 2160), (5120, 2880), (7680, 4320)] {
+        assert_eq!(warm_bands((1024, 1024)), None);
+        for size in [(1920, 1080), (2944, 1840), (3840, 2160), (7680, 4320)] {
             let bands = warm_bands(size).expect("a large output is warmed in bands");
             let mut y = 0_u32;
             for band in &bands {

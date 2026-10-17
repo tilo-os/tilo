@@ -301,6 +301,8 @@ pub struct Submission {
 struct Warm {
     frame: FramePaint,
     pins: crate::shell::gpu_frames::FramePins,
+    /// [`PresentPipe::note_input`]'s count when the warm was asked for.
+    input_epoch: u64,
 }
 
 /// Signalled by the render thread each time a frame retires. Boxed as a trait object so
@@ -317,6 +319,8 @@ pub struct PresentPipe {
     frame_is_newest: AtomicBool,
     /// Frames handed over but not yet presented; the logic thread reads it to decide whether to build the next frame.
     inflight: Arc<AtomicUsize>,
+    /// Input the logic thread has read, counted ([`Self::note_input`]).
+    input_epoch: Arc<AtomicU64>,
     /// Frames presented whose flip has not retired ([`Presenter::owes_retirement`]).
     unretired: Arc<AtomicUsize>,
     /// Serial of the newest frame the render thread has finished handling.
@@ -460,6 +464,8 @@ struct RetireBoard {
     unretired: Arc<AtomicUsize>,
     /// Frames handed over and not yet rendered: idle work waits for none.
     inflight: Arc<AtomicUsize>,
+    /// Input the logic thread has read: idle work stops once more arrives.
+    input_epoch: Arc<AtomicU64>,
 }
 
 impl RetireBoard {
@@ -478,8 +484,23 @@ impl RetireBoard {
     /// Run [`Presenter::warm`] for `frame` while no frame is in flight: a
     /// frame handed over before or during it goes first. Its client frames
     /// go back once it is done.
-    fn warm(&self, presenter: &mut dyn Presenter, Warm { frame, pins }: Warm) {
-        let idle = || self.inflight.load(Ordering::Acquire) == 0;
+    ///
+    /// Input read since the warm was asked for stops it too, before the
+    /// frame that input makes is even built: the GPU is then free for that
+    /// frame after at most the one step under way.
+    fn warm(
+        &self,
+        presenter: &mut dyn Presenter,
+        Warm {
+            frame,
+            pins,
+            input_epoch,
+        }: Warm,
+    ) {
+        let idle = || {
+            self.inflight.load(Ordering::Acquire) == 0
+                && self.input_epoch.load(Ordering::Acquire) == input_epoch
+        };
         if idle() {
             presenter.warm(&frame, &idle);
         }
@@ -826,6 +847,7 @@ impl PresentPipe {
     pub fn spawn(presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
+        let input_epoch = Arc::new(AtomicU64::new(0));
         let unretired = Arc::new(AtomicUsize::new(0));
         let queue_depth = Arc::new(AtomicUsize::new(QUEUE_DEPTH));
         let overlapping = Arc::new(AtomicBool::new(false));
@@ -841,6 +863,7 @@ impl PresentPipe {
             overlapping: overlapping.clone(),
             unretired: unretired.clone(),
             inflight: inflight.clone(),
+            input_epoch: input_epoch.clone(),
         };
         let pending: PendingFrames = Arc::new(Mutex::new(VecDeque::new()));
         let thread_pending = pending.clone();
@@ -886,6 +909,7 @@ impl PresentPipe {
             pending,
             frame_is_newest: AtomicBool::new(false),
             inflight,
+            input_epoch,
             unretired,
             presented: presented_frames,
             submitted: submitted_frames,
@@ -1124,9 +1148,21 @@ impl PresentPipe {
     pub fn warm(&self, frame: FramePaint) -> bool {
         let pins = frame.client_frame_pins();
         self.frame_is_newest.store(false, Ordering::Release);
+        let input_epoch = self.input_epoch.load(Ordering::Acquire);
         self.tx
-            .send(PresentMsg::Warm(Box::new(Warm { frame, pins })))
+            .send(PresentMsg::Warm(Box::new(Warm {
+                frame,
+                pins,
+                input_epoch,
+            })))
             .is_ok()
+    }
+
+    /// The logic thread read input: idle work on the render thread
+    /// ([`Self::warm`]) yields at its next step, so the frame that input
+    /// makes finds the GPU free.
+    pub fn note_input(&self) {
+        self.input_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn resize(&self, size: (u32, u32)) {
@@ -1260,6 +1296,48 @@ mod tests {
         fn set_dpms(&mut self, on: bool) {
             self.dpms.lock_recover().push(on);
         }
+    }
+
+    /// Idle warming yields to input the loop has read, before the frame
+    /// that input makes is built: the warm asks `keep_going` between steps,
+    /// and input noted after the warm was asked for answers no.
+    #[test]
+    fn warming_yields_to_input_before_its_frame_is_built() {
+        struct Warming {
+            started: std::sync::mpsc::Sender<()>,
+            resume: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+            verdict: std::sync::mpsc::Sender<bool>,
+        }
+        impl Presenter for Warming {
+            fn present(&mut self, _scene: &Scene, _output: OutputId) {}
+            fn warm(&mut self, _frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+                let before = keep_going();
+                let _ = self.started.send(());
+                let _ = self.resume.lock_recover().recv();
+                let _ = self.verdict.send(before && !keep_going());
+            }
+        }
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume) = std::sync::mpsc::channel();
+        let (verdict, verdict_rx) = std::sync::mpsc::channel();
+        let mut pipe = spawn_with_retire(Box::new(Warming {
+            started,
+            resume: Arc::new(Mutex::new(resume)),
+            verdict,
+        }));
+        assert!(pipe.warm(FramePaint::full(Scene::new())));
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the warm started");
+        pipe.note_input();
+        resume_tx.send(()).expect("resume the warm");
+        assert!(
+            verdict_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the warm reported"),
+            "the warm went on while idle and stopped at the step after input arrived"
+        );
+        pipe.shutdown();
     }
 
     /// `PresentPipe::spawn` with a retire signal that does nothing — what most of these tests want, since they assert on the counters rather than the wakeup.
