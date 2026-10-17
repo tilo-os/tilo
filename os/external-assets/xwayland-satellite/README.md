@@ -1,10 +1,11 @@
 # xwayland-satellite, patched
 
-The OS image and the CI builders run xwayland-satellite built from the pinned
-upstream source with the patches here, instead of Fedora's package.
-`tools/ci/install-xwayland-satellite.sh` builds and installs it everywhere: the
-`xwayland-satellite-builder` stage of `os/Containerfile`,
-`os/Containerfile.builder`, the developer distrobox
+The OS image, the CI builders and the legacy VM guest run xwayland-satellite
+built from the pinned upstream source with the patches here, instead of
+Fedora's package. `tools/ci/install-xwayland-satellite.sh` builds and installs
+it everywhere: the `xwayland-satellite-builder` stage of `os/Containerfile`,
+`os/Containerfile.builder`, the legacy VM guest
+(`os/Containerfile.legacy-guest`), the developer distrobox
 (`dist/dev/Containerfile.fedora44`) and, for CI containers whose builder
 predates it, `tools/ci/ensure-x11-bridge-tools.sh`.
 

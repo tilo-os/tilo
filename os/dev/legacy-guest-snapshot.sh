@@ -21,6 +21,8 @@ readonly INPUTS=(
   os/base-snapshot.env
   crates/runtime/legacy-agent
   crates/runtime/legacy-agent-protocol
+  os/external-assets/xwayland-satellite
+  tools/ci/install-xwayland-satellite.sh
 )
 
 valid_ref() {

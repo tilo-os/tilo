@@ -6,6 +6,28 @@
 # (os/legacy-guest-snapshot.env). The agent binary is built by the same
 # workflow and placed at os/legacy-guest/agent/tilo-legacy-agent first.
 ARG BASE_REF
+# The pinned builder os/Containerfile builds bootc in.
+ARG SATELLITE_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+
+# xwayland-satellite with the clipboard handoff fix
+# (os/external-assets/xwayland-satellite/README.md): Fedora's 0.8.2
+# drops a paste in flight while the host's clipboard manager takes over an X11
+# selection. Once a satellite release contains
+# https://github.com/Supreeeme/xwayland-satellite/pull/527, install Fedora's
+# package again.
+FROM ${SATELLITE_BUILD_IMAGE} AS xwayland-satellite-builder
+COPY os/external-assets/xwayland-satellite/0001-drain-pending-conversions-before-takeover.patch /patches/
+COPY os/external-assets/github-assets.tsv /assets/github-assets.tsv
+COPY tools/ci/install-xwayland-satellite.sh /install-xwayland-satellite.sh
+RUN dnf install -y xcb-util-cursor-devel \
+ && dnf clean all \
+ && cd /assets \
+ && asset=$(bash /install-xwayland-satellite.sh --asset-name) \
+ && url=$(awk -F '\t' -v name="$asset" '$1 !~ /^#/ && $2 == name {print $3}' github-assets.tsv) \
+ && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$asset" "$url" \
+ && bash /install-xwayland-satellite.sh /assets /out/usr /assets/github-assets.tsv /patches
+
 FROM ${BASE_REF}
 
 # foot is a small Wayland terminal for guest tools, and the window the
@@ -21,7 +43,8 @@ RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
       flatpak \
       waypipe \
       xorg-x11-server-Xwayland \
-      xwayland-satellite \
+      xcb-util-cursor \
+      open-sans-fonts \
       mesa-dri-drivers \
       mesa-vulkan-drivers \
       dbus-daemon \
@@ -39,11 +62,14 @@ RUN rm -f /usr/lib/bootupd/updates/BIOS.json \
  && test -f /usr/lib/bootupd/updates/EFI.json
 
 COPY os/legacy-guest/rootfs/ /
+COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite
+COPY --from=xwayland-satellite-builder /out/usr/share/licenses/tilo-xwayland-satellite/ /usr/share/licenses/tilo-xwayland-satellite/
 COPY --chmod=0755 os/legacy-guest/agent/tilo-legacy-agent /usr/libexec/tilo-legacy-agent
 
 RUN --mount=type=bind,source=os/scripts/verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
     systemctl enable tilo-legacy-agent.service \
  && test -x /usr/libexec/tilo-legacy-agent \
  && command -v waypipe xwayland-satellite flatpak foot \
+ && ! ldd /usr/bin/xwayland-satellite | grep -q 'not found' \
  && bash /run/tilo-verify-no-cisco-openh264.sh \
  && bootc container lint
