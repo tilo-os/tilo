@@ -148,6 +148,22 @@ pub struct NotificationPerson {
     pub identity: String,
 }
 
+/// Why a notification is addressed to the person, rather than news they may
+/// read later. Only these may surface while the person types; everything
+/// else waits for them to pause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Addressed {
+    /// Someone wrote to them or mentioned them: a communications app the
+    /// launcher verified named the person it is from.
+    Message,
+    /// Someone is calling them now.
+    IncomingCall,
+    /// Something they scheduled is due: a meeting about to start, an alarm.
+    Reminder,
+    /// Someone (a person or an agent) is waiting on their answer.
+    Ask,
+}
+
 /// A single notification. `id` is a process-unique token for the desktop's
 /// own bookkeeping; `sender_id` is the local sending protocol's id (the
 /// freedesktop notification id on the native desktop) used to answer the
@@ -195,6 +211,10 @@ pub struct Notification {
     pub show_on_lock_screen: bool,
     /// Hide body text in the live banner while retaining it in local history.
     pub show_preview: bool,
+    /// Set when the notification asks something of the person directly
+    /// ([`Addressed`]); see [`Self::addressed`] for the reading every gate
+    /// uses.
+    pub addressed: Option<Addressed>,
 }
 
 impl Notification {
@@ -221,7 +241,33 @@ impl Notification {
             bypass_dnd: false,
             show_on_lock_screen: true,
             show_preview: true,
+            addressed: None,
         }
+    }
+
+    /// Why this notification is addressed to the person, if it is: what the
+    /// sender path established ([`Self::addressed`] field), else what its
+    /// shape says. An ask carries a "Not now" answer, an alarm the person
+    /// scheduled is due, and a banner led by a verified person is from them.
+    #[must_use]
+    pub fn addressed(&self) -> Option<Addressed> {
+        if self.addressed.is_some() {
+            return self.addressed;
+        }
+        if self.actions.iter().any(|(key, _)| key == NOT_NOW_ACTION) {
+            return Some(Addressed::Ask);
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        if self.scheduled_target.is_some() {
+            return Some(Addressed::Reminder);
+        }
+        self.from.as_ref().map(|_| Addressed::Message)
+    }
+
+    #[must_use]
+    pub fn with_addressed(mut self, addressed: Addressed) -> Self {
+        self.addressed = Some(addressed);
+        self
     }
 
     /// Action to invoke on activation: `"default"` if present, else the
