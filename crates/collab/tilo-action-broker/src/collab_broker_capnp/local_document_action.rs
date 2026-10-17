@@ -2,6 +2,108 @@
 use super::*;
 use crate::local_document_action::Request;
 
+/// Retry acceleration only. Durability belongs to the SDK's private receipt
+/// history checkpoint, not the execution journal. Eviction is safe because the
+/// invocation address binds every report byte, and no report dispatches work.
+#[derive(Default)]
+pub(super) struct ReceiptCache {
+    pub(super) records: std::collections::VecDeque<ReceiptRecord>,
+    pub(super) bytes: usize,
+}
+
+#[derive(Clone)]
+pub(super) struct ReceiptRecord {
+    pub key: InvocationKey,
+    pub intent: serde_json::Value,
+    pub admission: crate::action_evidence::AdmissionEvidence,
+    pub id: u64,
+    request_digest: [u8; 32],
+    bytes: usize,
+}
+
+impl ReceiptRecord {
+    #[cfg(test)]
+    pub(super) fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
+        self.request_digest == admission_request_digest(request)
+    }
+}
+
+impl ReceiptCache {
+    pub(super) fn lookup(&self, key: &InvocationKey) -> Option<&ReceiptRecord> {
+        self.records.iter().find(|record| record.key == *key)
+    }
+
+    pub(super) fn admit(
+        &mut self,
+        key: InvocationKey,
+        intent: serde_json::Value,
+        id: u64,
+    ) -> Result<(), String> {
+        let digest =
+            admission_request_digest(intent.get("request").ok_or("local report request absent")?);
+        let mut retained = intent.clone();
+        retained
+            .as_object_mut()
+            .ok_or("invalid local report intent")?
+            .remove("request");
+        if let Some(record) = self.lookup(&key) {
+            if record.request_digest != digest || record.intent != retained {
+                return Err("local report identity reused with different input".into());
+            }
+            return Ok(());
+        }
+        let facts = invocation_journal::evidence_facts(&key, &intent)?;
+        let admission = crate::action_evidence::mint_local_report(facts, &intent)?;
+        let bytes = serde_json::to_vec(&(&key, &retained, &admission))
+            .map_err(|_| "local receipt encoding failed")?
+            .len();
+        if bytes > 4 * 1024 * 1024 {
+            return Err("local receipt exceeds host byte budget".into());
+        }
+        while self.records.len() >= 128 || self.bytes + bytes > 4 * 1024 * 1024 {
+            let retired = self
+                .records
+                .pop_front()
+                .ok_or("invalid local receipt accounting")?;
+            self.bytes -= retired.bytes;
+        }
+        self.bytes += bytes;
+        self.records.push_back(ReceiptRecord {
+            key,
+            intent: retained,
+            admission,
+            id,
+            request_digest: digest,
+            bytes,
+        });
+        Ok(())
+    }
+}
+
+fn write_observation(
+    mut out: runtime_collab::collab_capnp::published_invocation_observation::Builder<'_>,
+    record: &ReceiptRecord,
+) -> Result<(), capnp::Error> {
+    out.set_host(record.key.host.as_bytes());
+    out.set_invocation(record.key.invocation.0.as_bytes());
+    out.set_found(true);
+    out.set_id(record.id);
+    out.set_update_json(
+        &serde_json::to_string(&tilo_actions::InvocationUpdate::Accepted {
+            invocation: record.key.invocation,
+        })
+        .map_err(|_| capnp::Error::failed("local observation encoding failed".into()))?,
+    );
+    out.set_admission_json(
+        &serde_json::to_string(&record.admission)
+            .map_err(|_| capnp::Error::failed("local admission encoding failed".into()))?,
+    );
+    out.set_terminal_json("");
+    out.set_uncertain(false);
+    out.set_cancellation_requested(false);
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the RPC keeps capture, asynchronous resolution, serialized revalidation and exact-owner admission observation together"
@@ -14,6 +116,11 @@ pub(super) fn admit(
     let parsed = (|| {
         let request =
             Request::decode(params.get()?.get_request()?).map_err(capnp::Error::failed)?;
+        if request.bound_invocation().map_err(capnp::Error::failed)? != request.invocation {
+            return Err(capnp::Error::failed(
+                "local report invocation does not bind capture".into(),
+            ));
+        }
         let route = channel.route();
         let admitted = channel
             .state
@@ -135,12 +242,13 @@ pub(super) fn admit(
             invocation,
             owner,
         };
-        let record = journal.lookup(&key).map_err(capnp::Error::failed)?;
-        durable_local_invocation::write_observation(
-            results.get().init_observation(),
-            journal.host(),
-            invocation,
-            record.as_ref(),
-        )
+        let receipts = state
+            .local_report_receipts
+            .lock()
+            .map_err(|_| capnp::Error::failed("local receipt cache unavailable".into()))?;
+        let record = receipts
+            .lookup(&key)
+            .ok_or_else(|| capnp::Error::failed("local report receipt unavailable".into()))?;
+        write_observation(results.get().init_observation(), record)
     })
 }

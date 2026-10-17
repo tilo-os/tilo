@@ -1,7 +1,8 @@
 //! Signed semantic admission, not proof of execution or successful completion.
 //!
-//! Retain the entire [`AdmissionEvidence`] only in the host-private journal.
-//! Publish only [`AdmissionReceipt`]. An opening permits offline guesses of the
+//! Retain the entire [`AdmissionEvidence`] only in private history or the
+//! host-private execution journal. Publish only [`AdmissionReceipt`].
+//! An opening permits offline guesses of the
 //! intent and must be disclosed only through original-owner observation.
 //! Certificate root trust, room/host authority, revocation, certificate time
 //! policy and live caller authentication remain the caller's responsibility.
@@ -86,7 +87,7 @@ pub struct AdmissionReceipt {
     pub signature: Vec<u8>,
 }
 
-/// Private journal value. Serialization includes the opening and is NOT a
+/// Private evidence value. Serialization includes the opening and is NOT a
 /// public observation format. No plaintext intent is retained, even privately.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +223,25 @@ pub(crate) fn mint(
     mint_with_signer(facts, exact_intent, crate::evidence_signer::sign)
 }
 
+/// A local report can be reconstructed after cache eviction or host restart.
+/// Derive its private salt from a domain-separated device signature, not from
+/// public input: a public content hash would allow guesses of private text.
+/// This is not an execution permit and never reserves a journal identity.
+pub(crate) fn mint_local_report(
+    facts: AdmissionFacts,
+    exact_intent: &Value,
+) -> Result<AdmissionEvidence, String> {
+    let mut seed = b"tilo-local-report-private-salt-v1\0".to_vec();
+    seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)?)?);
+    let (_, signature) = crate::evidence_signer::sign(&facts.room, &seed)?;
+    mint_with_nonce(
+        facts,
+        exact_intent,
+        *blake3::hash(&signature).as_bytes(),
+        crate::evidence_signer::sign,
+    )
+}
+
 fn mint_with_signer(
     facts: AdmissionFacts,
     exact_intent: &Value,
@@ -232,6 +252,15 @@ fn mint_with_signer(
     let mut nonce = [0; 32];
     nonce[..16].copy_from_slice(Uuid::new_v4().as_bytes());
     nonce[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    mint_with_nonce(facts, exact_intent, nonce, signer)
+}
+
+fn mint_with_nonce(
+    facts: AdmissionFacts,
+    exact_intent: &Value,
+    nonce: [u8; 32],
+    signer: impl FnOnce(&str, &[u8]) -> Result<(DeviceCert, [u8; 64]), String>,
+) -> Result<AdmissionEvidence, String> {
     let opening = IntentOpening {
         nonce,
         intent_digest: intent_digest(exact_intent)?,
@@ -266,7 +295,8 @@ fn mint_with_signer(
 /// which root/device is trusted for this host and room, including revocation
 /// and certificate validity policy. Supply expected facts from trusted state,
 /// not by copying them from an untrusted receipt. Replays with identical facts
-/// still verify: the durable journal owns invocation uniqueness and dispatch.
+/// still verify: the durable journal owns execution uniqueness and dispatch.
+/// Local reports instead use content-bound capture identities, never dispatch.
 ///
 /// # Errors
 /// Returns an error if the facts differ, encoding fails, or the certificate,

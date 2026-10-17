@@ -15,12 +15,15 @@ const MAX_HASHES: usize = 256;
 pub struct Request {
     pub version: u8,
     pub invocation: uuid::Uuid,
+    /// Random identity of this capture, before content binding. Keeps identical
+    /// reads/no-ops distinct without an unbounded host invocation ledger.
+    pub capture_id: uuid::Uuid,
     pub revision: String,
     pub resource: String,
     pub action: String,
     pub argument: Option<String>,
     /// Exact canonical executor input, privately committed without re-encoding.
-    /// The journal retains a request digest, never its plaintext.
+    /// The bounded host retry cache retains a digest, never its plaintext.
     pub encoded: tilo_actions::EncodedAction,
     /// Exact original context, including parent resource and source invocation.
     /// This is correlation only, not caller authority or a delivery instruction.
@@ -39,6 +42,26 @@ impl std::fmt::Debug for Request {
 }
 
 impl Request {
+    /// Content-address the complete immutable capture, except the address itself.
+    /// Callers generate `capture_id` once and preserve it on every retry.
+    pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
+        let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
+        value
+            .as_object_mut()
+            .ok_or("invalid local report")?
+            .remove("invocation");
+        let digest = crate::collab_broker_capnp::admission_request_digest(&value);
+        let mut hash = blake3::Hasher::new_derive_key("tilo local document capture identity v1");
+        hash.update(&digest);
+        let bytes = hash
+            .finalize()
+            .as_bytes()
+            .first_chunk::<16>()
+            .copied()
+            .ok_or("invalid local report digest")?;
+        Ok(uuid::Uuid::from_bytes(bytes))
+    }
+
     /// Resolve the existing action argument transport into its declared types.
     /// The resulting object, not merely an opaque transport string, is committed.
     pub(crate) fn typed_arguments(
@@ -75,7 +98,7 @@ impl Request {
         }
         let value: Self =
             serde_json::from_slice(bytes).map_err(|_| "invalid local document action report")?;
-        if value.version != 1 || value.invocation.is_nil() {
+        if value.version != 1 || value.invocation.is_nil() || value.capture_id.is_nil() {
             return Err("invalid local document report version or invocation".into());
         }
         for field in [&value.revision, &value.resource, &value.action] {
@@ -116,12 +139,46 @@ mod tests {
     fn report() -> serde_json::Value {
         serde_json::json!({
             "version": 1, "invocation": uuid::Uuid::new_v4(),
+            "capture_id": uuid::Uuid::new_v4(),
             "revision": "revision", "resource": "document", "action": "edit",
             "argument": "text", "original_heads": vec![[0u8; 32]],
             "mutation_hashes": vec![[1u8; 32]], "group": null,
             "encoded": {"type_id": "test.edit", "payload": b"{}".to_vec()},
             "context": null
         })
+    }
+
+    #[test]
+    fn capture_identity_binds_all_report_fields_and_preserves_distinct_noops() {
+        let request = Request::decode(&serde_json::to_vec(&report()).unwrap()).unwrap();
+        let expected = request.bound_invocation().unwrap();
+        let original = serde_json::to_value(&request).unwrap();
+        for field in original.as_object().unwrap().keys() {
+            if field == "invocation" {
+                continue;
+            }
+            let mut changed = original.clone();
+            changed[field] = match field.as_str() {
+                "capture_id" => serde_json::json!(uuid::Uuid::new_v4()),
+                "version" => serde_json::json!(2),
+                "original_heads" | "mutation_hashes" => serde_json::json!([]),
+                "encoded" => {
+                    serde_json::json!({"type_id": "test.edit", "payload": b"null".to_vec()})
+                }
+                "context" => serde_json::json!(tilo_actions::ActionContext::default()),
+                "group" => serde_json::json!({"id": "g", "label": "g", "kind": "edit"}),
+                _ => serde_json::json!("different"),
+            };
+            let changed: Request = serde_json::from_value(changed).unwrap();
+            assert_ne!(changed.bound_invocation().unwrap(), expected, "{field}");
+        }
+        let mut rebound = request.clone();
+        rebound.invocation = expected;
+        assert_eq!(rebound.bound_invocation().unwrap(), expected);
+        rebound.mutation_hashes.clear();
+        let noop = rebound.bound_invocation().unwrap();
+        rebound.capture_id = uuid::Uuid::new_v4();
+        assert_ne!(rebound.bound_invocation().unwrap(), noop);
     }
 
     #[test]

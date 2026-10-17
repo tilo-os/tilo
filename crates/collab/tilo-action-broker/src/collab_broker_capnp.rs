@@ -3513,6 +3513,7 @@ pub struct CapnpBrokerState {
     /// barrier and the single application delivery. Never held across awaits.
     admission_lock: Mutex<()>,
     journal: Mutex<Result<Option<InvocationJournal>, String>>,
+    local_report_receipts: Mutex<local_document_action::ReceiptCache>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
@@ -4339,6 +4340,7 @@ impl CapnpBrokerState {
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
+                local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
@@ -5757,6 +5759,13 @@ impl CapnpBrokerState {
                     .into(),
             );
         }
+        if let Some(report) = local_report {
+            if report.bound_invocation()? != report.invocation
+                || inputs.requested != Some(tilo_actions::InvocationId(report.invocation))
+            {
+                return Err("local report invocation does not bind capture".into());
+            }
+        }
         let typed_local_arguments = local_report
             .map(|report| report.typed_arguments(&offered.1.params))
             .transpose()?;
@@ -6121,7 +6130,14 @@ impl CapnpBrokerState {
                 Some(report) => serde_json::json!({
                     "kind": "local-document-action-report-v1",
                     "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
-                    "resolved_request": request,
+                    "resolved_request": {
+                        "app_id": offered.0.app_id,
+                        "record_id": offered.0.route.record_id,
+                        "resource": offered.1.resource,
+                        "action": offered.1.action,
+                        "argument": argument,
+                        "original_request": original_request,
+                    },
                     "report": report,
                     "typed_arguments": typed_local_arguments,
                 }),
@@ -6144,33 +6160,43 @@ impl CapnpBrokerState {
                         .ok_or("application invocation stream unavailable")?,
                 )?;
             }
-            let admission = if owner.verified_actor().is_some() {
-                let mut facts = invocation_journal::evidence_facts(&key, &intent)?;
-                if let Some(DurableContext::Task { caller, .. }) = durable {
-                    let admitted = caller.current(self)?;
-                    let certificate = admitted
-                        .certificate
-                        .as_ref()
-                        .ok_or("task caller certificate missing")?;
-                    if let crate::action_evidence::VerifiedActor::NativeTask {
-                        root, device, ..
-                    } = &mut facts.actor
-                    {
-                        *root = certificate.user_public_key;
-                        *device = certificate.device_public_key;
-                    }
-                }
-                Some(crate::action_evidence::mint(facts, &intent).map_err(|_| {
-                    "action_evidence_unavailable: host signing identity unavailable".to_string()
-                })?)
+            if local_report.is_some() {
+                self.local_report_receipts
+                    .lock()
+                    .map_err(|_| "local receipt cache unavailable")?
+                    .admit(key.clone(), intent, id)?;
+                Some(key)
             } else {
-                // Actor-only legacy/system work is never upgraded into a certified person.
-                None
-            };
-            if !journal.admit_with_evidence(key.clone(), intent, id, admission)? {
-                return Err("invocation already admitted".into());
+                let admission = if owner.verified_actor().is_some() {
+                    let mut facts = invocation_journal::evidence_facts(&key, &intent)?;
+                    if let Some(DurableContext::Task { caller, .. }) = durable {
+                        let admitted = caller.current(self)?;
+                        let certificate = admitted
+                            .certificate
+                            .as_ref()
+                            .ok_or("task caller certificate missing")?;
+                        if let crate::action_evidence::VerifiedActor::NativeTask {
+                            root,
+                            device,
+                            ..
+                        } = &mut facts.actor
+                        {
+                            *root = certificate.user_public_key;
+                            *device = certificate.device_public_key;
+                        }
+                    }
+                    Some(crate::action_evidence::mint(facts, &intent).map_err(|_| {
+                        "action_evidence_unavailable: host signing identity unavailable".to_string()
+                    })?)
+                } else {
+                    // Actor-only legacy/system work is never upgraded into a certified person.
+                    None
+                };
+                if !journal.admit_with_evidence(key.clone(), intent, id, admission)? {
+                    return Err("invocation already admitted".into());
+                }
+                Some(key)
             }
-            Some(key)
         } else {
             None
         };

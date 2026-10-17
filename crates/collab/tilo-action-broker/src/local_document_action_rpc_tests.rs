@@ -95,10 +95,10 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             no_delivery(&rig).await;
-            let invocation = uuid::Uuid::new_v4();
-            let request = crate::local_document_action::Request {
+            let mut request = crate::local_document_action::Request {
                 version: 1,
-                invocation,
+                invocation: uuid::Uuid::nil(),
+                capture_id: uuid::Uuid::new_v4(),
                 revision: "original-r1".into(),
                 resource: "workspace:atlas".into(),
                 action: "open".into(),
@@ -124,8 +124,11 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                 mutation_hashes,
                 group: None,
             };
+            request.invocation = request.bound_invocation().unwrap();
+            let invocation = request.invocation;
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
+            wrong_revision.invocation = wrong_revision.bound_invocation().unwrap();
             let mut stale = raw.admit_local_document_action_request();
             stale
                 .get()
@@ -203,7 +206,12 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                         agent: None,
                     },
                 };
-                let record = journal.lookup(&key).unwrap().unwrap();
+                assert!(
+                    journal.lookup(&key).unwrap().is_none(),
+                    "reports never enter the execution journal"
+                );
+                let receipts = rig.state.local_report_receipts.lock().unwrap();
+                let record = receipts.lookup(&key).unwrap();
                 let retained = &record.intent;
                 assert_eq!(retained["record_id"], env.route.record_id);
                 assert_eq!(retained["resource"], request.resource);
@@ -215,7 +223,6 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                     "kind": "local-document-action-report-v1",
                     "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
                     "resolved_request": {
-                        "peer_id": 903,
                         "app_id": env.route.app_id,
                         "record_id": env.route.record_id,
                         "resource": request.resource,
@@ -249,16 +256,27 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                     changed[field] = serde_json::json!("substitution");
                     assert!(evidence.validate_retained(&changed).is_err());
                 }
-                assert!(record.terminal.is_none());
+                assert_eq!(record.admission, evidence);
             }
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
-            assert_eq!(receipt_barriers(&rig).writes, before.writes + 1);
+            assert_eq!(receipt_barriers(&rig).writes, before.writes);
             no_delivery(&rig).await;
             let mut retry = raw.admit_local_document_action_request();
             retry.get().set_request(&bytes);
-            assert!(
-                retry.send().promise.await.is_err(),
-                "no second admission or dispatch"
+            let replay = retry.send().promise.await.unwrap();
+            assert_eq!(
+                replay.get().unwrap().get_observation().unwrap().get_id(),
+                observation.get_id()
+            );
+            assert_eq!(
+                replay
+                    .get()
+                    .unwrap()
+                    .get_observation()
+                    .unwrap()
+                    .get_admission_json()
+                    .unwrap(),
+                observation.get_admission_json().unwrap()
             );
             no_delivery(&rig).await;
             let mut substituted = request.clone();
@@ -268,16 +286,72 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                 .get()
                 .set_request(&serde_json::to_vec(&substituted).unwrap());
             assert!(retry.send().promise.await.is_err());
-            assert_eq!(receipt_barriers(&rig).writes, before.writes + 1);
+            assert_eq!(receipt_barriers(&rig).writes, before.writes);
+            if kind == tilo_actions::OperationKind::Document && !request.mutation_hashes.is_empty()
+            {
+                // Sustained typing crosses the bounded host-cache horizon.
+                // No report appends to the journal or performs a data barrier.
+                let before_burst = receipt_barriers(&rig);
+                for _ in 0..144 {
+                    let mut next = request.clone();
+                    next.capture_id = uuid::Uuid::new_v4();
+                    next.invocation = next.bound_invocation().unwrap();
+                    let mut rpc = raw.admit_local_document_action_request();
+                    rpc.get().set_request(&serde_json::to_vec(&next).unwrap());
+                    assert!(
+                        rpc.send()
+                            .promise
+                            .await
+                            .unwrap()
+                            .get()
+                            .unwrap()
+                            .get_observation()
+                            .unwrap()
+                            .get_found()
+                    );
+                }
+                {
+                    let receipts = rig.state.local_report_receipts.lock().unwrap();
+                    assert_eq!(receipts.records.len(), 128);
+                    assert!(receipts.bytes <= 4 * 1024 * 1024);
+                }
+                assert_eq!(receipt_barriers(&rig), before_burst);
+                // An evicted exact retry reconstructs the same content-bound
+                // evidence; it still cannot redeliver or produce a terminal.
+                let mut retry = raw.admit_local_document_action_request();
+                retry.get().set_request(&bytes);
+                let replay = retry.send().promise.await.unwrap();
+                assert_eq!(
+                    replay
+                        .get()
+                        .unwrap()
+                        .get_observation()
+                        .unwrap()
+                        .get_admission_json()
+                        .unwrap(),
+                    observation.get_admission_json().unwrap()
+                );
+                let mut retry = raw.admit_local_document_action_request();
+                retry
+                    .get()
+                    .set_request(&serde_json::to_vec(&substituted).unwrap());
+                assert!(
+                    retry.send().promise.await.is_err(),
+                    "eviction cannot permit content substitution"
+                );
+                assert_eq!(receipt_barriers(&rig), before_burst);
+                no_delivery(&rig).await;
+            }
             // An old endpoint must not silently inherit a missing/replaced host.
             rig.state.host_workers.lock().unwrap().remove(&903);
-            substituted.invocation = uuid::Uuid::new_v4();
+            substituted.capture_id = uuid::Uuid::new_v4();
+            substituted.invocation = substituted.bound_invocation().unwrap();
             let mut stale = raw.admit_local_document_action_request();
             stale
                 .get()
                 .set_request(&serde_json::to_vec(&substituted).unwrap());
             assert!(stale.send().promise.await.is_err());
-            assert_eq!(receipt_barriers(&rig).writes, before.writes + 1);
+            assert_eq!(receipt_barriers(&rig).writes, before.writes);
             no_delivery(&rig).await;
             drop(raw);
             rig.stop().await;
