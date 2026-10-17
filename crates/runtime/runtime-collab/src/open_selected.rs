@@ -154,7 +154,7 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
 pub fn is_envelope(bytes: &[u8]) -> bool {
     bytes.len() <= MAX_WIRE_BYTES
         && serde_json::from_slice::<serde_json::Value>(bytes)
-            .is_ok_and(|v| v.get("protocol").is_some())
+            .is_ok_and(|v| v.get("protocol").and_then(serde_json::Value::as_str) == Some(PROTOCOL))
 }
 #[cfg(test)]
 mod tests {

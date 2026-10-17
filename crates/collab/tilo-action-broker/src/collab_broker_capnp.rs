@@ -14,6 +14,7 @@
 //! fetch instead.
 
 mod approved_checks;
+mod external_moderation;
 pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
@@ -3468,6 +3469,7 @@ pub struct CapnpBrokerState {
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     private_drafts: Mutex<private_draft::Drafts>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
+    external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
@@ -4305,6 +4307,7 @@ impl CapnpBrokerState {
                 pending_invocations: Mutex::new(HashMap::new()),
                 private_drafts: Mutex::new(HashMap::default()),
                 approved_check_jobs: Mutex::default(),
+                external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 ended_runs: crate::task_runs::EndedRuns::default(),
                 app_action_access: RwLock::new(
@@ -9711,6 +9714,30 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let receipt = future.await.map_err(capnp::Error::failed)?;
                 let bytes = runtime_collab::open_selected::encode_observed(&receipt)
                     .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                results.get().set_reply_json(&bytes);
+                Ok(())
+            });
+        }
+        if request
+            .get_command_json()
+            .is_ok_and(external_moderation::is_envelope)
+        {
+            let receive = match request.get_command_json().and_then(|bytes| {
+                external_moderation::start(&self, bytes, request.get_on_behalf_of()?)
+                    .map_err(capnp::Error::failed)
+            }) {
+                Ok(receive) => receive,
+                Err(error) => return Promise::err(error),
+            };
+            return Promise::from_future(async move {
+                let reply = receive
+                    .await
+                    .map_err(|_| {
+                        capnp::Error::failed("external moderation outcome unobserved".into())
+                    })?
+                    .map_err(capnp::Error::failed)?;
+                let bytes = serde_json::to_vec(&reply)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?;
                 results.get().set_reply_json(&bytes);
                 Ok(())
             });
@@ -15526,6 +15553,8 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
+    include!("external_moderation_rpc_tests.rs");
     #[cfg(test)]
     include!("approved_check_progress_fixture.rs");
     #[cfg(test)]
