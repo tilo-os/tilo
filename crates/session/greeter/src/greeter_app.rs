@@ -106,9 +106,8 @@ const CLOCK_MAX: f32 = 200.0;
 const CLOCK_WEIGHT: f32 = 280.0;
 /// The larger-text control's step.
 const LARGER_TEXT_SCALE: f32 = 1.5;
-/// The still backdrop's composition. Any phase is a valid frame; this one
-/// keeps the band of light clear of the credentials.
-const BACKDROP_PHASE_SECONDS: f64 = 0.0;
+/// The still backdrop's composition, the one the lock screen draws too.
+const BACKDROP_PHASE_SECONDS: f64 = ui::auth_backdrop::STILL_SECONDS;
 
 /// How the screen arranges the time and the credentials. Each is a complete
 /// composition; see [`GreeterApp::build_composition`].

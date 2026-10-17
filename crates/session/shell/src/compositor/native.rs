@@ -465,7 +465,6 @@ struct NativeRedrawReasons {
     capture: bool,
     keepalive: bool,
     lock_clock: bool,
-    lock_animation: bool,
     /// A media-key readout drawn over the lock surface is fading or due to clear.
     lock_osd: bool,
     /// An earlier tick counted a change but painted no frame for it: the
@@ -490,7 +489,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
+            || (session_locked && (self.lock_clock || self.lock_osd))
     }
 
     /// The reasons [`Self::content_changed`] counts, as frame-trace
@@ -517,7 +516,6 @@ impl NativeRedrawReasons {
             (desktop && self.capture, r::CAPTURE),
             (desktop && self.keepalive, r::KEEPALIVE),
             (session_locked && self.lock_clock, r::LOCK_CLOCK),
-            (session_locked && self.lock_animation, r::LOCK_ANIMATION),
             (session_locked && self.lock_osd, r::LOCK_OSD),
             (self.owed, r::OWED),
         ]
@@ -1093,40 +1091,6 @@ mod idle_work_tests;
 /// the loop flat out without painting until something unrelated paints.
 fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > tick_started)
-}
-
-// A due animation remains dirty until it paints, but is no longer a wake
-// deadline. Keeping an expired deadline here would busy-spin while waiting
-// for display cadence or presenter retirement. Those wake sources already
-// carry the pending frame; future animation deadlines still wake the idle loop.
-fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
-    deadline.filter(|deadline| *deadline > now)
-}
-
-/// How long after the last input a visible lock backdrop keeps moving. It
-/// then holds still until someone touches the machine: a locked laptop left
-/// on the desk must not repaint at the backdrop's cadence until it blanks.
-const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
-
-/// The lock backdrop animates only while it can be seen and someone is
-/// there. Behind a blanked panel the backend drops every frame, so building
-/// them would keep an unattended, locked machine awake at the backdrop's
-/// cadence.
-fn lock_animation_deadline(
-    theme: &ui::theme::Theme,
-    session: &SessionManager,
-    has_wallpaper: bool,
-    last_frame: Instant,
-    now: Instant,
-) -> Option<Instant> {
-    lock_screen::animation_deadline(
-        theme,
-        session.is_locked()
-            && !session.is_blanked()
-            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
-        has_wallpaper,
-        last_frame,
-    )
 }
 
 /// How often a locked session re-reads its players, so the lock card follows
@@ -10347,9 +10311,6 @@ pub fn run() {
     // full-scene keepalive consumed a material fraction of a software-rendered
     // VM core despite no changing pixels; every real producer already carries
     // an explicit redraw/revision/deadline edge.
-    let lock_animation_epoch = Instant::now();
-    let mut last_lock_animation_frame = lock_animation_epoch;
-    let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
@@ -13390,14 +13351,6 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_animation_deadline(
-                frame_builder.theme(),
-                &session,
-                lock_has_wallpaper,
-                last_lock_animation_frame,
-                iter_t0,
-            )
-            .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
@@ -13650,17 +13603,12 @@ pub fn run() {
                         )
                     })
                 };
-                lock_has_wallpaper = wallpaper.is_some();
-                last_lock_animation_frame = iter_t0;
-                let mut lock_scene = lock_screen::draw_lock_scene_at_time(
+                let mut lock_scene = lock_screen::draw_lock_scene_with_wallpaper(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
                     wallpaper.as_ref(),
-                    iter_t0
-                        .saturating_duration_since(lock_animation_epoch)
-                        .as_secs_f64(),
                 );
                 // Media keys stay live while locked; their readout is drawn
                 // here because the desktop chrome that normally paints it is
@@ -14474,19 +14422,6 @@ pub fn run() {
             frame_clock.next_deadline(),
             [
                 ("widget", app_tick.park_deadline(&frame_builder, pipe_ready)),
-                (
-                    "lock-animation",
-                    lock_animation_park_deadline(
-                        park_now,
-                        lock_animation_deadline(
-                            frame_builder.theme(),
-                            &session,
-                            lock_has_wallpaper,
-                            last_lock_animation_frame,
-                            park_now,
-                        ),
-                    ),
-                ),
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
@@ -15861,47 +15796,6 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
-        // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
-        {
-            let due_at = Instant::now();
-            let now = due_at + Duration::from_millis(1);
-            let due = Some(due_at);
-            let frame = now + Duration::from_millis(8);
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    true,
-                    frame,
-                    [lock_animation_park_deadline(now, due)]
-                ),
-                Some(Duration::from_millis(8))
-            );
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    false,
-                    frame,
-                    [lock_animation_park_deadline(now, due)]
-                ),
-                Some(IDLE_BACKEND_POLL)
-            );
-            let future = Some(now + Duration::from_millis(42));
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    false,
-                    frame,
-                    [lock_animation_park_deadline(now, future)]
-                ),
-                Some(Duration::from_millis(42))
-            );
-        }
         // Phase `an_answered_widget_deadline_does_not_spin_the_loop`.
         {
             let due_at = Instant::now();
@@ -15935,58 +15829,6 @@ mod tests {
                 Some(future)
             );
         }
-        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
-        {
-            let theme = ui::theme::Theme::dark();
-            let t0 = Instant::now();
-            let config = IdleConfig {
-                blank_timeout: Some(Duration::from_secs(10)),
-                lock_timeout: Some(Duration::from_secs(5)),
-                suspend_timeout: None,
-            };
-            let mut session = SessionManager::new(config, t0);
-            let at = |secs| t0 + Duration::from_secs(secs);
-            session.tick(at(6));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
-                "a visible lock animates its backdrop"
-            );
-            session.tick(at(11));
-            assert!(session.is_locked() && session.is_blanked());
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
-                "a blanked panel must not keep the loop building lock frames"
-            );
-            session.note_activity(at(12));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
-        }
-        // Phase `an_untouched_visible_lock_stops_animating`.
-        {
-            let theme = ui::theme::Theme::dark();
-            let t0 = Instant::now();
-            let config = IdleConfig {
-                blank_timeout: None,
-                lock_timeout: Some(Duration::from_secs(5)),
-                suspend_timeout: None,
-            };
-            let mut session = SessionManager::new(config, t0);
-            let at = |secs| t0 + Duration::from_secs(secs);
-            session.tick(at(6));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
-            session.tick(at(21));
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
-                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
-            );
-            session.note_activity(at(30));
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
-                "input moves it again"
-            );
-        }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
         {
             let fading = NativeRedrawReasons {
@@ -15998,15 +15840,6 @@ mod tests {
                 !fading.content_changed(false),
                 "the unlocked host drives its own OSD frames"
             );
-        }
-        // Phase `artwork_repaints_only_while_the_lock_is_visible`.
-        {
-            let artwork = NativeRedrawReasons {
-                lock_animation: true,
-                ..NativeRedrawReasons::default()
-            };
-            assert!(artwork.content_changed(true));
-            assert!(!artwork.content_changed(false));
         }
         // Phase `locked_clock_gets_an_explicit_minute_refresh_edge`.
         {

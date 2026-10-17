@@ -70,20 +70,6 @@ const fn transport_node(transport: Transport) -> AccessNodeId {
     }
 }
 
-/// Slow artwork does not need the display's full refresh rate. This deadline
-/// remains pending until an actual lock frame paints, so renderer backpressure
-/// or an off-cadence wake cannot consume the animation update.
-pub fn animation_deadline(
-    theme: &Theme,
-    locked: bool,
-    has_wallpaper: bool,
-    last_frame: std::time::Instant,
-) -> Option<std::time::Instant> {
-    (locked && !has_wallpaper && ui::auth_backdrop::needs_animation(theme))
-        .then(|| last_frame.checked_add(std::time::Duration::from_millis(42)))
-        .flatten()
-}
-
 /// Live lock-screen state to render, computed by the caller so this paint
 /// stays pure and unit-testable (no clock reads, no auth state of its own).
 #[derive(Debug, Clone, Copy, Default)]
@@ -756,6 +742,11 @@ pub fn draw_lock_scene(
 /// As [`draw_lock_scene`], using an optional compositor-owned private image
 /// behind the lock scrim. The image data has already been normalised and read
 /// from Tilo's private cache; this renderer never opens an app-provided URI.
+///
+/// The artwork holds still, as the greeter draws it: a locked machine is
+/// mostly unattended, and moving artwork would repaint the whole output at
+/// its own cadence for as long as the lock is up. Only what the lock shows
+/// changing (the clock, typed dots, a track) repaints it.
 pub fn draw_lock_scene_with_wallpaper(
     outputs: &[LockOutput],
     theme: &Theme,
@@ -763,7 +754,14 @@ pub fn draw_lock_scene_with_wallpaper(
     view: &LockView<'_>,
     wallpaper: Option<&ImageData>,
 ) -> Scene {
-    draw_lock_scene_at_time(outputs, theme, text, view, wallpaper, 0.0)
+    draw_lock_scene_at_time(
+        outputs,
+        theme,
+        text,
+        view,
+        wallpaper,
+        ui::auth_backdrop::STILL_SECONDS,
+    )
 }
 
 /// Paint the hardware-key readout (volume, brightness, playback) over the
@@ -1723,25 +1721,6 @@ mod tests {
             };
             let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
             assert!(!scene.encoding().is_empty());
-        }
-        // Phase `lock_animation_schedules_only_visible_motion_and_preserves_pending_deadline`.
-        {
-            use std::time::{Duration, Instant};
-            let last = Instant::now();
-            let theme = Theme::dark();
-            let deadline =
-                animation_deadline(&theme, true, false, last).expect("animated lock deadline");
-            assert!(deadline > last && deadline <= last + Duration::from_millis(50));
-            assert_eq!(
-                animation_deadline(&theme, true, false, last),
-                Some(deadline)
-            );
-            assert!(animation_deadline(&theme, false, false, last).is_none());
-            assert!(animation_deadline(&theme, true, true, last).is_none());
-            assert!(
-                animation_deadline(&theme.with_reduce_motion(true), true, false, last).is_none()
-            );
-            assert!(animation_deadline(&Theme::high_contrast(), true, false, last).is_none());
         }
     }
 
