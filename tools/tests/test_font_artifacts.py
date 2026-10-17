@@ -77,14 +77,37 @@ class FontArtifactsTest(unittest.TestCase):
                     fc.prepared_root(SOURCE, "fixtures", cache, True)
 
     def test_the_artifact_cache_outlives_build_directories(self):
-        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target", "HOME": "/home/me"}, clear=True):
-            self.assertEqual(fc.default_cache(), Path("/home/me/.cache/tilo/test-env/font-artifacts"))
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target", "HOME": home}, clear=True):
+                self.assertEqual(fc.default_cache(), Path(home) / ".cache/tilo/test-env/font-artifacts")
         with patch.dict(os.environ, {"TILO_TEST_CACHE_DIR": "/cache/tests", "HOME": "/fresh"}, clear=True):
             self.assertEqual(fc.default_cache(), Path("/cache/tests/font-artifacts"))
         with patch.dict(os.environ, {"TILO_FONT_ASSET_CACHE": "/fonts", "HOME": "/home/me"}, clear=True):
             self.assertEqual(fc.default_cache(), Path("/fonts"))
         with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target"}, clear=True):
             self.assertEqual(fc.default_cache(), Path("/target/font-artifacts"))
+
+    def test_a_home_that_points_nowhere_builds_in_the_target_directory(self):
+        # The OS image's builder runs as root in a bootc image, whose /root links to a
+        # /var/roothome that exists only on a booted system.
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "root"
+            home.symlink_to("var/roothome")
+            target = Path(temporary) / "target"
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target), "HOME": str(home)}, clear=True):
+                self.assertEqual(fc.default_cache(), target / "font-artifacts")
+                _, rows = fc.artifact_entries(SOURCE)
+                self.warm_cache(target / "font-artifacts", rows)
+                with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
+                    root = fc.prepared_root(SOURCE, "fixtures", None, True)
+                self.assertEqual(fc.verify(root, "fixtures"), (37, 55771564))
+
+    def test_a_cache_that_cannot_be_made_names_why(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "dangling"
+            cache.symlink_to("nowhere/cache")
+            with self.assertRaises(OSError):
+                fc.prepared_root(SOURCE, "fixtures", cache / "fonts", True)
 
     def test_self_contained_offline_catalog_is_verified_without_a_digest_cache(self):
         with tempfile.TemporaryDirectory() as temporary:
