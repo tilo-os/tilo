@@ -157,12 +157,6 @@ impl Chat {
         let total = i64::try_from(self.top_level(&Id::from_raw(channel))).unwrap_or(i64::MAX);
         u32::try_from((total - self.read_mark(channel, user)).max(0)).unwrap_or(u32::MAX)
     }
-
-    /// The keys of the drafts the record holds.
-    #[must_use]
-    pub fn draft_keys(&self) -> Vec<String> {
-        self.drafts.keys().cloned().collect()
-    }
 }
 
 /// `message` as the timeline draws it.
@@ -260,7 +254,8 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
     })
 }
 
-/// The rich text of the draft stored under `key`, when the record has one.
+/// The rich text of the draft stored under `key` in the person's drafts
+/// record ([`crate::drafts::ChatDrafts`]), when it has one.
 #[must_use]
 pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
     let Ok(Some((Value::Object(ObjType::Map), drafts))) = doc.get(ROOT, "drafts") else {
@@ -277,20 +272,6 @@ pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
 pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
     draft(doc, key)
         .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
-        .unwrap_or_default()
-}
-
-/// The draft for `key` as a post carries it.
-#[must_use]
-pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<tilo_document::ClipBlock> {
-    draft(doc, key)
-        .and_then(|root| tilo_doc::model::open(doc, &root).ok())
-        .map(|containers| {
-            tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
-                .iter()
-                .map(tilo_rich_text::clip_block)
-                .collect()
-        })
         .unwrap_or_default()
 }
 

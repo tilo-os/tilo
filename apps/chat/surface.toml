@@ -3,7 +3,7 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 1
+version = 2
 fields = [
   { path = "workspaces", type = "Collection<Workspace>", stored = "collection" },
   { path = "workspaces.*.name", type = "String", label = true },
@@ -61,7 +61,6 @@ fields = [
   { path = "people.*.agent", type = "bool", readonly = true },
   { path = "agent_names", type = "BTreeMap<String, String>" },
   { path = "read", type = "BTreeMap<String, BTreeMap<String, i64>>" },
-  { path = "drafts", type = "BTreeMap<String, RichText>" },
   { path = "feedback", type = "Collection<FeedbackReport>", stored = "collection" },
   { path = "feedback.*.submission", type = "Json<Option<ui::feedback::Submission>>", readonly = true },
   { path = "feedback.*.author", type = "Atom", readonly = true },
@@ -172,13 +171,6 @@ destructive = true
 kind = "undoable"
 params = [
   { name = "channel", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "start-draft"
-kind = "undoable"
-params = [
-  { name = "key", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

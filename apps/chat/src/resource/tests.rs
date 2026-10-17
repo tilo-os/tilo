@@ -769,9 +769,80 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
             ..
         }]
     ));
-    let composer = TestApp::<ChatShell>::capture(Some("composer")).unwrap();
-    let draft = composer.read_document(|doc| crate::projection::draft_text(doc, "c_crit"));
+    let mut composer = TestApp::<ChatShell>::capture(Some("composer")).unwrap();
+    assert!(
+        !composer.read_document(|doc| crate::projection::has_draft(doc, "c_crit")),
+        "a draft is never the room's"
+    );
+    let draft = composer
+        .with_surface::<ChatApp, _>(|chat| chat.composer_main.value())
+        .unwrap();
     assert!(draft.contains("Enter sends"), "{draft:?}");
+}
+
+/// What one person types is theirs: it is in their own record on each of
+/// their devices, and never in another person's composer or in the room.
+#[test]
+fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let mut laptop = TestApp::<ChatShell>::for_person(&ada).unwrap();
+    let mut phone = TestApp::<ChatShell>::for_person(&ada).unwrap();
+    let mut bobs = TestApp::<ChatShell>::for_person(&bob).unwrap();
+    let mut room = laptop.peer_document();
+    bobs.merge_peer(&mut room).unwrap();
+    phone.merge_peer(&mut room).unwrap();
+    let channel = laptop
+        .with_surface::<ChatApp, _>(|chat| chat.active_channel.clone())
+        .unwrap();
+
+    laptop.with_surface::<ChatApp, _>(|chat| {
+        let mut doc = ui::automerge::AutoCommit::new();
+        chat.composer_main.set_key(&channel);
+        chat.composer_main.ensure_draft(&doc);
+        chat.composer_main
+            .insert_text(&mut ui::widget::Edits::lend(&mut doc), "hello from Ada");
+    });
+    laptop.harness().relayout();
+
+    // Bob shares the room and sees none of it.
+    let mut room = laptop.peer_document();
+    bobs.merge_peer(&mut room).unwrap();
+    bobs.harness().relayout();
+    let bobs_composer = bobs
+        .with_surface::<ChatApp, _>(|chat| {
+            chat.composer_main.set_key(&channel);
+            chat.composer_main.value()
+        })
+        .unwrap();
+    assert_eq!(
+        bobs_composer, "",
+        "Ada's typing never shows in Bob's composer"
+    );
+    assert!(
+        !room
+            .save()
+            .windows(b"hello from Ada".len())
+            .any(|w| w == b"hello from Ada"),
+        "the room's record carries none of it"
+    );
+
+    // Ada's phone has it, once her own record reaches it.
+    let adas = laptop.person::<crate::drafts::ChatDrafts>().unwrap();
+    let on_phone = phone.person::<crate::drafts::ChatDrafts>().unwrap();
+    on_phone
+        .record()
+        .merge_peer_document(adas.record().document().unwrap())
+        .unwrap();
+    phone.harness().relayout();
+    let phones_composer = phone
+        .with_surface::<ChatApp, _>(|chat| {
+            chat.composer_main.set_key(&channel);
+            chat.composer_main.sync(&ui::automerge::AutoCommit::new());
+            chat.composer_main.value()
+        })
+        .unwrap();
+    assert_eq!(phones_composer, "hello from Ada");
 }
 
 /// Filing feedback is commenting: a commenter files a report through the
