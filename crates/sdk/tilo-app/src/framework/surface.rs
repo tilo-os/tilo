@@ -184,6 +184,15 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = query;
     }
 
+    /// Whether results for the latest [`search_query`](Self::search_query)
+    /// are still coming (a server is still looking). A search already
+    /// showing waits for them and shows them, with what `search_entries`
+    /// gives once this turns false, without anyone typing again. Read after
+    /// every sync.
+    fn search_pending(&self) -> bool {
+        false
+    }
+
     /// Consume a request to retry this window's failed record save, once.
     /// The framework's record owner performs the retry after releasing its
     /// document loan; the surface never writes or flushes storage itself.
@@ -390,9 +399,39 @@ pub(crate) struct SearchQueries(Rc<RefCell<QueryDelivery>>);
 struct QueryDelivery {
     last: Option<ui_core::search::SearchQuery>,
     pending: Option<ui_core::search::SearchQuery>,
+    /// The surface said its results for `last` are still coming.
+    awaiting: bool,
+    /// Wakes the window, so a query asked between frames reaches the
+    /// surface without waiting for input. `None` where no query is ever
+    /// delivered (History).
+    wake: Option<WakeHandle>,
 }
 
 impl SearchQueries {
+    fn waking(wake: Option<WakeHandle>) -> Self {
+        Self(Rc::new(RefCell::new(QueryDelivery {
+            wake,
+            ..QueryDelivery::default()
+        })))
+    }
+
+    /// Whether the surface has yet to answer the latest query: it has not
+    /// been given it, or said its results are still coming.
+    pub(crate) fn answering(&self) -> bool {
+        let delivery = self.0.borrow();
+        delivery.wake.is_some() && (delivery.pending.is_some() || delivery.awaiting)
+    }
+
+    /// The latest query asked.
+    pub(crate) fn last(&self) -> Option<ui_core::search::SearchQuery> {
+        self.0.borrow().last.clone()
+    }
+
+    /// What the surface says of its results for the latest query.
+    fn settle(&self, awaiting: bool) {
+        self.0.borrow_mut().awaiting = awaiting;
+    }
+
     pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
         if query
             .text()
@@ -402,10 +441,18 @@ impl SearchQueries {
         {
             return;
         }
-        let mut delivery = self.0.borrow_mut();
-        if delivery.last.as_ref() != Some(query) {
+        let wake = {
+            let mut delivery = self.0.borrow_mut();
+            if delivery.last.as_ref() == Some(query) {
+                return;
+            }
             delivery.last = Some(query.clone());
             delivery.pending = Some(query.clone());
+            delivery.awaiting = false;
+            delivery.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
         }
     }
 
@@ -687,6 +734,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         let runner = effects
             .env()
             .map(|env| EffectRunner::new(env.scoped(&scope)));
+        let search_queries = SearchQueries::waking(effects.env().map(|env| env.wake.clone()));
         // Captures and History describe their controls too. Publication is
         // inert metadata; only the runner below can execute an effect.
         if !E::declarations().is_empty() {
@@ -711,7 +759,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             statuses,
             jobs: OwnedJobs::new(jobs),
             surface,
-            search_queries: SearchQueries::default(),
+            search_queries,
             scope,
         }
     }
@@ -810,6 +858,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         }
         self.jobs.poll(&mut self.surface);
         self.surface.sync(state, path);
+        self.search_queries
+            .settle(self.effects.is_some() && self.surface.search_pending());
         if self.effects.is_some() {
             let now = self.surface.effects();
             if *self.statuses.borrow() != now {
