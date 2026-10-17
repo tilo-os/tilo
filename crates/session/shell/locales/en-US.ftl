@@ -2984,3 +2984,9 @@ drives-read-only-hibernated = Windows is hibernated or uses Fast Startup on this
 drives-read-only-not-shut-down = Windows wasn't shut down properly. Shut Windows down fully to make changes.
 drives-read-only-check = Windows wants to check this drive for errors. Shut Windows down fully to make changes.
 drives-failed-title = { $drive } couldn't be opened
+
+# The top bar's workspace menu and profile card
+workspace-menu-settings = Workspace settings…
+profile-action-identities = Your identities
+profile-action-backup = Back up your identity…
+profile-action-pair-device = Pair a device…

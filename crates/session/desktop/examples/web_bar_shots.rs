@@ -225,11 +225,9 @@ fn stage() -> Stage {
     let room = Rc::new(Room {
         tree: RefCell::new(tree.clone()),
     });
-    let mut bar = TopBarChrome::from_tree_with_local_user(&tree, ME.into())
+    let bar = TopBarChrome::from_tree_with_local_user(&tree, ME.into())
         .with_chrome(room)
-        .with_tilo_mark()
-        .with_workspace_menu();
-    bar.set_host_label(Some("tilo.coffee".into()));
+        .with_tilo_mark();
     Stage {
         bar,
         tilo: TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()),

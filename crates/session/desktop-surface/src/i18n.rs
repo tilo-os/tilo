@@ -103,12 +103,12 @@ mod tests {
 
     #[test]
     fn german_desktops_resolve_german_copy() {
-        let english = t("topbar-open-overview");
+        let english = t("workspace-menu-rename");
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = t("topbar-open-overview");
+        let german = t("workspace-menu-rename");
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english, "Open overview");
-        assert_eq!(german, "Übersicht öffnen");
+        assert_eq!(english, "Rename workspace");
+        assert_eq!(german, "Arbeitsbereich umbenennen");
     }
 }
 

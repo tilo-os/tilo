@@ -133,10 +133,10 @@ mod tests {
             assert!(frame.chrome().overlays.quick_settings);
             click(&mut frame, "topbar_tray_pill", &mut document);
             assert!(!frame.chrome().overlays.quick_settings);
-            click(&mut frame, "topbar_overview_button", &mut document);
+            click(&mut frame, "topbar_workspace_pill", &mut document);
+            assert!(frame.host().workspace_menu_labels().is_some());
+            assert!(frame.host_mut().choose_in_workspace_menu("Overview"));
             assert!(frame.chrome().overlays.overview);
-            click(&mut frame, "topbar_overview_button", &mut document);
-            assert!(!frame.chrome().overlays.overview);
             rebuild(&mut frame, &mut document);
             assert_eq!(guard.attempts(), 0);
         }
@@ -273,8 +273,8 @@ mod tests {
             assert!(!frame.paint().encoding().is_empty());
             click(&mut frame, "topbar_tray_pill", &mut document);
             click(&mut frame, "topbar_tray_pill", &mut document);
-            click(&mut frame, "topbar_overview_button", &mut document);
-            click(&mut frame, "topbar_overview_button", &mut document);
+            click(&mut frame, "topbar_workspace_pill", &mut document);
+            assert!(frame.host_mut().choose_in_workspace_menu("Overview"));
             assert_eq!(guard.attempts(), 0);
         }
 

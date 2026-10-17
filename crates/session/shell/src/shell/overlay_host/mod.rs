@@ -14,6 +14,7 @@ mod agent_actions;
 mod agent_markers;
 mod ask_agent;
 mod axis_navigation;
+mod bar_popovers;
 mod person_markers;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
@@ -966,6 +967,8 @@ pub struct ShellOverlayHost {
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
     agent_quick_composer_node: Option<NodeId>,
+    /// The workspace menu and the profile card the top bar opens.
+    bar_popovers: bar_popovers::BarPopovers,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The tiles shown and the pointer, kept current for a presence pump
@@ -2583,6 +2586,7 @@ impl ShellOverlayHost {
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,
+            bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
@@ -2875,6 +2879,7 @@ impl ShellOverlayHost {
             || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
             || self.person_quick_composer.modal_capture().is_some()
+            || self.bar_popovers.any_open()
     }
 
     /// Whether the pointer is over the shell-owned bar a maximized window
@@ -18178,6 +18183,8 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
+            // So is a popover the bar asked for.
+            self.harvest_bar_popover_request();
             // `/` the app did not type opens search of that app, as Ctrl+K
             // does. A focused field or terminal takes `/` as text.
             if !*ctx.handled
@@ -18915,6 +18922,9 @@ impl Widget for ShellOverlayHost {
         self.palette.sync(s, p);
         self.agent_quick_composer.sync(s, p);
         self.person_quick_composer.sync(s, p);
+        if self.bar_popovers.profile.is_open() {
+            self.bar_popovers.profile.sync(s, p);
+        }
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -18962,6 +18972,8 @@ impl Widget for ShellOverlayHost {
             | person_activation
             | person_context_dirty
             | person_action_dirty;
+        let bar_popover_dirty =
+            self.bar_popovers.profile.is_open() && self.bar_popovers.profile.update(doc, path);
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
@@ -19072,6 +19084,9 @@ impl Widget for ShellOverlayHost {
         // pointer dispatch; and drop a menu whose tab has since gone.
         self.harvest_pending_tab_context_menus();
         self.prune_stale_tab_context_menu();
+        // Same for a popover the bar asked for, and what was chosen in one.
+        self.harvest_bar_popover_request();
+        self.settle_bar_popovers();
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -19176,6 +19191,7 @@ impl Widget for ShellOverlayHost {
         desk_dirty
             || agent_quick_dirty
             || person_quick_dirty
+            || bar_popover_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -19416,6 +19432,7 @@ impl Widget for ShellOverlayHost {
             self.person_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
         );
+        children.extend(self.build_bar_popovers(taffy, theme, node_map));
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -19501,6 +19518,7 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer
                 .apply_layout(taffy, agent_node, self.rect.origin());
         }
+        self.apply_bar_popovers_layout(taffy);
         self.agent_markers.apply(taffy, self.rect.origin());
         self.person_markers.apply(taffy, self.rect.origin());
         if let Some(node) = self.person_quick_composer_node {
@@ -19728,6 +19746,7 @@ impl Widget for ShellOverlayHost {
         }
         self.agent_quick_composer
             .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -20058,6 +20077,9 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            return;
+        }
+        if self.route_bar_popover_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if self.agent_quick_composer.is_open()
@@ -21066,6 +21088,12 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&self.agent_quick_composer);
         }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&self.bar_popovers.profile);
+        }
         out.extend(self.agent_markers.children());
         if self.person_quick_composer.is_open() {
             out.push(&self.person_quick_composer);
@@ -21102,6 +21130,12 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&mut self.agent_quick_composer);
         }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&mut self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&mut self.bar_popovers.profile);
+        }
         out.extend(self.agent_markers.children_mut());
         if self.person_quick_composer.is_open() {
             out.push(&mut self.person_quick_composer);
@@ -21113,6 +21147,7 @@ impl Widget for ShellOverlayHost {
     fn take_focus_reset(&mut self) -> bool {
         self.agent_quick_composer.take_focus_reset()
             | self.person_quick_composer.take_focus_reset()
+            | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
@@ -21178,6 +21213,7 @@ impl Widget for ShellOverlayHost {
             | self.person_quick_composer.take_structure_dirty()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
+            | self.bar_popovers.structure_stale()
     }
 
     fn needs_animation_frame(&self) -> bool {

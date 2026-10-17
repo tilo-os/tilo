@@ -5,11 +5,10 @@
   "budget":{"clicks":0,"keys":0},
   "steps":[{"op":"checkpoint","name":"navigation","checks":[
     {"kind":"visible","target":"semantic:topbar:workspace-settings"},
-    {"kind":"target_size","target":"semantic:topbar:overview","min":[24,24]},
-    {"kind":"gap","first":"semantic:topbar:workspace-down","second":"semantic:topbar:workspace-settings","axis":"x","min":4,"max":12},
-    {"kind":"aligned","first":"semantic:topbar:overview","second":"semantic:topbar:workspace-settings","axis":"y","tolerance":1},
-    {"kind":"no_overlap","first":"semantic:topbar:workspace-down","second":"semantic:topbar:workspace-settings"},
-    {"kind":"contrast","label":"Workspace name glyph and chip background, 1280 dark 100% text","foreground":[164,25],"background":[150,35],"min":4.5},
+    {"kind":"target_size","target":"semantic:topbar:workspace-settings","min":[24,24]},
+    {"kind":"target_size","target":"semantic:topbar:profile","min":[24,24]},
+    {"kind":"aligned","first":"semantic:topbar:profile","second":"semantic:topbar:workspace-settings","axis":"y","tolerance":1},
+    {"kind":"no_overlap","first":"semantic:topbar:workspace-settings","second":"semantic:topbar:center:clock"},
     {"kind":"contrast","label":"App shortcut hint glyph and nearby desktop background, 1280 dark 100% text","foreground":[553,599],"background":[330,591],"min":4.5}
   ]}]
 }

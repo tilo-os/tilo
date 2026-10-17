@@ -28,12 +28,7 @@ topbar-watching-description = { $count } { $count ->
         [one] Person schaut
        *[other] Personen schauen
     } zu, ohne teilzunehmen
-topbar-open-overview = Übersicht öffnen
 topbar-tilo-menu = Tilo-Menü
-topbar-previous-workspace = Vorheriger Arbeitsbereich
-topbar-next-workspace = Nächster Arbeitsbereich
-topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
-topbar-workspace-host = Gehostet bei { $host }
 topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
@@ -49,9 +44,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
-topbar-network-offline = Offline
-topbar-tray-open = { $app } öffnen
-topbar-tray-menu = Menü für { $app }
 topbar-editor-control = Bearbeitungselement der oberen Leiste
 topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
 topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
@@ -89,13 +81,11 @@ topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
 topbar-strips = Leisten in diesem Arbeitsbereich
-topbar-strip-count = { $name } · { $count }
 topbar-strip-go = Zu { $name } wechseln, { $count ->
     [0] niemand dort
     [one] eine Person dort
    *[other] { $count } Personen dort
 }
-topbar-strip-add = Leiste hinzufügen
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] Eine weitere Leiste
@@ -1210,8 +1200,6 @@ activity-task-awaiting-acceptance = Wartet darauf, dass der Agent die Aufgabe ü
 activity-task-run-accepted = Der Agent hat die Aufgabe übernommen · zuletzt { $time }
 activity-task-run-planning = Der Agent plant die Schritte · zuletzt { $time }
 activity-task-run-executing = Der Agent nimmt Änderungen vor · zuletzt { $time }
-topbar-cpu-reading = CPU { $value }
-topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen

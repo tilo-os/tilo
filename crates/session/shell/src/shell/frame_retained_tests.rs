@@ -555,7 +555,11 @@ fn assert_owned_files_fixture(fixture: &PopulatedShellFixture) {
 }
 
 fn assert_populated_control_targets(fixture: &PopulatedShellFixture) {
-    for target in ["topbar_tray_pill", "topbar_overview_button"] {
+    for target in [
+        "topbar_tray_pill",
+        "topbar_workspace_pill",
+        "topbar_profile",
+    ] {
         assert!(
             fixture
                 .widget_registry()
@@ -595,14 +599,17 @@ fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
         );
         assert!(!close_qs.encoding().is_empty());
         assert!(!fixture.chrome().overlays.quick_settings);
-        let open_overview = dispatch_populated_fixture_click(
+        let open_menu = dispatch_populated_fixture_click(
             &mut fixture,
-            "topbar_overview_button",
+            "topbar_workspace_pill",
             &mut document,
             &mut focus,
         );
-        assert!(!open_overview.encoding().is_empty());
+        assert!(!open_menu.encoding().is_empty());
+        assert!(fixture.host().workspace_menu_labels().is_some());
+        assert!(fixture.host_mut().choose_in_workspace_menu("Overview"));
         assert!(fixture.chrome().overlays.overview);
+
         assert_eq!(guard.attempts(), 0);
     }
 

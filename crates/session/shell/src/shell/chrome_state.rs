@@ -262,6 +262,16 @@ pub(crate) struct RecordRequest {
     pub(crate) actor: crate::shell::state::Actor,
 }
 
+/// A popover the top bar opens, asked for by the bar that was pressed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BarPopoverRequest {
+    /// Open or close the workspace menu under `anchor`, the workspace name
+    /// on the bar that asked.
+    WorkspaceMenu { anchor: vello::kurbo::Rect },
+    /// Open or close the profile card under the person's own avatar.
+    Profile,
+}
+
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
@@ -707,6 +717,9 @@ pub struct ChromeState {
     /// top bar without bumping revision so the workspace lens can animate
     /// from the exact context that opened it.
     pub workspace_settings_anchor: vello::kurbo::Rect,
+    /// The popover a top bar asked for and the overlay host has not opened
+    /// (or closed) yet: the workspace menu or the profile card.
+    pub bar_popover_request: Option<BarPopoverRequest>,
     /// The Permissions tab's in-progress grant. Lives here (not the
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
@@ -1018,6 +1031,7 @@ impl ChromeState {
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
+            bar_popover_request: None,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
             instance: {
@@ -2624,6 +2638,85 @@ impl ChromeState {
             self.bump();
         }
         removed
+    }
+
+    /// Go to the workspace `id`, as choosing it in the workspace menu does;
+    /// `false` when it is already shown or no longer there.
+    pub fn switch_to_workspace(&mut self, id: crate::shell::state::WorkspaceId) -> bool {
+        let changed = {
+            let mut tree = self.tree_mut();
+            let known = tree.desktop.workspaces.iter().any(|w| w.id == id);
+            let moves = known && tree.desktop.active != id;
+            if moves {
+                tree.set_active(id);
+            }
+            moves
+        };
+        tracing::info!(target: "tilo::shortcut", ?id, changed, "workspace switch");
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Add a strip named `name` at the bottom of the active workspace and
+    /// move to it, as the workspace menu's New desk asks. `false` without
+    /// an active workspace this device may change.
+    pub fn add_named_strip(&mut self, name: &str) -> bool {
+        let added = {
+            let mut tree = self.tree_mut();
+            let Some(room) = tree.desktop.active_workspace().map(|ws| ws.room) else {
+                return false;
+            };
+            if !tree.governs_room(room) {
+                return false;
+            }
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
+                return false;
+            };
+            let ws_id = ws.id;
+            let strip = crate::shell::state::Strip::new(
+                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+                name.to_owned(),
+            );
+            let id = strip.id;
+            ws.strips.push(strip);
+            tree.desktop.active_strip.insert(ws_id, id);
+            tree.queue_save();
+            true
+        };
+        if added {
+            self.bump();
+        }
+        added
+    }
+
+    /// Whether the person may add a strip to the active workspace here: a
+    /// foreign room stays closed to local mutation.
+    pub fn can_add_strip(&self) -> bool {
+        let tree = self.tree();
+        tree.desktop
+            .active_workspace()
+            .is_some_and(|ws| tree.governs_room(ws.room))
+    }
+
+    /// Whether the person may rename the active workspace: whoever governs
+    /// it, or anyone in one nobody owns yet (the rename claims it).
+    pub fn may_rename_active_workspace(&self) -> bool {
+        let tree = self.tree();
+        let ownerless = tree
+            .desktop
+            .active_workspace()
+            .is_some_and(|ws| ws.owner().is_none() && tree.governs_room(ws.room));
+        drop(tree);
+        ownerless || self.can_rename_active_workspace()
+    }
+
+    /// Give the active workspace `name` through the same commit the
+    /// workspace settings' name field uses.
+    pub fn rename_active_workspace(&mut self, name: &str) {
+        self.editing_workspace_name = Some(name.to_owned());
+        self.commit_workspace_name();
     }
 
     pub fn switch_workspace(&mut self, dir: i32) -> bool {

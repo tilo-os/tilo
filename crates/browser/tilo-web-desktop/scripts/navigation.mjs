@@ -1,7 +1,7 @@
 // The desktop's own navigation, driven through the browser as a person does
 // it: a spin of a mouse's sideways wheel pans the strip and focus follows
-// to the window it stopped on; the top bar's arrows switch workspaces; the
-// desktop shortcuts
+// to the window it stopped on; the top bar's workspace menu switches
+// workspaces; the desktop shortcuts
 // move between workspaces and windows even while an app's text field holds
 // the keyboard. Every input is a trusted event from Chrome's input pipeline.
 //
@@ -268,20 +268,37 @@ for (const deadline = Date.now() + 240_000; ;) {
 await settles('and focus follows to the last window', label, order[2]);
 console.log(JSON.stringify({step: 'wheel', ok: true}));
 
-// A second workspace, through the overview; then the top bar's arrows.
-await click(...await named('Open overview'));
+// The workspace's name in the top bar opens its menu: the workspaces to go
+// to, the overview and a new desk.
+async function openWorkspaceMenu() {
+  const s = await snapshot();
+  const shown = s.workspaces.find(w => w.id === s.activeWorkspace).label;
+  await click(...await named(`${shown}: workspaces, overview and desks`));
+  await sleep(500);
+}
+// Goes to the workspace at `index` through that menu.
+async function chooseWorkspace(index) {
+  const {label: name} = (await snapshot()).workspaces[index];
+  await openWorkspaceMenu();
+  await click(...await named(name));
+}
+// A second workspace, through the overview the menu opens; then the menu
+// to go between them.
+await openWorkspaceMenu();
+await click(...await named('Overview'));
 await sleep(1500);
 await click(...await named('New workspace'));
 await settles('a new workspace opens', s => [s.workspaces.length, workspace(s)], [2, 1]);
 await key('Escape');
 await sleep(1000);
-await click(...await named('Previous workspace'));
-await settles('the top bar goes to the previous workspace', workspace, 0);
-await click(...await named('Next workspace'));
-await settles('and to the next one', workspace, 1);
-await click(...await named('Previous workspace'));
+await chooseWorkspace(0);
+await settles('the workspace menu goes to the first workspace', workspace, 0);
+await chooseWorkspace(1);
+await settles('and to the second one', workspace, 1);
+await chooseWorkspace(0);
 await settles('back in the first workspace', workspace, 0);
-console.log(JSON.stringify({step: 'workspace buttons', ok: true}));
+console.log(JSON.stringify({step: 'workspace menu', ok: true}));
+
 
 // The shortcuts while an app's text field holds the keyboard: a new note.
 await command({kind: 'select', route: (await snapshot()).entries.find(e => e.label === 'Notes').route});
