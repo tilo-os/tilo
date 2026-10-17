@@ -1171,6 +1171,36 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The last action refused here ([`super::Dispatcher::refused`]): by
+    /// the door, or by the room after this window applied it.
+    pub fn refused(&mut self) -> Option<super::Refused> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.refused())
+            .flatten()
+    }
+
+    /// The room refused `changes` (Automerge hashes) of this window's
+    /// record, `reason` what a person is told (a host replicating the
+    /// record reads it from the room's words with
+    /// `tilo_relay_protocol::refusal::plain_reason`): withdraw them and what
+    /// was built on them, as that host does, and run the frame that tells
+    /// the app. Whether anything was withdrawn.
+    ///
+    /// # Errors
+    /// Returns why the record could not withdraw them.
+    pub fn refused_by_room(&mut self, changes: &[[u8; 32]], reason: &str) -> Result<bool, String> {
+        let refused: Vec<_> = changes
+            .iter()
+            .map(|hash| ui_core::automerge::ChangeHash(*hash))
+            .collect();
+        let withdrawn = self
+            .records
+            .withdraw_refused(&self.checkout.id, &refused, reason)?;
+        self.harness().relayout();
+        self.settle();
+        Ok(withdrawn.is_some())
+    }
+
     /// Run the frame the app runs after an event: edits the views and
     /// effects submitted are applied, and what they change is drawn.
     pub fn settle(&mut self) {

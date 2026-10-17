@@ -53,6 +53,9 @@ pub enum MenuItem {
         submenu: Option<Vec<MenuItem>>,
     },
     Separator,
+    /// A line of secondary text about the rows around it ("Hosted by
+    /// example.org"): read, never chosen. Keyboard and pointer pass over it.
+    Caption(String),
 }
 
 impl std::fmt::Debug for MenuItem {
@@ -65,6 +68,7 @@ impl std::fmt::Debug for MenuItem {
                 .field("submenu", submenu)
                 .finish(),
             MenuItem::Separator => f.write_str("MenuItem::Separator"),
+            MenuItem::Caption(text) => f.debug_tuple("MenuItem::Caption").field(text).finish(),
         }
     }
 }
@@ -186,9 +190,15 @@ impl MenuItem {
         MenuItem::Separator
     }
 
+    /// A line of secondary text, never a command; see [`MenuItem::Caption`].
+    pub fn caption(text: impl Into<String>) -> Self {
+        MenuItem::Caption(text.into())
+    }
+
     pub fn label(&self) -> Option<&str> {
         match self {
             MenuItem::Action { label, .. } => Some(label.as_str()),
+            MenuItem::Caption(text) => Some(text.as_str()),
             MenuItem::Separator => None,
         }
     }
@@ -198,7 +208,7 @@ impl MenuItem {
     pub fn checked(&self) -> Option<bool> {
         match self {
             MenuItem::Action { checked, .. } => *checked,
-            MenuItem::Separator => None,
+            MenuItem::Separator | MenuItem::Caption(_) => None,
         }
     }
 
@@ -206,7 +216,7 @@ impl MenuItem {
     pub fn shortcut(&self) -> Option<&Shortcut> {
         match self {
             MenuItem::Action { shortcut, .. } => shortcut.as_ref(),
-            MenuItem::Separator => None,
+            MenuItem::Separator | MenuItem::Caption(_) => None,
         }
     }
 
@@ -214,7 +224,7 @@ impl MenuItem {
     pub fn submenu_items(&self) -> Option<&[MenuItem]> {
         match self {
             MenuItem::Action { submenu, .. } => submenu.as_deref(),
-            MenuItem::Separator => None,
+            MenuItem::Separator | MenuItem::Caption(_) => None,
         }
     }
 
@@ -531,6 +541,9 @@ impl ContextMenu {
     fn item_height(&self, index: usize) -> f64 {
         match self.items.get(index) {
             Some(MenuItem::Action { .. }) => self.row_height,
+            // A caption is a caption line with an `s1` of air either side,
+            // tighter than a row: it is read with the rows above it.
+            Some(MenuItem::Caption(_)) => (self.row_height * CAPTION_ROW_SHARE).ceil(),
             Some(MenuItem::Separator) if item_shown(&self.items, index) => SEPARATOR_HEIGHT,
             Some(MenuItem::Separator) | None => 0.0,
         }
@@ -798,7 +811,7 @@ impl ContextMenu {
                 self.selection = Some(idx);
                 self.close();
             }
-            MenuItem::Action { .. } | MenuItem::Separator => {}
+            MenuItem::Action { .. } | MenuItem::Separator | MenuItem::Caption(_) => {}
         }
     }
 
@@ -1058,6 +1071,8 @@ const SEPARATOR_HEIGHT: f64 = 9.0;
 /// The air between a control and the menu it opened: the `s1` step.
 const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
+/// A caption line's share of a row's height.
+const CAPTION_ROW_SHARE: f64 = 0.75;
 /// How far, in logical pixels, the pointer may be from where the menu opened
 /// and still count as not having moved: the opening position went through
 /// `f32`, the pointer's did not.
@@ -1076,20 +1091,14 @@ fn label_inset(theme: &Theme) -> f64 {
 /// between two actions and never next to another separator, so a menu built
 /// from optional sections has no leading, trailing or doubled rule.
 fn item_shown(items: &[MenuItem], index: usize) -> bool {
+    let content = |item: &&MenuItem| !matches!(item, MenuItem::Separator);
     match items.get(index) {
-        Some(MenuItem::Action { .. }) => true,
+        Some(MenuItem::Action { .. } | MenuItem::Caption(_)) => true,
         Some(MenuItem::Separator) => {
             let before = items.get(..index).unwrap_or_default();
             let after = items.get(index.saturating_add(1)..).unwrap_or_default();
-            let action_before = before
-                .iter()
-                .rev()
-                .take_while(|item| matches!(item, MenuItem::Action { .. }))
-                .count()
-                > 0;
-            let action_after = after
-                .iter()
-                .any(|item| matches!(item, MenuItem::Action { .. }));
+            let action_before = before.iter().rev().take_while(content).count() > 0;
+            let action_after = after.iter().any(|item| content(&item));
             action_before && action_after
         }
         None => false,
@@ -1386,6 +1395,39 @@ impl Widget for ContextMenu {
                     }
                     y += row_height;
                 }
+                MenuItem::Caption(text) => {
+                    let caption = theme.text(TextRole::Caption);
+                    let ink = theme
+                        .tokens
+                        .colors
+                        .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+                        .ink_dim;
+                    let text_x = if has_leading_gutter {
+                        label_x
+                            + f64::from(theme.tokens.metrics.icon_sm)
+                            + f64::from(theme.tokens.spacing.s2)
+                    } else {
+                        label_x
+                    };
+                    let shown = text_renderer.elide_to_width_style(
+                        text,
+                        (self.rect.x1 - text_x - label_inset(theme)).max(1.0) as f32,
+                        &caption,
+                    );
+                    let (_, height) = text_renderer.measure_style(&shown, None, &caption);
+                    text_renderer.draw_style(
+                        scene,
+                        &shown,
+                        ink,
+                        transform.pre_translate(Vec2::new(
+                            text_x,
+                            y + (row_height - f64::from(height)) / 2.0,
+                        )),
+                        None,
+                        &caption,
+                    );
+                    y += row_height;
+                }
                 MenuItem::Separator if row_height <= 0.0 => {}
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
@@ -1594,6 +1636,18 @@ impl Widget for ContextMenu {
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
+                if let MenuItem::Caption(text) = item {
+                    // Read in place among the rows, never focused.
+                    return Some(
+                        AccessNode::new(Role::StaticText)
+                            .with_name(text.clone())
+                            .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                            .with_state(AccessState {
+                                hidden: !self.open,
+                                ..Default::default()
+                            }),
+                    );
+                }
                 let MenuItem::Action {
                     label,
                     checked,
@@ -1946,6 +2000,32 @@ mod a11y_tests {
             assert!(!node.state.hidden, "open menu is visible");
         }
 
+        fn a_caption_is_read_among_the_rows_but_never_chosen() {
+            let mut menu = ContextMenu::with_items(vec![
+                MenuItem::selection("Lounge"),
+                MenuItem::caption("Hosted by example.org"),
+                MenuItem::separator(),
+                MenuItem::selection("Overview"),
+            ]);
+            menu.open_at([10.0, 10.0]);
+            assert!(
+                item_shown(menu.items(), 2),
+                "a caption above keeps the rule"
+            );
+            assert!(!menu.items()[1].is_enabled(), "keyboard passes over it");
+            menu.click_item(1);
+            assert_eq!(menu.take_selection(), None);
+            assert!(menu.is_open(), "a click on the caption chooses nothing");
+            let node = Widget::accessibility(&menu).expect("menu semantics");
+            let caption = &node.children[1];
+            assert_eq!(caption.role, crate::a11y::Role::StaticText);
+            assert_eq!(caption.name.as_deref(), Some("Hosted by example.org"));
+            assert!(
+                menu.item_height(1) < menu.item_height(0),
+                "a caption line is tighter than a row"
+            );
+        }
+
         fn accessibility_exposes_named_action_rows_and_skips_separators() {
             let mut menu = ContextMenu::new();
             menu.push(MenuItem::action("Keep Offline", || {}));
@@ -1986,6 +2066,7 @@ mod a11y_tests {
 
         accessibility_reports_menu_role_and_collapsed_when_closed();
         accessibility_open_menu_is_expanded_and_visible();
+        a_caption_is_read_among_the_rows_but_never_chosen();
         accessibility_exposes_named_action_rows_and_skips_separators();
         accessibility_exposes_checked_state_without_polluting_the_label();
     }

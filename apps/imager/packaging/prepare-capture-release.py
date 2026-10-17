@@ -41,12 +41,6 @@ def qualification_image(output, env, cohort):
             qualifier.bound_file(value['roles'][role]['path'], value['roles'][role]['sha256'])
             shutil.copyfile(value['roles'][role]['path'], target)
             target.chmod(0o755)
-        for source, destination in qualifier.PLATFORM_SCRIPTS.items():
-            qualifier.bound_file(ROOT / source, value['source_inputs'][source])
-            target = context / 'rootfs' / destination.lstrip('/')
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / source, target)
-            target.chmod(0o755)
         browser = qualifier.fixed_module(HERE / 'prepare-capture-browser.py', 'capture_browser')
         recipe = 'FROM ' + env['TILO_CAPTURE_QUALIFIER_BASE'] + '\nCOPY rootfs/ /\n'
         recipe += browser.stage(context / 'rootfs', output / 'browser-release', output / 'pins.json',

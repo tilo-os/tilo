@@ -3351,6 +3351,9 @@ pub struct Collaborator {
     /// announces its own participant to its own applications — without
     /// this, an app had no way to find itself in the room's own roster.
     pub is_self: bool,
+    /// When the room admitted this member, Unix milliseconds; `u64::MAX`
+    /// when it has no time for them.
+    pub joined_at_ms: u64,
 }
 
 /// Roster + local permissions snapshot delivered on
@@ -3434,6 +3437,7 @@ impl ContextStream {
                 color: c.get_color(),
                 is_agent: c.get_is_agent(),
                 is_self: c.get_is_self(),
+                joined_at_ms: c.get_joined_at_ms(),
             });
         }
         let perms_reader = ctx.get_permissions()?;

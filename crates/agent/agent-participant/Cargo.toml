@@ -30,7 +30,7 @@ agent = { path = "../../../apps/agent" }
 # generated apps: begin (tools/web/generate_web_desktop.py)
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
-calendar = { path = "../../../apps/calendar" }
+calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
 camera = { path = "../../../apps/camera" }
 canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }

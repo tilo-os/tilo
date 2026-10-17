@@ -70,90 +70,15 @@ pub fn require(capability: Option<&ConsumerCapability>, required: Option<u32>) -
 }
 
 /// Authenticate the actual installed consumer proof before target custody writes.
+/// The check re-executes the installed probes and compares the image receipt.
 /// # Errors
-/// Refuses old/missing consumers, an untrusted verifier, or failed native checks.
+/// Refuses old/missing consumers, untrusted artifacts, or failed native checks.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
-    use std::{
-        fs::OpenOptions,
-        io::Read,
-        os::unix::fs::{MetadataExt, OpenOptionsExt},
-        process::{Command, Stdio},
-    };
-    const VERIFIER: &str = "/usr/libexec/tilo-verify-home-consumer-capability";
-    // Every namespace edge is root-controlled; a target user cannot replace
-    // the verifier with their importer or another executable between checks.
-    for path in ["/", "/usr", "/usr/libexec", VERIFIER] {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 || metadata.file_type().is_symlink()
-        {
-            return Err(unavailable());
-        }
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(VERIFIER)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.mode() & 0o111 == 0 || metadata.len() > 1024 * 1024 {
-        return Err(unavailable());
-    }
-    let mut child = Command::new(VERIFIER)
-        .arg("--check")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let stdout = child.stdout.take().ok_or_else(unavailable)?;
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    let _reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout.take(4097).read_to_end(&mut bytes).map(|_| bytes);
-        let _ = send.send(result);
-    });
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(150))
-        .ok_or_else(unavailable)?;
-    let result = receive.recv_timeout(std::time::Duration::from_secs(150));
-    let bytes = match result {
-        Ok(Ok(bytes)) if bytes.len() <= 4096 => bytes,
-        _ => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable());
-        }
-    };
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(unavailable());
-            }
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    // Retain the original verifier handle until all target checks finish.
-    let observed = std::fs::symlink_metadata(VERIFIER)?;
-    if observed.dev() != metadata.dev()
-        || observed.ino() != metadata.ino()
-        || file.metadata()?.ino() != metadata.ino()
-    {
-        return Err(unavailable());
-    }
-    let shape: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
-    if !shape.is_object() {
-        return Err(unavailable());
-    }
-    let proof: ConsumerCapability = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    use crate::installed_consumers::data;
+    let value = data::home(&data::Store::installed(), true, &mut data::invoke)
+        .map_err(|_| unavailable())?;
+    let proof: ConsumerCapability = serde_json::from_value(value).map_err(|_| unavailable())?;
     proof.validate()?;
     Ok(proof)
 }

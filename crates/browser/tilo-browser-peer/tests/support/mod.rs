@@ -90,9 +90,24 @@ pub async fn start_host_admitting(
     plain_listen: Option<SocketAddr>,
     guests: &[[u8; 32]],
 ) -> TestHost {
+    start_host_limiting(root, host, state, web_listen, plain_listen, guests, None).await
+}
+
+/// [`start_host_admitting`], holding its guests to the change and content
+/// budgets `limits`, as a public host does.
+pub async fn start_host_limiting(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    plain_listen: Option<SocketAddr>,
+    guests: &[[u8; 32]],
+    limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+) -> TestHost {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
+        member_limits: limits,
         ..Default::default()
     };
     if !guests.is_empty() {

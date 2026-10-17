@@ -264,7 +264,7 @@ chat-chat-feedback = { $op ->
 }
 chat-chat-agent-names = Changed the agents' names
 chat-chat-read = Changed the read marks
-chat-chat-drafts = { $op ->
+chat-chat-drafts-drafts = { $op ->
     [splice] Typed in a draft
     [mark] Formatted a draft
     [replace] Cleared a draft

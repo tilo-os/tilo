@@ -45,15 +45,20 @@ function aboutLinks(about) {
   return Object.keys(links).length ? links : null;
 }
 
-/** The host a room scope names (`rooms.example`), for the bar's host pill;
- * `null` on the person's own desktop. */
-function scopeHost(scope) {
+/** Where a room scope is hosted (`rooms.example`), as the desktop says it
+ * ("Hosted by …"); `null` on the person's own desktop. A room on the site the
+ * page was opened from, or on one of its machines (`eu1.tilo.coffee` behind
+ * `tilo.coffee`), is hosted by that site: the name people reached it by, not
+ * the machine's. */
+export function scopeHost(scope, site = globalThis.location?.host) {
   if (scope.kind !== 'room') return null;
+  let host;
   try {
-    return new URL(scope.host).host;
+    host = new URL(scope.host).host;
   } catch {
     return null;
   }
+  return site && (host === site || host.endsWith(`.${site}`)) ? site : host;
 }
 
 /** `onStatus` that also titles the tab after the workspace in front. */
@@ -245,7 +250,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
   // The desktop offers Invite in a room the page can invite to.
   const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
-  const host = scopeHost(scope);
+  const host = scopeHost(scope, window.location?.host);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),

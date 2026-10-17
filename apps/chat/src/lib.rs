@@ -2,7 +2,7 @@
 //!
 //! A collaborative chat + calls surface tied to workspaces. The
 //! convergent state — workspaces, categories, channels, messages, reactions,
-//! edits + edit history, threads, members and drafts — is the [`record::Chat`]
+//! edits + edit history, threads and members — is the [`record::Chat`]
 //! model, the room's own record of the chat, changed only through its verbs
 //! and field edits. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
@@ -55,6 +55,7 @@ pub mod call;
 pub mod composer;
 pub mod continuity;
 pub mod demo;
+pub mod drafts;
 pub mod effects;
 pub mod events;
 mod external;

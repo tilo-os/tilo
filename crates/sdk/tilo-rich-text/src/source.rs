@@ -12,10 +12,10 @@ use std::rc::Rc;
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::automerge::ObjId;
 use ui::automerge::transaction::Transactable;
-use ui::framework::{Dispatcher, Live, ResourceSelection};
+use ui::framework::{Dispatcher, Live, PersonRecord, ResourceSelection};
 use ui::presence::PresenceKey;
 use ui::tilo_actions::ActionError;
-use ui::tilo_resource::{Demand, Doc, ModelError, Resource, Tracker};
+use ui::tilo_resource::{Demand, Doc, Invoke, ModelError, Resource, Tracker};
 use ui::widget::{Edits, PresenceKeyFn};
 
 /// Everything the editor reads.
@@ -324,6 +324,119 @@ impl RichTextSource for RichTextField {
 
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         self.presence.clone()
+    }
+}
+
+/// Makes an edit of a person record's rich-text field the record's action.
+type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
+
+/// Rich text stored in a field of one of the person's own records
+/// ([`PersonRecord`]): a draft, a private note. It follows the person to
+/// their other devices and never reaches the room the app is open in.
+///
+/// `locate` finds the field's map in the record; `wrap` turns an edit of
+/// it into the record's own action (a field edit at its path), so the
+/// record's history and undo hold it. `start`, when given, is the action
+/// that creates the field, applied before the first edit of a field that
+/// does not exist yet.
+pub struct PersonField<P: Resource> {
+    record: PersonRecord<P>,
+    locate: Locate,
+    wrap: Wrap<P>,
+    start: Option<Box<dyn Fn() -> Invoke<P>>>,
+    field: Option<FieldState>,
+    /// The record's heads when the field was last read.
+    heads: Option<Vec<ui::automerge::ChangeHash>>,
+}
+
+impl<P: Resource> PersonField<P> {
+    /// The rich text `locate` finds in `record`, each edit applied as the
+    /// action `wrap` makes of it.
+    pub fn new(
+        record: PersonRecord<P>,
+        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
+        wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
+    ) -> Self {
+        Self {
+            record,
+            locate: Box::new(locate),
+            wrap: Box::new(wrap),
+            start: None,
+            field: None,
+            heads: None,
+        }
+    }
+
+    /// Create the field with `start` before its first edit.
+    #[must_use]
+    pub fn with_start(mut self, start: impl Fn() -> Invoke<P> + 'static) -> Self {
+        self.start = Some(Box::new(start));
+        self
+    }
+
+    /// Create the field when it does not exist yet, so an editor has a
+    /// document to write in before the first keystroke.
+    ///
+    /// # Errors
+    /// The record refused the start action.
+    pub fn ensure(&mut self) -> Result<(), ActionError> {
+        self.refresh();
+        if self.field.is_none()
+            && let Some(start) = &self.start
+        {
+            self.record.invoke(&start())?;
+            self.refresh();
+        }
+        Ok(())
+    }
+
+    /// Read the field again from the record when the record moved: an
+    /// edit here, or one from the person's other device.
+    fn refresh(&mut self) {
+        let heads = self.record.record().heads();
+        if self.heads.as_ref() == Some(&heads) && self.field.is_some() {
+            return;
+        }
+        let revision = self
+            .field
+            .as_ref()
+            .map_or(0, |field| field.revision.wrapping_add(1));
+        let read = self.record.record().read(|doc| {
+            let root = (self.locate)(doc)?;
+            FieldState::read_only(doc, root, revision).ok()
+        });
+        self.field = read.flatten();
+        self.heads = Some(heads);
+    }
+}
+
+impl<P: Resource> RichTextSource for PersonField<P> {
+    fn read_only(&self) -> bool {
+        !self.record.editable()
+    }
+
+    fn sync(&mut self, _doc: &Doc) {
+        self.refresh();
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.as_ref().map(|field| field.revision)
+    }
+
+    fn read_from(&mut self, _doc: &Doc) -> bool {
+        self.refresh();
+        self.field.is_some()
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        self.field.as_ref().map(|field| read(&field.state))
+    }
+
+    fn apply(&mut self, _edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
+        self.ensure()?;
+        self.record.apply(&(self.wrap)(edit))?;
+        self.refresh();
+        Ok(())
     }
 }
 

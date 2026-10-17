@@ -120,7 +120,7 @@ impl FileExplorerWidget {
                 label: String::new(),
                 size_bytes: 64_000_000_000,
                 internal: false,
-                open_at: Some("/run/media/alex/Stick".into()),
+                open_at: Some(self.current_path.to_string_lossy().into_owned()),
             },
         ]);
     }

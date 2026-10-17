@@ -633,6 +633,51 @@ fn non_members_hold_nothing() {
 }
 
 #[test]
+fn admission_records_when_a_member_joined_until_they_leave() {
+    fn by_owner(room: &RoomPolicy, change: Change, now: u64) -> RoomPolicy {
+        let owner = Authority::person(room.party(ALICE));
+        let mut next = room.clone();
+        next.apply(ALICE, &owner, change, &Context::at(now), false)
+            .expect("the owner governs");
+        next
+    }
+    let room = by_owner(
+        &room_with(&[]),
+        Change::AddMember {
+            person: CAROL.into(),
+            role: Role::Viewer,
+        },
+        NOW,
+    );
+    assert_eq!(room.joined_at(CAROL), Some(NOW));
+    assert_eq!(
+        room.joined_at(ALICE),
+        Some(0),
+        "the owner holds it from the start"
+    );
+    assert_eq!(room.joined_at(BOB), None);
+
+    let room = by_owner(
+        &room,
+        Change::SetRole {
+            person: CAROL.into(),
+            role: Role::Editor,
+        },
+        NOW + 5_000,
+    );
+    assert_eq!(room.joined_at(CAROL), Some(NOW), "a role change keeps it");
+
+    let room = by_owner(
+        &room,
+        Change::RemoveMember {
+            person: CAROL.into(),
+        },
+        NOW + 5_000,
+    );
+    assert_eq!(room.joined_at(CAROL), None);
+}
+
+#[test]
 fn only_governors_change_membership() {
     let mut room = room_with(&[(BOB, Role::Editor)]);
     let bob = room.party(BOB);

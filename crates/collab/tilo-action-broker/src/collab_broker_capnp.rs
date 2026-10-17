@@ -7678,7 +7678,8 @@ impl CapnpBrokerState {
                             .iter()
                             .find(|row| row.id == person)
                             .map_or_else(|| person.clone(), |row| row.name.clone());
-                        (person, name)
+                        let joined = workspace.policy.joined_at(&person);
+                        (person, name, joined)
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
@@ -7695,9 +7696,13 @@ impl CapnpBrokerState {
                 colour: None,
                 is_agent: false,
                 is_self: true,
+                joined_at: people
+                    .iter()
+                    .find(|(person, _, _)| *person == admitted.principal_id)
+                    .and_then(|(_, _, joined)| *joined),
             });
         }
-        for (person, name) in people {
+        for (person, name, joined_at) in people {
             if admitted.agent_id.is_none() && person == admitted.principal_id {
                 continue;
             }
@@ -7707,6 +7712,7 @@ impl CapnpBrokerState {
                 colour: None,
                 is_agent: false,
                 is_self: false,
+                joined_at,
             });
         }
         for (agent, _) in agents {
@@ -7722,6 +7728,7 @@ impl CapnpBrokerState {
                 colour: None,
                 is_agent: true,
                 is_self,
+                joined_at: None,
             });
         }
         if collaborators.iter().filter(|row| row.is_self).count() != 1 {
@@ -12974,6 +12981,7 @@ impl context_stream::Server for ContextStreamServer {
                     slot.set_color(c.packed_colour());
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
+                    slot.set_joined_at_ms(c.packed_joined_at());
                 }
             }
             let perm_count = u32::try_from(permissions.len()).map_err(|_| {
@@ -17278,6 +17286,7 @@ pub mod tests {
         let room = workspace.room.to_string();
         let other_person = "other-person";
         workspace.admit(other_person, crate::test_support::Role::Viewer);
+        workspace.policy.joined.insert(other_person.into(), 7_000);
         workspace.allow_in_room(
             crate::test_support::Subject::person("person-in-other-room"),
             &uuid::Uuid::new_v4().to_string(),
@@ -17338,6 +17347,15 @@ pub mod tests {
                 .iter()
                 .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
         );
+        // When each person joined travels with their row, so every replica
+        // numbers namesakes alike; the owner holds the room from its start.
+        let joined = |id: &str| roster.iter().find(|row| row.id == id).unwrap().joined_at;
+        assert_eq!(joined(other_person), Some(7_000));
+        assert_eq!(
+            roster.iter().find(|row| row.is_self).unwrap().joined_at,
+            Some(0)
+        );
+        assert_eq!(joined(&format!("agent:{tide}")), None);
         assert!(
             roster
                 .iter()
@@ -17392,6 +17410,7 @@ pub mod tests {
             colour: None,
             is_agent: true,
             is_self: false,
+            joined_at: None,
         };
         {
             let mut channels = state.channels.lock().unwrap();

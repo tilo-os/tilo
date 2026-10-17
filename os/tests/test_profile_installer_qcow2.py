@@ -15,6 +15,15 @@ HELPER = Path(__file__).resolve().parents[1] / "dev/profile-installer-qcow2.py"
 spec = importlib.util.spec_from_file_location("profile_installer_qcow2", HELPER)
 profile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profile)
+REPO = HELPER.parents[2]
+
+
+def staging_handoff():
+    """This checkout's build of the helper the extractor unpacks handoffs with."""
+    subprocess.run(["cargo", "build", "--quiet", "--manifest-path", str(REPO / "Cargo.toml"),
+                    "-p", "tilo-install-helpers", "--bin", "tilo-staging-handoff"], check=True)
+    target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "target"))
+    return str(target / "debug/tilo-staging-handoff")
 
 
 @unittest.skipUnless(shutil.which("qemu-img") and shutil.which("qemu-io"),
@@ -45,7 +54,8 @@ class ProfileQcow2Tests(unittest.TestCase):
                            check=True, capture_output=True, env={**os.environ,
                                "TILO_INSTALLER_PROFILE_DEVICE": str(raw),
                                "TILO_INSTALLER_PROFILE_ALLOW_FILE": "1",
-                               "TILO_INSTALLER_PROFILE_OUT_DIR": str(extracted)})
+                               "TILO_INSTALLER_PROFILE_OUT_DIR": str(extracted),
+                               "TILO_STAGING_HANDOFF": staging_handoff()})
             unpacked = extracted / "setup-handoff"
             self.assertEqual({path.relative_to(unpacked).as_posix(): path.read_bytes()
                               for path in unpacked.rglob("*") if path.is_file()}, expected)

@@ -714,16 +714,9 @@ impl ChatApp {
             }
             return;
         }
-        // A shared draft is created the first time its surface is written
-        // in. Private person and Agent drafts are process-local and must not
-        // mint even an empty placeholder in the workspace document.
-        if self.direct_agent.is_none() && self.direct_person.is_none() {
-            let key = self.draft_key();
-            if !crate::projection::has_draft(doc, &key) {
-                self.ensure_composer_draft(doc, &key);
-                self.focused_composer_mut().sync(doc);
-            }
-        }
+        // A draft is made in the person's own record the first time its
+        // composer is written in.
+        self.focused_composer_mut().ensure_draft(doc);
         self.focused_composer_mut()
             .handle(event, scale, modifiers, doc);
         match self.focused_composer_mut().take_outcome() {
@@ -1064,6 +1057,7 @@ impl ChatApp {
             self.leave_floated_agent_route();
         }
         self.close_person_conversation();
+        self.not_sent = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
@@ -1125,12 +1119,6 @@ impl ChatApp {
             .channels
             .insert_as(&item(&id), self.channels.len(), &channel);
         self.apply_now(doc, insert);
-        if kind == ChannelKind::Text {
-            self.apply_now(
-                doc,
-                Chat::START_DRAFT.with(chat::StartDraft { key: id.clone() }),
-            );
-        }
         self.reload(doc);
         id
     }
@@ -1559,17 +1547,6 @@ impl ChatApp {
         true
     }
 
-    /// The draft text the focused composer was last loaded from (by
-    /// `reload`), the base its next edit is spliced against.
-    fn draft_key(&self) -> String {
-        match self.focus {
-            Focus::Thread => self
-                .thread_draft_key()
-                .unwrap_or_else(|| self.active_channel.clone()),
-            Focus::Main => self.active_channel.clone(),
-        }
-    }
-
     /// Insert `s` at the active shared input's caret. Message edits remain in
     /// memory until saved; otherwise this targets the focused composer
     /// `TextInput` — used by the emoji picker, which splices a picked glyph as
@@ -1586,13 +1563,7 @@ impl ChatApp {
             self.edit_input.insert_text(doc, s);
             return;
         }
-        if self.direct_agent.is_none() && self.direct_person.is_none() {
-            let key = self.draft_key();
-            if !crate::projection::has_draft(doc, &key) {
-                self.ensure_composer_draft(doc, &key);
-                self.focused_composer_mut().sync(doc);
-            }
-        }
+        self.focused_composer_mut().ensure_draft(doc);
         self.focused_composer_mut().insert_text(doc, s);
         self.reload(doc);
     }
@@ -1690,23 +1661,22 @@ impl ChatApp {
         if !self.can_participate() {
             return;
         }
-        let (key, parent) = match self.focus {
-            Focus::Thread => match self.thread_draft_key() {
-                Some(key) => (key, self.thread_open.clone()),
-                None => (self.active_channel.clone(), None),
-            },
-            Focus::Main => (self.active_channel.clone(), None),
+        let parent = match self.focus {
+            Focus::Thread => self.thread_open.clone(),
+            Focus::Main => None,
         };
-        let text = crate::projection::draft_text(doc, &key);
+        let text = self.focused_composer().value();
         if text.trim().is_empty() {
             return;
         }
-        let body = crate::projection::draft_clips(doc, &key);
+        let body = self.focused_composer().clips();
         // Posting is the record's `post`, the verb the palette and agents
         // use; the post binds `@name` to participants once, so no reader
-        // re-parses the body to work out who it was addressed to. Emptying
-        // the draft is an edit of it in the same step.
-        self.apply_now(
+        // re-parses the body to work out who it was addressed to. The draft
+        // is the writer's own and is emptied in their own record once the
+        // post is taken; a refused post keeps it, to send again, and says
+        // so beside the composer.
+        let posted = self.try_apply_now(
             doc,
             Chat::POST.with(chat::Post {
                 channel: item(&self.active_channel),
@@ -1716,16 +1686,12 @@ impl ChatApp {
                 attachment: None,
             }),
         );
-        if let Ok(clear) =
-            Chat::paths()
-                .drafts
-                .key(key)
-                .perform(&tilo_document::RichTextAction::ReplaceBody {
-                    markdown: String::new(),
-                })
-        {
-            self.apply_now(doc, clear);
+        if let Err(reason) = posted {
+            self.not_sent = Some(reason);
+            return;
         }
+        self.not_sent = None;
+        self.focused_composer_mut().clear(doc);
         self.focused_composer_mut().sync(doc);
         if matches!(self.focus, Focus::Main) {
             self.jump_to_latest();
@@ -2373,8 +2339,7 @@ mod tests {
             app.active_channel = "c_general".into();
             app.focus = Focus::Main;
             app.thread_open = None;
-            crate::testing::set_draft(&mut doc, "c_general", "hi from the composer");
-            app.reload(&doc);
+            crate::testing::write_draft(&mut app, &mut doc, "hi from the composer");
             app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
             let action = app
                 .dispatched
@@ -2545,6 +2510,37 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_post_keeps_its_text_and_says_it_was_not_sent() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        let before = crate::testing::top_level(&doc, "c_general");
+        let too_long = "x".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES + 1);
+        crate::testing::write_draft(&mut app, &mut doc, &too_long);
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(crate::testing::top_level(&doc, "c_general"), before);
+        assert_eq!(
+            app.composer_main.value(),
+            too_long,
+            "the text waits to be sent again"
+        );
+        assert!(
+            app.not_sent.is_some(),
+            "the refusal is shown, never swallowed"
+        );
+        render_frame(&mut app, 1280.0, 720.0);
+        let retries = app
+            .hits
+            .iter()
+            .filter(|(rect, hit)| {
+                matches!(hit, Hit::Send) && rect.y0 >= app.composer_main.rect().y1
+            })
+            .count();
+        assert_eq!(retries, 1, "Retry stands under the composer");
+    }
+
+    #[test]
     fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
         app.active_channel = "c_general".into();
@@ -2565,8 +2561,7 @@ mod tests {
             &automerge::ROOT,
         ));
         let before = crate::testing::top_level(&doc, "c_general");
-        crate::testing::set_draft(&mut doc, "c_general", "accepted semantic send");
-        app.reload(&doc);
+        crate::testing::write_draft(&mut app, &mut doc, "accepted semantic send");
         render_frame(&mut app, 1280.0, 720.0);
         assert!(ui::Widget::perform_semantic_action(
             &mut app,
@@ -2576,7 +2571,11 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(crate::testing::top_level(&doc, "c_general"), before + 1);
-        assert_eq!(crate::testing::draft_text(&doc, "c_general"), "");
+        assert_eq!(app.composer_main.value(), "");
+        assert!(
+            !crate::projection::has_draft(&doc, "c_general"),
+            "a draft never enters the room's record"
+        );
     }
 
     #[test]
@@ -4458,9 +4457,9 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                crate::testing::draft_text(&doc, &app.active_channel),
+                app.composer_main.value(),
                 "🦀 Accessible draft",
-                "semantic editing updates the same unsent collaborative draft"
+                "semantic editing updates the person's unsent draft"
             );
             assert!(ui::Widget::perform_semantic_action(
                 &mut app,
@@ -4593,7 +4592,7 @@ mod tests {
     #[test]
     fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
         let (mut app, mut doc) = app_with_doc();
-        crate::testing::set_draft(&mut doc, &app.active_channel, "Ae\u{301}👋B");
+        crate::testing::write_draft(&mut app, &mut doc, "Ae\u{301}👋B");
         app.sync_composers(&doc);
         render_frame(&mut app, 1280.0, 720.0);
         assert!(app.composer_main.perform_action(

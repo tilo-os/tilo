@@ -236,34 +236,6 @@ class Transport(unittest.TestCase):
             connect.assert_not_called()
 
 
-class BackendLock(unittest.TestCase):
-    """The compiled daemon (crates/system/install-helpers/tests/code_refresh.rs)
-    and the backend agree on the lock and the applied receipt."""
-
-    def test_transient_backend_owns_lock_after_launcher_reexec(self):
-        import subprocess
-        text = (ROOT / 'usr/libexec/tilo-install').read_text(encoding='utf-8')
-        start = text.index('# Only the transient backend owns this lock.')
-        end = text.index('# TILO_VM_CODE_REFRESH_PROBE_V1:', start)
-        self.assertGreater(start, text.index('if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then'))
-        with tempfile.TemporaryDirectory() as directory:
-            state = Path(directory) / 'code-refresh'
-            state.mkdir(mode=0o700)
-            block = text[start:end].replace('/run/tilo-installer/code-refresh', str(state))
-            script = Path(directory) / 'launcher.sh'
-            script.write_text('#!/bin/bash\nset -euo pipefail\n'
-                              'if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then\n'
-                              ' TILO_INSTALL_TRANSIENT=1 bash "$0"; exit $?\nfi\n'
-                              + block + 'echo backend-ran\n')
-            result = subprocess.run(['bash', str(script)], capture_output=True, text=True, timeout=5)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, 'backend-ran\n')
-            (state / 'active.json').write_text('{"state":"applying"}')
-            result = subprocess.run(['bash', str(script)], capture_output=True, text=True, timeout=5)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn('backend-ran', result.stdout)
-
-
 class SeedDaemon(unittest.TestCase):
     """The Python daemon only old media run, from the bootstrap seed."""
 

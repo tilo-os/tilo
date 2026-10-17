@@ -404,13 +404,14 @@ bins = ["tilo-account-credential"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
-  { from = "@manifest/scripts/verify-account-consumer-capability.py", to = "/usr/libexec/tilo-verify-account-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/service-consumer-capability.py", to = "/usr/libexec/tilo-service-consumer-capability.py", mode = "0755" },
 ]
 
 # Installed target-user setup consumer. First use and the retained launcher
 # authenticate this root-owned helper; elevated operations keep their existing
 # parent/descriptor admission rather than gaining a new installation grant.
+# Its --verify-{account,home,applications}-consumer-capability and
+# --data-consumer-catalog-facts modes produce and check the installed consumer
+# receipts (os/docs/data-consumer-capabilities.md).
 [[component]]
 name = "prepared-setup"
 kind = "userspace"
@@ -421,10 +422,6 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
   { from = "tilo-installer-prepared-setup-extract", to = "/usr/libexec/tilo-installer-prepared-setup-extract", mode = "0755" },
-  { from = "@manifest/scripts/verify-home-consumer-capability.py", to = "/usr/libexec/tilo-verify-home-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/verify-applications-consumer-capability.py", to = "/usr/libexec/tilo-verify-applications-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/installed-data-consumer.py", to = "/usr/libexec/tilo-installed-data-consumer.py", mode = "0755" },
-  { from = "@manifest/scripts/data-consumer-catalog-facts.py", to = "/usr/libexec/tilo-data-consumer-catalog-facts", mode = "0755" },
 ]
 
 [[component]]

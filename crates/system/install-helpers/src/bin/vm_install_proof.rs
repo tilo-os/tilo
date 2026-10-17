@@ -12,6 +12,17 @@ fn main() -> ExitCode {
             &tilo_install_helpers::code_refresh::System,
         );
     }
+    if let [command, base] = args.as_slice()
+        && command == "code-refresh-check"
+    {
+        return match tilo_install_helpers::code_refresh::check_applied(std::path::Path::new(base)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilo-vm-install-proof code-refresh-check: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     tilo_install_helpers::main(&install_proof::COMMAND, &args, |values| {
         install_proof::run(&install_proof::System, values)
     })

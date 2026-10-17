@@ -160,6 +160,7 @@ fn queued_presence_arrival_and_departure_repaint_without_widget_dirtiness() {
                     colour: None,
                     is_agent: false,
                     is_self: false,
+                    joined_at: None,
                 }]
             } else {
                 Vec::new()

@@ -1283,12 +1283,6 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
-COPY os/scripts/verify-account-consumer-capability.py \
-    os/scripts/service-consumer-capability.py \
-    os/scripts/verify-home-consumer-capability.py \
-    os/scripts/verify-applications-consumer-capability.py \
-    os/scripts/installed-data-consumer.py \
-    os/scripts/data-consumer-catalog-facts.py /tilo-components/scripts/
 COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
     os/usr/libexec/tilo-verified-update \
     /tilo-components/usr/libexec/
@@ -3288,10 +3282,10 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
     && OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image \
     # Observe the installed helper and exact signed SDK through its own loader.
     # Optional service-session artifacts absent means no service_sessions proof.
-    && /usr/libexec/tilo-verify-account-consumer-capability \
-    && /usr/libexec/tilo-verify-account-consumer-capability --check >/dev/null \
-    && /usr/libexec/tilo-verify-home-consumer-capability \
-    && /usr/libexec/tilo-verify-home-consumer-capability --check >/dev/null
+    && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability \
+    && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability --check >/dev/null \
+    && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability \
+    && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability --check >/dev/null
 
 # Validate.
 #

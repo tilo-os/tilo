@@ -4,7 +4,9 @@ use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use web_time::SystemTime;
 
-use crate::state::{GovernedIdentity, RedemptionReceipt, put_member};
+use crate::state::{
+    GovernedIdentity, RedemptionReceipt, delete_member_joined, put_member, put_member_joined_once,
+};
 
 /// How many later redemption receipts one governed identity row keeps beside
 /// its first (`GovernedIdentity::admission`).
@@ -273,6 +275,7 @@ pub fn admit_invited_member(
         cert.user_public_key,
         grant.role.into(),
     )?;
+    put_member_joined_once(&mut candidate, cert.user_public_key, now_ns / 1_000_000)?;
     candidate.commit();
     crate::room::media::refresh_authorization(document, &mut candidate)
         .map_err(|error| error.to_string())?;
@@ -470,6 +473,7 @@ pub fn remove_member(
         candidate
             .delete(&members, person.as_str())
             .map_err(|error| error.to_string())?;
+        delete_member_joined(&mut candidate, &person)?;
     }
     for id in personal {
         candidate

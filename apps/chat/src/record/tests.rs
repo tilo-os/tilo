@@ -117,11 +117,6 @@ fn a_new_chat_starts_with_its_creator_and_a_starter_workspace() {
             ("Lounge", ChannelKind::Voice)
         ]
     );
-    assert_eq!(
-        chat.draft_keys(),
-        ["c_general"],
-        "a text channel has its draft"
-    );
     let people = chat.user_rows();
     assert_eq!(
         people
@@ -443,10 +438,6 @@ fn channels_and_categories_are_made_moved_and_deleted() {
         .find(|channel| channel.name == "beta")
         .unwrap()
         .id;
-    assert!(
-        ada.state().unwrap().draft_keys().contains(&beta),
-        "a new text channel comes with its draft"
-    );
     ada.apply(Chat::MOVE_CHANNEL.with(chat::MoveChannel {
         channel: id(&beta),
         up: true,
@@ -499,7 +490,6 @@ fn a_channel_category_must_belong_to_its_workspace() {
         after.channels, before.channels,
         "no hidden channel is created"
     );
-    assert_eq!(after.drafts, before.drafts, "no orphan draft is created");
 
     ada.apply(create(id("cat_home_text"))).unwrap();
     let chat = ada.state().unwrap();
@@ -511,14 +501,9 @@ fn a_channel_category_must_belong_to_its_workspace() {
 }
 
 #[test]
-fn deleting_a_channel_takes_its_messages_drafts_and_read_marks() {
+fn deleting_a_channel_takes_its_messages_and_read_marks() {
     let mut ada = room();
     ada.apply(post("hello")).unwrap();
-    let hello = said(&ada, "hello");
-    ada.apply(Chat::START_DRAFT.with(chat::StartDraft {
-        key: format!("c_general::t::{hello}"),
-    }))
-    .unwrap();
     ada.apply(Chat::MARK_READ.with(chat::MarkRead {
         channel: id("c_general"),
         seen: None,
@@ -530,7 +515,6 @@ fn deleting_a_channel_takes_its_messages_drafts_and_read_marks() {
     .unwrap();
     let chat = ada.state().unwrap();
     assert!(chat.messages.is_empty());
-    assert!(chat.draft_keys().is_empty());
     assert_eq!(chat.read_mark("c_general", ADA), 0);
 }
 
@@ -703,48 +687,6 @@ fn plain_changes_are_field_edits_at_their_paths() {
         ada.apply(Invoke::edit(&text).unwrap()).is_err(),
         "a message's text changes only through edit-message"
     );
-}
-
-#[test]
-fn a_draft_is_rich_text_edited_at_its_key() {
-    let mut ada = room();
-    let append = Chat::paths()
-        .drafts
-        .key("c_general")
-        .perform(&tilo_document::RichTextAction::AppendParagraph {
-            text: "half a thought".into(),
-        })
-        .unwrap();
-    ada.apply(Invoke::edit(&append).unwrap()).unwrap();
-    assert_eq!(
-        crate::projection::draft_text(ada.doc(), "c_general"),
-        "\nhalf a thought".trim_start()
-    );
-    // Typing into a draft never started starts it, holding just what was
-    // typed; nothing else changes.
-    let before = ada.state().unwrap();
-    let elsewhere = Chat::paths()
-        .drafts
-        .key("c_random")
-        .perform(&tilo_document::RichTextAction::AppendParagraph {
-            text: "an aside".into(),
-        })
-        .unwrap();
-    ada.apply(Invoke::edit(&elsewhere).unwrap()).unwrap();
-    assert_eq!(
-        crate::projection::draft_text(ada.doc(), "c_random").trim_start(),
-        "an aside"
-    );
-    assert_eq!(
-        crate::projection::draft_text(ada.doc(), "c_general"),
-        "\nhalf a thought".trim_start()
-    );
-    let after = ada.state().unwrap();
-    assert_eq!(after.drafts.len(), before.drafts.len() + 1);
-    assert_eq!(after.messages, before.messages);
-    assert_eq!(after.channels, before.channels);
-    assert_eq!(after.people, before.people);
-    assert_eq!(after.read, before.read);
 }
 
 #[test]

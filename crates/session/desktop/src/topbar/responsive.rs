@@ -153,7 +153,10 @@ impl TopBarChrome {
     pub(super) const CONTROL_WIDGET_EDITOR: &'static str = "topbar:widget-editor";
 
     pub(super) fn use_responsive(&self, theme: &Theme) -> bool {
-        !self.rect.is_zero_area()
+        // The workspace menu already holds what the icon row would: the bar
+        // keeps its names and faces at every width.
+        !self.has_workspace_menu()
+            && !self.rect.is_zero_area()
             && !self.is_compact()
             && self.rect.width()
                 < self.center_band_width(theme)
@@ -166,12 +169,14 @@ impl TopBarChrome {
         if self.tilo_mark.is_some() {
             targets.push(Self::CONTROL_TILO_MARK);
         }
-        targets.extend([
-            Self::CONTROL_OVERVIEW,
-            Self::CONTROL_WORKSPACE_UP,
-            Self::CONTROL_WORKSPACE_DOWN,
-            Self::CONTROL_WORKSPACE_SETTINGS,
-        ]);
+        if !self.has_workspace_menu() {
+            targets.extend([
+                Self::CONTROL_OVERVIEW,
+                Self::CONTROL_WORKSPACE_UP,
+                Self::CONTROL_WORKSPACE_DOWN,
+            ]);
+        }
+        targets.push(Self::CONTROL_WORKSPACE_SETTINGS);
         let strips = self.strip_responsive_specs();
         targets.extend(
             self.widget_config
@@ -180,9 +185,18 @@ impl TopBarChrome {
                 .copied()
                 .map(Self::center_control),
         );
-        targets.push(Self::CONTROL_QUICK_SETTINGS);
+        if !self.has_workspace_menu() {
+            targets.push(Self::CONTROL_QUICK_SETTINGS);
+        }
         if self.collaborators_visible() || self.invite_visible() || self.sharing_label().is_some() {
             targets.push(Self::CONTROL_COLLABORATORS);
+        }
+        if self.own_chip().is_some() {
+            targets.push(Self::CONTROL_PROFILE);
+        }
+        if self.has_workspace_menu() {
+            // People, you, then the system: the bar's trailing edge.
+            targets.push(Self::CONTROL_QUICK_SETTINGS);
         }
         if !self.status.media.is_empty() {
             targets.push(Self::CONTROL_MEDIA);
@@ -255,7 +269,11 @@ impl TopBarChrome {
             Self::CONTROL_OVERVIEW => (Self::overview_glyph_icon(), 100),
             Self::CONTROL_WORKSPACE_UP => (Icon::ChevronUp, 10),
             Self::CONTROL_WORKSPACE_DOWN => (Icon::ChevronDown, 10),
+            Self::CONTROL_WORKSPACE_SETTINGS if self.has_workspace_menu() => {
+                (Icon::LayoutGrid, 100)
+            }
             Self::CONTROL_WORKSPACE_SETTINGS => (Icon::Settings, 90),
+            Self::CONTROL_PROFILE => (Icon::User, 105),
             Self::CONTROL_CENTER_CLOCK => (Icon::Clock, 70),
             Self::CONTROL_CENTER_MONITOR => (Icon::Monitor, 20),
             Self::CONTROL_CENTER_CALENDAR => (Icon::Calendar, 20),

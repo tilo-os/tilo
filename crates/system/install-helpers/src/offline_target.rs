@@ -1,5 +1,5 @@
-//! `tilo-installer-offline-target verify|import`: authenticates and imports
-//! the separately signed, offline installer target.
+//! `tilo-installer-offline-target verify|import|receipt`: authenticates and
+//! imports the separately signed, offline installer target.
 //!
 //! The live medium is transport, not the installed image. `verify` runs
 //! before any disk mutation: the target's metadata, its OCI manifest and
@@ -786,10 +786,9 @@ pub fn import_image(host: &dyn Host) -> Result<String> {
             "--network=none",
             "--cap-drop=ALL",
             "--entrypoint",
-            "/usr/bin/python3",
+            "/usr/libexec/tilo-board-successor",
             &image_id,
-            "/usr/lib/tilo/hardware_profile.py",
-            "--install-update-origin",
+            "install-update-origin",
             text(&metadata, "update_origin"),
         ],
         seconds(120),
@@ -797,6 +796,27 @@ pub fn import_image(host: &dyn Host) -> Result<String> {
     // Bootc consumes this immutable ID; the guest proof checks its resulting
     // deployment's manifest digest and origin against the signed receipt.
     Ok(image_id)
+}
+
+/// `receipt`: what the installer backend needs from the verified preflight,
+/// as `UPDATE_ORIGIN=` and `DEVELOPMENT=0|1` lines.
+///
+/// # Errors
+/// No saved preflight, or one without an update origin.
+pub fn receipt_facts(host: &dyn Host) -> Result<String> {
+    let path = host.receipt();
+    require(
+        path.is_file() && !path.is_symlink(),
+        "offline target has no verified preflight",
+    )?;
+    let receipt = loads(&checked_file(&path, 8192)?)?;
+    let receipt = as_map(&receipt, "receipt")?;
+    let origin = get(receipt, "update_origin")
+        .as_str()
+        .filter(|origin| !origin.is_empty() && !origin.contains('\n'))
+        .ok_or_else(|| Error::new("verified preflight names no update origin"))?;
+    let development = u8::from(text(receipt, "schema") == DEV_SCHEMA);
+    Ok(format!("UPDATE_ORIGIN={origin}\nDEVELOPMENT={development}"))
 }
 
 /// The target's index descriptor, named `target` for the one-image view.
@@ -921,25 +941,27 @@ fn check_development_mount(host: &dyn Host, mounted: &Path) -> Result<()> {
     Ok(())
 }
 
-const USAGE: &str = "usage: tilo-installer-offline-target [-h] {verify,import}\n";
+const USAGE: &str = "usage: tilo-installer-offline-target [-h] {verify,import,receipt}\n";
 const HELP: &str = "
 Authenticate and import the separately signed, offline installer target.
 
 The live medium is transport, not the installed image.  `verify` runs before
-any disk mutation; `import` rechecks the manifest after Podman loads it.
-`dev-target-uki validate-image|promote` projects a CI development target into
-its unsigned target UKI, in the development installer VM only.
+any disk mutation; `import` rechecks the manifest after Podman loads it;
+`receipt` prints the verified update origin and whether the target is an
+unsigned development image. `dev-target-uki validate-image|promote` projects
+a CI development target into its unsigned target UKI, in the development
+installer VM only.
 
 positional arguments:
-  {verify,import}
+  {verify,import,receipt}
 
 options:
   -h, --help       show this help message and exit
 ";
 
 /// The command line: `verify` prints the verified facts, `import` the image
-/// ID, `dev-target-uki` is [`crate::dev_target_uki::main`]; a refusal exits
-/// 1, a usage error 2.
+/// ID, `receipt` the backend's facts, `dev-target-uki` is
+/// [`crate::dev_target_uki::main`]; a refusal exits 1, a usage error 2.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     if let Some(("dev-target-uki", rest)) = args
         .split_first()
@@ -977,19 +999,19 @@ pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     let Some(command) = positionals.first() else {
         return usage("the following arguments are required: command");
     };
-    if command != "verify" && command != "import" {
+    if !["verify", "import", "receipt"].contains(&command.as_str()) {
         return usage(&format!(
-            "argument command: invalid choice: '{command}' (choose from verify, import)"
+            "argument command: invalid choice: '{command}' (choose from verify, import, receipt)"
         ));
     }
     unknown.extend(positionals.iter().skip(1).cloned());
     if !unknown.is_empty() {
         return usage(&format!("unrecognized arguments: {}", unknown.join(" ")));
     }
-    let outcome = if command == "verify" {
-        verify(host).map(|result| Dumps::SORTED.dumps(&result))
-    } else {
-        import_image(host)
+    let outcome = match command.as_str() {
+        "verify" => verify(host).map(|result| Dumps::SORTED.dumps(&result)),
+        "receipt" => receipt_facts(host),
+        _ => import_image(host),
     };
     match outcome {
         Ok(line) => {

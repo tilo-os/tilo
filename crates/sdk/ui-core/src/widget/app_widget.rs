@@ -286,6 +286,12 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
 
+    /// The room refused a change this record made, and the record withdrew
+    /// it: the action is refused as one refused on this device is.
+    /// Delivered, like [`Self::record_save_status`], after the record loan
+    /// ends.
+    fn record_refused(&mut self, _refusal: &crate::record::RecordRefusal) {}
+
     /// Answer a device-owner operation from the authenticated hosting shell.
     /// This is not an app action and never grants access to a host shell.
     ///

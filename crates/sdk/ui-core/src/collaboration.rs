@@ -949,9 +949,32 @@ pub struct Collaborator {
     /// Apps can't derive this themselves: `id` is the address *other*
     /// machines use, and a machine never announces its own to its own apps.
     pub is_self: bool,
+    /// When the room admitted this participant, Unix milliseconds, as its
+    /// membership records it; `None` for an agent or a member admitted
+    /// before rooms recorded it. People who share a name are numbered in
+    /// this order ([`crate::presence::ParticipantLabels::by_joining`]).
+    pub joined_at: Option<u64>,
 }
 
 impl Collaborator {
+    /// [`Self::joined_at`] as the roster's wire carries it: `u64::MAX` for
+    /// none.
+    #[must_use]
+    pub fn packed_joined_at(&self) -> u64 {
+        self.joined_at.unwrap_or(u64::MAX)
+    }
+
+    /// The admission time a roster row's packed value names: `None` for
+    /// `u64::MAX`.
+    #[must_use]
+    pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
+        if packed == u64::MAX {
+            None
+        } else {
+            Some(packed)
+        }
+    }
+
     /// [`Self::colour`] as the roster's wire carries it: the presence
     /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
     /// is black).

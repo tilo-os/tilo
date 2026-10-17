@@ -88,12 +88,14 @@ suites = ["os/tests/test_container_signature_policy.py"]
 name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
-# to the helper's own early return.
+# to the helper's own early return. test_service_candidate_bridge.py holds the
+# fixture's receiving closure to the installed producer's list. The installer
+# script suites build and run tilo-staging-handoff, which their scripts hand
+# their checks to.
 inputs = [
   "os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs",
-  "crates/system/install-helpers/src/staging_handoff.rs",
-  "crates/system/install-helpers/src/staging_handoff/",
-  "crates/system/install-helpers/tests/fixtures/",
+  "crates/platform/imager-backend/src/account_admission.rs",
+  "crates/system/install-helpers/",
   "apps/staging-handoff-model/",
 ]
 suites = [
@@ -210,9 +212,7 @@ suites = [
   "os/scripts/installer-receive-fixture/test_delivery.py",
   "os/scripts/installer-source-fixture/test_bounded_native.py",
   "os/scripts/installer-source-fixture/test_source.py",
-  "os/tests/data_consumer_capability_test.py",
   "os/tests/test_install_purpose.py",
-  "os/tests/test_optional_service_consumer.py",
   "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
@@ -810,7 +810,7 @@ readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
 package = "tilo-board-successor"
 # The selector's tests run the shipped tilo-verified-update with it, read the
 # shipped hardware definitions as profile fixtures, and hold the reader to the
-# module the installer still uses.
+# module the image builders still use.
 inputs = [
   "os/usr/libexec/tilo-verified-update",
   "os/hardware/profiles/*.json",
@@ -874,6 +874,7 @@ package = "tilo-install-helpers"
 # and all oracle inputs in this package's result key.
 inputs = [
   "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition",
+  "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/",
   "os/usr/libexec/tilo-firstboot-autologin-cleanup",
   "os/usr/libexec/tilo-session-recovery",
@@ -904,6 +905,7 @@ readers = [
   "crates/system/install-helpers/tests/install_proof.rs",
   "crates/system/install-helpers/tests/code_refresh.rs",
   "crates/system/install-helpers/tests/dev_target_uki.rs",
+  "crates/system/install-helpers/tests/backend_commands.rs",
 ]
 
 [[cargo]]
@@ -1177,12 +1179,11 @@ readers = [
 [[cargo]]
 package = "imager-backend"
 inputs = [
-  "os/scripts/", "os/usr/libexec/tilo-firstboot-user",
+  "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
 ]
 readers = [
-  "crates/platform/imager-backend/src/account_admission.rs",
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
 ]

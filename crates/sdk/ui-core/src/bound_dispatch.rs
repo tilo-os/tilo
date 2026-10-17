@@ -3352,6 +3352,9 @@ pub(crate) struct RecordActionState {
             crate::undo::UndoStatus,
         ),
     >,
+    /// Changes the room refused and the record withdrew, not yet told to
+    /// the app that holds it ([`crate::record::RecordStore::take_refusals`]).
+    pub(crate) refusals: Vec<crate::record::RecordRefusal>,
 }
 impl Default for RecordActionState {
     fn default() -> Self {
@@ -3362,6 +3365,7 @@ impl Default for RecordActionState {
             statuses: HashMap::new(),
             summaries: HashMap::new(),
             answered: HashMap::new(),
+            refusals: Vec::new(),
         }
     }
 }

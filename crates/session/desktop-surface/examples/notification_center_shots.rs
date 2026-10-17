@@ -74,6 +74,7 @@ fn ask() -> Notification {
         title: "Keep with passkey".into(),
         subtitle: None,
         source: Some(HostActionSource::Identity),
+        label: None,
     };
     let mut ask = keep.notice(
         "Keep this identity?",
