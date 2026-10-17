@@ -3178,24 +3178,38 @@ impl CapnpBrokerState {
                 },
                 automation::completion(invocation, &report),
             );
-            state.shortcut_runs.push(automation::FinishedShortcutRun {
-                room,
-                shortcut,
-                invoker: actor,
-                report,
-            });
+            state
+                .ended_runs
+                .shortcuts
+                .push(automation::FinishedShortcutRun {
+                    room,
+                    shortcut,
+                    invoker: actor,
+                    report,
+                });
         });
         Ok(job)
     }
 
     /// Shortcut runs finished since the last call, oldest first.
     pub fn take_finished_shortcut_runs(&self) -> Vec<automation::FinishedShortcutRun> {
-        self.shortcut_runs.take()
+        self.ended_runs.shortcuts.take()
     }
 
     /// Whether a finished shortcut run is waiting to be taken.
     pub fn has_finished_shortcut_runs(&self) -> bool {
-        self.shortcut_runs.has_finished()
+        self.ended_runs.shortcuts.has_finished()
+    }
+
+    /// Agent runs of workspace tasks that ended since the last call, oldest
+    /// first.
+    pub fn take_ended_task_runs(&self) -> Vec<crate::task_runs::EndedTaskRun> {
+        self.ended_runs.tasks.take()
+    }
+
+    /// Whether an ended task run is waiting to be taken.
+    pub fn has_ended_task_runs(&self) -> bool {
+        self.ended_runs.tasks.has_ended()
     }
 
     /// Execute a host-owned workspace governance action (permission
