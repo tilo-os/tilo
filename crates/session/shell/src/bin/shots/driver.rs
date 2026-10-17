@@ -1566,6 +1566,10 @@ impl ShellDriver {
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
+            "palette_rechner" => self.scene_palette_query("rechner"),
+            "palette_sum" => self.scene_palette_query("2+2"),
+            "palette_move" => self.scene_palette_query("move"),
+            "palette_files" => self.scene_palette_query("files"),
             "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
@@ -1727,6 +1731,20 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .set_palette_query("zzzz-nothing-matches-this");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Search answering one typed query, for the queries search used to get
+    /// wrong: a German word that offered Restart, arithmetic, the move verb
+    /// and an open app's name.
+    fn scene_palette_query(&mut self, query: &str) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query(query);
         let root = self.root_obj.clone();
         self.fb
             .host_mut()
@@ -2890,6 +2908,10 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "palette_rechner",
+        "palette_sum",
+        "palette_move",
+        "palette_files",
         "topbar-edit",
         "quick-settings",
         "qs-edit",
