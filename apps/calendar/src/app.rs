@@ -2556,8 +2556,12 @@ impl CalendarApp {
     /// model; it never claims that a remote participant is available.
     fn local_schedule_conflicts(&self, edited: &Event) -> Vec<String> {
         let (start, end) = Self::event_interval(edited, edited.start.date());
-        let window_start = start.date() - Duration::days(1);
-        let window_end = end.date();
+        // Named zones can put the same instant on different calendar dates.
+        // Two days covers the full IANA offset spread without moving any
+        // recurrence anchor into a different timezone.
+        let window_start = start.date() - Duration::days(2);
+        let window_end = end.date().max(start.date()) + Duration::days(2);
+        let resolved = Self::resolved_event_interval(edited, edited.start.date());
         let mut conflicts = Vec::new();
 
         for candidate in &self.model.events {
@@ -2585,7 +2589,14 @@ impl CalendarApp {
                     .into_iter()
                     .any(|date| {
                         let (other_start, other_end) = Self::event_interval(candidate, date);
-                        start < other_end && other_start < end
+                        resolved
+                            .zip(Self::resolved_event_interval(candidate, date))
+                            .map_or_else(
+                                || start < other_end && other_start < end,
+                                |((start, end), (other_start, other_end))| {
+                                    start < other_end && other_start < end
+                                },
+                            )
                     })
             };
             if overlaps {
