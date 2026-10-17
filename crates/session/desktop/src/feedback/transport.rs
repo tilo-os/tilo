@@ -394,6 +394,11 @@ impl Transport for SessionTransport {
 /// Existing focused-surface consent/masking and content custody. Raw screenshots
 /// or whole-desktop capture must never be implemented by this adapter.
 pub trait Capture {
+    /// Whether this adapter can produce a masked screenshot at all.
+    fn offers_screenshots(&self) -> bool;
+    /// Context read from the subject's surface, beyond the app identity the
+    /// desktop already names.
+    ///
     /// # Errors
     /// Refuses unavailable or protected opt-in context.
     fn context(&mut self) -> Result<Vec<ReviewText>, Error>;
@@ -405,11 +410,16 @@ pub trait Capture {
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error>;
 }
 
-/// Explicit description-only binding until a qualified capture adapter exists.
+/// Reads nothing from any surface: a report carries the person's text and,
+/// with consent, the identity of the app it is about. No screenshot is
+/// offered until a qualified capture adapter exists.
 pub struct NoCapture;
 impl Capture for NoCapture {
+    fn offers_screenshots(&self) -> bool {
+        false
+    }
     fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
-        Err(Error::CaptureProtected)
+        Ok(Vec::new())
     }
     fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
         Err(Error::CaptureProtected)
@@ -678,6 +688,9 @@ impl Host {
 }
 
 impl FeedbackHost for Host {
+    fn offers_screenshots(&self) -> bool {
+        self.capture.offers_screenshots()
+    }
     fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
         self.current(None, false)?;
         let context = self.capture.context()?;

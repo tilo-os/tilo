@@ -32,6 +32,8 @@ pub struct InProcessApps {
     feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
     native_feedback: Option<Box<dyn feedback_native::Producer>>,
     feedback_destination: Option<tilo_desktop::feedback::Destination>,
+    /// The window the person last asked to give feedback about.
+    feedback_subject: Option<tilo_desktop::feedback::Subject>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -88,6 +90,7 @@ impl InProcessApps {
             feedback: None,
             native_feedback: None,
             feedback_destination: None,
+            feedback_subject: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -454,7 +457,12 @@ impl InProcessApps {
     ) -> Result<AppComponent, LaunchError> {
         if definition.app_id == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
-                Some(feedback) => feedback.prepare(&self.device_id, &self.author.0, tab),
+                Some(feedback) => {
+                    feedback
+                        .about(self.feedback_subject.clone())
+                        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+                    feedback.prepare(&self.device_id, &self.author.0, tab)
+                }
                 None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
             };
         }
@@ -581,6 +589,16 @@ impl InProcessApps {
                 .map_err(|error| LaunchError::Operation(error.to_string()))?,
         );
         Ok(())
+    }
+
+    /// Feedback opened from now on, and an open composer, is about `subject`.
+    pub(crate) fn feedback_about(&mut self, subject: Option<tilo_desktop::feedback::Subject>) {
+        if let Some(feedback) = &self.feedback
+            && let Err(error) = feedback.about(subject.clone())
+        {
+            tracing::debug!(%error, "feedback subject not applied to the open composer");
+        }
+        self.feedback_subject = subject;
     }
 
     /// Storage/transport wakes service the approved outbox, including while

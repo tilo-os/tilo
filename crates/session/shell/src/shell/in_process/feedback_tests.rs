@@ -120,8 +120,12 @@ impl DestinationOwner {
 
 struct AdmittedHost(Rc<RefCell<DestinationOwner>>);
 impl FeedbackHost for AdmittedHost {
+    fn offers_screenshots(&self) -> bool {
+        false
+    }
     fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
-        Err(Error::CaptureProtected)
+        // Like the production adapter, nothing is read from the surface.
+        Ok(Vec::new())
     }
     fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
         Err(Error::CaptureProtected)
@@ -412,4 +416,131 @@ fn unconfigured_native_feedback_cannot_review_send_or_create_shared_drafts() {
             .contains("Feedback is not configured")
     );
     assert!(inputs.in_process().unwrap().borrow().views.is_empty());
+}
+
+#[test]
+fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_consent() {
+    use crate::shell::window_actions::{Destination as Place, open_hosted};
+    use tilo_desktop::feedback::{Focused, composer_tab, focused};
+    let root = tempfile::tempdir().unwrap();
+    let mut apps = InProcessApps::at(&root.path().join("profile"), AUTHOR).unwrap();
+    let owner = destination_owner(&mut apps);
+    owner.borrow_mut().offline = false;
+    apps.install_feedback(
+        owner.borrow().destination.clone(),
+        Box::new(AdmittedHost(owner.clone())),
+    )
+    .unwrap();
+    let chrome = crate::shell::chrome_state::ChromeState::new(
+        crate::shell::state::WorkspaceTree::bootstrap_default(),
+    );
+    chrome.borrow_mut().hosted_inputs =
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
+            .unwrap();
+    open_hosted(
+        &mut chrome.borrow_mut(),
+        crate::shell::state::AppKind::Other("Notes".into()),
+        "Shopping list",
+        Place::Beside,
+    );
+    let Focused::App(notes) = focused(&chrome.borrow().tree().desktop, |_| None) else {
+        panic!("the opened window is in front");
+    };
+    assert_eq!(
+        notes.name, "Notes",
+        "the app's own name, not the window title"
+    );
+    crate::shell::feedback_entry::open(&mut chrome.borrow_mut()).unwrap();
+    assert_eq!(
+        focused(&chrome.borrow().tree().desktop, |_| None),
+        Focused::Composer
+    );
+    let opened = composer_tab(&chrome.borrow().tree().desktop).expect("the composer opened");
+    // Asking again from the composer brings back the same one, still about Notes.
+    crate::shell::feedback_entry::open(&mut chrome.borrow_mut()).unwrap();
+    assert_eq!(composers(&chrome.borrow().tree().desktop), 1);
+    assert_eq!(composer_tab(&chrome.borrow().tree().desktop), Some(opened));
+
+    let mut frame = mount(&chrome.borrow().hosted_inputs);
+    frame.relayout();
+    assert!(frame.inspection_json().unwrap().contains("About Notes"));
+    call(
+        &mut frame,
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "Saving lost my edit; write to jana@example.org"}}),
+    )
+    .unwrap();
+    call(&mut frame, "review", &json!({})).unwrap();
+    frame.relayout();
+    let without = frame.inspection_json().unwrap();
+    assert!(
+        !without.contains("App: Notes"),
+        "nothing is attached without consent"
+    );
+    let preview = preview(&frame.inspection().root).expect("the review is shown");
+    assert!(
+        preview.contains("write to ") && !preview.contains("jana@example.org"),
+        "{preview}"
+    );
+    call(
+        &mut frame,
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "include_context"}], "op": "set", "value": true}}),
+    )
+    .unwrap();
+    call(&mut frame, "review", &json!({})).unwrap();
+    frame.relayout();
+    assert!(frame.inspection_json().unwrap().contains("App: Notes ("));
+    let _approval = call(&mut frame, "submit", &json!({}));
+    assert!(frame.wait_until(ui::time::Duration::from_secs(5), |_| {
+        chrome
+            .borrow()
+            .hosted_inputs
+            .in_process()
+            .unwrap()
+            .borrow_mut()
+            .pump_feedback();
+        !owner.borrow().pending.is_empty()
+    }));
+    owner.borrow_mut().deliver();
+    assert_sent_about_notes(&owner.borrow().sends);
+}
+
+/// The reviewed text exactly as the composer shows it for approval.
+fn preview(node: &ui::headless::InspectionNode) -> Option<String> {
+    if node.test_id.as_deref() == Some("feedback-preview") {
+        return node.semantics.as_ref()?.name.clone();
+    }
+    node.children.iter().find_map(preview)
+}
+
+fn composers(desktop: &crate::shell::state::DesktopTree) -> usize {
+    desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter(|tab| tilo_desktop::feedback::is_composer(&tab.tile))
+        .count()
+}
+
+/// The one report sent: the description masked, the app named, no title.
+fn assert_sent_about_notes(sends: &[Submission]) {
+    let sent = sends.first().unwrap();
+    assert!(!sent.feedback.text.contains("jana@example.org"));
+    let context: Vec<_> = sent
+        .feedback
+        .context
+        .iter()
+        .map(|field| field.value.as_str())
+        .collect();
+    assert_eq!(context.len(), 1);
+    assert!(context[0].starts_with("App: Notes ("), "{context:?}");
+    assert!(
+        !serde_json::to_string(sent)
+            .unwrap()
+            .contains("Shopping list"),
+        "the window's title never leaves the device"
+    );
 }

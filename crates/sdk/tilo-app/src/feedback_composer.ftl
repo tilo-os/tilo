@@ -1,8 +1,9 @@
 feedback-title = Give feedback
 feedback-describe = What happened, and what did you expect?
-feedback-context = Include context from this app
+feedback-about = About { $app }
+feedback-context = Include which app this is about
 feedback-screenshot = Include one masked screenshot of this app
-feedback-privacy = Attachments are optional. Review and hide private information before sending.
+feedback-privacy = Only what you include is sent. Review it and hide anything private before sending.
 feedback-review = Review what will be sent
 feedback-remove-screenshot = Remove screenshot
 feedback-hide-context = Hide this context field
