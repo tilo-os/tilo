@@ -301,6 +301,8 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# The persistent room test's page fetches over the room's plain listener.
+hyper = { version = "1", features = ["client", "http1"] }
 
 [[test]]
 name = "it"
