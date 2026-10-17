@@ -3622,6 +3622,8 @@ impl std::fmt::Debug for PublishedInvocationResult {
 pub struct LocalDocumentActionReport {
     pub version: u8,
     pub invocation: uuid::Uuid,
+    /// Random capture identity, preserved unchanged across retries.
+    pub capture_id: uuid::Uuid,
     pub revision: String,
     pub resource: String,
     pub action: String,
@@ -3812,12 +3814,69 @@ fn reliable_decode_observation(
 }
 
 impl LocalDocumentActionReport {
+    /// Bind the complete immutable report, except the invocation address itself.
+    /// Generate `capture_id` once; finalize this address only after mutation hashes
+    /// are known and preserve both identities across transport retries.
+    /// # Errors
+    /// Returns an error if the report cannot be encoded.
+    pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
+        let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
+        value
+            .as_object_mut()
+            .ok_or("invalid local report")?
+            .remove("invocation");
+        // Match the broker's journal request digest, including recursively sorted
+        // object members even when serde_json's preserve_order feature is enabled.
+        fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    let mut members: Vec<_> = fields.iter().collect();
+                    members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                    out.push(b'{');
+                    for (position, (name, member)) in members.into_iter().enumerate() {
+                        if position > 0 {
+                            out.push(b',');
+                        }
+                        canonical(&serde_json::Value::String(name.clone()), out);
+                        out.push(b':');
+                        canonical(member, out);
+                    }
+                    out.push(b'}');
+                }
+                serde_json::Value::Array(items) => {
+                    out.push(b'[');
+                    for (position, item) in items.iter().enumerate() {
+                        if position > 0 {
+                            out.push(b',');
+                        }
+                        canonical(item, out);
+                    }
+                    out.push(b']');
+                }
+                scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
+            }
+        }
+        let mut encoded = Vec::new();
+        canonical(&value, &mut encoded);
+        let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
+        request.update(&encoded);
+        let mut hash = blake3::Hasher::new_derive_key("tilo local document capture identity v1");
+        hash.update(request.finalize().as_bytes());
+        let bytes = hash
+            .finalize()
+            .as_bytes()
+            .first_chunk::<16>()
+            .copied()
+            .ok_or("invalid local report digest")?;
+        Ok(uuid::Uuid::from_bytes(bytes))
+    }
+
     /// Closed, bounded encoding shared with the authenticated local endpoint.
     /// No actor, app, record or target identity may be supplied by the caller.
     /// # Errors
     /// Refuses invalid addresses, noncanonical hash sets and oversized reports.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        if self.version != 1 || self.invocation.is_nil() {
+        if self.version != 1 || self.invocation.is_nil() || self.capture_id.is_nil() {
             return Err("invalid local document report version or invocation".into());
         }
         for field in [&self.revision, &self.resource, &self.action] {
@@ -4066,6 +4125,7 @@ mod local_document_action_transport_tests {
         LocalDocumentActionReport {
             version: 1,
             invocation: uuid::Uuid::from_bytes([1; 16]),
+            capture_id: uuid::Uuid::from_bytes([4; 16]),
             revision: "captured-revision".into(),
             resource: "document".into(),
             action: "edit".into(),
@@ -4103,6 +4163,7 @@ mod local_document_action_transport_tests {
             vec![
                 "action",
                 "argument",
+                "capture_id",
                 "context",
                 "encoded",
                 "group",
@@ -4118,6 +4179,16 @@ mod local_document_action_transport_tests {
             assert!(json.get(forbidden).is_none());
         }
         assert_eq!(json["invocation"], value.invocation.to_string());
+        assert_eq!(json["capture_id"], value.capture_id.to_string());
+        let mut missing_capture = json.clone();
+        missing_capture
+            .as_object_mut()
+            .unwrap()
+            .remove("capture_id");
+        assert!(serde_json::from_value::<LocalDocumentActionReport>(missing_capture).is_err());
+        let mut nil_capture = value.clone();
+        nil_capture.capture_id = uuid::Uuid::nil();
+        assert!(nil_capture.encode().is_err());
         let debug = format!("{value:?}");
         assert!(!debug.contains("private text"));
         assert!(!debug.contains("captured-revision"));

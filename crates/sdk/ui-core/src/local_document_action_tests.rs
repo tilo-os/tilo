@@ -51,6 +51,7 @@ fn capture_debug_does_not_disclose_private_intent() {
     let private = "private note body";
     let capture = CapturedAction {
         invocation: uuid::Uuid::new_v4(),
+        capture_id: uuid::Uuid::new_v4(),
         revision: private.into(),
         published: Some(PublishedInvocation {
             resource: private.into(),
@@ -86,6 +87,19 @@ fn canonical_host_captures_each_execution_not_each_undo_step() {
     let captured = queue.drain();
     assert_eq!(captured.len(), 2);
     assert_ne!(captured[0].invocation, captured[1].invocation);
+    assert_ne!(captured[0].capture_id, captured[1].capture_id);
+    for capture in &captured {
+        assert_eq!(capture.invocation, capture.bound_invocation().unwrap());
+        let retry = capture.clone();
+        assert_eq!(retry.capture_id, capture.capture_id);
+        assert_eq!(retry.bound_invocation().unwrap(), capture.invocation);
+        let mut without_mutations = capture.clone();
+        without_mutations.mutation_hashes.clear();
+        assert_ne!(
+            without_mutations.bound_invocation().unwrap(),
+            capture.invocation
+        );
+    }
     assert_eq!(captured[0].published.as_ref().unwrap().resource, "child");
     assert_eq!(captured[0].encoded.type_id, "parent.put");
     assert_eq!(
@@ -141,10 +155,16 @@ fn noops_keep_empty_actual_mutations_without_inventing_a_change() {
     let mut doc = AutoCommit::new();
     let mut host = crate::action_host::ActionHost::new();
     host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+    host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
     let captured = queue.drain();
-    assert_eq!(captured.len(), 1);
-    assert!(captured[0].mutation_hashes.is_empty());
-    assert!(captured[0].published.is_some());
+    assert_eq!(captured.len(), 2);
+    assert_ne!(captured[0].capture_id, captured[1].capture_id);
+    assert_ne!(captured[0].invocation, captured[1].invocation);
+    for capture in captured {
+        assert!(capture.mutation_hashes.is_empty());
+        assert!(capture.published.is_some());
+        assert_eq!(capture.invocation, capture.bound_invocation().unwrap());
+    }
 }
 
 #[test]
@@ -273,6 +293,7 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         let mut report = runtime_collab::LocalDocumentActionReport {
             version: 1,
             invocation: action.invocation,
+            capture_id: action.capture_id,
             revision: action.revision.clone(),
             resource: "body".into(),
             action: "set".into(),
