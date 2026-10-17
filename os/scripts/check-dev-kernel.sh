@@ -4,7 +4,7 @@
 #   check-dev-kernel.sh [ROOT]     (default /)
 #
 # tilo-vmd gives every headful slot a vkms card created through configfs and
-# per-seat uinput devices (docs/superpowers/specs/2026-09-22-dev-vm-overlays-spike-results.md).
+# per-seat uinput devices (docs/architecture/dev-vms.md).
 # Missing any of these surfaces only when the first slot starts, as an opaque
 # modprobe or mkdir error, so check the image's own kernel here instead:
 #

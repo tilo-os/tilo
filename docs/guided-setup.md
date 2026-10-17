@@ -1,8 +1,10 @@
 # Guided Tilo setup and migration
 
-Date: 2026-09-16
-Status: Approved for implementation by the user's request to implement the app
-for Windows and Linux. Platform feasibility and release validation remain gates.
+The product contract for the Imager's guided setup on Windows and Linux.
+Platform feasibility and release validation gate each advertised configuration;
+the USB-free installation path is specified in
+[`architecture/usb-free-install.md`](architecture/usb-free-install.md), and
+delivery status is in [`migration-status.md`](migration-status.md).
 
 ## Outcome and scope
 
@@ -141,7 +143,7 @@ imported content as part of migration.
 Use one coordinator with focused services rather than expanding the existing
 Imager view into the installation and synchronization engine:
 
-- **Setup coordinator:** owns the user-approved plan and state transitions. The
+- **Setup coordinator:** owns the reviewed plan and state transitions. The
   plan records mode, source identities, folder policies, payload identity,
   target layout, and review revision. It contains no account/encryption secrets.
 - **Capability and storage probes:** return current facts and supported actions;
@@ -193,25 +195,6 @@ Installer cleanup occurs only after installation and required migration data are
 verified and both OS boot paths have been exercised. Never remove originals or
 recovery material automatically as migration cleanup.
 
-## Delivery sequence
-
-This document is the shared product contract, not a single implementation-sized
-specification. Deliver the following subprojects with their own detailed design,
-review, and implementation plan:
-
-1. **Platform feasibility:** prove internal installer entry and return to the
-   existing OS on selected Windows and Linux configurations. Determine staging,
-   firmware/encryption constraints, storage preparation, and recovery protocol.
-   Publish a tested support matrix; a failed probe must not expand support claims.
-2. **Setup and folder selection:** implement the shared plan, capability-driven
-   experience choices, folder policies, estimates, and review using existing
-   payload/package services. Expose only functional installation routes.
-3. **Internal dual-boot installation:** integrate validated platform adapters,
-   privileged execution, installer handoff, and persistent boot-choice behavior.
-4. **Migration and connections:** deliver verified copying and first-login
-   continuation, then baseline-driven synchronization, conflicts, recoverable
-   deletions, and ongoing folder management. Keep connected is not selectable
-   until its full contract is implemented.
 
 ## Acceptance and validation
 
@@ -246,14 +229,3 @@ review, and implementation plan:
   `apps/imager/packaging/README.md`.
 - [GNU GRUB: loopback booting](https://www.gnu.org/software/grub/manual/grub/html_node/Loopback-booting.html)
   describes why reading an image is distinct from the OS supporting image boot.
-
-## Review boundary
-
-The user approved the experience choices, preserving the existing OS, copied and
-synchronized folder modes, connected-folder behavior, and the installation flow
-with the old OS retained as default. This written specification makes those
-decisions reviewable. The subsequent instruction to implement the app authorizes
-execution of this design, including the 30-day recovery policy and component
-boundaries. Begin with platform feasibility and the non-mutating setup foundation;
-do not treat unproven platform support as established. Track remaining delivery
-components and their verification explicitly until the full app is complete.

@@ -1,7 +1,6 @@
 # Canvas: an agent-fluent vector and wet-media editor
 
-Status: approved direction (2026-10-02). Implementation tracked on the
-`feat/canvas` branch.
+The app lives in `apps/canvas`.
 
 ## Intent
 
@@ -83,7 +82,7 @@ points describe a curve; pressure is optional per point.
 
 ## Agent loop (reusable by every app)
 
-1. `scripts/agent-loop/session.sh <app>` starts an isolated session: a
+1. `scripts/agent-loop/session.py <app>` starts an isolated session: a
    headless Tilo compositor as the Wayland display (nothing on the user's
    desktop), the runtime daemon on a fixed profile under
    `target/agent-loop/`, and `tilo-app dev` for the app. Rebuilds restart

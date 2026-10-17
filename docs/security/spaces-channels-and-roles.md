@@ -64,7 +64,7 @@ caches require separate protection.
 
 Encryption, revocation, and redaction do not retrieve bytes that another device
 has already read or copied. Cooperative redaction is specified separately in
-`2026-06-30-cryptographic-redaction-design.md`; it is a compliance protocol, not
+[`cooperative-redaction.md`](cooperative-redaction.md); it is a compliance protocol, not
 a guarantee against an adversarial recipient.
 
 ## User-facing consequences
