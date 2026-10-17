@@ -755,13 +755,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             return Ok(None);
         }
-        let rows = self.top_resources(&target.provider).await?;
-        match page::resource_named(name, &rows) {
+        let named = self.resources_named(&target.provider, name).await?;
+        match page::resource_named(name, &named) {
             Some(Ok(id)) if id == *name => Ok(None),
             Some(found) => found.map(Some),
             None if page::looks_like_handle(name) => Err(format!(
                 "{name} is no handle of this connection (handles last one connection); name the resource by its kind or label instead: {}",
-                resource_list(&rows)
+                resource_list(&self.top_resources(&target.provider).await?)
             )),
             None => Ok(None),
         }
@@ -790,7 +790,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         if !workspace
             && name.len() <= RESOURCE_NAME_BYTES
-            && let Some(found) = page::resource_named(&name, &rows)
+            && let Some(found) =
+                page::resource_named(&name, &self.resources_named(provider, &name).await?)
         {
             return found;
         }
@@ -810,35 +811,38 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             resource_list(&rows)
         ))
     }
-    /// The resources `provider` lists at its top level, read on past the
-    /// first page. An app's page can stop at its work budget short of a
-    /// resource it lists: between a write and its next publication it walks
-    /// its widgets instead of reading its published snapshot, and the walk
-    /// spends work on every widget. That publication moves the revision, so
-    /// a listing whose cursor went stale starts over.
+    /// The first page of the resources `provider` lists at its top level,
+    /// which names a few of them in a refusal. Finding one by name is
+    /// [`Self::resources_named`]'s.
     async fn top_resources(&self, provider: &str) -> Result<Vec<CatalogueRow>, String> {
-        let first = CatalogueQuery {
-            provider: Some(provider.to_owned()),
-            max_results: 128,
-            ..CatalogueQuery::default()
-        };
-        let mut query = first.clone();
-        let mut rows = Vec::new();
-        for _ in 0..TOP_RESOURCE_PAGES {
-            let mut page = self.ask(query.clone()).await?;
-            if page.stale_cursor {
-                rows.clear();
-                query = first.clone();
-                continue;
-            }
-            rows.append(&mut page.rows);
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            query.revision = Some(page.revision);
-            query.cursor = page.next_cursor;
-        }
-        Ok(rows)
+        Ok(self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows)
+    }
+    /// The top-level resources of `provider` whose kind or label is `name`.
+    /// The host answers the name itself, whole: a listing's page can stop at
+    /// its work budget short of the resource (right after a write, an app
+    /// walks its widgets until it publishes again), so reading pages for it
+    /// would fail once an app outgrows any page count.
+    async fn resources_named(
+        &self,
+        provider: &str,
+        name: &str,
+    ) -> Result<Vec<CatalogueRow>, String> {
+        Ok(self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                resource_name: Some(name.to_owned()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows)
     }
     /// Why `target` is not offered, in terms the caller can act on: the
     /// actions its resource has, or the resources there are. Only what the
@@ -1500,6 +1504,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let query = CatalogueQuery {
             canonical_route: None,
             view_resource: None,
+            resource_name: None,
             provider: Some(provider),
             parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,
@@ -2682,8 +2687,6 @@ const EXPANDED_RESOURCES: usize = 3;
 const WORD_FILTER_PAGES: usize = 8;
 /// The most host pages read to list every action of one found resource.
 const EVERY_ACTION_PAGES: usize = 4;
-/// The most host pages read to list a provider's top-level resources.
-const TOP_RESOURCE_PAGES: usize = 8;
 /// Words of a needle no row matches whole that are searched one by one,
 /// and the shortest searched: "as" or "to" would match nearly everything.
 const SOME_WORDS_SEARCHED: usize = 6;

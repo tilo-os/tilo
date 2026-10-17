@@ -561,6 +561,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
                             max_bytes: 1024,
                             max_work: 1,
                             max_depth: 1,
+                            resource_name: String::new(),
                         },
                     )
                     .unwrap(),

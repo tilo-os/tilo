@@ -6438,24 +6438,31 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                     query.get_cursor().map(<[u8]>::to_vec),
                     text(query.get_needle()),
                     text(query.get_parent_resource()),
+                    text(query.get_resource_name()),
                 ) {
-                    (Ok(revision), Ok(cursor), Ok(needle), Ok(parent_resource)) => {
-                        Ok(runtime_collab::ActionDirectoryQuery {
-                            peer_id: query.get_peer_id(),
-                            revision,
-                            cursor,
-                            needle,
-                            parent_resource,
-                            max_results: query.get_max_results(),
-                            max_bytes: query.get_max_bytes(),
-                            max_work: query.get_max_work(),
-                            max_depth: query.get_max_depth(),
-                        })
-                    }
+                    (
+                        Ok(revision),
+                        Ok(cursor),
+                        Ok(needle),
+                        Ok(parent_resource),
+                        Ok(resource_name),
+                    ) => Ok(runtime_collab::ActionDirectoryQuery {
+                        peer_id: query.get_peer_id(),
+                        revision,
+                        cursor,
+                        needle,
+                        parent_resource,
+                        max_results: query.get_max_results(),
+                        max_bytes: query.get_max_bytes(),
+                        max_work: query.get_max_work(),
+                        max_depth: query.get_max_depth(),
+                        resource_name,
+                    }),
                     (Err(error), ..)
                     | (_, Err(error), ..)
                     | (_, _, Err(error), ..)
-                    | (_, _, _, Err(error)) => Err(error),
+                    | (_, _, _, Err(error), _)
+                    | (_, _, _, _, Err(error)) => Err(error),
                 }
             }
             Err(error) => Err(error),

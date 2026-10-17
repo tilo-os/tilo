@@ -1425,6 +1425,7 @@ impl CapnpBrokerState {
                     max_bytes: limits.max_bytes.unwrap_or(u32::MAX),
                     max_work: limits.max_work.unwrap_or(u32::MAX),
                     max_depth: limits.max_depth.unwrap_or(u16::MAX),
+                    resource_name: query.resource_name.clone().unwrap_or_default(),
                 },
             )
         };

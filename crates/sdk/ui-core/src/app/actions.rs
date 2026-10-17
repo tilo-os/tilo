@@ -1023,6 +1023,67 @@ impl App {
         clippy::indexing_slicing,
         reason = "every directory arithmetic/index is guarded by the hard page budgets and loop bounds directly above it"
     )]
+    /// The top-level resources `query` names by kind or label, whole. A
+    /// write drops the published snapshot until the next publication, and a
+    /// listing in between walks the widget tree a budgeted page at a time:
+    /// read from that, a name lookup would depend on where the resource falls
+    /// in the tree. The resources about to be published answer it instead.
+    fn action_directory_named(
+        &mut self,
+        query: &runtime_collab::ActionDirectoryQuery,
+        revision: String,
+    ) -> runtime_collab::ActionDirectoryPage {
+        let name = query.resource_name.as_str();
+        let max_results = usize::try_from(query.max_results)
+            .unwrap_or(ACTION_DIRECTORY_MAX_RESULTS)
+            .clamp(1, ACTION_DIRECTORY_MAX_RESULTS);
+        let max_bytes = usize::try_from(query.max_bytes)
+            .unwrap_or(ACTION_DIRECTORY_MAX_BYTES)
+            .clamp(1, ACTION_DIRECTORY_MAX_BYTES);
+        let named = |kind: &str, label: &str| kind == name || label.eq_ignore_ascii_case(name);
+        let found: Vec<_> = if let Some(snapshot) = &self.actions.action_directory_snapshot {
+            snapshot
+                .roots
+                .iter()
+                .filter(|row| {
+                    row.action.is_none() && named(&row.resource_kind, &row.resource_label)
+                })
+                .cloned()
+                .collect()
+        } else {
+            self.publication_resources()
+                .iter()
+                .filter(|resource| named(&resource.kind, &resource.label))
+                .filter_map(|resource| self.directory_resource_row(resource, "", true))
+                .collect()
+        };
+        let mut rows = Vec::new();
+        let mut bytes = DIRECTORY_PAGE_WIRE_BYTES.saturating_add(revision.len());
+        for mut row in found.into_iter().take(max_results) {
+            row.has_children &= query.max_depth > 0;
+            bytes = bytes.saturating_add(runtime_collab::action_directory_row_wire_bytes(&row));
+            if bytes > max_bytes {
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows: Vec::new(),
+                    next_cursor: Vec::new(),
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                };
+            }
+            rows.push(row);
+        }
+        runtime_collab::ActionDirectoryPage {
+            revision,
+            rows,
+            next_cursor: Vec::new(),
+            exhausted: true,
+            stale_cursor: false,
+            budget_exhausted: false,
+        }
+    }
+
     fn action_directory_page(
         &mut self,
         query: runtime_collab::ActionDirectoryQuery,
@@ -1037,7 +1098,7 @@ impl App {
                 budget_exhausted: true,
             };
         };
-        let requested_revision = query.revision;
+        let requested_revision = query.revision.clone();
         if !requested_revision.is_empty() && requested_revision != revision {
             return runtime_collab::ActionDirectoryPage {
                 revision,
@@ -1047,6 +1108,9 @@ impl App {
                 stale_cursor: true,
                 budget_exhausted: false,
             };
+        }
+        if !query.resource_name.is_empty() {
+            return self.action_directory_named(&query, revision);
         }
         let max_results = usize::try_from(query.max_results)
             .unwrap_or(ACTION_DIRECTORY_MAX_RESULTS)

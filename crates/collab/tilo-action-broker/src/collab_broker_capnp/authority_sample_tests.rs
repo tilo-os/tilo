@@ -438,6 +438,7 @@ async fn query_wide_page(
                 max_bytes: CapnpBrokerState::DIRECTORY_MAX_BYTES,
                 max_work: CapnpBrokerState::DIRECTORY_MAX_WORK,
                 max_depth: 1,
+                resource_name: String::new(),
             },
         )
         .await;

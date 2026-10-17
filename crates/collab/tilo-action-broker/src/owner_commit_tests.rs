@@ -1416,6 +1416,7 @@ mod owner_commit_tests {
                             max_bytes: 65536,
                             max_work: 64,
                             max_depth: 4,
+                            resource_name: String::new(),
                         })
                         .await
                 });
