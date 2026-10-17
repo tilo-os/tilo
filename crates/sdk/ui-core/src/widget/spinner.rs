@@ -3,7 +3,10 @@
 //! Renders four dots orbiting a centre point at constant angular velocity, driven
 //! by wall-clock time captured at construction rather than per-frame mutation, so
 //! the widget is cheap to keep alive. Opts into [`Widget::needs_animation_frame`]
-//! permanently so the host keeps redrawing while any spinner is visible.
+//! while it moves, but steps at the indicator cadence
+//! ([`crate::animation::indicator`]): it repaints and damages its own box only
+//! when its step changes, so a visible spinner presents 30 times a second, not
+//! at every refresh.
 
 use crate::time::Instant;
 
@@ -47,6 +50,11 @@ pub struct Spinner {
     /// theme argument, so this is how the shared spinner tells the host that a
     /// reduced-motion presentation is static and needs no wakeups.
     reduce_motion: bool,
+    /// The indicator step last drawn; `None` before the first draw.
+    drawn_step: Option<u64>,
+    /// The last draw moved to a new step: its box is damage until the frame
+    /// is presented (`mark_drawn`).
+    stepped: bool,
 }
 
 impl Spinner {
@@ -62,6 +70,18 @@ impl Spinner {
             start: crate::time::now(),
             rect: Rect::ZERO,
             reduce_motion: false,
+            drawn_step: None,
+            stepped: true,
+        }
+    }
+
+    /// The step this spinner shows at `now`: its pose, frozen at 0 under
+    /// reduced motion.
+    fn step_at(&self, now: Instant) -> u64 {
+        if self.reduce_motion {
+            0
+        } else {
+            crate::animation::indicator_step(self.start, now)
         }
     }
 
@@ -129,7 +149,11 @@ impl Widget for Spinner {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        self.reduce_motion = theme.reduce_motion;
+        self.reduce_motion = !theme.motion().loops();
+        let now = crate::time::now();
+        let step = Some(self.step_at(now));
+        self.stepped |= self.drawn_step != step;
+        self.drawn_step = step;
         let size = f64::from(self.size);
         let dot_r = size * DOT_RADIUS_FRAC;
         let orbit_r = size * ORBIT_RADIUS_FRAC;
@@ -137,10 +161,11 @@ impl Widget for Spinner {
 
         // Phase ∈ [0, 1); ms (not seconds) keeps the divisor small for
         // long-lived spinners.
-        let phase = if theme.reduce_motion {
+        let phase = if self.reduce_motion {
             0.0
         } else {
-            let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+            let elapsed_ms =
+                crate::animation::indicator_elapsed(self.start, now).as_secs_f64() * 1000.0;
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
@@ -181,6 +206,17 @@ impl Widget for Spinner {
     /// static, so requesting frames would only waste power.
     fn needs_animation_frame(&self) -> bool {
         !self.reduce_motion
+    }
+
+    /// Only a new step changes what the spinner paints: frames between
+    /// steps leave its box undamaged, and an unchanged frame does not
+    /// present.
+    fn needs_redraw(&self) -> bool {
+        self.stepped || self.drawn_step != Some(self.step_at(crate::time::now()))
+    }
+
+    fn mark_drawn(&mut self) {
+        self.stepped = false;
     }
 
     /// `Rect::ZERO` sentinel for the first frame.
@@ -290,6 +326,28 @@ mod tests {
                 "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
             );
         }
+    }
+
+    /// A spinner repaints once per indicator step, not at every refresh:
+    /// frames between steps damage nothing and so do not present.
+    #[test]
+    fn spinner_repaints_only_when_its_step_changes() {
+        let mut s = Spinner::new();
+        let start = crate::time::now();
+        s.set_started_for_test(start);
+        let at = |offset: crate::time::Duration| start + offset;
+        crate::time::testing::with_monotonic_time(at(crate::time::Duration::ZERO), || {
+            draw_path_data(&mut s, false);
+        });
+        assert!(s.needs_redraw(), "a fresh pose is damage until presented");
+        s.mark_drawn();
+        crate::time::testing::with_monotonic_time(
+            at(crate::time::Duration::from_millis(10)),
+            || assert!(!s.needs_redraw(), "same step, nothing to repaint"),
+        );
+        crate::time::testing::with_monotonic_time(at(crate::animation::INDICATOR_STEP), || {
+            assert!(s.needs_redraw(), "the next step repaints")
+        });
     }
 
     #[test]

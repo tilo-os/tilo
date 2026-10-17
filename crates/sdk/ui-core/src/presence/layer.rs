@@ -51,9 +51,12 @@ pub struct WidgetPresence {
     own: HashSet<UserId>,
     self_participant: Option<(UserId, String)>,
     surface: Option<String>,
-    /// A typing mark is fading or semantic activity is on screen: what
-    /// widgets paint from them changes with the clock, not with this state.
+    /// Semantic activity is on screen: what widgets paint from it changes
+    /// with the clock, not with this state.
     animating: bool,
+    /// The fade step of every visible typing mark: the highlights change
+    /// only when one steps, so only then must the window repaint.
+    typing_steps: Vec<u32>,
 }
 
 impl WidgetPresence {
@@ -86,7 +89,8 @@ impl PresenceCtx {
             own: self.own.clone(),
             self_participant: self.self_participant.clone(),
             surface: self.surface.clone(),
-            animating: self.has_active_typing(now) || self.has_visible_interactions(now),
+            animating: self.has_visible_interactions(now),
+            typing_steps: self.typing_steps(now),
         }
     }
 }

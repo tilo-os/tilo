@@ -54,6 +54,11 @@ struct AppHandler {
     app: App,
     clipboard_attachment: Option<crate::clipboard::ClipboardAttachment>,
     animation_schedule: animation_schedule::AnimationSchedule,
+    /// When the next "just typed" highlight steps down its fade
+    /// (`PresenceCtx::typing_next_step`).
+    typing_step_at: Option<crate::time::Instant>,
+    /// Debug check that animation frames move something.
+    still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
     physical_input_trace: Option<crate::physical_input_trace::Trace>,
@@ -3146,10 +3151,24 @@ impl AppHandler {
                 );
             }
         }
-        if crate::render_thread::retry::submit_redraw_frame(
+        let presents = crate::render_thread::retry::submit_redraw_frame(
             full_redraw_required,
             !damage_regions.is_empty() || !scroll_copies.is_empty(),
-        ) {
+        );
+        // `needs_animation_frame` is for motion: frames that change nothing
+        // for a second mean a widget polls through them. Debug builds name it.
+        if cfg!(debug_assertions)
+            && self
+                .still_animation
+                .frame(app.root_widget.needs_animation_frame(), presents)
+        {
+            crate::diag!(
+                "tilo-ui: a second of animation frames painted nothing; asked for by {:?}. \
+                 Wait on a wake deadline or a waking channel (ui::wake::waking_channel) instead.",
+                animation_schedule::animating_leaves(app.root_widget.as_ref())
+            );
+        }
+        if presents {
             let cpu_frame_id = app
                 .profiler
                 .as_ref()
@@ -4116,14 +4135,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         app.publish_playback_handoff();
 
-        // Keep pumping frames while any "just typed" highlighter mark is
-        // still fading, so the taper animates instead of freezing.
+        // A "just typed" highlight fades in steps, each a wake deadline: a
+        // step that came due paints once, and the loop sleeps between them
+        // instead of repainting the window at every refresh while a peer
+        // types.
         let typing_now = crate::time::now();
         app.presence_ctx.prune_typing(typing_now);
-        let typing_active = app.presence_ctx.has_active_typing(typing_now);
-        if typing_active {
+        let typing_step_due = self.typing_step_at.is_some_and(|due| due <= typing_now);
+        if typing_step_due {
             request_primary_redraw();
         }
+        self.typing_step_at = app.presence_ctx.typing_next_step(typing_now);
+        let typing_active = typing_step_due;
 
         let idle_model = app.service_native_idle_model();
         if idle_model.changed {
@@ -4228,23 +4251,42 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             && scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
 
         // A hover tooltip is not motion, so it reveals even under
-        // reduce-motion — requested independently of the animation pump.
-        let tooltip_pending = app.input.tooltip_host.needs_frame();
+        // reduce-motion. Its dwell is a wait: the loop sleeps until the
+        // reveal is due (`scheduled_deadline`) and paints once then.
+        let tooltip_reveal = app.input.tooltip_host.reveal_at();
+        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::time::now());
         if tooltip_pending {
             request_primary_redraw();
         }
+        let scheduled_deadline = scheduled_deadline
+            .into_iter()
+            .chain(tooltip_reveal.filter(|_| !tooltip_pending))
+            .chain(self.typing_step_at)
+            .min();
 
-        // Reduced motion lets the loop go idle since animated widgets
-        // already paint their resting state.
+        // A widget asking for a frame is served whatever the motion setting.
+        // Reduced motion is applied where motion is decided — each widget
+        // reads `Theme::motion()` and settles instead of asking — never by
+        // starving the pump: a fade that replaces a slide still needs its
+        // frames, and gating here froze every reduced-motion app that waited
+        // on one.
         let widget_animation = app.root_widget.needs_animation_frame();
         let needs_frame = widget_animation
             || app
                 .presence_ctx
                 .interaction_animation_demand(crate::time::now(), &app.theme);
-        let (animation_due, animation_deadline) = self.animation_schedule.poll(
-            crate::time::now(),
-            any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
-        );
+        let animate = any_render_available && needs_frame;
+        if animate && self.animation_schedule.idle() {
+            // An animation starts: beat at the refresh of the output the
+            // window is on now.
+            self.animation_schedule.set_refresh_millihertz(
+                window
+                    .current_monitor()
+                    .and_then(|monitor| monitor.refresh_rate_millihertz()),
+            );
+        }
+        let (animation_due, animation_deadline) =
+            self.animation_schedule.poll(crate::time::now(), animate);
         if animation_due {
             app.needs_sync |= widget_animation;
             // Forces `apply_layout` since an animation tick (e.g. momentum
@@ -4294,9 +4336,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
             widget_due: widget_still_due,
-            animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
+            animation: needs_frame,
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
+            frame_interval: self.animation_schedule.interval(),
         };
         let deadline = crate::render_thread::retry::next_wake(
             crate::time::now(),
@@ -4942,6 +4985,8 @@ impl App {
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
+            typing_step_at: None,
+            still_animation: animation_schedule::StillAnimation::default(),
             dev_window_state: std::collections::HashMap::new(),
             dev_loaded_library: crate::host::environment()
                 .dev_session

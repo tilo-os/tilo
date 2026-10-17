@@ -31,6 +31,28 @@ pub use render::{
 /// How long a "just typed" highlight lingers before fading out.
 pub const TYPING_FADE: crate::time::Duration = crate::time::Duration::from_millis(2500);
 
+/// The highlight fades in this many steps, each a wake deadline: a slow
+/// taper reads the same in steps of a quarter second, and while a peer types
+/// the window repaints a few times a second instead of at every refresh.
+pub const TYPING_FADE_STEPS: u32 = 10;
+
+/// One step of the typing fade.
+const TYPING_FADE_STEP: crate::time::Duration = match TYPING_FADE.checked_div(TYPING_FADE_STEPS) {
+    Some(step) => step,
+    None => crate::time::Duration::ZERO,
+};
+
+/// Which fade step a mark `age` old is in; `None` once it has faded.
+fn typing_step(age: crate::time::Duration) -> Option<u32> {
+    (age < TYPING_FADE)
+        .then(|| u32::try_from(age.as_nanos() / TYPING_FADE_STEP.as_nanos()).unwrap_or(u32::MAX))
+}
+
+/// The alpha of a mark `age` old: `1.0` just typed, down a step at a time.
+fn typing_alpha(age: crate::time::Duration) -> Option<f32> {
+    typing_step(age).map(|step| (1.0 - step as f32 / TYPING_FADE_STEPS as f32).clamp(0.0, 1.0))
+}
+
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
 /// Generous on purpose: a caret key is per *block*, so a stray mark is
@@ -1374,19 +1396,13 @@ impl PresenceCtx {
         key: &PresenceKey,
         now: Instant,
     ) -> Vec<(SelectionRange, f32)> {
-        let fade = TYPING_FADE.as_secs_f32();
         let Some(marks) = self.typing.get(&(user.clone(), key.clone())) else {
             return Vec::new();
         };
         marks
             .iter()
             .filter_map(|m| {
-                let age = now.saturating_duration_since(m.born).as_secs_f32();
-                if age >= fade {
-                    return None;
-                }
-                let alpha = (1.0 - age / fade).clamp(0.0, 1.0);
-                Some((m.range, alpha))
+                typing_alpha(now.saturating_duration_since(m.born)).map(|alpha| (m.range, alpha))
             })
             .collect()
     }
@@ -1397,25 +1413,50 @@ impl PresenceCtx {
         key: &PresenceKey,
         now: Instant,
     ) -> Vec<(UserId, SelectionRange, f32)> {
-        let fade = TYPING_FADE.as_secs_f32();
         let mut out = Vec::new();
         for ((user, k), marks) in &self.typing {
             if k != key {
                 continue;
             }
             for m in marks {
-                let age = now.saturating_duration_since(m.born).as_secs_f32();
-                if age >= fade {
-                    continue;
+                if let Some(alpha) = typing_alpha(now.saturating_duration_since(m.born)) {
+                    out.push((user.clone(), m.range, alpha));
                 }
-                let alpha = (1.0 - age / fade).clamp(0.0, 1.0);
-                out.push((user.clone(), m.range, alpha));
             }
         }
         out
     }
 
-    /// The App polls this to keep requesting animation frames while a highlighter is still decaying.
+    /// When the next typing mark steps down its fade (or ends): the host
+    /// sleeps until then and paints once, instead of pumping frames through
+    /// the fade.
+    pub fn typing_next_step(&self, now: Instant) -> Option<Instant> {
+        self.typing
+            .values()
+            .flatten()
+            .filter_map(|m| {
+                let step = typing_step(now.saturating_duration_since(m.born))?;
+                m.born
+                    .checked_add(TYPING_FADE_STEP.saturating_mul(step.saturating_add(1)))
+            })
+            .min()
+    }
+
+    /// Every visible typing mark's fade step at `now`, in order: what the
+    /// painted highlights look like, so a frame that changes none of them
+    /// need not repaint.
+    pub(crate) fn typing_steps(&self, now: Instant) -> Vec<u32> {
+        let mut steps: Vec<u32> = self
+            .typing
+            .values()
+            .flatten()
+            .filter_map(|m| typing_step(now.saturating_duration_since(m.born)))
+            .collect();
+        steps.sort_unstable();
+        steps
+    }
+
+    /// Whether a typing highlight is still on screen at `now`.
     pub fn has_active_typing(&self, now: Instant) -> bool {
         let fade = TYPING_FADE;
         self.typing
@@ -2678,6 +2719,16 @@ mod string_id_wrapper_tests {
                 half[0].1
             );
             assert!(ctx.has_active_typing(mid));
+            assert_eq!(
+                ctx.typing_next_step(mid),
+                Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
+                "the fade wakes the host at its next step, not every frame"
+            );
+            assert_eq!(
+                ctx.active_typing(&bob, &key, mid + Duration::from_millis(10))[0].1,
+                half[0].1,
+                "within a step the highlight does not change"
+            );
 
             // Past the window: gone from the read, and prune reclaims it.
             let after = t0 + TYPING_FADE + Duration::from_millis(1);

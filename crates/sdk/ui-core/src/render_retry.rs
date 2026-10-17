@@ -128,6 +128,9 @@ pub(crate) struct WakeDemand {
     pub animation: bool,
     pub auxiliary_startup: bool,
     pub retry_due: bool,
+    /// One refresh of the window's output: how soon a fast demand without
+    /// its own deadline wakes again. Zero (unset) means [`FRAME_INTERVAL`].
+    pub frame_interval: Duration,
 }
 
 /// Select the actual event-loop deadline. Widget deadlines request
@@ -155,7 +158,12 @@ pub(crate) fn next_wake(
         .min();
     let animation = animation.filter(|_| any_render_available);
     if fast {
-        let fallback = now.checked_add(FRAME_INTERVAL).unwrap_or(now);
+        let interval = if demand.frame_interval.is_zero() {
+            FRAME_INTERVAL
+        } else {
+            demand.frame_interval
+        };
+        let fallback = now.checked_add(interval).unwrap_or(now);
         let wake = scheduled
             .filter(|deadline| *deadline > now)
             .map_or(fallback, |deadline| deadline.min(fallback));
@@ -401,6 +409,22 @@ mod tests {
             );
             assert_eq!(widget_deadline(Some(now), None), Some(now));
         }
+    }
+
+    #[test]
+    fn a_fast_demand_wakes_on_the_outputs_refresh() {
+        let now = crate::time::now();
+        let beat = Duration::from_nanos(11_111_358);
+        let demand = WakeDemand {
+            typing: true,
+            frame_interval: beat,
+            ..Default::default()
+        };
+        assert_eq!(
+            next_wake(now, None, true, demand, None, None, None),
+            Some(now + beat),
+            "a 90 Hz output wakes every 11.1 ms, not every 16.7 ms"
+        );
     }
 
     #[test]
