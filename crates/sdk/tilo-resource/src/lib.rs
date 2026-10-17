@@ -281,6 +281,10 @@ pub mod __private {
 
     /// What `#[resource]` declares of one verb, besides how it is built.
     #[derive(Clone, Copy)]
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "one independent `#[action(...)]` flag each, as the macro reads them"
+    )]
     pub struct VerbDecl {
         pub id: &'static str,
         pub label: &'static str,
