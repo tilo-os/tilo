@@ -2452,15 +2452,18 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
 # The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-relay.service.
+# (tilo-node-relay@) under it, as the host image runs tilo-relay.service. Its
+# snippet ships with the relay component (os/components.toml), which arrives
+# with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     /usr/lib/sysusers.d/
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
+RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-relay.conf,target=/run/tilo-relay-sysusers.conf,ro \
+    systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf \
+ && systemd-sysusers /run/tilo-relay-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.
