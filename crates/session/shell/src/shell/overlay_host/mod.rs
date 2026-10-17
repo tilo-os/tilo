@@ -993,8 +993,12 @@ pub struct ShellOverlayHost {
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
     /// The focused text field's caret in desktop coordinates, as the
-    /// compositor last reported it; the emoji picker opens against it.
+    /// compositor last reported it; the emoji picker and clipboard history
+    /// open against it.
     text_caret: Option<Rect>,
+    /// Clipboard history items chosen to paste since the compositor last
+    /// asked ([`Self::take_clipboard_pastes`]).
+    clipboard_pastes: Vec<[u8; 32]>,
     /// A Bluetooth pairing question from the compositor's agent, modal
     /// above the desktop while it waits for the person.
     pairing: crate::bluetooth_prompt::PairingOverlay,
@@ -2575,6 +2579,7 @@ impl ShellOverlayHost {
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
+            clipboard_pastes: Vec::new(),
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             expanded_collaborator: None,
             followed_peer: None,
@@ -3561,6 +3566,31 @@ impl ShellOverlayHost {
     /// into the focused field.
     pub fn take_emoji_commits(&mut self) -> Vec<String> {
         self.layers.emoji_picker.take_commits()
+    }
+
+    /// The clipboard history items chosen to paste (Super+V) since the last
+    /// call, for the compositor to commit into the focused field.
+    pub fn take_clipboard_pastes(&mut self) -> Vec<[u8; 32]> {
+        std::mem::take(&mut self.clipboard_pastes)
+    }
+
+    /// Make history item `id` the clipboard and close Quick Settings. Opened
+    /// to paste (Super+V), the item also goes into the field history was
+    /// summoned from, the way choosing it in any clipboard manager does;
+    /// browsed from Quick Settings, it is only copied.
+    fn choose_clipboard_item(&mut self, id: [u8; 32]) {
+        self.qs_selected_clipboard = Some(id);
+        let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(id));
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        if state.quick_settings.paste_origin.take().is_some() {
+            self.clipboard_pastes.push(id);
+        }
+        state.overlays.quick_settings = false;
+        state.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        state.bump();
     }
 
     /// The compositor committed `text` into a field; a secret field's emoji
@@ -10726,18 +10756,66 @@ impl ShellOverlayHost {
     /// same margin under the bar, and never past the display's bottom
     /// margin. Pinned to the primary's tray, a volume key or shortcut
     /// pressed while working on the other display opened it out of sight.
+    ///
+    /// Clipboard history opened to paste (Super+V) is the exception: it
+    /// opens where the text goes ([`Self::clipboard_paste_rect`]).
     fn quick_settings_rect(&self) -> Rect {
         let area = self.overlay_area();
         let margin = self.qs_panel.margin;
         let popover_w = self.quick_settings_width();
         let x1 = area.x1 - margin;
         let y0 = area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
-        let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
+        let (desired_h, paste_origin) = self.chrome.as_ref().map_or((360.0, None), |chrome| {
             let state = chrome.borrow();
-            self.quick_settings_preferred_height(&state)
+            let origin = (state.quick_settings.current_level()
+                == &crate::shell::quick_settings::QsLevel::Clipboard)
+                .then_some(state.quick_settings.paste_origin)
+                .flatten();
+            (self.quick_settings_preferred_height(&state), origin)
         });
+        if let Some(origin) = paste_origin {
+            return self.clipboard_paste_rect(origin, (popover_w, desired_h));
+        }
         let popover_h = desired_h.min((area.y1 - margin - y0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// Where clipboard history opened to paste goes: against the caret of
+    /// the field it will paste into, placed as the emoji picker is
+    /// ([`tilo_desktop::emoji_picker::card_at_caret`]); without a caret,
+    /// centred near the top of the focused window; without either, centred
+    /// near the top of the display with focus. Never under the tray, across
+    /// the screen from the text.
+    fn clipboard_paste_rect(
+        &self,
+        origin: crate::shell::chrome_state::PasteOrigin,
+        (width, desired_h): (f64, f64),
+    ) -> Rect {
+        let margin = self.qs_panel.margin;
+        let outputs = self.layer_outputs();
+        let display = self
+            .layer_geometry(&outputs)
+            .display_for(origin.caret.or(origin.window));
+        let height = desired_h.min((display.height() - 2.0 * margin).max(1.0));
+        if let Some(caret) = origin.caret {
+            return tilo_desktop::emoji_picker::card_at_caret(
+                caret,
+                (width, height),
+                display,
+                margin,
+                margin / 2.0,
+            );
+        }
+        let around = origin
+            .window
+            .map_or(display, |window| window.intersect(display));
+        let x0 = (around.center().x - width / 2.0)
+            .min(display.x1 - margin - width)
+            .max(display.x0 + margin);
+        let y0 = (around.y0 + around.height() * 0.12)
+            .min(display.y1 - margin - height)
+            .max(display.y0 + margin);
+        Rect::from_origin_size((x0, y0), (width, height))
     }
 
     /// Convert a pointer in painted coordinates back into Quick Settings'
@@ -11175,15 +11253,7 @@ impl ShellOverlayHost {
                 let Some(id) = history.get(current).map(|item| item.id) else {
                     return true;
                 };
-                self.qs_selected_clipboard = Some(id);
-                let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(id));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    let mut state = chrome.borrow_mut();
-                    state.overlays.quick_settings = false;
-                    state.quick_settings.nav_stack =
-                        vec![crate::shell::quick_settings::QsLevel::Root];
-                    state.bump();
-                }
+                self.choose_clipboard_item(id);
                 return true;
             }
             _ => return false,
@@ -14630,9 +14700,13 @@ impl ShellOverlayHost {
                     crate::shell::window_actions::Destination::Beside,
                 );
             }
-            A::ClipboardHistory => chrome
-                .borrow_mut()
-                .open_quick_settings_level(QsLevel::Clipboard),
+            A::ClipboardHistory => {
+                let origin = crate::shell::chrome_state::PasteOrigin {
+                    caret: self.text_caret,
+                    window: self.focused_window_rect(),
+                };
+                chrome.borrow_mut().open_clipboard_history_to_paste(origin);
+            }
             A::Notifications => chrome
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
@@ -15242,8 +15316,7 @@ impl ShellOverlayHost {
                 st.quick_settings.current_level(),
                 crate::shell::quick_settings::QsLevel::Root
             ) {
-                st.quick_settings.pop_level();
-                st.bump();
+                st.quick_settings_back();
             } else {
                 st.overlays.quick_settings = false;
                 st.bump();
@@ -16239,9 +16312,7 @@ impl ShellOverlayHost {
 
     fn pop_quick_settings_level(&self) {
         if let Some(chrome) = self.chrome.as_ref() {
-            let mut state = chrome.borrow_mut();
-            state.quick_settings.pop_level();
-            state.bump();
+            chrome.borrow_mut().quick_settings_back();
         }
     }
 
@@ -16923,15 +16994,7 @@ impl ShellOverlayHost {
                     )
                     .map(|item| item.id);
             } else {
-                self.qs_selected_clipboard = Some(item.id);
-                let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(item.id));
-                if let Some(chrome) = self.chrome.as_ref() {
-                    let mut state = chrome.borrow_mut();
-                    state.overlays.quick_settings = false;
-                    state.quick_settings.nav_stack =
-                        vec![crate::shell::quick_settings::QsLevel::Root];
-                    state.bump();
-                }
+                self.choose_clipboard_item(item.id);
                 return;
             }
             self.bump_chrome();

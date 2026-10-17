@@ -1,5 +1,6 @@
 //! Text the shell commits into the focused field on the user's behalf — a
-//! picked emoji — delivered the way an input method delivers it.
+//! picked emoji, a clipboard history item chosen to paste — delivered the
+//! way an input method delivers it.
 //!
 //! There is exactly one way text reaches a field without being typed:
 //! `zwp_input_method_v2.commit_string`, which the compositor turns into the
@@ -358,8 +359,9 @@ impl State {
         self.queue_text_commit(text, now, true);
     }
 
-    /// Commit text another device's input method composed into the focused
-    /// field, without reporting it back as something picked here.
+    /// Commit text into the focused field without reporting it back as
+    /// something picked here: what another device's input method composed,
+    /// or a clipboard history item chosen to paste.
     pub fn request_remote_text_commit(&mut self, text: String, now: Instant) {
         self.queue_text_commit(text, now, false);
     }
@@ -520,6 +522,13 @@ pub fn relay(
 ) -> Vec<DeliveredText> {
     for text in host.take_emoji_commits() {
         state.request_text_commit(text, now);
+    }
+    // A clipboard history item chosen to paste goes in the same way, and is
+    // not an emoji to remember.
+    for id in host.take_clipboard_pastes() {
+        if let Some(text) = super::selection::history_item_text(&state.selection_store(), id) {
+            state.request_remote_text_commit(text, now);
+        }
     }
     state.advance_text_commit(now);
     let delivered = state.take_delivered_text();
