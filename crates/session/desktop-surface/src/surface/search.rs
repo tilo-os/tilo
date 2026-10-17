@@ -32,6 +32,8 @@ pub(super) enum SearchRequest {
     Toggle,
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
+    /// Window `GroupId`'s search control: search what its shown tab holds.
+    Window(StripId, GroupId),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -338,6 +340,33 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
+    /// Open search over what window `group` shows: its shown tab's
+    /// resources and search providers, the in-app search its search control
+    /// offers. Opens over everything when the window is gone.
+    fn open_window_search(&mut self, doc: &AutoCommit, strip: StripId, group: GroupId) {
+        let host = self
+            .rows
+            .get(&strip)
+            .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
+            .and_then(|window| window.active_host());
+        let Some(host) = host else {
+            self.open_search(doc, None);
+            return;
+        };
+        let data = SearchData {
+            resources: ui::widget::published_resources(host, doc),
+            providers: ui::widget::published_search_providers(host),
+            ..SearchData::default()
+        };
+        self.search.open(data);
+        self.search
+            .palette_mut()
+            .set_platform_conventions(self.platform);
+        self.search.set_query("");
+        self.new_tab_into = None;
+        self.structure_dirty = true;
+    }
+
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
@@ -347,6 +376,7 @@ impl DesktopSurface {
             Some(SearchRequest::Toggle) => self.open_search(doc, None),
             Some(SearchRequest::Open(query)) => self.open_search(doc, query),
             Some(SearchRequest::NewTab(strip, group)) => self.open_new_tab_search(strip, group),
+            Some(SearchRequest::Window(strip, group)) => self.open_window_search(doc, strip, group),
             None => {}
         }
         self.follow_search();

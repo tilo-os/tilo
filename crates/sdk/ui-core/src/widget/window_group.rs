@@ -955,19 +955,26 @@ impl WindowGroup {
         }
     }
 
-    /// Run a press on a pill's History chip on that tab's History door, as
-    /// the History shortcut and the palette do. Returns whether one ran.
-    fn drain_history_press(&mut self) -> bool {
-        let Some((id, control)) = self.bar.take_history() else {
-            return false;
-        };
-        let Some((_, host)) = self.hosts.iter_mut().find(|(i, _)| *i == id) else {
-            return false;
-        };
-        if let Err(error) = host.invoke_history_control(control) {
-            tracing::debug!(%error, "window: History control refused");
+    /// Run a press on a pill's search or History chip: search is the
+    /// host's to open ([`Self::take_pending_search_open`]); History runs on
+    /// that tab's History door, as the History shortcut and the palette do.
+    /// Returns whether one ran.
+    fn drain_chip_presses(&mut self) -> bool {
+        let mut pressed = false;
+        if let Some(id) = self.bar.take_search() {
+            self.search_active = !self.search_active;
+            self.pending_search_open = Some(id);
+            pressed = true;
         }
-        true
+        if let Some((id, control)) = self.bar.take_history()
+            && let Some((_, host)) = self.hosts.iter_mut().find(|(i, _)| *i == id)
+        {
+            if let Err(error) = host.invoke_history_control(control) {
+                tracing::debug!(%error, "window: History control refused");
+            }
+            pressed = true;
+        }
+        pressed
     }
 
     /// The bar showed or hid: repaint, and rebuild where an app's header
@@ -2152,13 +2159,7 @@ impl WindowGroup {
             handled = true;
         }
 
-        if let Some(id) = self.bar.take_search() {
-            self.search_active = !self.search_active;
-            self.pending_search_open = Some(id);
-            handled = true;
-        }
-
-        handled |= self.drain_history_press();
+        handled |= self.drain_chip_presses();
 
         // The group knows its own id; the shell knows what a new tab
         // should contain, so republish with the id and let it decide.
@@ -3200,10 +3201,10 @@ impl Widget for WindowGroup {
         }
     }
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        // A History chip pressed from assistive technology arrives outside
+        // A chip pressed from assistive technology arrives outside
         // `handle_event`: run it here, before the frame lays out.
-        let history = self.drain_history_press();
-        self.active_host_mut().is_some_and(|h| h.update(s, p)) || history
+        let pressed = self.drain_chip_presses();
+        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed
     }
     fn build_layout(
         &mut self,

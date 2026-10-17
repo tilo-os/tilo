@@ -1,6 +1,7 @@
 //! Captures of apps in a desktop window, and where their History control
 //! stands: Chat and Notes at rest, Chat's tab with the pointer resting on
-//! it (its window controls revealed), and Chat with History open.
+//! it (its window controls revealed), Chat with History open, and Chat in
+//! the desktop surface with History open and with its tab's search open.
 //! Run with an output directory.
 
 #![allow(
@@ -137,5 +138,68 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut frame = window(8, "Notes", Some(AppKind::Editor), notes);
     capture(&mut frame, &out, "notes-window.png");
+
+    desktop(&out, &profile.path().join("desktop"));
     Ok(())
+}
+
+/// Chat as the browser desktop shows it: a window of the desktop surface.
+struct ChatTiles(std::path::PathBuf);
+
+impl tilo_desktop_surface::TileSource for ChatTiles {
+    fn tile(
+        &mut self,
+        _: &tilo_desktop_model::Workspace,
+        tab: &tilo_desktop_model::Tab,
+    ) -> TileHost {
+        tile(&self.0, chat::definition(), tab.id, |doc| {
+            chat::demo::seed(doc).unwrap();
+        })
+    }
+}
+
+/// Chat in the desktop surface: History opened from its tab, then the
+/// tab's search control.
+fn desktop(out: &Path, profile: &Path) {
+    let mut minter = tilo_desktop_model::IdMinter::new(7);
+    let id = minter.mint();
+    let tab = tilo_desktop_model::Tab {
+        id,
+        title: "Chat".into(),
+        tile: tilo_desktop_model::TileContent::LocalApp {
+            app_id: "so.tilo.chat".into(),
+            label: "Chat".into(),
+            note: String::new(),
+        },
+    };
+    let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
+    let (surface, _handle) =
+        tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(ChatTiles(profile.into())));
+    let mut frame =
+        FrameHarness::new_with_theme(ui::State::new(), Box::new(surface), SIZE, Theme::dark());
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let press = |frame: &mut FrameHarness, control: &str| {
+        frame
+            .perform_semantic_named(
+                "tabs",
+                Some(&format!("{control}:{id}")),
+                &ui::a11y::Action::Activate,
+            )
+            .expect("the tab offers the control");
+        for _ in 0..3 {
+            frame.relayout();
+        }
+    };
+    press(&mut frame, "tab-history");
+    capture(&mut frame, out, "chat-desktop-history-open.png");
+    press(&mut frame, "tab-history");
+    press(&mut frame, "tab-search");
+    capture(&mut frame, out, "chat-desktop-search.png");
+    for letter in ["g", "e", "n"] {
+        frame.send(&ui::synthetic_input::char_key(letter));
+    }
+    frame.relayout();
+    capture(&mut frame, out, "chat-desktop-search-typed.png");
 }
