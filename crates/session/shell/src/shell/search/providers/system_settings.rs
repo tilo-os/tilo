@@ -128,22 +128,6 @@ impl Verb {
 }
 
 /// The setting and verb an action id of this provider names.
-/// The Settings page each setting is shown on, by the slug its links use.
-const fn page_of(kind: Kind) -> &'static str {
-    match kind {
-        Kind::LockAfter | Kind::BlankAfter | Kind::SuspendAfter | Kind::AutoSuspend => "power",
-        Kind::DisplayScale | Kind::DisplayRefreshRate => "displays",
-        Kind::KeyboardLayout => "keyboard",
-        Kind::AppearanceMode => "appearance",
-    }
-}
-
-/// Every setting served here with the Settings page that shows it: its
-/// page's slug and its name in the desktop's language.
-pub(crate) fn named_settings() -> impl Iterator<Item = (&'static str, String)> {
-    SPECS.iter().map(|spec| (page_of(spec.kind), t(spec.name)))
-}
-
 fn parse(id: &str) -> Option<(&'static Spec, Verb)> {
     let (setting, suffix) = id.rsplit_once('.')?;
     let verb = [Verb::Get, Verb::Set, Verb::Toggle]
