@@ -27,33 +27,23 @@ struct Fixture {
 }
 #[zbus::interface(name = "org.freedesktop.Secret.Service")]
 impl Fixture {
-    fn open_session(
-        &self,
-        algorithm: &str,
-        _input: Value<'_>,
-    ) -> (Value<'static>, OwnedObjectPath) {
+    fn open_session(&self, algorithm: &str, input: Value<'_>) -> (Value<'static>, OwnedObjectPath) {
         assert_eq!(algorithm, "plain");
-        self.evidence.lock().unwrap().sessions += 1;
+        drop(input);
+        let mut evidence = self.evidence.lock().unwrap();
+        evidence.sessions = evidence.sessions.checked_add(1).unwrap();
+        drop(evidence);
         (Value::from(""), OwnedObjectPath::try_from(SESSION).unwrap())
     }
     fn search_items(
         &self,
         attributes: HashMap<String, String>,
     ) -> Result<(Vec<OwnedObjectPath>, Vec<OwnedObjectPath>), Error> {
-        assert_eq!(
-            attributes,
-            HashMap::from([
-                ("user".into(), KEY.into()),
-                ("server".into(), "Nextcloud".into()),
-                ("type".into(), "plaintext".into()),
-            ])
-        );
-        let mut evidence = self.evidence.lock().unwrap();
-        evidence.searches += 1;
-        if self.scenario == "search-stale" && evidence.searches == 1 {
+        let searches = self.record_search(attributes);
+        if self.scenario == "search-stale" && searches == 1 {
             return Err(Error::NoSession("restarted".into()));
         }
-        if self.scenario == "search-refused" && evidence.searches == 1 {
+        if self.scenario == "search-refused" && searches == 1 {
             return Err(Error::AccessDenied("proof forgotten".into()));
         }
         let item = OwnedObjectPath::try_from(ITEM).unwrap();
@@ -66,8 +56,9 @@ impl Fixture {
     }
     fn unlock(
         &self,
-        _objects: Vec<OwnedObjectPath>,
+        objects: Vec<OwnedObjectPath>,
     ) -> Result<(Vec<OwnedObjectPath>, OwnedObjectPath), Error> {
+        drop(objects);
         // Neither lock refusal nor prompt dismissal is an absent credential.
         if self.scenario == "cancelled" {
             return Ok((vec![], OwnedObjectPath::try_from("/prompt").unwrap()));
@@ -79,16 +70,13 @@ impl Fixture {
         items: Vec<OwnedObjectPath>,
         session: OwnedObjectPath,
     ) -> Result<HashMap<OwnedObjectPath, WireSecret>, Error> {
-        assert_eq!(items, vec![OwnedObjectPath::try_from(ITEM).unwrap()]);
-        assert_eq!(session.as_str(), SESSION);
-        let mut evidence = self.evidence.lock().unwrap();
-        evidence.reads += 1;
+        let (item, reads) = self.record_read(items, &session);
         match self.scenario.as_str() {
-            "read-stale" if evidence.reads == 1 => {
+            "read-stale" if reads == 1 => {
                 return Err(Error::NoSession("restarted".into()));
             }
             "always-stale" => return Err(Error::NoSession("restarted again".into())),
-            "read-refused" if evidence.reads == 1 => {
+            "read-refused" if reads == 1 => {
                 return Err(Error::AccessDenied("proof forgotten".into()));
             }
             "always-refused" | "unproved-denial" => {
@@ -107,21 +95,56 @@ impl Fixture {
             _ => b"synthetic-selected-credential".to_vec(),
         };
         Ok(HashMap::from([(
-            items[0].clone(),
+            item,
             (session, vec![], value, "text/plain".into()),
         )]))
     }
 }
-struct Proof(Arc<Mutex<Evidence>>);
+impl Fixture {
+    fn record_search(&self, attributes: HashMap<String, String>) -> usize {
+        assert_eq!(
+            attributes,
+            HashMap::from([
+                ("user".into(), KEY.into()),
+                ("server".into(), "Nextcloud".into()),
+                ("type".into(), "plaintext".into()),
+            ])
+        );
+        drop(attributes);
+        let mut evidence = self.evidence.lock().unwrap();
+        evidence.searches = evidence.searches.checked_add(1).unwrap();
+        evidence.searches
+    }
+
+    fn record_read(
+        &self,
+        items: Vec<OwnedObjectPath>,
+        session: &OwnedObjectPath,
+    ) -> (OwnedObjectPath, usize) {
+        assert_eq!(items, vec![OwnedObjectPath::try_from(ITEM).unwrap()]);
+        assert_eq!(session.as_str(), SESSION);
+        let item = items.into_iter().next().unwrap();
+        let mut evidence = self.evidence.lock().unwrap();
+        evidence.reads = evidence.reads.checked_add(1).unwrap();
+        (item, evidence.reads)
+    }
+}
+struct Proof {
+    evidence: Arc<Mutex<Evidence>>,
+    challenge: Vec<u8>,
+}
 #[zbus::interface(name = "so.tilo.Secrets1")]
 impl Proof {
     fn caller_challenge(&self) -> Vec<u8> {
-        vec![7; 32]
+        self.challenge.clone()
     }
     fn prove_caller(&self, program: Vec<u8>, proof: Vec<u8>) -> String {
         assert!(!program.is_empty());
         assert!(!proof.is_empty());
-        self.0.lock().unwrap().proofs += 1;
+        drop((program, proof));
+        let mut evidence = self.evidence.lock().unwrap();
+        evidence.proofs = evidence.proofs.checked_add(1).unwrap();
+        drop(evidence);
         "synthetic-owner".into()
     }
 }
@@ -130,9 +153,10 @@ struct DismissedPrompt;
 impl DismissedPrompt {
     async fn prompt(
         &self,
-        _window_id: &str,
+        window_id: &str,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
+        let _ = window_id;
         Self::completed(&emitter, true, Value::from(""))
             .await
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
@@ -152,45 +176,50 @@ impl Drop for Bus {
     }
 }
 
+const SCENARIO: &str = "TILO_NEXTCLOUD_READER_TEST";
+
+fn run_scenarios() {
+    for scenario in [
+        "present",
+        "absent",
+        "ambiguous",
+        "locked",
+        "cancelled",
+        "read-locked",
+        "missing-secret",
+        "empty",
+        "oversized",
+        "invalid-utf8",
+        "search-stale",
+        "read-stale",
+        "always-stale",
+        "search-refused",
+        "read-refused",
+        "always-refused",
+        "unproved-denial",
+    ] {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux::nextcloud_tests::nextcloud_read_only_session_recovery",
+                "--nocapture",
+            ])
+            .env(SCENARIO, scenario)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{scenario}: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
 #[test]
 fn nextcloud_read_only_session_recovery() {
-    const SCENARIO: &str = "TILO_NEXTCLOUD_READER_TEST";
     let Ok(scenario) = std::env::var(SCENARIO) else {
-        for scenario in [
-            "present",
-            "absent",
-            "ambiguous",
-            "locked",
-            "cancelled",
-            "read-locked",
-            "missing-secret",
-            "empty",
-            "oversized",
-            "invalid-utf8",
-            "search-stale",
-            "read-stale",
-            "always-stale",
-            "search-refused",
-            "read-refused",
-            "always-refused",
-            "unproved-denial",
-        ] {
-            let result = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "linux::nextcloud_tests::nextcloud_read_only_session_recovery",
-                    "--nocapture",
-                ])
-                .env(SCENARIO, scenario)
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "{scenario}: {} {}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
-            );
-        }
+        run_scenarios();
         return;
     };
     let scratch = tempfile::tempdir().unwrap();
@@ -223,7 +252,13 @@ fn nextcloud_read_only_session_recovery() {
             },
         )
         .unwrap()
-        .serve_at("/so/tilo/Secrets1", Proof(evidence.clone()))
+        .serve_at(
+            "/so/tilo/Secrets1",
+            Proof {
+                evidence: evidence.clone(),
+                challenge: vec![7; 32],
+            },
+        )
         .unwrap()
         .serve_at("/prompt", DismissedPrompt)
         .unwrap()
@@ -251,12 +286,15 @@ fn nextcloud_read_only_session_recovery() {
         }
         _ => assert!(matches!(result, Err(SecretError::Denied))),
     }
-    let evidence = evidence.lock().unwrap();
+    assert_evidence(&evidence.lock().unwrap(), &scenario, proof);
+}
+
+fn assert_evidence(evidence: &Evidence, scenario: &str, proof: bool) {
     let retried = scenario.contains("stale") || proof;
     assert_eq!(evidence.sessions, if retried { 2 } else { 1 });
     assert_eq!(evidence.proofs, if proof { 2 } else { 0 });
     assert_eq!(evidence.searches, if retried { 2 } else { 1 });
-    let expected_reads = match scenario.as_str() {
+    let expected_reads = match scenario {
         "absent" | "ambiguous" | "locked" | "cancelled" => 0,
         "read-stale" | "always-stale" | "read-refused" | "always-refused" => 2,
         _ => 1,
