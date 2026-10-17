@@ -952,7 +952,7 @@ mod tests {
         // the spin rather than assuming the channel handoff proves it. As in
         // production, undumpable processes use the wait channel fallback.
         let deadline = Instant::now() + DUMP_WAIT;
-        loop {
+        let initially_running = loop {
             let running = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
                 Ok(syscall) => syscall.trim() == "running",
                 Err(_) => {
@@ -961,14 +961,13 @@ mod tests {
                 }
             };
             if running {
-                break;
+                break true;
             }
-            assert!(
-                Instant::now() < deadline,
-                "initial running state was not observable"
-            );
+            if Instant::now() >= deadline {
+                break false;
+            }
             std::thread::yield_now();
-        }
+        };
         let mut left_alone = vec![(tid, "it was running".into())];
         let mut signalled = 0;
         park.store(true, Ordering::Release);
@@ -985,6 +984,10 @@ mod tests {
             .map(|(_, backtrace)| frames_of(backtrace));
         drop(release_tx);
         worker.join().unwrap();
+        assert!(
+            initially_running,
+            "initial running state was not observable"
+        );
         assert!(left_alone.is_empty(), "never revisited: {left_alone:?}");
         assert!(
             frames.is_some_and(|frames| frames.contains("recv")),
