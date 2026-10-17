@@ -441,6 +441,18 @@ pub enum Action {
     ReceiveFromOtherOwnDevice,
     /// The other device splits its "Outline" tab into a window of its own.
     OtherOwnDeviceSplitsOutline,
+    /// A player in another workspace and three people here, for the desk
+    /// widgets.
+    SeedDesk,
+    /// A key reached the focused window.
+    DeskTyping,
+    /// Super alone: tapped, held, released.
+    Super(shell::shell::input_policy::SuperGesture),
+    /// Where the focused field's caret is.
+    SetTextCaret(Option<vello::kurbo::Rect>),
+    /// Move the pointer through `points`, one frame (~16 ms) apart: a
+    /// trajectory, for pointer intent.
+    PointerPath(Vec<Point>),
 }
 
 /// A named, ordered list of actions.
@@ -544,6 +556,24 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_status_and_file_picker(driver, action);
     apply_seed_wifi_and_select_group(driver, action);
     apply_window_and_workspace_actions(driver, action);
+    apply_desk(driver, action);
+}
+
+/// The desk widgets and the Super surface.
+fn apply_desk(driver: &mut ShellDriver, action: &Action) {
+    match action {
+        Action::SeedDesk => driver.seed_desk_for_shots(),
+        Action::DeskTyping => driver.desk_typing_for_shots(),
+        Action::Super(gesture) => driver.super_gesture_for_shots(*gesture),
+        Action::SetTextCaret(caret) => driver.set_text_caret_for_shots(*caret),
+        Action::PointerPath(points) => {
+            for p in points {
+                driver.move_cursor(*p);
+                driver.step_frames(1);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Pointer, keyboard and plain-capture actions — split out of [`apply`]
@@ -1754,12 +1784,96 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
     }
 }
 
+/// The desk widgets through a working minute: at rest, typing, a pause, a
+/// pass along the edge and a reach for it, the caret near a widget, and
+/// the Super surface tapped, typed into and held. A pause is three real
+/// seconds of frames.
+fn desk_widgets_scenario() -> Scenario {
+    use shell::shell::desk_widgets::GLANCE_AFTER_PAUSE;
+    use shell::shell::input_policy::SuperGesture;
+    // A pause of a few seconds is a few hundred 16 ms frames, and four more
+    // so the pause has certainly passed.
+    let pause_frames = u32::try_from(GLANCE_AFTER_PAUSE.as_millis() / 16)
+        .unwrap_or(u32::MAX)
+        .saturating_add(4);
+    let along_edge: Vec<Point> = (0..30)
+        .map(|k| Point::new(1590.0, 120.0 + 22.0 * f64::from(k)))
+        .collect();
+    let reach: Vec<Point> = [0.0, 0.45, 0.75, 0.92, 0.99, 1.0, 1.0]
+        .into_iter()
+        .map(|f| Point::new(800.0 + (1568.0 - 800.0) * f, 520.0 - 70.0 * f))
+        .collect();
+    Scenario {
+        name: "desk_widgets",
+        description: "Desk widgets: glance at rest, away while typing, back after a pause, transit vs reach at the edge, the caret rule, and the Super surface tapped and held.",
+        actions: vec![
+            Action::SeedDesk,
+            Action::MoveCursor(Point::new(700.0, 420.0)),
+            Action::Wait(20),
+            Action::Relayout,
+            Action::Snapshot("01-glance-at-rest"),
+            Action::DeskTyping,
+            Action::SnapshotSequence {
+                prefix: "02-typing-away",
+                frames: 10,
+                gap_frames: 1,
+            },
+            Action::Wait(pause_frames.saturating_sub(12)),
+            Action::SnapshotSequence {
+                prefix: "03-pause-glance",
+                frames: 14,
+                gap_frames: 1,
+            },
+            Action::DeskTyping,
+            Action::Wait(12),
+            Action::PointerPath(along_edge),
+            Action::Snapshot("04-transit-along-edge-stays-away"),
+            Action::PointerPath(reach),
+            Action::SnapshotSequence {
+                prefix: "05-reach-glances",
+                frames: 12,
+                gap_frames: 1,
+            },
+            Action::MoveCursor(Point::new(700.0, 420.0)),
+            Action::Wait(pause_frames),
+            Action::SetTextCaret(Some(vello::kurbo::Rect::new(1440.0, 846.0, 1442.0, 866.0))),
+            Action::Wait(16),
+            Action::Snapshot("06-caret-near-music-keeps-it-away"),
+            Action::SetTextCaret(None),
+            Action::Wait(16),
+            Action::Super(SuperGesture::Tap),
+            Action::SnapshotSequence {
+                prefix: "07-super-tap",
+                frames: 12,
+                gap_frames: 1,
+            },
+            Action::Snapshot("08-super-surface"),
+            Action::Type("not"),
+            Action::Wait(4),
+            Action::Snapshot("09-super-typed"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(20),
+            Action::Snapshot("10-closed"),
+            Action::Super(SuperGesture::Peek),
+            Action::Wait(14),
+            Action::Snapshot("11-super-peek"),
+            Action::Super(SuperGesture::PeekReleased),
+            Action::SnapshotSequence {
+                prefix: "12-peek-released",
+                frames: 10,
+                gap_frames: 1,
+            },
+        ],
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the shell screenshot catalogue is one data table of action lists; splitting it would only relocate rows"
 )]
 fn build_scenarios() -> Vec<Scenario> {
     vec![
+        desk_widgets_scenario(),
         Scenario {
             name: "personal_workspace_on_laptop",
             description: "The person's Research workspace as the laptop that made it shows it, before and after splitting off the outline.",

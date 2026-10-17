@@ -841,20 +841,54 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
     }
 }
 
-/// Super pressed and released with nothing in between: the tap that opens
-/// global search on every mainstream desktop.
+/// How long Super must be held, alone, before the Super surface opens as a
+/// peek. A tap (press and release) is well under this; a person reaching
+/// for a chord usually presses its second key sooner, and one who holds
+/// Super this long without one is holding it to look.
+pub const SUPER_HOLD: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// What Super alone asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuperGesture {
+    /// Pressed and released with nothing in between, before
+    /// [`SUPER_HOLD`]: open the Super surface and keep it.
+    Tap,
+    /// Held alone for [`SUPER_HOLD`]: open the Super surface as a peek.
+    Peek,
+    /// The held Super came up: close the peek unless it was taken up.
+    PeekReleased,
+    /// A pointer press while peeking: the person is using the surface, so
+    /// it stays when Super comes up.
+    PeekTaken,
+    /// Another key while peeking: the hold was a chord after all; close the
+    /// peek and let the chord run.
+    PeekCancelled,
+}
+
+/// Super alone, tapped or held: the one surface with search, widgets, the
+/// time, status and people's lines.
 ///
 /// Fed every input event ahead of chord routing, so a Super chord the
 /// shell handles (Super+L, Super+Left) disarms it exactly like one a
-/// client receives, and a Super-click or Super-scroll does too.
+/// client receives, and a Super-click or Super-scroll does too. Time comes
+/// from the caller: [`Self::observe`] and [`Self::poll`] take the instant
+/// they reason about, and [`Self::deadline`] tells the loop when a held
+/// key turns into a peek, so nothing polls.
 #[derive(Debug, Default)]
 pub struct SuperTap {
-    armed: bool,
+    /// When the lone Super went down, while nothing else has happened.
+    armed: Option<std::time::Instant>,
+    /// The hold became a peek.
+    peeking: bool,
 }
 
 impl SuperTap {
-    /// `true` on the release that completes a lone tap.
-    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+    /// What `event` at `now` completes, if anything.
+    pub fn observe(
+        &mut self,
+        event: &WindowEvent,
+        now: std::time::Instant,
+    ) -> Option<SuperGesture> {
         match event {
             WindowEvent::KeyboardInput { event: key, .. } => {
                 let is_super = matches!(
@@ -866,35 +900,69 @@ impl SuperTap {
                         // Autorepeat of the held key keeps the tap alive;
                         // a fresh press starts one.
                         if !key.repeat {
-                            self.armed = true;
+                            self.armed = Some(now);
+                            self.peeking = false;
                         }
-                        false
+                        None
                     }
-                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (true, ElementState::Released) => {
+                        let armed = self.armed.take();
+                        if std::mem::take(&mut self.peeking) {
+                            return Some(SuperGesture::PeekReleased);
+                        }
+                        armed
+                            .is_some_and(|at| now.saturating_duration_since(at) < SUPER_HOLD)
+                            .then_some(SuperGesture::Tap)
+                    }
                     (false, ElementState::Pressed) => {
-                        self.armed = false;
-                        false
+                        self.armed = None;
+                        std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekCancelled)
                     }
-                    (false, ElementState::Released) => false,
+                    (false, ElementState::Released) => None,
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 ..
             }
-            | WindowEvent::MouseWheel { .. }
             | WindowEvent::Touch(_) => {
-                self.armed = false;
-                false
+                self.armed = None;
+                std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekTaken)
             }
-            _ => false,
+            WindowEvent::MouseWheel { .. } => {
+                self.armed = None;
+                None
+            }
+            _ => None,
         }
+    }
+
+    /// The peek, once Super has been held alone for [`SUPER_HOLD`] at `now`.
+    pub fn poll(&mut self, now: std::time::Instant) -> Option<SuperGesture> {
+        let at = self.armed?;
+        if self.peeking || now.saturating_duration_since(at) < SUPER_HOLD {
+            return None;
+        }
+        self.peeking = true;
+        Some(SuperGesture::Peek)
+    }
+
+    /// When a held Super turns into a peek.
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.armed
+            .filter(|_| !self.peeking)
+            .and_then(|at| at.checked_add(SUPER_HOLD))
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "test timelines add milliseconds to one monotonic instant"
+)]
 mod super_tap_tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use winit::keyboard::KeyLocation;
 
     fn key(logical: Key, state: ElementState) -> WindowEvent {
@@ -907,48 +975,144 @@ mod super_tap_tests {
         key(Key::Named(NamedKey::Super), state)
     }
 
+    fn ms(t0: Instant, n: u64) -> Instant {
+        t0 + Duration::from_millis(n)
+    }
+
     #[test]
     fn a_lone_super_tap_fires_on_release() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        assert!(!tap.observe(&super_key(ElementState::Pressed)));
-        assert!(tap.observe(&super_key(ElementState::Released)));
-        assert!(
-            !tap.observe(&super_key(ElementState::Released)),
-            "one tap, one search"
+        assert_eq!(tap.observe(&super_key(ElementState::Pressed), t0), None);
+        assert_eq!(tap.poll(ms(t0, 90)), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 110)),
+            Some(SuperGesture::Tap)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 120)),
+            None,
+            "one tap, one surface"
+        );
+    }
+
+    #[test]
+    fn holding_super_alone_peeks_and_release_ends_the_peek() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(
+            tap.deadline(),
+            Some(t0 + SUPER_HOLD),
+            "the loop wakes for the hold"
+        );
+        assert_eq!(
+            tap.poll(
+                (t0 + SUPER_HOLD)
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap()
+            ),
+            None
+        );
+        assert_eq!(tap.poll(t0 + SUPER_HOLD), Some(SuperGesture::Peek));
+        assert_eq!(tap.poll(ms(t0, 900)), None, "one peek per hold");
+        assert_eq!(tap.deadline(), None);
+        // Autorepeat while held changes nothing.
+        let mut repeat = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Super),
+            None,
+            ElementState::Pressed,
+        );
+        repeat.repeat = true;
+        assert_eq!(
+            tap.observe(&ui::synthetic_input::keyboard_input(repeat), ms(t0, 950)),
+            None
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1200)),
+            Some(SuperGesture::PeekReleased)
+        );
+    }
+
+    #[test]
+    fn a_long_press_never_counts_as_a_tap_even_unpolled() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 2000)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_click_while_peeking_takes_the_surface_and_a_chord_cancels_it() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.poll(t0 + SUPER_HOLD);
+        assert_eq!(
+            tap.observe(&ui::synthetic_input::mouse_press(), ms(t0, 500)),
+            Some(SuperGesture::PeekTaken)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 700)),
+            None
+        );
+
+        tap.observe(&super_key(ElementState::Pressed), ms(t0, 1000));
+        tap.poll(ms(t0, 1000) + SUPER_HOLD);
+        assert_eq!(
+            tap.observe(
+                &key(Key::Character("l".into()), ElementState::Pressed),
+                ms(t0, 1500)
+            ),
+            Some(SuperGesture::PeekCancelled)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1600)),
+            None
         );
     }
 
     #[test]
     fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
-        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed), t0);
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
+        assert_eq!(tap.poll(ms(t0, 1000)), None, "a chord never peeks");
 
-        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed), t0);
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
     }
 
     #[test]
     fn a_super_click_or_scroll_is_not_a_tap() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&ui::synthetic_input::mouse_press());
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&ui::synthetic_input::mouse_press(), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
 
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
     }
 
     #[test]
     fn a_modifier_released_alone_is_not_super() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
-        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed), t0);
+        assert_eq!(
+            tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released), t0),
+            None
+        );
     }
 }
 

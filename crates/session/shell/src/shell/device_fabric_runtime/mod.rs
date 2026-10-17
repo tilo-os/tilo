@@ -1910,6 +1910,7 @@ impl DeviceFabricRuntime {
                     contact_endpoint: None,
                     sender_name: None,
                     sound: None,
+                    incoming_call: false,
                 });
         }
     }

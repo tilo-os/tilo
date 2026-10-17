@@ -257,6 +257,11 @@ pub struct IncomingNotification {
     /// The system sound this notification stands for, from its `category`
     /// hint; `None` when the sender asked for silence (`suppress-sound`).
     pub sound: Option<settings_store::system_sounds::SystemSoundEvent>,
+    /// The sender filed it as a call ringing now (freedesktop category
+    /// `call.incoming`). Trusted only together with a verified sender
+    /// person ([`Self::contact_endpoint`]): a bare category is the app's
+    /// word alone.
+    pub incoming_call: bool,
 }
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
@@ -1151,6 +1156,15 @@ fn parse_notification_sound(
     })
 }
 
+/// Whether the sender filed the notification as a call ringing now.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_incoming_call(hints: &HashMap<String, OwnedValue>) -> bool {
+    hints
+        .get("category")
+        .and_then(|value| <&str>::try_from(value).ok())
+        == Some("call.incoming")
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
     hints
@@ -1801,6 +1815,7 @@ impl NotificationService {
                     .then(|| parse_sender_name(&hints))
                     .flatten(),
                 sound: parse_notification_sound(&hints),
+                incoming_call: parse_incoming_call(&hints),
             },
             sharing,
             ongoing_owner,
@@ -2041,6 +2056,7 @@ mod tests {
                 contact_endpoint: None,
                 sender_name: None,
                 sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
+                incoming_call: false,
             });
             assert_eq!(b.pending_incoming_len(), 1);
             let drained = b.drain_incoming();

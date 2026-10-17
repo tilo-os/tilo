@@ -2828,3 +2828,10 @@ storage-low-title = Der Speicher ist fast voll
 storage-low-body = Noch { $free } frei für { $volume }. Lösche große Downloads oder öffne Einstellungen, Speicher, um Platz zu schaffen.
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
+
+## Desk widgets
+
+desk-team-title = In diesem Arbeitsbereich
+# Where a person is: their strip, then the window they are on.
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } weitere

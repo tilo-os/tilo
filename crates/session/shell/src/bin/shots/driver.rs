@@ -1070,6 +1070,99 @@ impl ShellDriver {
         );
     }
 
+    /// A desk to show the widgets on: a player in another workspace than
+    /// this one, and three people here, one with a status line they wrote,
+    /// one whose machine generated theirs, one with none, each on a window.
+    pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
+        use shell::shell::state::Collaborator;
+        let player = PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
+            identity: "Spotify".to_string(),
+            status: PlaybackStatus::Playing,
+            title: Some("Teardrop".to_string()),
+            artist: Some("Massive Attack".to_string()),
+            artwork: None,
+            track_id: Some("/org/tilo/shots/track/1".to_string()),
+            length_us: Some(330_000_000),
+            position_us: 94_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: true,
+            can_go_previous: true,
+            observed_at: Instant::now(),
+        };
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+        let handle = self.chrome_handle();
+        let room = {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let tab_ids = tree
+                .desktop
+                .active_workspace()
+                .into_iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            if let Some(active) = tree.desktop.active_workspace_mut() {
+                for (index, (id, name)) in [("mara", "Mara"), ("jonas", "Jonas"), ("ada", "Ada")]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if !active.collaborators.iter().any(|person| person.id == id) {
+                        let mut person = Collaborator::new(id, name);
+                        person.active_tab = index
+                            .checked_rem(tab_ids.len())
+                            .and_then(|slot| tab_ids.get(slot))
+                            .copied();
+                        active.collaborators.push(person);
+                    }
+                }
+            }
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        };
+        if let Some(room) = room {
+            for (id, text, automatic) in [
+                ("mara", "Finishing the layout review before 3", false),
+                ("jonas", "Comparing two onboarding drafts", true),
+            ] {
+                self.fb.apply_remote_presence_for_shots(
+                    id.to_string(),
+                    ui::presence::PresenceKey::Workspace { id: room.clone() },
+                    ui::collaboration::PresencePayload::Status {
+                        text: text.to_string(),
+                        automatic,
+                    },
+                );
+            }
+        }
+    }
+
+    /// A key reached the focused window just now.
+    pub fn desk_typing_for_shots(&mut self) {
+        let now = Instant::now();
+        self.host_mut().note_client_typing(Some(now), now);
+    }
+
+    /// Super alone, as the compositor classifies it.
+    pub fn super_gesture_for_shots(&mut self, gesture: shell::shell::input_policy::SuperGesture) {
+        let state = std::mem::take(&mut self.state);
+        let root = self.root_obj.clone();
+        self.host_mut().super_gesture(gesture, &state, &root);
+        self.state = state;
+    }
+
+    /// The focused field's caret, in desktop coordinates.
+    pub fn set_text_caret_for_shots(&mut self, caret: Option<Rect>) {
+        self.host_mut().set_text_caret(caret);
+    }
+
     /// Populate the live room through the same collaborator/capability state
     /// the People overlay reads. The varied tab attribution lets the rendered
     /// proof exercise meaningful location lines instead of screenshot-only

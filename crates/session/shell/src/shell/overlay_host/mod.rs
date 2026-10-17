@@ -42,6 +42,8 @@ use crate::shell::quick_settings::refresh::QsField;
 use ui::TextRole;
 
 mod controller;
+mod desk;
+pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
 mod displays;
@@ -871,6 +873,8 @@ pub struct ShellOverlayHost {
     now_playing_preferred: Option<String>,
     /// When the visible card next repaints to advance its playhead.
     now_playing_tick: std::cell::Cell<Option<Instant>>,
+    /// The desk widgets and the Super surface.
+    desk: desk::DeskState,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::quick_settings::actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
@@ -2297,6 +2301,8 @@ impl ShellOverlayHost {
         host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
             crate::bluetooth::PairingPromptHandle::global(),
         );
+        // The live session keeps the desk choices made on the desk itself.
+        host.desk = desk::DeskState::persisting();
         host
     }
 
@@ -2521,6 +2527,7 @@ impl ShellOverlayHost {
             now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
             now_playing_preferred: None,
             now_playing_tick: std::cell::Cell::new(None),
+            desk: desk::DeskState::default(),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
@@ -3463,7 +3470,7 @@ impl ShellOverlayHost {
         &self.layers.emoji_picker
     }
 
-    /// Open global search, as a lone Super tap does.
+    /// Open global search (the palette scoped to everything).
     pub fn open_global_search(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
         self.refresh_search_results(doc, root);
@@ -12560,10 +12567,11 @@ impl ShellOverlayHost {
     fn track_cursor_position(&mut self, event: &WindowEvent, scale_factor: f64) {
         // A pointer that left the window is nowhere a peer can be shown. Only
         // the shared desk forgets it: `last_cursor` still hit-tests.
-        if matches!(event, WindowEvent::CursorLeft { .. })
-            && let Some(desk) = &self.shared_desk
-        {
-            desk.set_pointer(None);
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.desk_pointer_left(Instant::now());
+            if let Some(desk) = &self.shared_desk {
+                desk.set_pointer(None);
+            }
         }
         // Focus loss or a fresh press ends an abandoned navigation gesture.
         // Escape alone keeps the matching release owned across page changes.
@@ -12584,6 +12592,7 @@ impl ShellOverlayHost {
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(Some((p.x, p.y)));
             }
+            self.desk_pointer(p, Instant::now());
             self.focus_display_at(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
@@ -15227,6 +15236,16 @@ impl ShellOverlayHost {
     }
 
     fn handle_palette_pointer_click(&mut self, p: Point) -> bool {
+        // The field alone (the Super surface before anything is typed) has
+        // no filter band to hit.
+        if self.palette.shows_field_only() {
+            if self.palette.get_rect().contains(p) {
+                return false;
+            }
+            self.palette_visible = false;
+            self.palette.close();
+            return true;
+        }
         // Scope can be swapped without dismissing the palette. The target
         // is the segment's full-height slice of the track — the same rect
         // its semantic node publishes.
@@ -17762,7 +17781,8 @@ impl ShellOverlayHost {
             ..
         } = event
         {
-            if !repeat {
+            // Nothing is listed while the field stands alone.
+            if !repeat && !self.palette.shows_field_only() {
                 self.activate_selected_result(&mut ctx.state, ctx.path);
             }
             *ctx.handled = true;
@@ -18760,9 +18780,11 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
+        let desk_dirty = self.update_desk(Instant::now());
         steps.mark("commit");
         drop(steps);
-        agent_quick_dirty
+        desk_dirty
+            || agent_quick_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -19786,6 +19808,12 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
+        // Desk widgets above the windows: a press on a showing one is
+        // theirs, before the palette reads it as a click away.
+        if self.route_desk_event(event) {
+            *ctx.handled = true;
+            return;
+        }
         if self.handle_shell_mouse_click_event(event, ctx.handled) {
             return;
         }
@@ -20555,6 +20583,9 @@ impl Widget for ShellOverlayHost {
             // the query must use the same row as its editable semantic node.
             targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
         }
+        if self.onboarding.is_none() {
+            targets.extend(self.desk_test_rects());
+        }
         targets
     }
 
@@ -20708,7 +20739,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 16] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 17] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20797,6 +20828,7 @@ impl ShellOverlayHost {
                     .flatten(),
             ),
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
+            ("desk", self.desk_wake_deadline(now)),
         ]
     }
 
@@ -20948,6 +20980,7 @@ impl ShellOverlayHost {
                 .is_some_and(|ack| ack.fading_at(now, self.acknowledgement_reduce_motion.get()))
         };
         self.transition_started.is_some()
+            || self.desk_animating(now)
             || self.strip_indicators.needs_animation_frame_at(now)
             || self.workspace_switch_holding_at(now)
             || qs_in_flight
@@ -22042,26 +22075,10 @@ impl ShellOverlayHost {
             let now = std::time::SystemTime::now();
             let interactions = presence.visible_interactions(std::time::Instant::now());
             for row in &mut rows {
-                let direct = ui::permissions::UserId(row.id.clone());
-                let presence_id = presence
-                    .status_for(&direct, now)
-                    .map(|_| direct.clone())
-                    .or_else(|| {
-                        presence.names.iter().find_map(|(id, name)| {
-                            name.eq_ignore_ascii_case(&row.label).then(|| id.clone())
-                        })
-                    });
-                if let Some(id) = presence_id {
-                    row.status = presence.status_for(&id, now).map(|status| {
-                        tilo_desktop::collaborators::RosterStatus {
-                            text: status.text.clone(),
-                            source: if matches!(status.origin, ui::StatusOrigin::Inferred { .. }) {
-                                tilo_desktop::collaborators::LineSource::Generated
-                            } else {
-                                tilo_desktop::collaborators::LineSource::Written
-                            },
-                        }
-                    });
+                if let Some(status) =
+                    crate::shell::desk_widgets::team::status_line(presence, row, now)
+                {
+                    row.status = Some(status);
                 }
                 if let Some(interaction) = interactions.iter().find(|interaction| {
                     interaction.actor.id == row.id
@@ -23303,23 +23320,8 @@ impl ShellOverlayHost {
             },
             ui::Curve::EaseOut,
         );
-        let palette_now = Instant::now();
-        let palette_shown = self.palette_transition.is_visible(palette_now);
         let desktop = transform.transform_rect_bbox(self.rect);
-        // The scrim dims the whole desktop and the card floats over it: two
-        // parts, so a keystroke in the open palette repaints the card alone.
-        overlay_part(scene, "shell.palette-scrim", desktop, |scene| {
-            if palette_shown {
-                let openness = self.palette_transition.value(palette_now);
-                draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            }
-            None
-        });
-        overlay_part(scene, "shell.palette", desktop, |scene| {
-            palette_shown
-                .then(|| self.draw_palette_card(scene, transform, text_renderer, theme, presence))
-                .flatten()
-        });
+        self.draw_search_and_desk(scene, transform, text_renderer, theme, presence);
 
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
@@ -23467,7 +23469,9 @@ impl ShellOverlayHost {
             &palette_theme,
             presence,
         );
-        self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
+        if !self.palette.shows_field_only() {
+            self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
+        }
         if in_flight {
             scene.pop_layer();
         }
