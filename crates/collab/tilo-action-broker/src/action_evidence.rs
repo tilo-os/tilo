@@ -103,6 +103,16 @@ pub struct IntentOpening {
     nonce: [u8; 32],
     intent_digest: [u8; 32],
     retained_digest: [u8; 32],
+    /// Absent only in historical openings. The wrapper distinguishes a bound
+    /// missing request from an opening that predates retry-digest binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request: Option<RequestBinding>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestBinding {
+    digest: Option<[u8; 32]>,
 }
 
 impl std::fmt::Debug for AdmissionEvidence {
@@ -226,6 +236,11 @@ fn mint_with_signer(
         nonce,
         intent_digest: intent_digest(exact_intent)?,
         retained_digest: retained_digest(exact_intent)?,
+        request: Some(RequestBinding {
+            digest: exact_intent
+                .get("request")
+                .map(crate::collab_broker_capnp::admission_request_digest),
+        }),
     };
     let intent_commitment = opening.commitment();
     let bytes = signing_bytes(&facts, &intent_commitment)?;
@@ -297,6 +312,17 @@ impl AdmissionEvidence {
         Ok(())
     }
 
+    pub(crate) fn validate_request_digest(&self, digest: Option<[u8; 32]>) -> Result<(), String> {
+        if let Some(request) = &self.opening.request
+            && request.digest != digest
+        {
+            return Err("retained request digest differs from signed request".into());
+        }
+        // Historical openings cannot authenticate the separately stored digest;
+        // do not manufacture a binding or rewrite their signed commitments.
+        Ok(())
+    }
+
     /// Release the private opening only for the exact original owner. The
     /// caller must authenticate the live observer before supplying its actor;
     /// equality with a deserialized identity is not authentication.
@@ -332,6 +358,18 @@ impl IntentOpening {
         hash.update(&self.nonce);
         hash.update(&self.intent_digest);
         hash.update(&self.retained_digest);
+        if let Some(request) = &self.request {
+            hash.update(b"tilo-semantic-admission-request-v1\0");
+            match request.digest {
+                Some(digest) => {
+                    hash.update(&[1]);
+                    hash.update(&digest);
+                }
+                None => {
+                    hash.update(&[0]);
+                }
+            }
+        }
         *hash.finalize().as_bytes()
     }
 
@@ -427,6 +465,10 @@ mod tests {
     }
 
     fn evidence() -> AdmissionEvidence {
+        evidence_for(&intent())
+    }
+
+    fn evidence_for(intent: &Value) -> AdmissionEvidence {
         let root = SigningKey::from_bytes(&[11; 32]);
         let device = SigningKey::from_bytes(&[12; 32]);
         let mut certificate = DeviceCert {
@@ -439,7 +481,7 @@ mod tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut certificate, &root).unwrap();
-        mint_with_signer(facts(), &intent(), |room, bytes| {
+        mint_with_signer(facts(), intent, |room, bytes| {
             assert_eq!(room, "room");
             assert!(bytes.starts_with(SIGN_DOMAIN));
             Ok((certificate, device.sign(bytes).to_bytes()))
@@ -501,6 +543,67 @@ mod tests {
         let mut corrupt = evidence;
         corrupt.opening.intent_digest[0] ^= 1;
         assert!(corrupt.validate(&facts()).is_err());
+    }
+
+    #[test]
+    fn retry_digest_presence_and_contents_are_private_and_bound() {
+        for request in [
+            None,
+            Some(Value::Null),
+            Some(serde_json::json!({"argument": "secret"})),
+        ] {
+            let mut intent = intent();
+            if let Some(request) = request {
+                intent["request"] = request;
+            }
+            let evidence = evidence_for(&intent);
+            let digest = intent
+                .get("request")
+                .map(crate::collab_broker_capnp::admission_request_digest);
+            evidence.validate_request_digest(digest).unwrap();
+            assert!(evidence.validate_request_digest(Some([0; 32])).is_err());
+            if digest.is_some() {
+                assert!(evidence.validate_request_digest(None).is_err());
+            }
+            let mut removed = evidence.clone();
+            removed.opening.request = None;
+            assert!(
+                removed.validate(&facts()).is_err(),
+                "cannot downgrade a new opening"
+            );
+            let mut replaced = evidence;
+            replaced.opening.request.as_mut().unwrap().digest = Some([0; 32]);
+            assert!(replaced.validate(&facts()).is_err());
+        }
+    }
+
+    #[test]
+    fn historical_opening_keeps_its_original_commitment_encoding() {
+        let intent = serde_json::json!({"request": {"argument": "historical"}});
+        let evidence = evidence_for(&intent);
+        let mut historical = serde_json::to_value(&evidence).unwrap();
+        historical["opening"]
+            .as_object_mut()
+            .unwrap()
+            .remove("request");
+        // Reproduce the original three-component commitment independently of
+        // the current writer, then sign it with the fixture's device identity.
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"tilo-semantic-admission-commitment-v1\0");
+        hash.update(&evidence.opening.nonce);
+        hash.update(&evidence.opening.intent_digest);
+        hash.update(&evidence.opening.retained_digest);
+        let commitment = *hash.finalize().as_bytes();
+        let signature = SigningKey::from_bytes(&[12; 32])
+            .sign(&signing_bytes(&facts(), &commitment).unwrap())
+            .to_bytes();
+        historical["receipt"]["intent_commitment"] = serde_json::json!(commitment);
+        historical["receipt"]["signature"] = serde_json::json!(signature.to_vec());
+        let restored: AdmissionEvidence = serde_json::from_value(historical.clone()).unwrap();
+        restored.validate(&facts()).unwrap();
+        restored.opening.verify(&restored.receipt, &intent).unwrap();
+        restored.validate_retained(&serde_json::json!({})).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), historical);
     }
 
     #[test]

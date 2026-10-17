@@ -213,6 +213,11 @@ fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<
     (intent, request.as_ref().map(request_digest))
 }
 
+/// The journal's exact retry digest, also bound by private admission evidence.
+pub(crate) fn admission_request_digest(request: &serde_json::Value) -> [u8; 32] {
+    request_digest(request).0
+}
+
 /// A digest of `request` that is equal exactly when the JSON values are:
 /// object members are hashed in key order, whatever order they arrived in.
 fn request_digest(request: &serde_json::Value) -> guarded::Digest {
@@ -519,6 +524,13 @@ fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> R
             return Err("signed admission requires journal version 7".into());
         }
         check_evidence(&record.key, &record.intent, evidence)?;
+        evidence.validate_request_digest(
+            record
+                .request_digest
+                .as_ref()
+                .map(|digest| digest.0)
+                .or_else(|| record.intent.get("request").map(admission_request_digest)),
+        )?;
     }
     if let Some(terminal) = &record.terminal {
         let admission = record
@@ -834,6 +846,8 @@ impl InvocationJournal {
         self.check()?;
         if let Some(evidence) = &admission {
             check_evidence(&key, &intent, evidence)?;
+            evidence
+                .validate_request_digest(intent.get("request").map(admission_request_digest))?;
             evidence
                 .opening_for_owner(&evidence.receipt.facts.actor)?
                 .verify(&evidence.receipt, &intent)?;

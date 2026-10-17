@@ -585,14 +585,46 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             };
             assert_eq!(error, expected_error, "tampered {field}");
         }
+        // Only the retry digest changes: the retained intent and entire signed
+        // evidence remain byte-for-byte identical. Neither replacement nor
+        // removal may change what the recovered row accepts as an exact retry.
+        for digest in [serde_json::json!("00".repeat(32)), serde_json::Value::Null] {
+            let mut altered = snapshot.clone();
+            if digest.is_null() {
+                altered["records"][0].as_object_mut().unwrap().remove("request_digest");
+            } else {
+                altered["records"][0]["request_digest"] = digest;
+            }
+            std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+            let Err(error) = InvocationJournal::open(&root) else {
+                panic!("tampered retry digest was accepted");
+            };
+            assert_eq!(error, "retained request digest differs from signed request");
+        }
         std::fs::write(&path, bytes).unwrap();
-        let restored = InvocationJournal::open(&root).unwrap();
+        let mut restored = InvocationJournal::open(&root).unwrap();
         let recovered = restored.lookup(&admitted.key).unwrap().unwrap();
         assert_eq!(recovered.admission.as_ref().unwrap(), evidence);
         assert_eq!(recovered.intent, admitted.intent);
         evidence.validate_retained(&recovered.intent).unwrap();
         assert!(recovered.terminal.is_none());
         assert!(recovered.uncertain);
+        let request = serde_json::json!({
+            "peer_id": 903,
+            "app_id": env.route.app_id,
+            "record_id": env.route.record_id,
+            "resource": "workspace:atlas",
+            "action": "open",
+            "argument": "private argument",
+            "original_request": null,
+        });
+        assert!(recovered.admitted_request_is(&request));
+        let mut retry = recovered.intent.clone();
+        retry["request"] = request;
+        assert!(!restored.admit(admitted.key.clone(), retry.clone(), 999).unwrap(),
+            "an exact retry reuses the recovered admission");
+        retry["request"]["argument"] = serde_json::json!("changed argument");
+        assert!(restored.admit(admitted.key.clone(), retry, 999).is_err());
     }).await;
 }
 

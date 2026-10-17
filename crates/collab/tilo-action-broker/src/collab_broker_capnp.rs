@@ -67,7 +67,7 @@ pub use committed_document::{
     NativeDocumentReads, PreparedElsewhere, PreparingElsewhere,
 };
 use durable_local_invocation::DurableContext;
-pub(crate) use invocation_journal::DurableInvocation;
+pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
