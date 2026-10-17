@@ -232,6 +232,9 @@ pub struct MemberChanged {
     /// Left or was kicked: Discord does not tell the two apart without the audit log.
     #[serde(default)]
     pub left: bool,
+    /// The member's names, when the event carries them.
+    #[serde(default)]
+    pub user: Option<UserName>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +248,37 @@ pub struct Command {
     /// the code itself never reaches the event log.
     #[serde(default)]
     pub code_sha256: Option<String>,
+    /// Who ran it, as Discord names them.
+    #[serde(default)]
+    pub user: Option<UserName>,
+}
+
+/// A Discord user's names: their unique username, and the name they show
+/// when it is another (their server nickname, else their global name).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct UserName {
+    pub user_name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+impl UserName {
+    /// The names a member object (`{nick, user: {username, global_name}}`)
+    /// gives, or `None` without a username.
+    #[must_use]
+    pub fn of_member(member: &serde_json::Value) -> Option<Self> {
+        let user_name = member["user"]["username"].as_str()?.to_owned();
+        let display_name = member["nick"]
+            .as_str()
+            .or_else(|| member["user"]["global_name"].as_str())
+            .filter(|name| !name.is_empty() && *name != user_name)
+            .map(str::to_owned);
+        Some(Self {
+            user_name,
+            display_name,
+        })
+    }
 }
 
 #[cfg(test)]

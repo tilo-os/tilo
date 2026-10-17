@@ -105,6 +105,10 @@ profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
+profile-section-linked = Verknüpfte Konten
+profile-link = { $service }-Konto verknüpfen
+profile-unlink = Trennen
+profile-copy = Kopieren
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich

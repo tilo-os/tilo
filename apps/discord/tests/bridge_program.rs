@@ -409,6 +409,8 @@ fn pass() -> Vec<Step> {
                     ("discord_user", item("discord_user")),
                     ("person", item("person")),
                     ("code_sha256", item("code_sha256")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
                 ],
             )],
         ),
@@ -418,6 +420,18 @@ fn pass() -> Vec<Step> {
                 "unlink",
                 "unlink",
                 &[("discord_user", item("discord_user"))],
+            )],
+        ),
+        each(
+            "renames",
+            vec![guild(
+                "rename-link",
+                "rename-link",
+                &[
+                    ("discord_user", item("discord_user")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
+                ],
             )],
         ),
         each("import_categories", {

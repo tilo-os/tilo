@@ -155,6 +155,7 @@ struct VariantOptions {
     opens_path: Option<Vec<String>>,
     participant: bool,
     edit: bool,
+    member: bool,
     kind: Option<String>,
     /// The collection field whose items the effect is offered on, its first
     /// field bound to the item's id.
@@ -274,6 +275,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.participant = true;
             } else if meta.path.is_ident("edit") {
                 options.edit = true;
+            } else if meta.path.is_ident("member") {
+                options.member = true;
             } else if meta.path.is_ident("item") {
                 options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
             } else if meta.path.is_ident("offload") {
@@ -282,7 +285,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, \
+                     `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)` or `kind`",
                 ));
             }
@@ -512,6 +515,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         let participant = options.participant;
         let edits = options.edit;
+        let member = options.member;
         if options.item.is_some() && fields.is_empty() {
             return Err(syn::Error::new(
                 variant.span(),
@@ -590,6 +594,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 opens: #opens,
                 participant: #participant,
                 edits: #edits,
+                member: #member,
                 item: #item,
                 offload: #offload,
             }

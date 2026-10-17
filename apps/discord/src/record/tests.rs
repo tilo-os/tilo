@@ -324,6 +324,8 @@ fn complete(bot: &mut Replica<Guild>, user: &str, person: &str, code: &str) {
         discord_user: user.into(),
         person: person.into(),
         code_sha256: link::hash(code),
+        user_name: None,
+        display_name: None,
     }))
     .unwrap();
 }
@@ -425,6 +427,8 @@ fn only_a_person_begins_and_only_bots_complete() {
         discord_user: "d_ada".into(),
         person: ADA.into(),
         code_sha256: link::hash("X"),
+        user_name: None,
+        display_name: None,
     }));
     assert!(forged.is_err());
 }

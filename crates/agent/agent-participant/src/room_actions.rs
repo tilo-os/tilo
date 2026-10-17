@@ -28,8 +28,10 @@
 //!
 //! Document invocations serve the host user's own devices. Anyone else the
 //! room admits may only comment through them (actions on a `comments`
-//! field), run under their own current standing so the action's door
-//! decides: a commenter cannot publish document changes directly. Exact local
+//! field) and run the actions an app offers every member for themselves
+//! ([`tilo_actions::MEMBER_OWN_TAG`], linking their own account elsewhere),
+//! under their own current standing so the action's door decides: a
+//! commenter cannot publish document changes directly. Exact local
 //! View discovery also serves currently certified room readers, through the
 //! host's canonical Read policy; that grants no document invocation authority.
 //! Agents use their own mounts.
@@ -1453,6 +1455,16 @@ impl Worker {
         let route = record_of(&target.provider, &room)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        // An empty resource names the record's own: a caller that knows the
+        // app but not its code (the desktop asking a connector) names its
+        // actions so.
+        let mut target = target.clone();
+        if target.address.resource.is_empty()
+            && let Some(definition) = self.catalogue.get(&route.app_id)
+        {
+            target.address.resource = definition.record_kind.as_str().to_owned();
+        }
+        let target = &target;
         let arguments = invoke_arguments(&request.argument);
         let mounted = self
             .mount(&route, &state)
@@ -1514,9 +1526,13 @@ impl Worker {
         matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
     }
 
-    /// A comment `caller` makes on `route` through the host: run in a worker
-    /// of its own as `caller`, with the standing the room's policy gives them
-    /// now, so the action's door decides what they may write. The host then
+    /// A comment `caller` makes on `route` through the host, or an action of
+    /// the record any member may ask for themselves
+    /// ([`tilo_actions::MEMBER_OWN_TAG`]: linking their own account
+    /// elsewhere): run in a worker of its own as `caller`, with the standing
+    /// the room's policy gives them now, so the action's door and its own
+    /// checks decide what they may do. Its answer goes to `caller` alone, in
+    /// the receipt. The host then
     /// publishes the change like its own, keeps its held copy current and
     /// answers only once the change is saved: the caller cannot retry it
     /// themselves.
@@ -1538,7 +1554,11 @@ impl Worker {
         let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
         let comment = contract.kind == ui::permissions::policy::ActionKind::Undoable
             && contract.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
-        if !comment {
+        let own = contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::MEMBER_OWN_TAG);
+        if !comment && !own {
             return Err(refused());
         }
         let CallerPrincipal::Person(person) = caller.principal() else {

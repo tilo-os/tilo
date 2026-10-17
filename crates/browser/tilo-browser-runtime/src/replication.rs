@@ -40,7 +40,7 @@ use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
-const DESKTOP_APP: &str = "so.tilo.browser-desktop";
+pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
 /// How often a page asks again whether the room lets its person moderate
 /// the shared desktop: a role the room grants while they are in it reaches

@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createNativeCatalogueBridge, invokeRoomMembership, roomGovernanceResource} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeRoomMembership, roomGovernanceResource, runRoomAction} from './native-catalogue.mjs';
+
+test('the desktop asks the room host to run a room record action by its app and action alone', async () => {
+  const calls = [];
+  const connection = {invoke(target, argument) {
+    calls.push({target, argument});
+    const update = target.address.action === 'link-account'
+      ? {state: 'succeeded', output: {value: {code: 'ABCDEFGHJKLM'}}}
+      : {state: 'failed', error: {code: 'unknown_action', message: 'no such action'}};
+    return {done: Promise.resolve({terminal: true, update}), status: async () => ({terminal: true, update})};
+  }};
+  assert.deepEqual(await runRoomAction(connection, {id: 1, app: 'so.tilo.discord', action: 'link-account', arguments: {}}),
+    {ok: {code: 'ABCDEFGHJKLM'}});
+  assert.deepEqual(calls[0], {target: {provider: 'record:so.tilo.discord:', address: {resource: '', action: 'link-account'}}, argument: 'None'});
+  assert.deepEqual(await runRoomAction(connection, {id: 2, app: 'so.tilo.chat', action: 'my-link', arguments: {}}),
+    {error: 'no such action'});
+  assert.deepEqual(await runRoomAction(undefined, {id: 3, app: 'so.tilo.discord', action: 'my-link'}),
+    {error: 'this page reaches no room host'});
+});
 
 test('native requests preserve their correlation and exact query through the certified catalogue', async () => {
   const query = {provider:'record:so.tilo.chat:', view_resource:{id:'chat.message:fixture', kind:'chat.message'}};

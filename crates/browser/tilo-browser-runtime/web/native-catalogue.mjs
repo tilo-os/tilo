@@ -56,6 +56,28 @@ export function invokeRoomMembership({membership, room, resource, action, args =
   );
 }
 
+/**
+ * Have the room's host run an action of a room record for the person, as
+ * the desktop's chrome asks (a `room-action` host request: `{id, app,
+ * action, arguments}`): the host runs it through the record's own door, as
+ * them (`peer.actions`). An empty resource names the record's own, so the
+ * page needs none of the app's code. Resolves `{ok: value}` or `{error}`.
+ */
+export async function runRoomAction(connection, {app, action, arguments: args}) {
+  if (!connection) return {error: 'this page reaches no room host'};
+  try {
+    const ticket = connection.invoke({provider: `record:${app}:`, address: {resource: '', action}},
+      args && Object.keys(args).length ? {Json: args} : 'None');
+    let entry = await ticket.done;
+    for (let polls = 0; entry && !entry.terminal && polls < 20; polls++) entry = await ticket.status();
+    const update = entry?.update;
+    if (update?.state === 'succeeded') return {ok: update.output?.value ?? null};
+    return {error: String(update?.error?.message ?? entry?.reason ?? 'the room\'s host did not answer')};
+  } catch (error) {
+    return {error: String(error?.message ?? error)};
+  }
+}
+
 export function createNativeCatalogueBridge({take, deliver, actions, membership = () => undefined, current, onError = () => {}}) {
   let closed = false, scheduled = false;
   const pending = new Set();
