@@ -4,7 +4,7 @@
 //! The caller writes the result to /run before closing the encrypted target
 //! and emits it only after the install backend finishes successfully. The
 //! record is guest evidence, not a signature or a substitute for host
-//! readback.
+//! readback. Its schema is printed on stdout.
 
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -568,7 +568,8 @@ pub fn write(destination: &Path, result: &Value) -> Result<()> {
     Ok(())
 }
 
-/// The command: build the proof and write it.
+/// The command: build the proof, write it and print its schema, which names
+/// the proof line the backend emits.
 ///
 /// # Errors
 /// As [`build_proof`] and [`write`].
@@ -588,5 +589,13 @@ pub fn run(host: &dyn Host, values: &Values) -> Result<()> {
             .map_or_else(|| PathBuf::from(OFFLINE_RECEIPT), PathBuf::from),
     };
     let result = build_proof(host, &request)?;
-    write(&path("--output")?, &result)
+    write(&path("--output")?, &result)?;
+    println!(
+        "{}",
+        result
+            .get("schema")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    );
+    Ok(())
 }
