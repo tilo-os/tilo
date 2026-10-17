@@ -1489,7 +1489,7 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_ime(id),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,

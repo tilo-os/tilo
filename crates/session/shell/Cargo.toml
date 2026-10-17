@@ -393,6 +393,8 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-s
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 # The hosted-terminal tests tee its PTY writes in any profile.
 terminal = { path = "../../../apps/terminal", features = ["test-support"] }
+# The on-screen keyboard's own reading of the input method's content type.
+osk = { path = "../../../apps/osk" }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.

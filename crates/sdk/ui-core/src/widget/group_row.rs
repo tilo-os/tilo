@@ -3709,7 +3709,7 @@ impl FloatingSurfaceProvider for GroupRow {
         })
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         self.groups
             .iter()
             .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))

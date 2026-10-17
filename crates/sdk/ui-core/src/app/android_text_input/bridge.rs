@@ -14,11 +14,10 @@ use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use winit::event_loop::EventLoopProxy;
-use winit::window::ImePurpose;
 
 use super::{TextInputOp, named_key};
 use crate::app::{ImeWindowState, UserEvent};
-use crate::ime::ImeSurroundingText;
+use crate::ime::{Capitalization, ImeSurroundingText, InputContent, InputPurpose};
 use tilo_lock::MutexRecover as _;
 
 const CLASS: &str = "so.tilo.android.TiloTextInput";
@@ -65,6 +64,82 @@ pub(in crate::app) fn drain() -> Vec<TextInputOp> {
     std::mem::take(&mut *PENDING.lock_recover()).into()
 }
 
+/// `android.text.InputType` and `EditorInfo` values the keyboard reads.
+mod android {
+    pub const CLASS_TEXT: i32 = 0x1;
+    pub const CLASS_NUMBER: i32 = 0x2;
+    pub const CLASS_PHONE: i32 = 0x3;
+    pub const CLASS_DATETIME: i32 = 0x4;
+    pub const TEXT_CAP_WORDS: i32 = 0x2000;
+    pub const TEXT_CAP_SENTENCES: i32 = 0x4000;
+    pub const TEXT_AUTO_CORRECT: i32 = 0x8000;
+    pub const TEXT_AUTO_COMPLETE: i32 = 0x1_0000;
+    pub const TEXT_MULTI_LINE: i32 = 0x2_0000;
+    pub const TEXT_NO_SUGGESTIONS: i32 = 0x8_0000;
+    pub const TEXT_URI: i32 = 0x10;
+    pub const TEXT_EMAIL_ADDRESS: i32 = 0x20;
+    pub const TEXT_PERSON_NAME: i32 = 0x60;
+    pub const TEXT_PASSWORD: i32 = 0x80;
+    pub const TEXT_VISIBLE_PASSWORD: i32 = 0x90;
+    pub const TEXT_FILTER: i32 = 0xb0;
+    pub const NUMBER_SIGNED: i32 = 0x1000;
+    pub const NUMBER_DECIMAL: i32 = 0x2000;
+    pub const NUMBER_PASSWORD: i32 = 0x10;
+    pub const DATETIME_DATE: i32 = 0x10;
+    pub const DATETIME_TIME: i32 = 0x20;
+    pub const IME_NO_PERSONALIZED_LEARNING: i32 = 0x100_0000;
+}
+
+/// The `EditorInfo.inputType` and extra `imeOptions` for a field's content.
+/// Free text keeps the type it always had: auto-correct, capitalised
+/// sentences, line feeds as text.
+fn editor_info(content: InputContent) -> (i32, i32) {
+    use android as a;
+    let hints = content.hints;
+    let text = |variation: i32| {
+        let mut input = a::CLASS_TEXT | variation | a::TEXT_MULTI_LINE;
+        input |= match hints.capitalization {
+            Capitalization::None => 0,
+            Capitalization::Sentences => a::TEXT_CAP_SENTENCES,
+            Capitalization::Words => a::TEXT_CAP_WORDS,
+        };
+        if hints.spellcheck {
+            input |= a::TEXT_AUTO_CORRECT;
+        }
+        if hints.completion {
+            input |= a::TEXT_AUTO_COMPLETE;
+        }
+        input
+    };
+    let input = match content.purpose {
+        _ if hints.hidden && !matches!(content.purpose, InputPurpose::Pin) => {
+            a::CLASS_TEXT | a::TEXT_PASSWORD
+        }
+        InputPurpose::Password => a::CLASS_TEXT | a::TEXT_PASSWORD,
+        InputPurpose::Text if hints.lowercase => text(0),
+        InputPurpose::Text => text(0) | a::TEXT_AUTO_CORRECT | a::TEXT_CAP_SENTENCES,
+        InputPurpose::Search => text(a::TEXT_FILTER),
+        InputPurpose::Name => text(a::TEXT_PERSON_NAME),
+        InputPurpose::Email => text(a::TEXT_EMAIL_ADDRESS),
+        InputPurpose::Url => text(a::TEXT_URI),
+        InputPurpose::Number | InputPurpose::Decimal => {
+            a::CLASS_NUMBER | a::NUMBER_SIGNED | a::NUMBER_DECIMAL
+        }
+        InputPurpose::Pin if hints.hidden => a::CLASS_NUMBER | a::NUMBER_PASSWORD,
+        InputPurpose::Pin | InputPurpose::OneTimeCode => a::CLASS_NUMBER,
+        InputPurpose::Phone => a::CLASS_PHONE,
+        InputPurpose::Date => a::CLASS_DATETIME | a::DATETIME_DATE,
+        InputPurpose::Time => a::CLASS_DATETIME | a::DATETIME_TIME,
+        InputPurpose::Terminal => a::CLASS_TEXT | a::TEXT_VISIBLE_PASSWORD | a::TEXT_NO_SUGGESTIONS,
+    };
+    let options = if content.is_secret() {
+        a::IME_NO_PERSONALIZED_LEARNING
+    } else {
+        0
+    };
+    (input, options)
+}
+
 /// Points the keyboard at the focused field, or dismisses it for `None`.
 /// `restart` discards what the input method knows of the previous field.
 /// `surrounding` is what the next input connection starts from.
@@ -82,17 +157,13 @@ pub(in crate::app) fn update(
         let pixels = (f64::from(logical) * scale).round() as i32;
         JValue::Int(pixels)
     };
-    let (enabled, purpose, rect) = match field {
+    let (enabled, (input_type, ime_options), rect) = match field {
         Some(field) => (
             true,
-            match field.purpose {
-                ImePurpose::Password => 1,
-                ImePurpose::Terminal => 2,
-                _ => 0,
-            },
+            editor_info(field.content),
             [field.x, field.y, field.width, field.height].map(physical),
         ),
-        None => (false, 0, [JValue::Int(0); 4]),
+        None => (false, (0, 0), [JValue::Int(0); 4]),
     };
     let [x, y, width, height] = rect;
     let (text, [anchor, focus]) = surrounding.map_or((String::new(), [0; 2]), utf16_selection);
@@ -101,10 +172,11 @@ pub(in crate::app) fn update(
         env.call_static_method(
             class,
             "update",
-            "(ZIIIIIZLjava/lang/String;II)V",
+            "(ZIIIIIIZLjava/lang/String;II)V",
             &[
                 JValue::Bool(jboolean::from(enabled)),
-                JValue::Int(purpose),
+                JValue::Int(input_type),
+                JValue::Int(ime_options),
                 x,
                 y,
                 width,

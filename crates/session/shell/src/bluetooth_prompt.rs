@@ -213,7 +213,7 @@ impl PairingPromptView {
                 .with_placeholder(t("bluetooth-prompt-pin-placeholder"))
         } else {
             field
-                .with_kind(TextInputKind::Number)
+                .with_kind(TextInputKind::Pin)
                 .with_char_filter(|c| c.is_ascii_digit())
                 .with_accessible_name(t("bluetooth-prompt-code-label"))
                 .with_placeholder(t("bluetooth-prompt-code-placeholder"))

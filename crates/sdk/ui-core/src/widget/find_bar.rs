@@ -957,8 +957,8 @@ impl Widget for FindBar {
         Some(crate::ime::scoped_fingerprint(scope, field, key))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.field.ime_purpose()
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.field.ime_content()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

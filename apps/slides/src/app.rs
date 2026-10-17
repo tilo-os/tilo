@@ -3145,9 +3145,9 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.editing_notes
-            .then(|| self.notes.control().ime_purpose())
+            .then(|| self.notes.control().ime_content())
             .flatten()
     }
 

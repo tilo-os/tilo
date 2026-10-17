@@ -18,11 +18,203 @@ pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8;
     *hash.finalize().as_bytes()
 }
 
+/// What a field holds, for an input method to pick its layout: an email
+/// field gets `@`, a phone field the dial pad, a PIN the digit pad.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum InputPurpose {
+    /// Free text.
+    #[default]
+    Text,
+    /// A person's name.
+    Name,
+    Search,
+    Email,
+    Url,
+    /// A number, with sign and decimal separator.
+    Number,
+    /// A number with a fractional part.
+    Decimal,
+    Phone,
+    /// Digits only, such as a pairing passkey.
+    Pin,
+    /// A code sent to the person to confirm a sign-in.
+    OneTimeCode,
+    Password,
+    Date,
+    Time,
+    /// A terminal, whose keyboard wants the extra keys.
+    Terminal,
+}
+
+/// Which letters an input method capitalises on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Capitalization {
+    /// Its own default.
+    #[default]
+    None,
+    /// The first letter of each sentence.
+    Sentences,
+    /// The first letter of each word.
+    Words,
+}
+
+/// How an input method may help in a field. Each is a request on top of the
+/// input method's own default for the purpose; none set leaves that default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InputHints {
+    /// Suggest completions of the word being typed.
+    pub completion: bool,
+    /// Suggest corrections of misspelt words.
+    pub spellcheck: bool,
+    pub capitalization: Capitalization,
+    /// Prefer lower-case letters.
+    pub lowercase: bool,
+    /// Line breaks are text.
+    pub multiline: bool,
+    /// Do not show what is typed, in the keyboard either.
+    pub hidden: bool,
+    /// Learn nothing from what is typed and suggest nothing from it.
+    pub sensitive: bool,
+}
+
+/// A field's purpose and hints, as the toolkit tells an input method.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InputContent {
+    pub purpose: InputPurpose,
+    pub hints: InputHints,
+}
+
+/// Wire values of `zwp_text_input_v3`'s `content_purpose` and
+/// `content_hint`.
+mod wire {
+    pub const NORMAL: u32 = 0;
+    pub const DIGITS: u32 = 2;
+    pub const NUMBER: u32 = 3;
+    pub const PHONE: u32 = 4;
+    pub const URL: u32 = 5;
+    pub const EMAIL: u32 = 6;
+    pub const NAME: u32 = 7;
+    pub const PASSWORD: u32 = 8;
+    pub const PIN: u32 = 9;
+    pub const DATE: u32 = 10;
+    pub const TIME: u32 = 11;
+    pub const TERMINAL: u32 = 13;
+
+    pub const COMPLETION: u32 = 0x1;
+    pub const SPELLCHECK: u32 = 0x2;
+    pub const AUTO_CAPITALIZATION: u32 = 0x4;
+    pub const LOWERCASE: u32 = 0x8;
+    pub const TITLECASE: u32 = 0x20;
+    pub const HIDDEN_TEXT: u32 = 0x40;
+    pub const SENSITIVE_DATA: u32 = 0x80;
+    pub const MULTILINE: u32 = 0x200;
+}
+
+impl InputContent {
+    /// Free text, with the input method's defaults.
+    pub const TEXT: Self = Self::of(InputPurpose::Text);
+    pub const TERMINAL: Self = Self::of(InputPurpose::Terminal);
+    /// A password: hidden, and nothing learned from it.
+    pub const PASSWORD: Self = Self::of(InputPurpose::Password).secret();
+
+    #[must_use]
+    pub const fn of(purpose: InputPurpose) -> Self {
+        Self {
+            purpose,
+            hints: InputHints {
+                completion: false,
+                spellcheck: false,
+                capitalization: Capitalization::None,
+                lowercase: false,
+                multiline: false,
+                hidden: false,
+                sensitive: false,
+            },
+        }
+    }
+
+    /// The same content, hidden and sensitive: nothing typed is shown,
+    /// learned or suggested.
+    #[must_use]
+    pub const fn secret(mut self) -> Self {
+        self.hints.hidden = true;
+        self.hints.sensitive = true;
+        self
+    }
+
+    /// Whether the input method must neither show nor learn what is typed.
+    #[must_use]
+    pub const fn is_secret(self) -> bool {
+        self.hints.hidden || self.hints.sensitive || matches!(self.purpose, InputPurpose::Password)
+    }
+
+    /// The `zwp_text_input_v3` content hint bits and purpose for this
+    /// content. The protocol has no search, decimal or one-time-code
+    /// purpose; those ask for the nearest layout (free text, number,
+    /// digits).
+    #[must_use]
+    pub const fn wayland(self) -> (u32, u32) {
+        let purpose = match self.purpose {
+            InputPurpose::Text | InputPurpose::Search => wire::NORMAL,
+            InputPurpose::Name => wire::NAME,
+            InputPurpose::Email => wire::EMAIL,
+            InputPurpose::Url => wire::URL,
+            InputPurpose::Number | InputPurpose::Decimal => wire::NUMBER,
+            InputPurpose::Phone => wire::PHONE,
+            InputPurpose::Pin => wire::PIN,
+            InputPurpose::OneTimeCode => wire::DIGITS,
+            InputPurpose::Password => wire::PASSWORD,
+            InputPurpose::Date => wire::DATE,
+            InputPurpose::Time => wire::TIME,
+            InputPurpose::Terminal => wire::TERMINAL,
+        };
+        let h = self.hints;
+        let mut hint = 0;
+        if h.completion {
+            hint |= wire::COMPLETION;
+        }
+        if h.spellcheck {
+            hint |= wire::SPELLCHECK;
+        }
+        hint |= match h.capitalization {
+            Capitalization::None => 0,
+            Capitalization::Sentences => wire::AUTO_CAPITALIZATION,
+            Capitalization::Words => wire::TITLECASE,
+        };
+        if h.lowercase {
+            hint |= wire::LOWERCASE;
+        }
+        if h.multiline {
+            hint |= wire::MULTILINE;
+        }
+        if h.hidden {
+            hint |= wire::HIDDEN_TEXT;
+        }
+        if h.sensitive {
+            hint |= wire::SENSITIVE_DATA;
+        }
+        (hint, purpose)
+    }
+
+    /// The nearest of winit's own purposes, for a platform that takes no
+    /// more than that.
+    #[must_use]
+    pub const fn winit_purpose(self) -> winit::window::ImePurpose {
+        if self.is_secret() {
+            winit::window::ImePurpose::Password
+        } else if matches!(self.purpose, InputPurpose::Terminal) {
+            winit::window::ImePurpose::Terminal
+        } else {
+            winit::window::ImePurpose::Normal
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImeWindowState {
-    pub purpose: winit::window::ImePurpose,
-    /// The original editable field accepts line feeds, independently of its pixels.
-    pub multiline: bool,
+    /// What the field holds and how the input method may help in it,
+    /// including whether it takes line feeds.
+    pub content: InputContent,
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -31,15 +223,18 @@ pub struct ImeWindowState {
 
 impl ImeWindowState {
     pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
-        let purpose = widget.ime_purpose()?;
+        let mut content = widget.ime_content()?;
         let rect = widget.ime_cursor_rect()?;
-        let mut intent = Self::from_rect(purpose, rect);
-        intent.multiline = purpose == winit::window::ImePurpose::Normal && widget.ime_multiline();
-        Some(intent)
+        // Line feeds are text only where text is: never in a secret or a
+        // terminal.
+        content.hints.multiline |= !content.is_secret()
+            && content.purpose != InputPurpose::Terminal
+            && widget.ime_multiline();
+        Some(Self::from_rect(content, rect))
     }
 
     #[must_use]
-    pub fn from_rect(purpose: winit::window::ImePurpose, rect: vello::kurbo::Rect) -> Self {
+    pub fn from_rect(content: InputContent, rect: vello::kurbo::Rect) -> Self {
         let bounded = |v: f64| {
             if v.is_finite() {
                 #[allow(
@@ -55,8 +250,7 @@ impl ImeWindowState {
             }
         };
         ImeWindowState {
-            purpose,
-            multiline: false,
+            content,
             x: bounded(rect.x0),
             y: bounded(rect.y0),
             width: bounded(rect.width()).max(1),

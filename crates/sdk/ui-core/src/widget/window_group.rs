@@ -2861,7 +2861,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         })
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         self.hosts
             .iter()
             .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))

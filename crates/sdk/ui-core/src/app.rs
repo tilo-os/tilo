@@ -2283,7 +2283,7 @@ impl App {
     /// controls only change presentation and must not close pending app typing.
 
     /// The platform IME contract for the focused widget. A field opts in via
-    /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
+    /// [`Widget::ime_content`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally.
 
     /// Only fires if focus did NOT move — a move is narrated separately by

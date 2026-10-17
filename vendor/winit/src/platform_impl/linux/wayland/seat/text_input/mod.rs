@@ -14,6 +14,7 @@ use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::
 use crate::event::{Ime, WindowEvent};
 use crate::platform_impl::wayland;
 use crate::platform_impl::wayland::state::WinitState;
+use crate::platform::wayland::ImeContentType;
 use crate::window::ImePurpose;
 
 pub struct TextInputState {
@@ -74,7 +75,7 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
                 if window.ime_allowed() {
                     text_input.enable();
                     text_input
-                        .set_content_type_by_purpose(window.ime_purpose(), window.ime_multiline());
+                        .set_content_type_for(window.ime_purpose(), window.ime_content_type());
                     text_input.commit();
                     state
                         .events_sink
@@ -172,22 +173,22 @@ impl Dispatch<ZwpTextInputV3, TextInputData, WinitState> for TextInputState {
 }
 
 pub trait ZwpTextInputV3Ext {
-    fn set_content_type_by_purpose(&self, purpose: ImePurpose, multiline: bool);
+    /// Send `content` when the window set one, else what `purpose` stands for.
+    fn set_content_type_for(&self, purpose: ImePurpose, content: Option<ImeContentType>);
 }
 
 impl ZwpTextInputV3Ext for ZwpTextInputV3 {
-    fn set_content_type_by_purpose(&self, purpose: ImePurpose, multiline: bool) {
-        let (hint, purpose) = match purpose {
-            ImePurpose::Normal => (
-                if multiline {
-                    ContentHint::Multiline
-                } else {
-                    ContentHint::None
-                },
-                ContentPurpose::Normal,
+    fn set_content_type_for(&self, purpose: ImePurpose, content: Option<ImeContentType>) {
+        let (hint, purpose) = match content {
+            Some(content) => (
+                ContentHint::from_bits_truncate(content.hint),
+                ContentPurpose::try_from(content.purpose).unwrap_or(ContentPurpose::Normal),
             ),
-            ImePurpose::Password => (ContentHint::SensitiveData, ContentPurpose::Password),
-            ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
+            None => match purpose {
+                ImePurpose::Normal => (ContentHint::None, ContentPurpose::Normal),
+                ImePurpose::Password => (ContentHint::SensitiveData, ContentPurpose::Password),
+                ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
+            },
         };
         self.set_content_type(hint, purpose);
     }

@@ -437,17 +437,17 @@ impl Widget for WebView {
         );
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         (self.focused && self.engine.supports_text_input() && self.text_input.ready())
-            .then_some(winit::window::ImePurpose::Normal)
+            .then_some(crate::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
-        self.ime_purpose().is_some() && self.text_input.multiline()
+        self.ime_content().is_some() && self.text_input.multiline()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         Some(Rect::new(
             self.rect.x0,
             self.rect.y1 - 1.0,
@@ -457,7 +457,7 @@ impl Widget for WebView {
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         self.text_input.stamp(key)
     }
 

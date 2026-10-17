@@ -3229,8 +3229,8 @@ impl Widget for ActivityTimeline {
         ))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
 
     crate::redraw_flag!();

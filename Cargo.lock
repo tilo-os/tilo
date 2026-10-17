@@ -14727,6 +14727,7 @@ dependencies = [
  "notes",
  "notify",
  "os-actions",
+ "osk",
  "p256 0.14.0",
  "package-store",
  "parking_lot",

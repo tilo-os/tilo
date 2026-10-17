@@ -586,6 +586,15 @@ from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
 
+## `vendor/winit`: a field's whole text-input content type
+
+`WindowExtWayland::set_ime_content_type` sends any `zwp_text_input_v3`
+content hint set and purpose (an email field's `email` purpose, a name's
+title case, a password's hidden and sensitive hints) instead of the three
+that `ImePurpose` stands for. It replaces the earlier multiline-only setter:
+multiline is one of the hints. Other platforms keep `set_ime_purpose`, and
+`None` returns Wayland to the purpose's own mapping.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small

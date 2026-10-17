@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
+use crate::ime::{Capitalization, InputContent, InputPurpose};
 use crate::paint::PaintCtx;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
@@ -91,8 +92,8 @@ enum CtxAction {
     ApplySpelling {
         start: usize,
         end: usize,
-        replacement: String,
         original: String,
+        replacement: String,
     },
     AddToDictionary(String),
     IgnoreInField(String),
@@ -143,7 +144,6 @@ pub struct TextActionRequest {
     pub range: (usize, usize),
 }
 
-/// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
 impl TextActionRequest {
     /// What the action made of the requested text (a rewrite, a
     /// translation, a grammar fix), to write back with
@@ -168,6 +168,7 @@ pub struct TextActionResult {
     pub replacement: String,
 }
 
+/// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
 /// Prose, so apps opt out only for the smaller set of structured fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextInputKind {
@@ -181,6 +182,10 @@ pub enum TextInputKind {
     Path,
     Code,
     Number,
+    /// A telephone number: the dial pad.
+    Phone,
+    /// Digits only, such as a pairing passkey: the digit pad.
+    Pin,
     Password,
     /// A code or key typed or pasted in the clear: verification and
     /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
@@ -201,9 +206,35 @@ impl TextInputKind {
             Self::Username | Self::Email | Self::Path => TextKind::Identifier,
             Self::Url => TextKind::Url,
             Self::Code => TextKind::Code,
-            Self::Number => TextKind::Numeric,
+            Self::Number | Self::Phone | Self::Pin => TextKind::Numeric,
             Self::Password | Self::Secret => TextKind::Secret,
         }
+    }
+
+    /// What a field of this kind asks of an input method, before the
+    /// field's own overrides. Prose asks for nothing beyond the input
+    /// method's defaults, so ordinary text keeps the prediction and
+    /// capitalisation it always had.
+    #[must_use]
+    pub const fn input_content(self) -> InputContent {
+        let mut content = match self {
+            Self::Prose | Self::Path | Self::Code => InputContent::TEXT,
+            Self::Name => InputContent::of(InputPurpose::Name),
+            Self::Search => InputContent::of(InputPurpose::Search),
+            Self::Username => InputContent::of(InputPurpose::Text),
+            Self::Email => InputContent::of(InputPurpose::Email),
+            Self::Url => InputContent::of(InputPurpose::Url),
+            Self::Number => InputContent::of(InputPurpose::Number),
+            Self::Phone => InputContent::of(InputPurpose::Phone),
+            Self::Pin => InputContent::of(InputPurpose::Pin),
+            Self::Password | Self::Secret => InputContent::PASSWORD,
+        };
+        match self {
+            Self::Name => content.hints.capitalization = Capitalization::Words,
+            Self::Username | Self::Email | Self::Url => content.hints.lowercase = true,
+            _ => {}
+        }
+        content
     }
 }
 
@@ -1001,37 +1032,6 @@ impl TextInput {
         true
     }
 
-    pub fn autocorrect_enabled(&self) -> bool {
-        self.field_allows_spelling()
-            && self
-                .autocorrect
-                .unwrap_or_else(|| crate::text_assistance::preferences().auto_correct)
-    }
-
-    /// Select a language dictionary, accepting both en-US and `en_US` style
-    /// tags. If that Hunspell dictionary is unavailable, non-English checking
-    /// quietly disables itself; English retains the embedded fallback.
-    #[must_use]
-    pub fn with_spell_language(mut self, language: &str) -> Self {
-        self.set_spell_language(language);
-        self
-    }
-
-    pub fn set_spell_language(&mut self, language: &str) {
-        self.spell_language = language.to_string();
-        self.spell_cache_key = None;
-        self.autocorrection_preview_key = None;
-        self.autocorrection_preview = None;
-    }
-
-    pub fn spell_language(&self) -> &str {
-        &self.spell_language
-    }
-
-    /// Add a host-owned action to the selection context menu. Activating it
-    /// produces a request drained by `take_text_action_request`; the widget
-    /// never blocks on the action itself.
-    #[must_use]
     /// Replace `range`, which must still hold `expected`, with `replacement`
     /// as exactly one undo step: the typing before it is closed off as a
     /// step of its own, and typing after it starts a new one. Leaves the
@@ -1094,6 +1094,37 @@ impl TextInput {
         Some(end)
     }
 
+    pub fn autocorrect_enabled(&self) -> bool {
+        self.field_allows_spelling()
+            && self
+                .autocorrect
+                .unwrap_or_else(|| crate::text_assistance::preferences().auto_correct)
+    }
+
+    /// Select a language dictionary, accepting both en-US and `en_US` style
+    /// tags. If that Hunspell dictionary is unavailable, non-English checking
+    /// quietly disables itself; English retains the embedded fallback.
+    #[must_use]
+    pub fn with_spell_language(mut self, language: &str) -> Self {
+        self.set_spell_language(language);
+        self
+    }
+
+    pub fn set_spell_language(&mut self, language: &str) {
+        self.spell_language = language.to_string();
+        self.spell_cache_key = None;
+        self.autocorrection_preview_key = None;
+        self.autocorrection_preview = None;
+    }
+
+    pub fn spell_language(&self) -> &str {
+        &self.spell_language
+    }
+
+    /// Add a host-owned action to the selection context menu. Activating it
+    /// produces a request drained by `take_text_action_request`; the widget
+    /// never blocks on the action itself.
+    #[must_use]
     pub fn with_text_action(mut self, id: &str, label: &str) -> Self {
         self.add_text_action(id, label);
         self
@@ -4576,6 +4607,8 @@ impl TextInput {
         })
     }
 
+    /// The boundary is written before the correction, so undoing the
+    /// correction keeps the boundary that was typed.
     fn insert_word_boundary(&mut self, boundary: &str) {
         let correction = self.autocorrect_previous_word();
         self.insert_str(boundary);
@@ -4606,8 +4639,6 @@ impl TextInput {
         } else {
             correction.end
         };
-    /// The boundary is written before the correction, so undoing the
-    /// correction keeps the boundary that was typed.
         self.core.set_selection(correction.start, replace_end);
         self.insert_str(&correction.original);
         true
@@ -4902,6 +4933,7 @@ impl TextInput {
                 actions.push(Some(CtxAction::ApplySpelling {
                     start,
                     end,
+                    original: word.clone(),
                     replacement,
                 }));
             }
@@ -4933,7 +4965,6 @@ impl TextInput {
             menu.push(MenuItem::action(
                 crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
                 || {},
-                    original: word.clone(),
             ));
             actions.push(Some(CtxAction::AskAgent));
             menu.push(MenuItem::separator());
@@ -4981,6 +5012,7 @@ impl TextInput {
             CtxAction::ApplySpelling {
                 start,
                 end,
+                original,
                 replacement,
             } => {
                 if self
@@ -5016,7 +5048,6 @@ impl TextInput {
             }
             CtxAction::TextAction(index) => {
                 if let (Some(action), Some((start, end)), Some(selected)) = (
-                original,
                     self.text_actions.get(index),
                     self.selection_range(),
                     self.shareable_selection(),
@@ -5983,12 +6014,24 @@ impl Widget for TextInput {
         Some(Rect::new(x, top, x + self.last_caret_width, top + height))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(if self.holds_secret() {
-            winit::window::ImePurpose::Password
-        } else {
-            winit::window::ImePurpose::Normal
-        })
+    fn ime_content(&self) -> Option<InputContent> {
+        let mut content = self.kind.input_content();
+        if self.secret && !content.is_secret() {
+            // A secret PIN keeps its digit pad.
+            content = if content.purpose == InputPurpose::Pin {
+                content.secret()
+            } else {
+                InputContent::PASSWORD
+            };
+        }
+        if !content.is_secret() {
+            // Only a field's explicit opt-in adds help; turning the
+            // toolkit's own checking off leaves the input method's defaults.
+            content.hints.spellcheck |= self.spellcheck == Some(true);
+            content.hints.completion |= self.autocorrect == Some(true);
+            content.hints.multiline = self.multiline;
+        }
+        Some(content)
     }
 
     fn ime_multiline(&self) -> bool {
@@ -7089,10 +7132,17 @@ impl TextInput {
             .then(|| self.autocorrect_previous_word())
             .flatten();
         if self.enter_submits && !shift {
+            // What is submitted is the corrected word.
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
             self.fire_submit();
             *handled = true;
         } else if self.multiline {
             self.insert_str("\n");
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
             *handled = true;
         }
     }
@@ -7128,17 +7178,10 @@ impl TextInput {
         *handled = true;
     }
 
-            // What is submitted is the corrected word.
-            if let Some(correction) = correction {
-                self.apply_autocorrection(correction);
-            }
     fn handle_ctrl_shortcut(&mut self, c: &str, handled: &mut bool) {
         let lc = c.to_lowercase();
         match lc.as_str() {
             "a" => {
-            if let Some(correction) = correction {
-                self.apply_autocorrection(correction);
-            }
                 self.do_select_all();
                 *handled = true;
             }

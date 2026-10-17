@@ -205,8 +205,8 @@ impl FindBar {
         Widget::ime_cursor_rect(&self.bar)
     }
 
-    pub(crate) fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.bar)
+    pub(crate) fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        Widget::ime_content(&self.bar)
     }
 
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

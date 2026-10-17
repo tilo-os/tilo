@@ -2272,7 +2272,7 @@ impl Mount {
     fn publish_frame(&mut self, id: u64, moved_only: bool) {
         let ime_window = self.frame.ime_window();
         let ime = ime_window.as_ref().map(|i| {
-            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
+            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose)})
         });
         let unbuilt = self.tree_unbuilt(moved_only, ime_window.as_ref());
         let (decision, root_rect) = if unbuilt {

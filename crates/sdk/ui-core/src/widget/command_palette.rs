@@ -2396,8 +2396,8 @@ impl Widget for CommandPalette {
         }
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
 
     /// Only traps focus as a modal command launcher; the default Search

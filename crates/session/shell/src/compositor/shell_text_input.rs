@@ -254,7 +254,7 @@ impl ShellTextInput {
             let _ = self.conn.flush();
             return;
         };
-        let (hint, purpose) = content_type(field.purpose, field.multiline);
+        let (hint, purpose) = content_type(field.content);
         if self.enabled.is_none() {
             text_input.enable();
         }
@@ -303,28 +303,21 @@ impl ShellTextInput {
     }
 }
 
-/// The text-input content type for a field's purpose: a password is hidden
-/// and sensitive, so the keyboard shows its password layout and learns
-/// nothing from it.
+/// The text-input content type the field asks for, as the toolkit derived
+/// it: a password is hidden and sensitive, so the keyboard shows its
+/// password layout and learns nothing from it.
 fn content_type(
-    purpose: winit::window::ImePurpose,
-    multiline: bool,
+    content: ui::ime::InputContent,
 ) -> (
     zwp_text_input_v3::ContentHint,
     zwp_text_input_v3::ContentPurpose,
 ) {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
-    match purpose {
-        winit::window::ImePurpose::Password => (
-            ContentHint::HiddenText | ContentHint::SensitiveData,
-            ContentPurpose::Password,
-        ),
-        winit::window::ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
-        winit::window::ImePurpose::Normal if multiline => {
-            (ContentHint::Multiline, ContentPurpose::Normal)
-        }
-        _ => (ContentHint::None, ContentPurpose::Normal),
-    }
+    let (hint, purpose) = content.wayland();
+    (
+        ContentHint::from_bits_truncate(hint),
+        ContentPurpose::try_from(purpose).unwrap_or(ContentPurpose::Normal),
+    )
 }
 
 /// The chrome event an editing key from the on-screen keyboard's virtual
@@ -449,33 +442,24 @@ mod tests {
     #[test]
     fn a_password_field_asks_for_the_hidden_password_layout() {
         use zwp_text_input_v3::{ContentHint, ContentPurpose};
-        let (hint, purpose) = content_type(winit::window::ImePurpose::Password, false);
+        let (hint, purpose) = content_type(ui::ime::InputContent::PASSWORD);
         assert_eq!(purpose, ContentPurpose::Password);
         assert!(hint.contains(ContentHint::HiddenText | ContentHint::SensitiveData));
         assert_eq!(
-            content_type(winit::window::ImePurpose::Normal, false),
+            content_type(ui::ime::InputContent::TEXT),
             (ContentHint::None, ContentPurpose::Normal)
         );
     }
 
     #[test]
-    fn multiline_hint_never_changes_password_or_terminal_purpose() {
+    fn an_email_field_asks_for_the_email_layout() {
         use zwp_text_input_v3::{ContentHint, ContentPurpose};
+        let field = ui::widget::TextInput::local().with_kind(ui::widget::TextInputKind::Email);
+        let content = ui::widget::Widget::ime_content(&field).unwrap();
         assert_eq!(
-            content_type(winit::window::ImePurpose::Normal, true),
-            (ContentHint::Multiline, ContentPurpose::Normal)
+            content_type(content),
+            (ContentHint::Lowercase, ContentPurpose::Email)
         );
-        for purpose in [
-            winit::window::ImePurpose::Password,
-            winit::window::ImePurpose::Terminal,
-        ] {
-            assert_eq!(content_type(purpose, true), content_type(purpose, false));
-            assert!(
-                !content_type(purpose, true)
-                    .0
-                    .contains(ContentHint::Multiline)
-            );
-        }
     }
 
     #[test]

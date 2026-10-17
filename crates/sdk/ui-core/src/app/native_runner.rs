@@ -246,9 +246,9 @@ mod floating_source_focus_tests {
             }
             accepted
         }
-        fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, KurboRect)> {
+        fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, KurboRect)> {
             (id == "a").then_some((
-                winit::window::ImePurpose::Normal,
+                crate::ime::InputContent::TEXT,
                 KurboRect::new(-700.0, 500.0, -699.0, 520.0),
             ))
         }
@@ -774,8 +774,7 @@ fn dispatch_native_surface_accessibility(
 /// stays unchanged, while native handoff translations must not clamp to zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NativeImeWindowState {
-    purpose: winit::window::ImePurpose,
-    multiline: bool,
+    content: crate::ime::InputContent,
     x: i32,
     y: i32,
     width: u32,
@@ -783,8 +782,8 @@ struct NativeImeWindowState {
 }
 
 impl NativeImeWindowState {
-    fn from_rect(purpose: winit::window::ImePurpose, rect: KurboRect) -> Self {
-        let shared = ImeWindowState::from_rect(purpose, rect);
+    fn from_rect(content: crate::ime::InputContent, rect: KurboRect) -> Self {
+        let shared = ImeWindowState::from_rect(content, rect);
         let signed = |value: f64| {
             if value.is_finite() {
                 #[allow(
@@ -801,8 +800,7 @@ impl NativeImeWindowState {
             }
         };
         Self {
-            purpose,
-            multiline: shared.multiline,
+            content,
             x: signed(rect.x0),
             y: signed(rect.y0),
             width: shared.width,
@@ -813,29 +811,25 @@ impl NativeImeWindowState {
 
 impl From<NativeImeWindowState> for ImeWindowState {
     fn from(native: NativeImeWindowState) -> Self {
-        let mut shared = Self::from_rect(
-            native.purpose,
+        Self::from_rect(
+            native.content,
             KurboRect::from_origin_size(
                 (f64::from(native.x), f64::from(native.y)),
                 (f64::from(native.width), f64::from(native.height)),
             ),
-        );
-        shared.multiline = native.multiline;
-        shared
+        )
     }
 }
 
 impl From<ImeWindowState> for NativeImeWindowState {
     fn from(shared: ImeWindowState) -> Self {
-        let mut native = Self::from_rect(
-            shared.purpose,
+        Self::from_rect(
+            shared.content,
             KurboRect::from_origin_size(
                 (f64::from(shared.x), f64::from(shared.y)),
                 (f64::from(shared.width), f64::from(shared.height)),
             ),
-        );
-        native.multiline = shared.multiline;
-        native
+        )
     }
 }
 
@@ -873,8 +867,11 @@ fn resize_native_floating_window(window: &Window, rect: KurboRect) {
 }
 
 fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
-    tilo_presentation::text_input::set_multiline(window, intent.multiline);
-    window.set_ime_purpose(intent.purpose);
+    // Wayland takes the field's whole content type; other platforms take
+    // no more than winit's own purposes.
+    let (hint, purpose) = intent.content.wayland();
+    tilo_presentation::text_input::set_content_type(window, hint, purpose);
+    window.set_ime_purpose(intent.content.winit_purpose());
 }
 
 fn secondary_ime_state(
@@ -886,9 +883,9 @@ fn secondary_ime_state(
     if !focused {
         return None;
     }
-    let (purpose, rect) = root.floating_surface_ime(id)?;
+    let (content, rect) = root.floating_surface_ime(id)?;
     Some(NativeImeWindowState::from_rect(
-        purpose,
+        content,
         rect - desktop_rect.origin().to_vec2(),
     ))
 }
@@ -898,9 +895,9 @@ fn primary_floating_ime_state(
     id: &str,
     coordinate_offset: Vec2,
 ) -> Option<NativeImeWindowState> {
-    let (purpose, rect) = root.floating_surface_ime(id)?;
+    let (content, rect) = root.floating_surface_ime(id)?;
     Some(NativeImeWindowState::from_rect(
-        purpose,
+        content,
         rect - coordinate_offset,
     ))
 }
@@ -928,9 +925,7 @@ fn primary_ime_state_for_held_child(
         f64::from(primary.y.saturating_add(primary.height)),
     ) + primary_origin
         - child_origin;
-    let mut intent = NativeImeWindowState::from_rect(primary.purpose, rect);
-    intent.multiline = primary.multiline;
-    Some(intent)
+    Some(NativeImeWindowState::from_rect(primary.content, rect))
 }
 
 /// Refresh a held child's caret when the returned editor projects one, while
@@ -976,8 +971,13 @@ mod floating_ime_continuation_tests {
     #[test]
     fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
         let primary = ImeWindowState {
-            purpose: winit::window::ImePurpose::Password,
-            multiline: true,
+            content: crate::ime::InputContent {
+                purpose: crate::ime::InputPurpose::Email,
+                hints: crate::ime::InputHints {
+                    multiline: true,
+                    ..crate::ime::InputHints::default()
+                },
+            },
             x: 20,
             y: 30,
             width: 2,
@@ -991,8 +991,7 @@ mod floating_ime_continuation_tests {
         .unwrap();
         assert_eq!((projected.x, projected.y), (-180, -90));
         assert_eq!((projected.width, projected.height), (2, 24));
-        assert_eq!(projected.purpose, winit::window::ImePurpose::Password);
-        assert!(projected.multiline);
+        assert_eq!(projected.content, primary.content);
         assert_eq!(
             retained_return_ime_state(None, Some(projected), true),
             Some(projected)

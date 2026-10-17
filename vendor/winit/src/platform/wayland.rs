@@ -117,13 +117,23 @@ impl WaylandPresentation {
 /// One-shot observation of the next surface commit. No pixels or input text.
 pub type WaylandPresentationObserver = Box<dyn FnOnce(WaylandPresentation) + Send + 'static>;
 
+/// A field's `zwp_text_input_v3` content type: the `content_hint` bits and
+/// the `content_purpose` value, as the protocol defines them. Unknown hint
+/// bits are dropped and an unknown purpose is sent as `normal`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ImeContentType {
+    pub hint: u32,
+    pub purpose: u32,
+}
+
 /// Additional methods on [`Window`] that are specific to Wayland.
 ///
 /// [`Window`]: crate::window::Window
 pub trait WindowExtWayland {
-    /// Publish whether the original IME field accepts line feeds as text.
-    /// Password and terminal purposes never gain the multiline hint.
-    fn set_ime_multiline(&self, multiline: bool);
+    /// Send this content type to the input method instead of the one
+    /// [`Window::set_ime_purpose`](crate::window::Window::set_ime_purpose)
+    /// stands for; `None` goes back to the purpose's.
+    fn set_ime_content_type(&self, content: Option<ImeContentType>);
     /// Publish a private, ephemeral equality stamp for the original editable field.
     /// An empty stamp disables admission. Does not grant microphone or IME ownership.
     fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool;
@@ -170,12 +180,12 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
-    fn set_ime_multiline(&self, multiline: bool) {
+    fn set_ime_content_type(&self, content: Option<ImeContentType>) {
         match &self.window {
             #[cfg(x11_platform)]
             crate::platform_impl::Window::X(_) => (),
             #[cfg(wayland_platform)]
-            crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
+            crate::platform_impl::Window::Wayland(window) => window.set_ime_content_type(content),
         }
     }
     fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {

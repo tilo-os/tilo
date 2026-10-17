@@ -10060,8 +10060,8 @@ impl Widget for BlockEditor {
         Some(stamp)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {

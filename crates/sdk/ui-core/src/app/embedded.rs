@@ -588,14 +588,14 @@ impl Widget for EmbeddedApp {
             .map(|rect| rect + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.app.ime_window_state().map(|field| field.purpose)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.app.ime_window_state().map(|field| field.content)
     }
 
     fn ime_multiline(&self) -> bool {
         self.app
             .ime_window_state()
-            .is_some_and(|field| field.multiline)
+            .is_some_and(|field| field.content.hints.multiline)
     }
 
     fn ime_requires_deferred_ack(&self) -> bool {

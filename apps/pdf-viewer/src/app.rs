@@ -5332,9 +5332,9 @@ impl Widget for PdfApp {
             .flatten()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.search_active
-            .then(|| ui::widget::Widget::ime_purpose(&self.find_bar))
+            .then(|| ui::widget::Widget::ime_content(&self.find_bar))
             .flatten()
     }
 

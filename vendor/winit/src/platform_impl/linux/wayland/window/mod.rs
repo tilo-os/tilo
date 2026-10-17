@@ -700,11 +700,11 @@ impl Window {
         self.window_state.lock().unwrap().set_ime_purpose(purpose);
     }
 
-    pub fn set_ime_multiline(&self, multiline: bool) {
+    pub fn set_ime_content_type(&self, content: Option<crate::platform::wayland::ImeContentType>) {
         self.window_state
             .lock()
             .unwrap()
-            .set_ime_multiline(multiline);
+            .set_ime_content_type(content);
     }
 
     #[inline]
