@@ -739,7 +739,9 @@ impl WordProcessorWidget {
             return false;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        if !ui::text_selection::try_clipboard_copy(&plain) {
+        // A copy still waiting on the compositor counts as taken: a cut never
+        // waits on it, and undo brings the text back if it fails after all.
+        if ui::text_selection::try_clipboard_copy(&plain).outcome() == Some(false) {
             return false;
         }
         self.rich_clip = Some((plain, blocks));

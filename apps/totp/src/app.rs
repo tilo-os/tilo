@@ -125,6 +125,8 @@ pub struct AuthenticatorApp {
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
     last_copied: Option<String>,
+    /// The last copy, whose outcome can arrive after its confirmation.
+    copy: ui::CopyWatch,
     /// An account this view asked to delete, confirmed once it leaves the
     /// document.
     pending_delete: Option<AccountId>,
@@ -182,6 +184,7 @@ impl AuthenticatorApp {
             selected: None,
             notice: ui::LocalState::new(None),
             last_copied: None,
+            copy: ui::CopyWatch::default(),
             pending_delete: None,
             list_dirty: false,
             reduce_motion: false,
@@ -346,7 +349,10 @@ impl AuthenticatorApp {
                 return;
             }
             let code = totp::current_code(&acc);
-            if !ui::try_clipboard_copy_secret(&code, CODE_ON_CLIPBOARD_FOR) {
+            if !self
+                .copy
+                .watch(ui::try_clipboard_copy_secret(&code, CODE_ON_CLIPBOARD_FOR))
+            {
                 self.toast("Could not copy to the clipboard", ToastKind::Error);
                 return;
             }
@@ -925,6 +931,9 @@ impl Widget for AuthenticatorApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.copy.failed() {
+            self.toast("Could not copy to the clipboard", ToastKind::Error);
+        }
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();

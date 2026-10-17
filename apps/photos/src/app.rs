@@ -518,6 +518,8 @@ pub struct PhotosApp {
     /// Where the last export went, or why it failed. Shown once in the status
     /// bubble so an action is never silent.
     notice: Option<String>,
+    /// The last copy, whose outcome can arrive after its notice.
+    pub(crate) copy: ui::CopyWatch,
     status_bubble: ui::StatusBubble,
     /// The empty state's one action, where it was painted.
     empty_state: Option<EmptyState>,
@@ -932,6 +934,7 @@ impl PhotosApp {
             layout_theme: Theme::dark(),
             pending,
             notice: None,
+            copy: ui::CopyWatch::default(),
             status_bubble: ui::StatusBubble::new(),
             empty_state: None,
             empty_state_key: None,
@@ -1471,7 +1474,11 @@ impl PhotosApp {
         let Some(img) = self.edited_pixels() else {
             return false;
         };
-        let ok = ui::clipboard_copy_image(img.w as usize, img.h as usize, &img.bytes);
+        let ok = self.copy.watch(ui::clipboard_copy_image(
+            img.w as usize,
+            img.h as usize,
+            &img.bytes,
+        ));
         self.notice = Some(if ok {
             tr("photos-copied")
         } else {

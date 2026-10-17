@@ -234,8 +234,205 @@ pub trait ClipboardBackend: Send + Sync {
         false
     }
 
+    /// Start a Ctrl+C copy without waiting for it, and answer its outcome
+    /// through the returned [`ClipboardCopy`]. A copy through an app's own
+    /// Wayland connection waits on compositor roundtrips; this lets the UI
+    /// thread go on while it does, and wakes the app when it settles.
+    ///
+    /// The default copies now through the methods above, so its outcome is
+    /// settled before this returns.
+    fn copy(&self, content: CopyContent<'_>) -> ClipboardCopy {
+        copy_now(self, content)
+    }
+
     /// Short name for diagnostics, e.g. `"compositor-mirror"`.
     fn name(&self) -> &'static str;
+}
+
+/// [`ClipboardBackend::copy`] through the blocking methods.
+fn copy_now<B: ClipboardBackend + ?Sized>(backend: &B, content: CopyContent<'_>) -> ClipboardCopy {
+    ClipboardCopy::settled(match content {
+        CopyContent::Text(text) => backend.set_text(ClipboardTarget::Clipboard, text),
+        CopyContent::SharedText(text) => backend.set_shared_text(ClipboardTarget::Clipboard, text),
+        CopyContent::SecretText(text) => backend.set_secret_text(text),
+        CopyContent::Image {
+            width,
+            height,
+            rgba,
+        } => backend.set_image(width, height, rgba),
+    })
+}
+
+/// What a [`ClipboardBackend::copy`] puts on the Ctrl+C clipboard; each
+/// matches the blocking method of the same meaning.
+#[derive(Clone, Copy)]
+pub enum CopyContent<'a> {
+    /// [`ClipboardBackend::set_text`]: may land in an in-process buffer.
+    Text(&'a str),
+    /// [`ClipboardBackend::set_shared_text`]: only where other processes
+    /// can read it.
+    SharedText(&'a str),
+    /// [`ClipboardBackend::set_secret_text`].
+    SecretText(&'a str),
+    /// [`ClipboardBackend::set_image`]: RGBA8, `width * height * 4` bytes.
+    Image {
+        width: usize,
+        height: usize,
+        rgba: &'a [u8],
+    },
+}
+
+impl std::fmt::Debug for CopyContent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the bytes: a secret must not reach a log.
+        match self {
+            Self::Text(text) => f.debug_tuple("Text").field(&text.len()).finish(),
+            Self::SharedText(text) => f.debug_tuple("SharedText").field(&text.len()).finish(),
+            Self::SecretText(_) => f.write_str("SecretText"),
+            Self::Image { width, height, .. } => f
+                .debug_struct("Image")
+                .field("width", width)
+                .field("height", height)
+                .finish(),
+        }
+    }
+}
+
+/// The outcome of a [`ClipboardBackend::copy`]: copied, failed, or not
+/// known yet. It settles exactly once, and settling wakes the app that
+/// started the copy, so the app reads it on its next pass through its event
+/// loop.
+#[derive(Clone)]
+#[must_use = "a copy can fail after it returns; read its outcome"]
+pub struct ClipboardCopy {
+    state: std::sync::Arc<CopyState>,
+}
+
+struct CopyState {
+    progress: Mutex<CopyProgress>,
+    settled: std::sync::Condvar,
+    wake: tilo_rt::wake::WakeHandle,
+}
+
+#[derive(Default)]
+struct CopyProgress {
+    outcome: Option<bool>,
+    /// What to run with the outcome once it settles.
+    then: Vec<Box<dyn FnOnce(bool) + Send>>,
+}
+
+impl CopyState {
+    fn progress(&self) -> std::sync::MutexGuard<'_, CopyProgress> {
+        self.progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl ClipboardCopy {
+    /// A copy whose outcome is already known.
+    pub fn settled(copied: bool) -> Self {
+        let (copy, settle) = Self::pending();
+        settle.settle(copied);
+        copy
+    }
+
+    /// A copy whose outcome `CopySettler` reports later. Call on the thread
+    /// whose event loop should wake when it does.
+    pub fn pending() -> (Self, CopySettler) {
+        let state = std::sync::Arc::new(CopyState {
+            progress: Mutex::default(),
+            settled: std::sync::Condvar::new(),
+            wake: tilo_rt::wake::WakeHandle::new(),
+        });
+        (
+            Self {
+                state: std::sync::Arc::clone(&state),
+            },
+            CopySettler { state: Some(state) },
+        )
+    }
+
+    /// `Some(true)` once copied, `Some(false)` once failed, `None` while the
+    /// clipboard has not answered.
+    #[must_use]
+    pub fn outcome(&self) -> Option<bool> {
+        self.state.progress().outcome
+    }
+
+    /// Run `then` with the outcome: at once when it is settled, else on the
+    /// thread that settles it. A backend builds on another's copy with it,
+    /// as the native clipboard falls back to its in-process buffer.
+    pub fn on_settled(&self, then: impl FnOnce(bool) + Send + 'static) {
+        let mut progress = self.state.progress();
+        match progress.outcome {
+            Some(copied) => {
+                drop(progress);
+                then(copied);
+            }
+            None => progress.then.push(Box::new(then)),
+        }
+    }
+
+    /// Wait for the outcome. Only off the UI thread, which must never wait
+    /// on the compositor: a worker finishing an effect, say. Every copy
+    /// settles, if only as failed when whatever answers it goes away.
+    #[must_use]
+    pub fn wait(&self) -> bool {
+        let mut progress = self.state.progress();
+        loop {
+            if let Some(copied) = progress.outcome {
+                return copied;
+            }
+            progress = self
+                .state
+                .settled
+                .wait(progress)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+impl std::fmt::Debug for ClipboardCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ClipboardCopy")
+            .field(&self.outcome())
+            .finish()
+    }
+}
+
+/// Reports a pending [`ClipboardCopy`]'s outcome. Dropping it unsettled
+/// reports a failure, so a copy whose worker went away never stays pending.
+pub struct CopySettler {
+    state: Option<std::sync::Arc<CopyState>>,
+}
+
+impl CopySettler {
+    /// Settle the copy and wake the app that started it.
+    pub fn settle(mut self, copied: bool) {
+        self.finish(copied);
+    }
+
+    fn finish(&mut self, copied: bool) {
+        if let Some(state) = self.state.take() {
+            let then = {
+                let mut progress = state.progress();
+                progress.outcome = Some(copied);
+                std::mem::take(&mut progress.then)
+            };
+            state.settled.notify_all();
+            for then in then {
+                then(copied);
+            }
+            state.wake.wake();
+        }
+    }
+}
+
+impl Drop for CopySettler {
+    fn drop(&mut self) {
+        self.finish(false);
+    }
 }
 
 /// This target's clipboard, shared by every caller in the process.
@@ -358,6 +555,31 @@ pub(crate) mod tests {
 
     /// Tests that write the real system clipboard take turns.
     pub(crate) static SYSTEM: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_copy_settles_once_and_runs_what_waits_on_it() {
+        let (copy, settler) = ClipboardCopy::pending();
+        let (ran, outcomes) = std::sync::mpsc::channel();
+        let early = ran.clone();
+        copy.on_settled(move |copied| early.send(("before", copied)).unwrap());
+        assert_eq!(copy.outcome(), None);
+        assert!(
+            outcomes.try_recv().is_err(),
+            "nothing runs before it settles"
+        );
+        settler.settle(true);
+        assert_eq!(copy.outcome(), Some(true));
+        assert!(copy.wait());
+        copy.on_settled(move |copied| ran.send(("after", copied)).unwrap());
+        assert_eq!(
+            outcomes.try_iter().collect::<Vec<_>>(),
+            [("before", true), ("after", true)]
+        );
+
+        let (copy, settler) = ClipboardCopy::pending();
+        drop(settler);
+        assert_eq!(copy.outcome(), Some(false), "an abandoned copy failed");
+    }
 
     #[test]
     fn the_in_process_clipboard_conforms() {

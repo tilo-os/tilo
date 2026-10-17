@@ -733,6 +733,8 @@ pub struct TerminalWidget {
     /// The command runs of the process this terminal runs: its shell's
     /// marks, the run going on and the runs `run` asked for.
     runs: RunState,
+    /// The last copy of terminal output, whose outcome can arrive later.
+    copy: ui::CopyWatch,
 }
 
 /// The person's command history this terminal adds its runs to.
@@ -793,8 +795,7 @@ impl TerminalWidget {
         output_rx: Receiver<Vec<u8>>,
         content: ContentStore,
     ) -> Self {
-        let width = 80;
-        let height = 24;
+        let (width, height) = (80, 24);
         let grid = vec![" ".repeat(width); height];
         let grid_attrs = vec![vec![Attr::default(); width]; height];
 
@@ -901,6 +902,7 @@ impl TerminalWidget {
             target_menu_rows: None,
             environments_panel: EnvironmentsPanel::default(),
             runs: RunState::default(),
+            copy: ui::CopyWatch::default(),
         }
     }
 
@@ -2314,7 +2316,8 @@ impl TerminalWidget {
                     .selected_text()
                     .filter(|text| !text.is_empty())
                     .ok_or("there is no selected terminal output to copy")?;
-                if !ui::text_selection::try_clipboard_copy(&text) {
+                let copy = ui::text_selection::try_clipboard_copy(&text);
+                if !self.copy.watch(copy) {
                     return Err(
                         "the system clipboard did not accept selected terminal output".into(),
                     );
@@ -2326,7 +2329,8 @@ impl TerminalWidget {
                 if visible.trim().is_empty() {
                     return Err("there is no visible terminal output to copy".to_string());
                 }
-                if !ui::text_selection::try_clipboard_copy(&visible) {
+                let copy = ui::text_selection::try_clipboard_copy(&visible);
+                if !self.copy.watch(copy) {
                     return Err("the system clipboard did not accept terminal output".into());
                 }
             }
@@ -2919,6 +2923,10 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.copy.failed() {
+            // As for any terminal gesture that fails after it was accepted.
+            tracing::warn!("the system clipboard did not accept terminal output");
+        }
         self.sync_document(state, root);
     }
 

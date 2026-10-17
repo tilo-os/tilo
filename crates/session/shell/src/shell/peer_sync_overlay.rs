@@ -766,7 +766,8 @@ impl PeerSyncOverlay {
         // The token admits whoever pastes it: it stays out of clipboard
         // history and device sync, and leaves the clipboard after a while.
         self.state.status = Some(t(
-            if ui::try_clipboard_copy_secret(token, INVITE_ON_CLIPBOARD_FOR) {
+            if ui::try_clipboard_copy_secret(token, INVITE_ON_CLIPBOARD_FOR).outcome() == Some(true)
+            {
                 "peer-sync-copied"
             } else {
                 "peer-sync-copy-failed"

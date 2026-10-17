@@ -281,10 +281,11 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
     ));
     // A password copied in in-process chrome, through the toolkit's secret copy.
     ui::host::scoped(&selection::host_services(copied.clone()), || {
-        assert!(ui::try_clipboard_copy_secret(
-            "private password",
-            std::time::Duration::from_secs(3600)
-        ));
+        assert_eq!(
+            ui::try_clipboard_copy_secret("private password", std::time::Duration::from_secs(3600))
+                .outcome(),
+            Some(true)
+        );
     });
     assert_eq!(
         selection::mirror_text(&copied, Target::Clipboard).as_deref(),
