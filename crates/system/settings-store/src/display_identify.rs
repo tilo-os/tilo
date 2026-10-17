@@ -149,6 +149,7 @@ mod tests {
             hdr_unavailable_reason: None,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profile_labels: BTreeMap::new(),
         }
     }

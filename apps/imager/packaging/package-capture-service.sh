@@ -116,12 +116,11 @@ done < "$work/openpgp-sources"
 # Resolve the actual SDK probe from the verified runtime, using its own signed
 # interpreter and library closure rather than the builder's installed libraries.
 python3 - "$repo" "$out/runtime/$version" "$work/payload/bin/tilo-home-export" "$work/worker-protocol" "$expected_worker" <<'PY_PROBE'
-import importlib.util, pathlib, sys, tomllib
+import pathlib, sys, tomllib
 repo, bundle, worker, protocol_output = map(pathlib.Path, sys.argv[1:5])
 expected_worker = int(sys.argv[5])
-spec = importlib.util.spec_from_file_location('consumer_verifier', repo/'os/scripts/verify-account-consumer-capability.py')
-verifier = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(verifier)
+sys.path.insert(0, str(repo/'apps/imager/packaging'))
+import runtime_probe as verifier
 probe = bundle/'bin/tilo-runtime-account-capability'
 loader_name = verifier.interpreter(probe)
 manifest = tomllib.loads((bundle/'bundle.toml').read_text())
@@ -137,7 +136,6 @@ result = verifier.invoke([str(bundle/tar_loader), '--inhibit-cache', '--library-
                           str(bundle/'lib'), str(tar), '--version'],
                          {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
 verifier.require(b'GNU tar' in result, 'capture archive helper is not GNU tar')
-sys.path.insert(0, str(repo/'apps/imager/packaging'))
 import capture_protocol
 worker_loader = verifier.interpreter(worker)
 verifier.require(worker_loader == loader_name, 'capture worker uses another interpreter')

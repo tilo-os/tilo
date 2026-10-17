@@ -33,6 +33,11 @@ display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
 display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
 display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
+# Displays pane: a connected display that could not be lit
+display-status = Status
+display-link-down = Kein Bild hat diesen Bildschirm erreicht: Die Verbindung kam nicht zustande. Schließe das Kabel erneut an, um es noch einmal zu versuchen
+display-output-driver-rejected = Der Grafiktreiber hat das Einschalten dieses Bildschirms abgelehnt
+
 
 # Displays pane: night light, rotation, built-in name
 display-builtin = Integrierter Bildschirm
@@ -2466,3 +2471,26 @@ settings-desk-edge-bottom = Unteren Rand
 settings-desk-edge-bottom-left = Unten links
 settings-desk-edge-bottom-right = Unten rechts
 settings-desk-note = Widgets weichen aus, während du tippst, und kommen zurück, wenn du innehältst oder zu ihrem Rand greifst. Halte oder tippe Super, um alle zu sehen. Zieh eins an einen anderen Rand; seine Nadel hält es auf dem Streifen, auf dem du bist.
+
+settings-drives-title = Gemerkte Laufwerke
+settings-drives-intro = Gemerkte Laufwerke öffnen sich ohne erneute Nachfrage. Ein Laufwerk in diesem Computer öffnet sich, wenn du es in Dateien öffnest; bei einem externen wirst du bei jedem Anschließen gefragt.
+settings-drives-unnamed-internal = Laufwerk in diesem Computer
+settings-drives-unnamed-external = Externes Laufwerk
+settings-drives-internal = In diesem Computer
+settings-drives-external = Extern
+settings-drives-open-now = Gerade geöffnet
+settings-drives-external-detail = Öffnet sich sicher. Du wirst bei jedem Anschließen gefragt.
+settings-drives-internal-fast-detail = Öffnet sich mit dem schnellsten Treiber.
+settings-drives-internal-safely-detail = Öffnet sich sicher, mit einem abgeschotteten Treiber.
+settings-drives-open-safely = { $drive } sicher öffnen
+settings-drives-open-safely-desc = Etwas langsamer. Wäre das System auf diesem Laufwerk kompromittiert, erreicht ein präpariertes Dateisystem eine Sandbox statt des Kernels. Gilt ab dem nächsten Öffnen.
+settings-drives-forget = Vergessen
+settings-drives-forgotten = Vergessen. Beim nächsten Öffnen dieses Laufwerks wirst du wieder gefragt.
+settings-drives-now-safely = Dieses Laufwerk öffnet sich ab dem nächsten Öffnen sicher.
+settings-drives-now-fast = Dieses Laufwerk öffnet sich ab dem nächsten Öffnen mit dem schnellsten Treiber.
+settings-drives-changing = Wird geändert …
+settings-drives-busy = Eine Änderung an deinen Laufwerken läuft noch.
+settings-drives-change-error = Nicht geändert: { $error }
+settings-drives-bad-request = Das ist kein gemerktes Laufwerk.
+settings-drives-unexpected = Der Laufwerksdienst hat unerwartet geantwortet.
+settings-drives-refreshed = Laufwerke neu gelesen.

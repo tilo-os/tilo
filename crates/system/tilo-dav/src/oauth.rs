@@ -131,6 +131,13 @@ impl Service {
         Ok(AuthorisedClient { client, binding })
     }
 
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            clippy::unused_self,
+            reason = "only a test fixture's origin changes the binding"
+        )
+    )]
     fn binding(&self, server: &str, google: bool) -> Result<Binding, String> {
         let base = Url::parse(server).map_err(|_| "invalid calendar server URL")?;
         discovery::safe_url(&base, server)?;

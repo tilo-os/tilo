@@ -827,6 +827,7 @@ impl App {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(!tab_presents);
+            history.set_window_presents(tab_presents);
             self.layout.request_rebuild();
         }
     }

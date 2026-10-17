@@ -1125,6 +1125,7 @@ mod tests {
             title: "Keep with passkey".into(),
             subtitle: None,
             source: None,
+            label: None,
         }
         .notice(
             "Keep this identity?",

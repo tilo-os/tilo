@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The one privileged writer of the read-only ESP: applies a caller's staged plan of boot-entry and Secure Boot changes."
+description = "The one privileged writer of the read-only ESP: applies a caller's staged plan of boot-entry and Secure Boot changes; run as tilo-uki-cmdline, edits a UKI's sealed command line or .osrel in place."
+
+[lib]
+name = "tilo_esp_write"
+path = "src/lib.rs"
 
 [[bin]]
 name = "tilo-esp-write"
@@ -17,6 +21,8 @@ regex.workspace = true
 rustix = { workspace = true, features = ["fs", "std"] }
 serde_json.workspace = true
 sha2.workspace = true
+# str.isspace and str.splitlines, as the UKI editor's checks were defined.
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

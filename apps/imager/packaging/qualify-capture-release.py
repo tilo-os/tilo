@@ -56,12 +56,6 @@ FIXTURE_FILES = (
     'crates/platform/imager-backend/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
     'os/usr/libexec/tilo-firstboot-user',
     'os/usr/libexec/tilo-store-volume',
-    'os/scripts/verify-account-consumer-capability.py',
-    'os/scripts/service-consumer-capability.py',
-    'os/scripts/verify-home-consumer-capability.py',
-    'os/scripts/verify-applications-consumer-capability.py',
-    'os/scripts/installed-data-consumer.py',
-    'os/scripts/data-consumer-catalog-facts.py',
     'os/etc/pam.d/tilo-unlock',
     'os/usr/lib/sysusers.d/tilo-identity.conf',
     'os/usr/lib/tmpfiles.d/tilo.conf',
@@ -98,12 +92,6 @@ TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'im
            'firstboot_files': 'tilo-firstboot-files',
            'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
            'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
-PLATFORM_SCRIPTS = {
-    'os/scripts/verify-home-consumer-capability.py': '/usr/libexec/tilo-verify-home-consumer-capability',
-    'os/scripts/verify-applications-consumer-capability.py': '/usr/libexec/tilo-verify-applications-consumer-capability',
-    'os/scripts/installed-data-consumer.py': '/usr/libexec/tilo-installed-data-consumer.py',
-    'os/scripts/data-consumer-catalog-facts.py': '/usr/libexec/tilo-data-consumer-catalog-facts',
-}
 BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
             'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
@@ -439,9 +427,9 @@ try:
  if case==qualifier.TARGET_CASE:
   # Producing service facts executes the fixed receiving coordinator, including
   # authenticated Browser import and revocation, before the ordinary journey.
-  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-home-consumer-capability'],120)
-  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-applications-consumer-capability'],2800)
-  checked(['/usr/bin/python3','-I','/usr/libexec/tilo-verify-account-consumer-capability'],2800)
+  checked(['/usr/libexec/tilo-prepared-setup','--verify-home-consumer-capability'],120)
+  checked(['/usr/libexec/tilo-prepared-setup','--verify-applications-consumer-capability'],2800)
+  checked(['/usr/libexec/tilo-prepared-setup','--verify-account-consumer-capability'],2800)
   service=qualifier.service_completion((evidence/'service-bridge.log').read_bytes())
   capabilities=qualifier.document('/usr/share/tilo/account-consumer-capabilities.json')
   assert service['receiving_route_qualification_sha256']==capabilities['service_sessions']['receiving_route_qualification_sha256']
@@ -540,13 +528,8 @@ def prepare_source(candidate):
                     'disposable runtime enrollment differs from exact signed graph')
         else:
             bound_file(path, inputs[relative])
-    for relative, installed in PLATFORM_SCRIPTS.items():
-        path = Path(installed)
-        info = path.lstat()
-        require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o755,
-                'installed consumer qualification script custody differs')
-        bound_file(path, inputs[relative])
-    consumer = fixed_module(candidate / 'os/scripts/service-consumer-capability.py', 'fixed_service_graph')
+    consumer = fixed_module(candidate / 'os/scripts/installer-receive-fixture/service_contract.py',
+                            'fixed_service_graph')
     selected = consumer.selected(Path('/'))
     require(selected is not None, 'current receiving Browser/CEF graph is absent')
     subjects = document(candidate / 'subjects.json')

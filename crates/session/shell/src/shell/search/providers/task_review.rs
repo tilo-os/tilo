@@ -226,7 +226,8 @@ impl TaskReviewProvider {
             // shown; search offers no answer to a draft it cannot show.
             TaskReviewCommand::Inspect { .. }
             | TaskReviewCommand::AnswerConfirmation { .. }
-            | TaskReviewCommand::AlwaysAllow { .. } => return self.status(snapshot.room.clone()),
+            | TaskReviewCommand::AlwaysAllow { .. }
+            | TaskReviewCommand::UndoRun { .. } => return self.status(snapshot.room.clone()),
         };
         let room = snapshot.room.clone();
         let actor = snapshot.actor.clone();

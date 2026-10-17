@@ -20,7 +20,7 @@ class Overlay(unittest.TestCase):
   self.source=self.root/'source';self.helpers=self.root/'helpers'
   for rel in ['usr/libexec/tilo-security-audit',*overlay.OVERRIDES,'etc/greetd/config.toml','etc/greetd/config.installer.toml']:
    p=self.source/'os'/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('source:'+rel)
-  for rel in [*overlay.OVERRIDES,'dev/uki-cmdline.py','Containerfile.installer']:
+  for rel in [*overlay.OVERRIDES,'Containerfile.installer']:
    p=self.helpers/'os'/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('helper:'+rel)
  def test_overlay_context_and_command(self):
   with self.subTest(phase="preserves_source_policy_and_uses_reviewed_install_overrides"):

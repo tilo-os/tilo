@@ -90,6 +90,19 @@ topbar-strips-more = { $count ->
    *[other] { $count } more strips
 }, go to { $name }
 topbar-strip-name-placeholder = Name the strip
+topbar-workspace-name-placeholder = Name the workspace
+topbar-workspace-menu = { $workspace }: workspaces, overview and desks
+topbar-profile = { $name }: your profile
+workspace-menu-hosted-by = Hosted by { $host }
+workspace-menu-rename = Rename workspace
+workspace-menu-overview = Overview
+workspace-menu-new-desk = New desk
+profile-card = Your profile
+profile-name = Your name
+profile-name-placeholder = Your name
+profile-name-hint = How everyone here sees you
+profile-section-identity = Your identity
+profile-section-devices = Devices
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -555,6 +568,7 @@ history-notification-description-sourced = { $severity }. From { $source }. { $t
 history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
 host-action-source-identity = Identity
 host-action-source-devices = Devices
+host-action-source-workspace = Workspace
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -1096,6 +1110,10 @@ activity-task-review-saved = Saved. The agent's response will show up here.
 activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
 
 activity-confirm-waiting = Waiting for your confirmation
+activity-task-step-searching = Searching the web…
+activity-task-step-reading = Reading { $app }…
+activity-task-step-editing = Editing { $app }…
+activity-task-step-exploring = Looking at what { $app } can do…
 activity-confirm-confirmed = Confirmed
 activity-confirm-declined = Declined
 activity-confirm-risk-sends = Sends outside

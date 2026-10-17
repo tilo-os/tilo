@@ -1027,6 +1027,43 @@ fn a_published_diagnostic_retires_the_bracket_scan() {
 
 /// The sample project with `src/main.rs` open and bound, its text read from
 /// disk.
+/// The text a file is opened with reaches the document even when its first
+/// recording never arrives — at a launch the editor is handed its file before
+/// its record takes changes — so the editor shows the file instead of an
+/// empty "No file open" with nothing to select or edit.
+#[test]
+fn an_opened_files_text_lost_on_the_way_is_recorded_again() {
+    let mut sample = crate::test_support::sample();
+    let file = sample.root.join("notes.py");
+    std::fs::write(&file, "def greet():\n    pass\n").unwrap();
+    let file = crate::disk::canonical(&file);
+    sample.editor(|app| {
+        // The submission the open makes goes nowhere.
+        let dispatch = app.dispatch.take();
+        app.open_disk_file(&file).unwrap();
+        app.dispatch = dispatch;
+    });
+    sample.app.settle();
+    let text = |sample: &mut crate::test_support::Sample| {
+        sample.with_doc(|app, doc| {
+            let node = app.session.active_buffer().unwrap().node;
+            (
+                EditorDoc::read_buffer_key(doc, &app.buffer_key(node)),
+                app.editor.is_bound(),
+            )
+        })
+    };
+    let (lost, _) = text(&mut sample);
+    assert_eq!(lost, None, "the first recording never arrived");
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    sample.app.harness().relayout();
+    sample.app.settle();
+    let (recorded, bound) = text(&mut sample);
+    assert_eq!(recorded.as_deref(), Some("def greet():\n    pass\n"));
+    assert!(bound, "the editor shows the file");
+}
+
 fn synced_sample() -> crate::test_support::Sample {
     let mut sample = crate::test_support::sample();
     sample.open("src/main.rs");

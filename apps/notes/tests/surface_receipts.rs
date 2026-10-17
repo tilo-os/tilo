@@ -205,3 +205,61 @@ fn typing_into_a_notes_body_is_decided_by_the_committed_surface() {
         assert_eq!(receipt, Ok(Receipt::Admit));
     }
 }
+
+/// Renaming a note from its title applies the notebook's `rename` verb from
+/// the window, not through an invocation. The verb's claim must name Notes
+/// itself: a claim naming an app guessed from the action type
+/// (`org.tilo.Notes`) is one the record's app does not publish, and the
+/// identity service refused it and turned the window's collaboration off.
+#[test]
+fn renaming_a_note_from_its_title_is_decided_by_the_committed_surface() {
+    use ui::synthetic_input::{char_key, mouse_input, named_key};
+    use ui::winit::event::{ElementState, MouseButton};
+    use ui::winit::keyboard::NamedKey;
+
+    let (mut app, _) = crate::framework_support::with_note("Welcome", "Hello");
+    app.harness().relayout_at((1200, 800)).unwrap();
+    let before = app.peer_document().get_heads();
+    let title = app
+        .surface_mut::<notes::NotesApp>()
+        .main_title_center_for_test();
+    let modifiers = ui::winit::event::Modifiers::default();
+    let mut events = vec![
+        ui::synthetic_input::cursor_moved(title.x, title.y),
+        mouse_input(ElementState::Pressed, MouseButton::Left),
+        mouse_input(ElementState::Released, MouseButton::Left),
+    ];
+    events.extend(["R", "o", "a", "d"].map(char_key));
+    events.push(named_key(NamedKey::Enter));
+    for event in &events {
+        app.harness().dispatch_to_root_with(event, &modifiers);
+        app.harness().relayout();
+    }
+    let mut doc = app.peer_document();
+    let verbs: Vec<String> = doc
+        .get_changes(&before)
+        .iter()
+        .filter_map(|change| {
+            ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()).ok()
+        })
+        .flat_map(|claim| {
+            claim
+                .action
+                .members()
+                .into_iter()
+                .filter_map(|member| match member {
+                    ClaimedAction::Verb { action, .. } => Some(action.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        verbs,
+        ["so.tilo.notes/notes.notebook/rename"],
+        "the title edit renamed the note as Notes' own verb"
+    );
+    for (kind, receipt) in receipts_since(&doc, &before) {
+        assert_eq!(receipt, Ok(Receipt::Admit), "a `{kind}` change was refused");
+    }
+}

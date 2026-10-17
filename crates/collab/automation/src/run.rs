@@ -470,38 +470,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
             }
             StepKind::ForEach { items, item, body } => {
-                let elements = match self.evaluate(items) {
-                    Ok(Some(Value::Array(elements))) => Ok(elements),
-                    Ok(_) => Err(StepFailure::Binding {
-                        reason: "a loop needs an array".into(),
-                    }),
-                    Err(failure) => Err(failure),
-                };
-                let count = elements.as_ref().map(|e| Some(Value::from(e.len())));
-                self.record(step, &path, Done::local(count.map_err(Clone::clone)))?;
-                let elements = elements.unwrap_or_default();
-                let shadowed = self.vars.get(item).cloned();
-                let shadowed_secret = self.secret_vars.contains(item);
-                let secret = self.is_secret(items);
-                for (iteration, element) in elements.into_iter().enumerate() {
-                    if secret {
-                        self.secret_vars.insert(item.clone());
-                    } else {
-                        self.secret_vars.remove(item);
-                    }
-                    self.vars.insert(item.clone(), element);
-                    self.block(body, path.each(Some(iteration))).await?;
-                }
-                if shadowed_secret {
-                    self.secret_vars.insert(item.clone());
-                } else {
-                    self.secret_vars.remove(item);
-                }
-                match shadowed {
-                    Some(value) => self.vars.insert(item.clone(), value),
-                    None => self.vars.remove(item),
-                };
-                Ok(())
+                self.for_each(step, path, items, item, body).await
             }
             StepKind::SetVar { name, value } => {
                 let result = match self.evaluate(value) {
@@ -526,6 +495,51 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.record(step, &path, Done::local(result))
             }
         }
+    }
+
+    /// A loop step: bind `item` to each element of `items` in turn and run
+    /// `body`, restoring what `item` named (and whether it was secret)
+    /// afterwards.
+    async fn for_each(
+        &mut self,
+        step: &'a Step,
+        path: StepPath,
+        items: &Binding,
+        item: &str,
+        body: &'a [Step],
+    ) -> Result<(), Stop> {
+        let elements = match self.evaluate(items) {
+            Ok(Some(Value::Array(elements))) => Ok(elements),
+            Ok(_) => Err(StepFailure::Binding {
+                reason: "a loop needs an array".into(),
+            }),
+            Err(failure) => Err(failure),
+        };
+        let count = elements.as_ref().map(|e| Some(Value::from(e.len())));
+        self.record(step, &path, Done::local(count.map_err(Clone::clone)))?;
+        let elements = elements.unwrap_or_default();
+        let shadowed = self.vars.get(item).cloned();
+        let shadowed_secret = self.secret_vars.contains(item);
+        let secret = self.is_secret(items);
+        for (iteration, element) in elements.into_iter().enumerate() {
+            if secret {
+                self.secret_vars.insert(item.to_owned());
+            } else {
+                self.secret_vars.remove(item);
+            }
+            self.vars.insert(item.to_owned(), element);
+            self.block(body, path.each(Some(iteration))).await?;
+        }
+        if shadowed_secret {
+            self.secret_vars.insert(item.to_owned());
+        } else {
+            self.secret_vars.remove(item);
+        }
+        match shadowed {
+            Some(value) => self.vars.insert(item.to_owned(), value),
+            None => self.vars.remove(item),
+        };
+        Ok(())
     }
 
     async fn ask(

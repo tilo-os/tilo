@@ -1226,6 +1226,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
+        let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
             quote!(Made)
         } else if outboxes.is_empty() {
@@ -1234,6 +1235,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             quote!(Queued)
         };
         let incoming_message = verb.options.incoming_message;
+        let compensated = verb.options.undo.is_some();
         // Run where the verb is built from its arguments (the origin), never
         // when its recorded action replays: the action carries the result.
         let prepare = verb
@@ -1307,8 +1309,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 kind: #krate::ActionKind::#action_kind,
                 field: #field,
                 destructive: #destructive,
+                housekeeping: #housekeeping,
                 answer: #krate::__private::VerbAnswer::#answer,
                 incoming_message: #incoming_message,
+                compensated: #compensated,
                 collects: #collects,
                 content: #content,
                 item_field: #item_field,

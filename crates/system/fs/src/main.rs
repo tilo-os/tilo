@@ -7,6 +7,7 @@
     )
 )]
 
+mod primary_workspace;
 mod session_supervisor;
 mod workspace_startup;
 
@@ -483,6 +484,9 @@ enum Command {
         #[arg(long)]
         cache_dir: PathBuf,
     },
+    /// Start `serve` for the saved primary Files workspace of a host desktop
+    /// session, after its identity and permission check; exits 78 when not ready.
+    ServePrimary(primary_workspace::PrimaryArgs),
     /// Host a collaborative workspace and mount it locally.
     Serve {
         /// Refuse a fresh namespace; resume saved state or an authenticated discovered workspace only.
@@ -705,9 +709,13 @@ fn main() -> Result<()> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         std::process::exit(i32::from(code));
     }
+    let cli = Cli::parse();
+    if let Command::ServePrimary(args) = &cli.command {
+        std::process::exit(primary_workspace::run(args));
+    }
     // FUSE callbacks poll their futures on the fuser threads via the
     // runtime handle; the workers only serve iroh, sockets and timers.
-    let result = tilo_rt::daemon("tilo-fs").run(run_command())?;
+    let result = tilo_rt::daemon("tilo-fs").run(run_command(cli))?;
     if let Err(error) = &result
         && error.downcast_ref::<NotGovernor>().is_some()
     {
@@ -721,8 +729,7 @@ fn main() -> Result<()> {
     clippy::too_many_lines,
     reason = "one dispatch over every subcommand the daemon offers"
 )]
-async fn run_command() -> Result<()> {
-    let cli = Cli::parse();
+async fn run_command(cli: Cli) -> Result<()> {
     if let Some(path) = &cli.test_clock_file {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
@@ -734,6 +741,7 @@ async fn run_command() -> Result<()> {
             );
             Ok(())
         }
+        Command::ServePrimary(_) => bail!("serve-primary runs before the runtime starts"),
         Command::Serve {
             require_existing_workspace,
             mount_point,
@@ -4232,6 +4240,29 @@ mod tests {
                 None => vec![word],
             })
             .collect()
+    }
+
+    #[test]
+    fn host_files_unit_runs_the_primary_launch_check() {
+        // The host package's user unit, so a renamed flag fails here, not at login.
+        let unit = std::fs::read_to_string(os_file("dist/session/tilo-files-workspace.service"))
+            .expect("the host Files unit must exist");
+        let exec: Vec<&str> = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ExecStart="))
+            .expect("ExecStart=")
+            .split_whitespace()
+            .collect();
+        assert_eq!(
+            exec[0], "/usr/bin/fs",
+            "unexpected ExecStart binary: {exec:?}"
+        );
+        let cli = Cli::try_parse_from(std::iter::once("fs").chain(exec[1..].iter().copied()))
+            .expect("the host Files unit command line must parse");
+        assert!(
+            matches!(cli.command, Command::ServePrimary(_)),
+            "the host unit must pass the saved-state and authority check before serving"
+        );
     }
 
     #[test]

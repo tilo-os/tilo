@@ -3513,7 +3513,24 @@ impl Widget for TabBar {
                 } else {
                     node
                 };
-                if let Some(control) = self.history.get(&t.id) {
+                // The pill's search and History chips, where its open cluster
+                // shows them.
+                let chips = self.closable && self.show_maximize && !self.pinned_ids.contains(&t.id);
+                if chips {
+                    node.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(crate::i18n::widget_format(
+                                "tab-search-in",
+                                &[("title", t.title.clone().into())],
+                            ))
+                            .with_action_target(format!("tab-search:{}", t.id))
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            }),
+                    );
+                }
+                if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         AccessNode::new(Role::ToggleButton)
                             .with_name(crate::i18n::I18nManager::lookup_plain(
@@ -3584,6 +3601,16 @@ impl Widget for TabBar {
             .and_then(|value| value.parse::<u64>().ok())
         {
             return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-search:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            if self.pinned_ids.contains(&id) || !self.tabs.iter().any(|tab| tab.id == id) {
+                return false;
+            }
+            self.pending_search = Some(id);
+            return true;
         }
         if let Some(id) = target
             .strip_prefix("tab-history:")

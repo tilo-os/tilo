@@ -2127,11 +2127,22 @@ fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct ControlWitness {
     identity: ControlIdentity,
     intent: PreparedActionIntent,
     confirmation: tilo_actions::ConfirmationPolicy,
+    /// What the action is called, as its declaration says ("Mark as read"):
+    /// how a held control is named to people. Not part of its identity.
+    label: String,
+}
+
+impl PartialEq for ControlWitness {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.intent == other.intent
+            && self.confirmation == other.confirmation
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2169,6 +2180,9 @@ impl ControlWitness {
     }
     pub(crate) fn identity(&self) -> &ControlIdentity {
         &self.identity
+    }
+    pub(crate) fn label(&self) -> &str {
+        &self.label
     }
 }
 
@@ -2255,6 +2269,35 @@ pub(crate) fn control_witness_with_arguments(
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
         confirmation: spec.contract.confirmation.clone(),
+        label: spec.label.clone(),
+    })
+}
+
+/// What a control's action is declared as, for people: its name ("Mark as
+/// read") and whether it is housekeeping. Unlike a [`ControlWitness`] it
+/// proves nothing about the invocation.
+pub(crate) struct ControlDeclaration {
+    pub(crate) label: Option<String>,
+    pub(crate) housekeeping: bool,
+}
+
+/// [`ControlDeclaration`] of the action a control invokes, when `address`
+/// still resolves to one.
+pub(crate) fn control_declaration(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &legacy_document::LocalResourceTarget,
+    address: &tilo_actions::ActionAddress,
+) -> Option<ControlDeclaration> {
+    let resources = resources_for_control_target(root, doc, target, address).ok()?;
+    let (_, spec) = unique_control_spec(&resources, address).ok()?;
+    Some(ControlDeclaration {
+        label: Some(spec.label.trim().to_owned()).filter(|label| !label.is_empty()),
+        housekeeping: spec
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::HOUSEKEEPING_TAG),
     })
 }
 

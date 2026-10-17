@@ -59,19 +59,4 @@ else
   case "$count" in ''|*[!0-9]*|0) exit 1 ;; esac
 fi
 "$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig" >/dev/null 2>&1
-python3 - "$prediction" "$generation" "$pub" "$crypto_bin" <<'PY'
-import base64, json, os, struct, subprocess, sys, tempfile
-p, expected, public, crypto = sys.argv[1:]
-d = json.load(open(p, encoding="utf-8"))
-if d.get("generation") != int(expected) or d.get("pcr_bank") != "sha256" or d.get("pcrs") != [11]:
-    raise SystemExit(1)
-approved = base64.b64decode(d["approved_policy"], validate=True)
-signature = base64.b64decode(d["signature"], validate=True)
-with tempfile.TemporaryDirectory() as td:
-    message = os.path.join(td, "message")
-    sig = os.path.join(td, "signature")
-    open(message, "wb").write(approved + struct.pack(">Q", int(expected)))
-    open(sig, "wb").write(signature)
-    subprocess.run([crypto, "verify-rsa-sha256", public, message, sig], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-PY
+"$crypto_bin" verify-pcr-prediction "$pub" "$prediction" "$generation" >/dev/null 2>&1

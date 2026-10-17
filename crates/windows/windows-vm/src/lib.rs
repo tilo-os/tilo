@@ -25,6 +25,7 @@ mod guest_network;
 mod https_guest;
 mod libvirt;
 mod lifecycle;
+mod owner_status;
 mod portal_files;
 mod presentation;
 mod publication;
@@ -63,6 +64,7 @@ pub use libvirt::{
 pub use lifecycle::{
     LifecycleAction, LifecycleError, ManagedSessionState, VmStatus, WindowsVmService,
 };
+pub use owner_status::owner_status_json;
 pub use portal_files::{PortalDocumentStore, PortalRailCapabilityBroker, portal_lease_root};
 pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};

@@ -426,6 +426,16 @@ pub enum FilesEffect {
         #[param("The remote account's id")]
         account: String,
     },
+    /// Open a drive.
+    ///
+    /// Opens an NTFS drive (a Windows partition, an external drive) in
+    /// Files. The shell asks the person first, in its own sheet, unless
+    /// they chose to remember the drive.
+    #[effect(view, row)]
+    OpenDrive {
+        #[param("The drive's id, as its row names it")]
+        drive: String,
+    },
 }
 
 /// `effect` bound to its row, published as `id` labelled `label`: the ids

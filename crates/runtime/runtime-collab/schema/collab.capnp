@@ -514,6 +514,10 @@ struct ActionDirectoryQuery {
   # value pages exactly one live application's capability, identified by the
   # broker-issued peer id returned in the authenticated catalogue.
   peerId @8 :UInt64;
+  # Non-empty: only the top-level resources whose kind is this, or whose
+  # label is this ignoring ASCII case, answered whole on one page. A name
+  # lookup must not depend on where a page budget happens to end.
+  resourceName @9 :Text;
 }
 
 struct ActionDirectoryRow {

@@ -195,6 +195,9 @@ pub struct HistoryController {
     /// verified agents ([`crate::history_source::set_room_agents`]) the
     /// source names; a newer list is named on the next refresh.
     room_agents: Option<u64>,
+    /// The room's participants by id and name, as presence last named them:
+    /// the authors the source resolves besides registered identities.
+    roster: Vec<(String, String)>,
 }
 
 /// How many of the newest changes a history view describes when it opens,
@@ -260,6 +263,7 @@ impl HistoryController {
             side: PreviewSide::After,
             live_updates: false,
             generation: 0,
+            roster: Vec::new(),
             snapshots: HashMap::new(),
             window: HISTORY_PAGE,
             has_earlier: false,
@@ -312,6 +316,27 @@ impl HistoryController {
     ///
     /// # Errors
     ///
+    /// Name authors as the room's roster in `presence` names its
+    /// participants. Returns whether a name changed, so the next refresh
+    /// projects the history again with them.
+    pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
+        let mut roster: Vec<(String, String)> = presence
+            .names
+            .iter()
+            .map(|(crate::permissions::UserId(id), name)| (id.clone(), name.clone()))
+            .collect();
+        roster.sort();
+        if roster == self.roster {
+            return false;
+        }
+        self.source
+            .authors_mut()
+            .register_roster(roster.iter().map(|(id, name)| (id.as_str(), name.as_str())));
+        self.roster = roster;
+        self.projected_heads = None;
+        true
+    }
+
     /// Returns a projection error if the committed history cannot be read.
     pub fn refresh(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
         let mut projection = committed_clone(live);
@@ -324,8 +349,13 @@ impl HistoryController {
         if let Some(named) = self.room_agents {
             let current = crate::history_source::room_agents_revision();
             if current != named {
-                *self.source.authors_mut() =
-                    crate::history_source::AuthorDirectory::with_room_agents();
+                let mut authors = crate::history_source::AuthorDirectory::with_room_agents();
+                authors.register_roster(
+                    self.roster
+                        .iter()
+                        .map(|(id, name)| (id.as_str(), name.as_str())),
+                );
+                *self.source.authors_mut() = authors;
                 self.room_agents = Some(current);
                 self.projected_heads = None;
             }

@@ -128,6 +128,7 @@ fn directory_permission_clock_failure_refuses_cached_resolution() {
             max_bytes: 8192,
             max_work: 10,
             max_depth: 1,
+            resource_name: String::new(),
         });
     assert!(page.rows.is_empty() && page.revision.is_empty() && page.budget_exhausted);
     fail.store(false, Ordering::Release);

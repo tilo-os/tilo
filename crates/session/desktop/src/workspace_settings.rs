@@ -2792,11 +2792,23 @@ pub fn ownership_transfer_status(ws: &Workspace, local_user: &UserId) -> Option<
     }
 }
 
+/// A member by name, numbered when another member here shares it
+/// ([`ui::presence::ParticipantLabels`]), or by a shortened id.
 fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
     ws.collaborators
         .iter()
         .find(|person| person.id == user && !person.name.trim().is_empty())
-        .map_or_else(|| short_id(user), |person| person.name.trim().to_string())
+        .map_or_else(
+            || short_id(user),
+            |person| {
+                ui::presence::ParticipantLabels::new(
+                    ws.collaborators
+                        .iter()
+                        .map(|person| (person.id.as_str(), person.name.as_str())),
+                )
+                .label(user, person.name.trim())
+            },
+        )
 }
 
 /// Paint one [`MemberRow`] — avatar, name, role chip, Remove button.
@@ -2922,12 +2934,21 @@ fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) 
     person_name(ws, local_user, &row.user)
 }
 
-/// A person or agent as every workspace-settings pane names them: "You" for
-/// the viewer, their collaborator name, or a shortened id for someone the
-/// workspace has no name for.
+/// A person or agent as every workspace-settings pane names them: their
+/// collaborator name, the viewer included; the viewer by the name this
+/// device knows them by when the workspace has none; else a shortened id.
 fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
-    if id == local_user {
-        return t("workspace-settings-you");
+    let known = ws
+        .collaborators
+        .iter()
+        .any(|person| person.id == id && !person.name.trim().is_empty());
+    if id == local_user
+        && !known
+        && let Some(name) = ui::local_identity::bound()
+            .map(|identity| identity.display_name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    {
+        return name;
     }
     member_name_or_short_id(ws, id)
 }
@@ -5533,7 +5554,10 @@ mod permissions_pane_tests {
             let as_ada = permissions_pane_layout(&ws, pane(), &NoAppDirectory, &ada);
             assert_eq!(as_ada.rows[0].granted_by.as_deref(), Some("granted by you"));
             let as_bea = permissions_pane_layout(&ws, pane(), &NoAppDirectory, &bea);
-            assert_eq!(as_bea.rows[0].title, "You");
+            assert_eq!(
+                as_bea.rows[0].title, "Bea",
+                "the viewer is named, never \"You\""
+            );
             for row in as_bea.rows.iter().chain(&as_ada.rows) {
                 let shown = format!("{} {}", row.title, row.granted_by.as_deref().unwrap_or(""));
                 assert!(

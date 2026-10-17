@@ -6041,7 +6041,7 @@ mod breadcrumb_home_tests {
 // Exercise metadata projection inside the same checked callback entry the
 // host uses for its catalogue. Keeping the real component alive preserves
 // its registry owner, record lifetime and immutable local-person identity.
-fn with_owner_callback(callback: impl FnOnce() + 'static) {
+pub(super) fn with_owner_callback(callback: impl FnOnce() + 'static) {
     use std::cell::RefCell;
     use ui::widget::Widget;
 

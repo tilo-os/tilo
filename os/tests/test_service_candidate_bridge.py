@@ -1,6 +1,7 @@
 """Owned bridge boundaries; mocks do not certify native route qualification."""
-import importlib.util
 import json
+import re
+import subprocess
 from pathlib import Path
 import stat
 import sys
@@ -44,19 +45,27 @@ class ServiceCandidateBridge(unittest.TestCase):
             contract.decode(b' ' * (16 * 1024 + 1))
 
     def test_measured_receiving_closure_uses_the_producer_request_bound(self):
-        spec = importlib.util.spec_from_file_location(
-            'request_producer', ROOT / 'os/scripts/service-consumer-capability.py')
-        producer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(producer)
         value = request()
         value['receiving_dependencies'] = {
-            path: 'ab' * 32 for path in producer.RECEIVING_DEPENDENCIES
+            path: 'ab' * 32 for path in contract.RECEIVING_DEPENDENCIES
         }
         value['sdk_runtime_version'] = 'v' * 256
         value['cef_runtime_version'] = 'v' * 247 + '-chromium'
         encoded = json.dumps(value).encode()
         self.assertLessEqual(len(encoded), 16 * 1024)
         self.assertEqual(contract.decode(encoded), value)
+
+    def test_measured_closure_matches_the_installed_producer(self):
+        source = (ROOT / 'crates/platform/imager-backend/src/account_admission.rs').read_text()
+        block = source.split('pub const RECEIVING_DEPENDENCIES: &[&str] = &[', 1)[1].split('];', 1)[0]
+        self.assertEqual(tuple(re.findall(r'"([^"]+)"', block)), contract.RECEIVING_DEPENDENCIES)
+
+    def test_isolated_bridge_entry_imports_only_its_fixture_directory(self):
+        completed = subprocess.run([sys.executable, '-I', str(FIXTURE / 'service_contract.py')],
+                                   capture_output=True, timeout=30, env={'PATH': '/usr/bin:/bin'})
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, b'')
+        self.assertIn(b'accepts only --owned-bridge', completed.stderr)
 
     def test_native_scope_refuses_ordinary_root_namespace_before_artifact_work(self):
         import os

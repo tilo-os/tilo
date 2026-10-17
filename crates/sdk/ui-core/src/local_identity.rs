@@ -218,7 +218,7 @@ mod photo_tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Some((
                 [0x12; 32],
-                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).unwrap(),
+                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
             ))
         }
     }

@@ -7,8 +7,8 @@ FROM ${RPMS_REF} AS rpms
 
 # The kernel the UKI embeds, split out of the same root (os/Containerfile's
 # `kernel` stage). This image keeps its own split-out pair as well: it is a
-# development target, whose kernel tilo-installer-dev-target-uki.py checks
-# against the UKI.
+# development target, whose kernel `tilo-installer-offline-target
+# dev-target-uki` checks against the UKI.
 FROM ${BASE_IMAGE} AS kernel
 RUN mkdir -p /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 

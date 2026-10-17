@@ -248,7 +248,11 @@ containerfile="$repo/os/Containerfile"
 # In-guest test tooling (the AT-SPI client and smokes, the boot, input,
 # projection and admin-action checks) no longer ships: os/dev/vm.sh test
 # hands it to a booted guest, and the Files contract is bind-mounted.
-expected_contract=604a3c5d1644e39b48454cdf21c7571a231fffd24cabd9658e189fc3ccd985db
+# tilo-uki-cmdline is tilo-esp-write's link from the esp-write component, not a
+# COPY of the Python UKI editor.
+# The installed consumer capability producers are tilo-prepared-setup modes
+# now, so their six Python script rows are gone.
+expected_contract=28fa67fe1a1572d95230fce47a02857832194d2dd360bf40aaa8dc310f2e742e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

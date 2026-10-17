@@ -40,11 +40,10 @@ struct Writer {
     /// Rows per page of a resource's listing, as when the host's byte
     /// budget cuts it short.
     listing_page: Option<usize>,
-    /// Whether, after a write and until it publishes again, the app answers
-    /// its top-level listing by walking its widgets, whose work budget ends
-    /// the first page after one resource; `Some(true)` when it publishes
-    /// between that page and the next, which leaves the cursor stale.
-    walks_after_write: Option<bool>,
+    /// Whether, after a write, the app answers its top-level listing by
+    /// walking its widgets: each page stops at its work budget, and the
+    /// document lies past every page a caller would read.
+    walks_after_write: bool,
     walking: Arc<Mutex<bool>>,
     /// Every question and invocation the host was sent, in order.
     log: Arc<Mutex<Vec<Asked>>>,
@@ -78,7 +77,7 @@ impl Writer {
             query_failure: Arc::default(),
             document: None,
             listing_page: None,
-            walks_after_write: None,
+            walks_after_write: false,
             walking: Arc::default(),
             log: Arc::default(),
             started: 1,
@@ -141,38 +140,21 @@ impl Writer {
     }
 
     /// The top-level page an app walking its widgets after a write answers:
-    /// its first stops at its work budget after one resource.
+    /// the first resource, then pages its budget ends before any other.
     fn walked_listing(
         &self,
         query: &CatalogueQuery,
         rows: &[CatalogueRow],
     ) -> Option<CataloguePage> {
-        let mut walking = self.walking.lock().unwrap();
-        if !*walking {
+        if !*self.walking.lock().unwrap() {
             return None;
         }
-        if query.cursor.is_empty() {
-            return Some(CataloguePage {
-                revision: "v5".into(),
-                rows: rows.iter().take(1).cloned().collect(),
-                next_cursor: b"1".to_vec(),
-                budget_exhausted: true,
-                ..CataloguePage::default()
-            });
-        }
-        if self.walks_after_write == Some(true) {
-            *walking = false;
-            drop(walking);
-            return Some(CataloguePage {
-                revision: "v6".into(),
-                stale_cursor: true,
-                ..CataloguePage::default()
-            });
-        }
+        let page: u64 = String::from_utf8_lossy(&query.cursor).parse().unwrap_or(0);
         Some(CataloguePage {
             revision: "v5".into(),
-            rows: rows.iter().skip(1).cloned().collect(),
-            exhausted: true,
+            rows: rows.iter().take(usize::from(page == 0)).cloned().collect(),
+            next_cursor: page.saturating_add(1).to_string().into_bytes(),
+            budget_exhausted: true,
             ..CataloguePage::default()
         })
     }
@@ -449,8 +431,10 @@ impl ActionHost for Writer {
             return Pending::ready(Err(failure.take().unwrap().error));
         }
         drop(failure);
-        let listing =
-            query.target.is_none() && query.needle.is_empty() && query.parent_resource.is_none();
+        let listing = query.target.is_none()
+            && query.needle.is_empty()
+            && query.parent_resource.is_none()
+            && query.resource_name.is_none();
         if provider != WORKSPACE
             && listing
             && self.blank_listings.lock().unwrap().pop_front() == Some(true)
@@ -467,6 +451,9 @@ impl ActionHost for Writer {
         } else if query.needle.is_empty() {
             let parent = query.parent_resource.clone().unwrap_or_default();
             rows.retain(|row| row.parent_resource == parent);
+            if let Some(name) = &query.resource_name {
+                rows.retain(|row| row.resource.is_named(name));
+            }
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
         }
@@ -529,7 +516,7 @@ impl ActionHost for Writer {
                 }));
             }
             *self.running.lock().unwrap() = true;
-        } else if self.walks_after_write.is_some() {
+        } else if self.walks_after_write {
             *self.walking.lock().unwrap() = true;
         }
         self.invoked.lock().unwrap().push(request);
@@ -1964,36 +1951,45 @@ fn a_parent_resource_is_named_as_resources_are_named_elsewhere() {
 }
 
 #[test]
-fn a_resource_named_by_kind_right_after_a_write_is_found_past_the_first_page() {
-    for publishes_between_pages in [false, true] {
-        let mut host = Writer::new(Some("open"));
-        host.walks_after_write = Some(publishes_between_pages);
-        *host.running.lock().unwrap() = true;
-        let server = McpServer::new(host.clone(), "room".into(), "owner".into());
-        run(async {
-            let page = call(
-                &server,
-                "tilo_query",
-                json!({"app_id": APP, "needle": "select block"}),
-            )
-            .await
-            .unwrap();
-            let doc = resource(&page, "word_processor.document")["resource"].clone();
-            let write = json!({"app_id": APP, "resource": doc, "action": "select-block", "arguments": {"block": "b0"}});
-            call(&server, "tilo_invoke", write).await.unwrap();
-            for action in ["save-as", "select-block"] {
-                let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": action, "arguments": {}});
-                let ran = call(&server, "tilo_invoke", by_kind).await;
-                assert!(
-                    ran.is_ok(),
-                    "{action} by kind after a write (publishing between pages: {publishes_between_pages}): {ran:?}"
-                );
-            }
-        });
-        let invoked = host.invoked();
-        assert_eq!(invoked.len(), 3, "{invoked:?}");
-        assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
-    }
+fn a_resource_named_by_kind_right_after_a_write_is_found_however_far_its_listing_reaches() {
+    let mut host = Writer::new(Some("open"));
+    host.walks_after_write = true;
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let page = call(
+            &server,
+            "tilo_query",
+            json!({"app_id": APP, "needle": "select block"}),
+        )
+        .await
+        .unwrap();
+        let doc = resource(&page, "word_processor.document")["resource"].clone();
+        let write = json!({"app_id": APP, "resource": doc, "action": "select-block", "arguments": {"block": "b0"}});
+        call(&server, "tilo_invoke", write).await.unwrap();
+        host.asked();
+        for action in ["save-as", "select-block"] {
+            let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": action, "arguments": {}});
+            let ran = call(&server, "tilo_invoke", by_kind).await;
+            assert!(ran.is_ok(), "{action} by kind after a write: {ran:?}");
+        }
+        let listings = host
+            .asked()
+            .into_iter()
+            .filter(|asked| {
+                matches!(asked, Asked::Query(query)
+                    if query.provider.is_some()
+                        && query.resource_name.is_none()
+                        && query.target.is_none()
+                        && query.needle.is_empty()
+                        && query.parent_resource.is_none())
+            })
+            .count();
+        assert_eq!(listings, 0, "the host is asked the name, not paged for it");
+    });
+    let invoked = host.invoked();
+    assert_eq!(invoked.len(), 3, "{invoked:?}");
+    assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
 }
 
 #[test]

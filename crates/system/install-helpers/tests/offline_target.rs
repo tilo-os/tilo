@@ -384,8 +384,8 @@ fn development_import_validates_boot_layout_without_changing_image() {
     assert_eq!(import_image(&host).unwrap(), image_id);
     let calls = host.calls.borrow();
     let validate: Vec<String> = [
-        "python3",
-        "/usr/libexec/tilo-installer-dev-target-uki.py",
+        "/usr/libexec/tilo-installer-offline-target",
+        "dev-target-uki",
         "validate-image",
         "--image-root",
         &mounted.to_string_lossy(),

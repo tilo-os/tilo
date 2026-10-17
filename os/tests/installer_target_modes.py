@@ -2,9 +2,6 @@
 """Exercise shared installer target promotion and mutable-state discovery."""
 from pathlib import Path
 import os
-import hashlib
-import importlib.util
-from unittest.mock import patch
 import subprocess
 import tempfile
 import unittest
@@ -72,22 +69,7 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
                 self.assertNotEqual(second.returncode, 0)
                 self.assertIn('already contains', second.stderr)
 
-    def test_target_boot_digest_and_etc_discovery(self):
-        with self.subTest(phase="boot_digest_uses_virtual_kernel_and_initramfs_bytes"):
-            spec = importlib.util.spec_from_file_location('uki', BACKEND.parents[2] / 'dev/uki-cmdline.py')
-            uki = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(uki)
-            rows = [('.linux', 0, 8, 3), ('.initrd', 8, 8, 4), ('.cmdline', 16, 8, 8)]
-            with patch.object(uki, 'sections', return_value=rows):
-                self.assertEqual(uki.boot_digest(b'linuxxxxinitxxxxinstall!'),
-                                 hashlib.sha256(b'lininit').hexdigest())
-                self.assertEqual(uki.boot_digest(b'linuxxxxinitxxxxnormal!!'),
-                                 hashlib.sha256(b'lininit').hexdigest())
-                self.assertNotEqual(uki.boot_digest(b'linuxxxxDIFFxxxxnormal!!'),
-                                    hashlib.sha256(b'lininit').hexdigest())
-            with patch.object(uki, 'sections', return_value=[('.linux', 0, 2, 3), rows[1]]):
-                with self.assertRaises(SystemExit):
-                    uki.boot_digest(b'linuxxxxinitxxxxnormal!!')
+    def test_target_etc_discovery(self):
         with self.subTest(phase="composefs_mutable_etc_discovery"):
             body = SOURCE.split('find_deploy_etc() {', 1)[1].split('\n}\n', 1)[0]
             with tempfile.TemporaryDirectory() as temporary:

@@ -16,6 +16,10 @@ pub(super) struct WorkspaceStatus {
 }
 
 impl WorkspaceStatus {
+    pub(super) fn can_resume_existing(&self) -> bool {
+        self.can_resume_existing
+    }
+
     pub(super) fn require_existing(&self) -> Result<()> {
         anyhow::ensure!(
             self.can_resume_existing,

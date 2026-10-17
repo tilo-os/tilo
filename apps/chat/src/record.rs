@@ -1,6 +1,7 @@
 //! The chat record: workspaces, their categories and channels, every
-//! channel's messages, the people in the room, each person's read marks and
-//! the composers' drafts.
+//! channel's messages, the people in the room and each person's read marks.
+//! What someone is writing and has not sent is theirs, not the room's: it
+//! is kept in their own record ([`crate::drafts`]).
 //!
 //! Plain changes are the built-in field edits every path offers: renaming a
 //! channel or a category, setting a channel's topic, archiving it, pinning a
@@ -15,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_document::{ClipBlock, RichText};
+use tilo_document::ClipBlock;
 use ui::tilo_resource::{
     self, ActionCx, Atom, Collection, Id, Identified, Json, JsonSchema, Keyed, Model, Refusal,
 };
@@ -30,6 +31,29 @@ pub const MAX_AGENT_NAME_BYTES: usize = 80;
 pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
+
+/// Bring a chat record of version `from` up to this one. Version 1 kept
+/// everyone's unsent drafts in the room, where every member edited one
+/// shared draft per channel; drafts are each writer's own now
+/// ([`crate::drafts`]), so the room's copy is dropped.
+///
+/// # Errors
+/// When `from` is not a version this chat was.
+fn migrate(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no Chat migration from {from}"
+        )));
+    }
+    if doc.get(ROOT, "drafts")?.is_some() {
+        doc.delete(ROOT, "drafts")?;
+    }
+    Ok(())
+}
 
 /// The room's chat. See the module docs.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -51,8 +75,6 @@ pub struct Chat {
     /// Each person's read mark per channel: how many of its top-level
     /// messages they have seen.
     pub read: BTreeMap<String, BTreeMap<String, i64>>,
-    /// The composers' drafts, by channel or thread.
-    pub drafts: BTreeMap<String, RichText>,
     /// Reviewed feedback filed in a channel, under its submission's id.
     pub feedback: Collection<FeedbackReport>,
     /// Reports of people and messages, and what the room's moderators (or
@@ -784,13 +806,8 @@ impl Chat {
         Ok(id)
     }
 
-    /// Add `channel` as `id`, with the empty draft its composer writes in:
-    /// made with the channel, so collaborators' first keystrokes land in
-    /// one draft rather than in two made at once.
+    /// Add `channel` as `id`.
     pub(crate) fn open_channel(&mut self, id: Id, channel: Channel) {
-        if channel.kind == ChannelKind::Text {
-            self.drafts.insert(id.to_string(), RichText::default());
-        }
         self.channels.push(id, channel);
     }
 
@@ -898,6 +915,8 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
+    version = 2,
+    migrate = migrate,
 )]
 impl Chat {
     /// Start the chat.
@@ -1146,28 +1165,9 @@ impl Chat {
         self.messages
             .retain(|_, message| message.channel != *channel);
         let key = channel.to_string();
-        let thread = format!("{key}:");
-        self.drafts
-            .retain(|draft, _| *draft != key && !draft.starts_with(&thread));
         for marks in self.read.values_mut() {
             marks.remove(&key);
         }
-        Ok(())
-    }
-
-    /// Start a draft.
-    ///
-    /// The empty draft a composer writes in, made once: a thread's the
-    /// first time someone answers in it.
-    #[action(housekeeping)]
-    pub fn start_draft(
-        &mut self,
-        #[param("The channel, or the channel and thread, it is written in")] key: String,
-    ) -> Result<(), Refusal> {
-        if key.is_empty() || key.len() > 512 {
-            return Err(Refusal::new("a draft is kept under its channel or thread"));
-        }
-        self.drafts.entry(key).or_default();
         Ok(())
     }
 

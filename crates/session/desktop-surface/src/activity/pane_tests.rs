@@ -1275,7 +1275,11 @@ mod tests {
             "Unknown collaborator · 01234567"
         );
         unidentified.created_by = pane.local_user();
-        assert_eq!(pane.task_creator_label(&unidentified), "You");
+        assert_eq!(
+            pane.task_creator_label(&unidentified),
+            pane.local_user(),
+            "the reader is named like anyone else, never \"You\""
+        );
     }
 
     #[test]
@@ -4052,6 +4056,66 @@ mod task_review_tests {
         pane.selected_task = Some(id);
         (tree, pane, host)
     }
+    /// Once an agent's run of a task ended and history recorded what it
+    /// changed under the task, Task Center offers to undo it as one, and
+    /// that asks the host to undo the task's run in each changed document.
+    #[test]
+    fn an_ended_runs_task_offers_to_undo_it_as_one() {
+        let (mut tree, mut pane, host) = review_fixture();
+        host.mutations.set(true);
+        let id = pane.selected_task.clone().unwrap();
+        host.snapshot
+            .borrow_mut()
+            .controls
+            .get_mut(&id)
+            .unwrap()
+            .active_run = None;
+        pane.refresh(&mut tree);
+        let task = tree.active_workspace().unwrap().tasks[0].clone();
+        assert!(
+            !pane.task_actions_for(&task).contains(&TaskAction::UndoTask),
+            "nothing recorded, nothing to undo"
+        );
+
+        let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[ui::RunStep {
+                app: "so.tilo.notes".into(),
+                record: "file:/notes/release.note".into(),
+                run: ui::ChangeRun::new(change, change),
+                what: Vec::new(),
+            }],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, &id));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+        assert!(pane.task_actions_for(&task).contains(&TaskAction::UndoTask));
+
+        assert!(
+            pane.apply_task_action(TaskAction::UndoTask, &mut tree)
+                .handled
+        );
+        let submitted = host.submitted.borrow();
+        assert_eq!(
+            submitted.last().map(|request| &request.command),
+            Some(&crate::activity::TaskReviewCommand::UndoRun {
+                task_id: id.clone(),
+                steps: vec![(
+                    "so.tilo.notes".to_owned(),
+                    "file:/notes/release.note".to_owned()
+                )],
+            })
+        );
+    }
+
     #[test]
     fn header_title_uses_current_viewport_and_scope_on_the_first_frame() {
         for theme in [

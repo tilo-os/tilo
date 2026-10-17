@@ -35,6 +35,8 @@ const CODEC_SCENARIOS: &[&str] = &[
     "codecsdemo-failed",
 ];
 const DEVICE_DISPLAYS: &str = "device-displays";
+/// Storage with remembered NTFS drives, drawn tall enough to reach them.
+const STORAGE_DRIVES: &str = "storage-drives";
 
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
@@ -55,6 +57,7 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 DEVICE_DISPLAYS,
+                STORAGE_DRIVES,
                 "keyboard-single",
                 "keyboard-many",
                 "keyboard-touch",
@@ -71,6 +74,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
+        Some(STORAGE_DRIVES) => (1200, 1450),
         _ => WIDE_VIEWPORT,
     }
 }
@@ -94,6 +98,8 @@ pub struct CaptureScene {
     /// Stand-in storage summaries of the person's devices, for the
     /// storage capture.
     pub storage_devices: Vec<crate::panes::storage::DeviceResidency>,
+    /// Stand-in remembered NTFS drives, for the drives capture.
+    pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -120,6 +126,11 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         },
         storage_devices: if fixture.scenario() == Some(Category::Storage.slug()) {
             storage_fixture()
+        } else {
+            Vec::new()
+        },
+        remembered_drives: if fixture.scenario() == Some(STORAGE_DRIVES) {
+            crate::panes::drives::capture_fixture()
         } else {
             Vec::new()
         },
@@ -312,6 +323,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
         Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
+        Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
         }
@@ -452,7 +464,11 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 10 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 11 + CODEC_SCENARIOS.len()
+        );
+        assert_eq!(
+            staged(Some(STORAGE_DRIVES)),
+            Staged::Pane(Category::Storage)
         );
         for scenario in CODEC_SCENARIOS {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));

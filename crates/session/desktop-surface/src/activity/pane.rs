@@ -4,7 +4,7 @@ use super::morning::{
 mod morning_sources;
 mod task_confirmation_view;
 mod task_review_view;
-pub use task_confirmation_view::ConfirmationNotice;
+pub use task_confirmation_view::{ConfirmationNotice, PausedDraft, RunGlance};
 
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
@@ -276,6 +276,8 @@ enum TaskAction {
     Cancel,
     /// Show or hide the reviewed task's run counters.
     Details,
+    /// Undo everything the agent's run of the task changed, as one.
+    UndoTask,
 }
 
 impl TaskAction {
@@ -298,6 +300,7 @@ impl TaskAction {
             Self::KeepDraft => "activity-confirm-back",
             Self::AlwaysAllow => "activity-confirm-always",
             Self::OpenResource => "activity-task-open-resource",
+            Self::UndoTask => "activity-detail-undo-task",
             Self::StartAgent => "activity-task-start-agent",
             Self::Launch => "activity-task-launch-agent",
             Self::Start => "activity-task-mark-started",
@@ -892,6 +895,9 @@ pub struct RoomActivityPane {
     confirmation_notices: Vec<ConfirmationNotice>,
     noticed_confirmations: HashSet<String>,
     review_pending: Option<uuid::Uuid>,
+    /// Whether [`Self::review_pending`] undoes a task's run rather than
+    /// changing the task, so its outcome is told as an undo.
+    review_pending_undo: bool,
     review_notice: Option<String>,
     review_task_offset: usize,
     requested_review_task: Option<String>,
@@ -1134,6 +1140,7 @@ impl RoomActivityPane {
             confirmation_notices: Vec::new(),
             noticed_confirmations: HashSet::new(),
             review_pending: None,
+            review_pending_undo: false,
             review_notice: None,
             review_task_offset: 0,
             requested_review_task: None,
@@ -1832,6 +1839,40 @@ impl RoomActivityPane {
             || t("activity-unknown-collaborator"),
             |actor| self.source.authors().resolve(actor).name,
         )
+    }
+
+    /// The run recorded for the agent's work on task `task_id`, if it
+    /// changed anything.
+    fn task_agent_run(&self, task_id: &str) -> Option<&IndexedAgentRun> {
+        self.agent_runs
+            .iter()
+            .find(|indexed| indexed.run.task.as_deref() == Some(task_id))
+    }
+
+    /// Whether the agent's run of task `task_id` changed something this
+    /// person can undo as one.
+    fn can_undo_task_run(&self, task_id: &str) -> bool {
+        self.host.mutations_available() && self.task_agent_run(task_id).is_some()
+    }
+
+    /// Ask the host to undo the agent's whole run of `task_id`, through
+    /// each changed document's own history. Returns whether it was asked.
+    fn undo_task_run(&mut self, task_id: &str) -> bool {
+        let Some(indexed) = self.task_agent_run(task_id) else {
+            return false;
+        };
+        let steps = indexed
+            .run
+            .steps
+            .iter()
+            .map(|step| (step.app.clone(), step.record.clone()))
+            .collect();
+        self.submit_review(crate::activity::TaskReviewCommand::UndoRun {
+            task_id: task_id.to_owned(),
+            steps,
+        });
+        self.review_pending_undo = self.review_pending.is_some();
+        self.review_pending.is_some()
     }
 
     fn can_undo_agent_run(&self) -> bool {
@@ -5659,16 +5700,20 @@ impl RoomActivityPane {
             .unwrap_or_else(|| self.person_label(id))
     }
 
-    /// A participant id as people read it: their name, "You", or a short
-    /// handle, never the raw key.
+    /// A participant id as people read it: their name (the reader's own
+    /// too), or a short handle, never the raw key.
     pub(super) fn person_label(&self, id: &str) -> String {
         let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         let authors = self.source.authors();
         if authors.is_registered(&handle) {
             return authors.resolve(&handle).name;
         }
-        if id == self.local_user() {
-            return t("workspace-settings-you");
+        if id == self.local_user()
+            && let Some(name) = ui::local_identity::bound()
+                .map(|identity| identity.display_name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+        {
+            return name;
         }
         if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return format!(
@@ -5811,6 +5856,14 @@ impl RoomActivityPane {
         action: TaskAction,
         tree: &mut impl ActivityTree,
     ) -> RoomActivityOutcome {
+        if action == TaskAction::UndoTask {
+            if self.review_pending.is_none()
+                && let Some(id) = self.selected_task.clone()
+            {
+                self.undo_task_run(&id);
+            }
+            return handled_outcome();
+        }
         if matches!(
             action,
             TaskAction::ReviewHistory
@@ -5960,6 +6013,9 @@ impl RoomActivityPane {
             let mut actions = vec![TaskAction::ReviewHistory];
             if task.resource.is_some() {
                 actions.push(TaskAction::OpenResource);
+            }
+            if control.active_run.is_none() && self.can_undo_task_run(&task.id) {
+                actions.push(TaskAction::UndoTask);
             }
             if snapshot.writable && self.review_pending.is_none() {
                 if task.status == WorkspaceTaskStatus::Queued
@@ -6245,6 +6301,16 @@ impl RoomActivityPane {
         let Some(indexed) = self.selected_agent_run().cloned() else {
             return UndoApply::default();
         };
+        // An agent's run of a task is undone by each document's own
+        // history, which also takes back what a change queued outside the
+        // document (a file renamed on disk); reverting the document alone
+        // would leave that behind.
+        if let Some(task) = &indexed.run.task
+            && self.undo_task_run(task)
+        {
+            self.agent_undo_notice = Some((indexed.run.id, t("activity-task-review-saving")));
+            return UndoApply::default();
+        }
         let Some(records) = records else {
             return UndoApply::default();
         };

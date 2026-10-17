@@ -244,10 +244,9 @@ fn request_shout(app: &mut TestApp<RewriterApp>) -> tilo_app::widget::TextAction
     harness.send(&cursor_moved(x, y));
     harness.send(&mouse_input(ElementState::Pressed, MouseButton::Right));
     harness.send(&mouse_input(ElementState::Released, MouseButton::Right));
-    // The menu opens at the pointer; the registered action is its first row.
-    let row = f64::from(tilo_app::tokens::Metrics::BASE.menu_row_height);
-    let inset = f64::from(tilo_app::tokens::Spacing::BASE.s2);
-    harness.click_at(x + 40.0, y + inset + row / 2.0);
+    // The open menu owns the keyboard; the registered action is its first row.
+    harness.key("Down");
+    harness.key("Enter");
     app.with_surface(|surface: &mut Rewriter| surface.input.take_text_action_request())
         .flatten()
         .expect("the selection's action was requested")

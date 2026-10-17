@@ -327,7 +327,39 @@ pub struct DocumentImportRequest {
     pub confirm_label: String,
 }
 
+/// Whether, and how, to open an NTFS drive ([`crate::shell::drives`]).
+/// Only the compositor draws this sheet, so no app can answer it for the
+/// person; the mount service opens a drive only on an answer from here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DriveConsentRequest {
+    pub handle: String,
+    pub title: String,
+    /// Where the drive is and how large, under the title.
+    pub drive: String,
+    pub detail: String,
+    /// One sentence per way to open it.
+    pub choices: Vec<String>,
+    /// The choice the sheet starts on. A suggestion, never an answer.
+    pub preselect: usize,
+    /// The label of the "Remember" row, or `None` when nothing about this
+    /// drive may be remembered.
+    pub remember: Option<String>,
+    pub confirm_label: String,
+    pub cancel_label: String,
+}
+
+/// The answer to a [`DriveConsentRequest`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveConsentDecision {
+    Chosen { choice: usize, remember: bool },
+    NotNow,
+}
+
 enum PendingDialog {
+    DriveConsent {
+        request: DriveConsentRequest,
+        reply: oneshot::Sender<DriveConsentDecision>,
+    },
     ShortcutStep {
         request: ShortcutStepRequest,
         reply: ShortcutStepReply,
@@ -651,6 +683,35 @@ impl PortalDialogQueue {
         })
     }
 
+    /// Queue the sheet asking whether, and how, to open a drive.
+    /// Dismissing it answers [`DriveConsentDecision::NotNow`].
+    ///
+    /// # Errors
+    ///
+    /// When the request offers nothing to choose, or a sheet with the same
+    /// handle is already live.
+    pub fn enqueue_drive_consent(
+        &self,
+        request: DriveConsentRequest,
+    ) -> Result<oneshot::Receiver<DriveConsentDecision>, String> {
+        if request.choices.is_empty() || request.preselect >= request.choices.len() {
+            return Err("a drive sheet needs its choices and a valid starting one".into());
+        }
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::DriveConsent { request, reply }
+        })
+    }
+
+    fn finish_drive_consent(&self, handle: &str, decision: DriveConsentDecision) -> bool {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::DriveConsent { reply, .. } => {
+                let _ = reply.send(decision);
+                Ok(())
+            }
+            other => Err(other),
+        })
+    }
+
     fn finish_window_transfer(&self, handle: &str, choice: Option<usize>) -> bool {
         self.finish_pending(handle, |pending| match pending {
             PendingDialog::WindowTransfer { request, reply } => {
@@ -764,6 +825,17 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
+            PendingDialog::DriveConsent { request, .. } => Some(DialogView::DriveConsent {
+                handle: request.handle.clone(),
+                title: request.title.clone(),
+                drive: request.drive.clone(),
+                detail: request.detail.clone(),
+                choices: request.choices.clone(),
+                preselect: request.preselect,
+                remember_label: request.remember.clone(),
+                confirm_label: request.confirm_label.clone(),
+                cancel_label: request.cancel_label.clone(),
+            }),
             PendingDialog::ShortcutStep {
                 request, validate, ..
             } => Some(DialogView::ShortcutStep {
@@ -940,6 +1012,10 @@ impl PortalDialogQueue {
             .ok()
             .and_then(|mut inner| inner.pending.remove(handle));
         match pending {
+            Some(PendingDialog::DriveConsent { reply, .. }) => {
+                let _ = reply.send(DriveConsentDecision::NotNow);
+                true
+            }
             Some(PendingDialog::ShortcutStep { reply, .. }) => {
                 reply(ShortcutStepDecision::Cancelled);
                 true
@@ -1173,6 +1249,19 @@ impl AppChooserService for ShellAppChooserService {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogView {
+    /// Whether, and how, to open a drive. The ways to open it are the
+    /// choices; Cancel leaves it closed.
+    DriveConsent {
+        handle: String,
+        title: String,
+        drive: String,
+        detail: String,
+        choices: Vec<String>,
+        preselect: usize,
+        remember_label: Option<String>,
+        confirm_label: String,
+        cancel_label: String,
+    },
     ShortcutStep {
         handle: String,
         shortcut: String,
@@ -1281,12 +1370,15 @@ impl DialogView {
             | Self::ActionGrant { handle, .. }
             | Self::WindowTransfer { handle, .. }
             | Self::Authentication { handle, .. }
-            | Self::NetworkSecrets { handle, .. } => handle,
+            | Self::NetworkSecrets { handle, .. }
+            | Self::DriveConsent { handle, .. } => handle,
         }
     }
     pub fn title(&self) -> String {
         match self {
-            Self::ShortcutStep { title, .. } | Self::WindowTransfer { title, .. } => title.clone(),
+            Self::ShortcutStep { title, .. }
+            | Self::WindowTransfer { title, .. }
+            | Self::DriveConsent { title, .. } => title.clone(),
             Self::AppChoice { .. } => t("portal-choose-app-title"),
             Self::Review { title, .. } => title.clone(),
             Self::ShortcutBindings { .. } => t("portal-shortcuts-title"),
@@ -1308,6 +1400,7 @@ impl DialogView {
             | Self::LauncherReview { app_name, .. }
             | Self::UsbDevices { app_name, .. }
             | Self::WindowTransfer { app_name, .. } => app_name.clone(),
+            Self::DriveConsent { drive, .. } => drive.clone(),
             Self::ActionGrant { action, .. } => action.clone(),
             Self::Authentication { .. } => t("portal-auth-heading"),
             Self::NetworkSecrets { .. } => t("portal-network-heading"),
@@ -1318,7 +1411,8 @@ impl DialogView {
             Self::ShortcutStep { detail, .. }
             | Self::AppChoice { detail, .. }
             | Self::Review { detail, .. }
-            | Self::WindowTransfer { detail, .. } => detail.clone(),
+            | Self::WindowTransfer { detail, .. }
+            | Self::DriveConsent { detail, .. } => detail.clone(),
             Self::ShortcutBindings { .. } => t("portal-shortcuts-detail"),
             Self::LauncherReview { detail, .. } => detail.clone(),
             Self::UsbDevices { detail, .. } => detail.clone(),
@@ -1332,7 +1426,8 @@ impl DialogView {
             Self::AppChoice { choices, .. }
             | Self::ActionGrant { choices, .. }
             | Self::WindowTransfer { choices, .. }
-            | Self::ShortcutStep { choices, .. } => choices,
+            | Self::ShortcutStep { choices, .. }
+            | Self::DriveConsent { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
@@ -1352,7 +1447,8 @@ impl DialogView {
             | Self::ActionGrant { .. }
             | Self::WindowTransfer { .. }
             | Self::Authentication { .. }
-            | Self::NetworkSecrets { .. } => &[],
+            | Self::NetworkSecrets { .. }
+            | Self::DriveConsent { .. } => &[],
         }
     }
     /// The fields of a network-secrets sheet.
@@ -1373,6 +1469,7 @@ impl DialogView {
             Self::NetworkSecrets { .. } => "network_secrets",
             Self::ActionGrant { .. } => "action_grant",
             Self::WindowTransfer { .. } => "window_transfer",
+            Self::DriveConsent { .. } => "drive_consent",
             Self::ShortcutStep { .. } => "shortcut_step",
         }
     }
@@ -1382,7 +1479,8 @@ impl DialogView {
             Self::AppChoice { choices, .. }
             | Self::ActionGrant { choices, .. }
             | Self::WindowTransfer { choices, .. }
-            | Self::ShortcutStep { choices, .. } => choices.len(),
+            | Self::ShortcutStep { choices, .. }
+            | Self::DriveConsent { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
             Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
@@ -1392,7 +1490,8 @@ impl DialogView {
         match self {
             Self::AppChoice { .. } => t("portal-open"),
             Self::ShortcutStep { confirm_label, .. }
-            | Self::WindowTransfer { confirm_label, .. } => confirm_label.clone(),
+            | Self::WindowTransfer { confirm_label, .. }
+            | Self::DriveConsent { confirm_label, .. } => confirm_label.clone(),
             Self::Review { confirm_label, .. } => confirm_label.clone(),
             Self::ShortcutBindings { .. } => t("portal-save-shortcuts"),
             Self::LauncherReview { confirm_label, .. } => confirm_label.clone(),
@@ -1409,6 +1508,7 @@ impl DialogView {
             Self::ActionGrant { .. } => {
                 crate::shell::app_action_consent::consent_label(AppActionConsent::Deny)
             }
+            Self::DriveConsent { cancel_label, .. } => cancel_label.clone(),
             _ => t("portal-cancel"),
         }
     }
@@ -1548,6 +1648,9 @@ impl PortalDialogController {
             self.launcher_field = 0;
             self.forget_secret();
             match self.view() {
+                Some(DialogView::DriveConsent { preselect, .. }) => {
+                    self.selected = preselect;
+                }
                 Some(DialogView::Authentication { identity, echo, .. }) => {
                     self.selected = identity;
                     self.secret = TextInput::local()
@@ -1654,6 +1757,13 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::DriveConsent { .. } => self.queue.finish_drive_consent(
+                view.handle(),
+                DriveConsentDecision::Chosen {
+                    choice: self.selected,
+                    remember: self.remember,
+                },
+            ),
             DialogView::ShortcutStep { choices, .. } => {
                 if let Err(reason) = self
                     .queue
@@ -1759,6 +1869,9 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::DriveConsent { .. } => self
+                .queue
+                .finish_drive_consent(view.handle(), DriveConsentDecision::NotNow),
             DialogView::ShortcutStep { .. } => self
                 .queue
                 .finish_shortcut_step(view.handle(), ShortcutStepDecision::Cancelled),
@@ -1832,6 +1945,9 @@ impl PortalDialogController {
                 remember_offered,
                 ..
             } => (fields.len().min(6), usize::from(*remember_offered)),
+            DialogView::DriveConsent { remember_label, .. } => {
+                (0, usize::from(remember_label.is_some()))
+            }
             _ => (0, 0),
         };
         let height = 190.0
@@ -2201,16 +2317,49 @@ impl PortalDialogController {
         )
     }
 
-    /// Whether "Remember on this device" is ticked and focused, when the
-    /// sheet offers it.
+    /// Whether the sheet's "Remember" row is ticked and focused, when the
+    /// sheet offers one.
     pub fn remember_display(&self) -> Option<(bool, bool)> {
         match self.view()? {
             DialogView::NetworkSecrets {
                 remember_offered: true,
                 ..
             } => Some((self.remember, self.entry_focus >= self.entries.len())),
+            // Its choices take the focus; Space ticks the row.
+            DialogView::DriveConsent {
+                remember_label: Some(_),
+                ..
+            } => Some((self.remember, false)),
             _ => None,
         }
+    }
+
+    /// What the sheet's "Remember" row says, when it offers one.
+    pub fn remember_label(&self) -> Option<String> {
+        match self.view()? {
+            DialogView::NetworkSecrets {
+                remember_offered: true,
+                ..
+            } => Some(t("portal-remember-device")),
+            DialogView::DriveConsent { remember_label, .. } => remember_label,
+            _ => None,
+        }
+    }
+
+    /// Tick or untick the "Remember" row of a sheet whose keys otherwise
+    /// move between choices. `false` when the sheet up has no such row.
+    pub fn toggle_remember(&mut self) -> bool {
+        let offered = matches!(
+            self.view(),
+            Some(DialogView::DriveConsent {
+                remember_label: Some(_),
+                ..
+            })
+        );
+        if offered {
+            self.remember = !self.remember;
+        }
+        offered
     }
 
     /// Why the network-secrets sheet did not close, when it refused.
@@ -2278,6 +2427,14 @@ impl PortalDialogController {
             } => {
                 state["error"] = self.entry_error.clone().into();
                 state["value"] = self.step_field.value().into();
+            }
+            DialogView::DriveConsent { remember_label, .. } => {
+                state["cancel_label"] = view.cancel_label().into();
+                state["remember"] = if remember_label.is_some() {
+                    self.remember.into()
+                } else {
+                    serde_json::Value::Null
+                };
             }
             _ => {}
         }
@@ -2599,6 +2756,82 @@ mod tests {
             echo: false,
             notice: Some("Wrong password".into()),
         }
+    }
+
+    fn drive_request(remember: Option<&str>) -> DriveConsentRequest {
+        DriveConsentRequest {
+            handle: "tilo-drive-1-nvme0n1p3:1".into(),
+            title: "Open Windows?".into(),
+            drive: "Inside this computer · 512 GB".into(),
+            detail: "Choose how to open this drive.".into(),
+            choices: vec!["Open safely".into(), "Open".into()],
+            preselect: 1,
+            remember: remember.map(str::to_owned),
+            confirm_label: "Open".into(),
+            cancel_label: "Not now".into(),
+        }
+    }
+
+    #[test]
+    fn the_drive_sheet_starts_on_the_suggestion_and_answers_only_what_was_chosen() {
+        let bounds = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let queue = PortalDialogQueue::default();
+        let answer = queue
+            .enqueue_drive_consent(drive_request(Some("Remember this drive")))
+            .expect("queued");
+        let mut sheet = PortalDialogController::new(queue.clone());
+        assert!(sheet.pump());
+        assert_eq!(
+            sheet.selected(),
+            1,
+            "the suggestion is selected, not answered"
+        );
+        let view = sheet.view().expect("visible");
+        assert_eq!(view.app_name(), "Inside this computer · 512 GB");
+        assert_eq!(view.cancel_label(), "Not now");
+        assert_eq!(
+            sheet.remember_label().as_deref(),
+            Some("Remember this drive")
+        );
+        assert_eq!(sheet.remember_display(), Some((false, false)));
+        let layout = sheet.layout(bounds).expect("layout");
+        let remember = layout.remember.expect("a remember row");
+        assert_eq!(layout.choices.len(), 2);
+        assert!(remember.y0 >= layout.choices[1].y1, "below the choices");
+        assert!(remember.y1 <= layout.cancel.y0, "above the buttons");
+        assert!(sheet.toggle_remember());
+        assert!(sheet.select_next(true));
+        assert_eq!(sheet.state_json()["remember"], true);
+        assert!(sheet.confirm());
+        assert_eq!(
+            answer.blocking_recv(),
+            Ok(DriveConsentDecision::Chosen {
+                choice: 0,
+                remember: true
+            })
+        );
+
+        let dismissed = queue
+            .enqueue_drive_consent(drive_request(None))
+            .expect("queued");
+        assert!(sheet.pump());
+        assert!(
+            !sheet.toggle_remember(),
+            "nothing to remember for this drive"
+        );
+        assert!(sheet.remember_display().is_none());
+        assert!(sheet.layout(bounds).expect("layout").remember.is_none());
+        assert!(sheet.cancel());
+        assert_eq!(dismissed.blocking_recv(), Ok(DriveConsentDecision::NotNow));
+
+        let withdrawn = queue
+            .enqueue_drive_consent(drive_request(None))
+            .expect("queued");
+        assert!(queue.cancel("tilo-drive-1-nvme0n1p3:1"));
+        assert_eq!(withdrawn.blocking_recv(), Ok(DriveConsentDecision::NotNow));
+        let mut invalid = drive_request(None);
+        invalid.preselect = 2;
+        assert!(queue.enqueue_drive_consent(invalid).is_err());
     }
 
     #[test]

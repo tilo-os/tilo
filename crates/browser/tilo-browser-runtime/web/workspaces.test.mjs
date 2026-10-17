@@ -440,8 +440,9 @@ test('the person switches between the home and the workspaces they entered, neve
   // Without a home, the person's own desktop offers every room entered.
   assert.equal(workspaceChoices({entered, current: {kind: 'own'}}).length, 4);
   assert.deepEqual(workspaceActions(fromAcme), [
-    {id: 'open-workspace:home', title: 'Open Lounge', subtitle: 'Workspace · rooms.example'},
-    {id: 'open-workspace:https://globex.example/G', title: 'Open globex.example', subtitle: 'Workspace · globex.example · did not open last time'},
-    {id: 'open-workspace:https://rooms.example/TEAM', title: 'Open Team', subtitle: 'Workspace · rooms.example'},
+    {id: 'open-workspace:home', title: 'Open Lounge', label: 'Lounge', source: 'workspaces', subtitle: 'Workspace · rooms.example'},
+    {id: 'open-workspace:https://globex.example/G', title: 'Open globex.example', label: 'globex.example', source: 'workspaces',
+      subtitle: 'Workspace · globex.example · did not open last time'},
+    {id: 'open-workspace:https://rooms.example/TEAM', title: 'Open Team', label: 'Team', source: 'workspaces', subtitle: 'Workspace · rooms.example'},
   ]);
 });

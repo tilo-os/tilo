@@ -35,13 +35,6 @@ def package(output, host, env):
             shutil.copyfile(row['path'], destination)
             destination.chmod(0o755)
             qualifier.bound_file(destination, row['sha256'])
-        for source, installed in qualifier.PLATFORM_SCRIPTS.items():
-            qualifier.bound_file(release.ROOT / source, cohort['source_inputs'][source])
-            destination = root / installed.lstrip('/')
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(release.ROOT / source, destination)
-            destination.chmod(0o755)
-            qualifier.bound_file(destination, cohort['source_inputs'][source])
         def ownership(member):
             member.uid = member.gid = 0
             member.uname = member.gname = 'root'

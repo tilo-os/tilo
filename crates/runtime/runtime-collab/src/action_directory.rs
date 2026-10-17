@@ -163,6 +163,9 @@ pub struct ActionDirectoryQuery {
     pub max_bytes: u32,
     pub max_work: u32,
     pub max_depth: u16,
+    /// Non-empty: only the top-level resources whose kind is this, or whose
+    /// label is this ignoring ASCII case, answered whole on one page.
+    pub resource_name: String,
 }
 
 /// A hierarchy-preserving directory row. Resource rows have no action or

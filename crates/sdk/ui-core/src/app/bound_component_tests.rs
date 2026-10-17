@@ -1265,6 +1265,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             max_bytes: 8192,
             max_work: 16,
             max_depth: 8,
+            resource_name: String::new(),
         };
         let first = fixture.app.action_directory_page(query.clone());
         assert_eq!(first.rows.len(), 1);

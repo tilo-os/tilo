@@ -7237,6 +7237,7 @@ dependencies = [
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tokio",
+ "toml 1.0.6+spec-1.1.0",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -12973,7 +12974,6 @@ dependencies = [
  "anyhow",
  "des",
  "iroh-base",
- "neighbour-wire",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -14479,6 +14479,7 @@ dependencies = [
  "tilo-locale",
  "tilo-media",
  "tilo-net",
+ "tilo-ntfs-mount",
  "tilo-oauth",
  "tilo-paths",
  "tilo-relay-protocol",
@@ -14813,6 +14814,7 @@ dependencies = [
  "tilo-net",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-ntfs-mount",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",
@@ -17490,6 +17492,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17867,6 +17870,9 @@ dependencies = [
  "sha2 0.11.0",
  "staging-handoff-model",
  "tempfile",
+ "tilo-advisory-lock",
+ "tilo-board-successor",
+ "tilo-esp-write",
  "tilo-firstboot-files",
  "tilo-pycompat",
  "tilo-seal",
@@ -18278,6 +18284,18 @@ dependencies = [
  "tempfile",
  "tilo-ntfs-protocol",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ntfs-mount"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-sandbox-core",
  "workspace-hack",
 ]
 
