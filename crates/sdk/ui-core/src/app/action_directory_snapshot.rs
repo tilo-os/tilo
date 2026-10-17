@@ -69,19 +69,35 @@ pub(super) struct DirectoryNode {
     pub depth: usize,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 pub(super) struct ActionDirectorySnapshot {
+    // Computed once at construction, never by the input/gesture path.
+    retained_bytes: usize,
     pub(super) effective_invocations: Option<[u8; 32]>,
     pub roots: Vec<ActionDirectoryRow>,
     pub nodes: HashMap<String, DirectoryNode>,
     pub actions: HashMap<ActionAddress, ActionDirectoryRow>,
 }
 
+impl PartialEq for ActionDirectorySnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.effective_invocations == other.effective_invocations
+            && self.roots == other.roots
+            && self.nodes == other.nodes
+            && self.actions == other.actions
+    }
+}
+impl Eq for ActionDirectorySnapshot {}
+
+const MAX_PINNED_REVISIONS: usize = 64;
+const MAX_PINNED_BYTES: usize = 4 * 1024 * 1024;
+
 /// A pre-event inert directory retained only for local mutation admission.
 /// Dropping the last owner makes the revision unavailable to the local RPC.
 pub(super) struct LocalDocumentDirectoryPin {
     revision: String,
     snapshot: std::rc::Rc<ActionDirectorySnapshot>,
+    retained_bytes: usize,
 }
 
 impl App {
@@ -95,13 +111,28 @@ impl App {
         let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
         let pins = &mut self.actions.local_document_directory_pins;
         pins.retain(|pin| pin.strong_count() > 0);
+        let mut retained_bytes = 0usize;
+        for pin in pins.iter().filter_map(std::rc::Weak::upgrade) {
+            if pin.revision == revision {
+                return Some(pin);
+            }
+            retained_bytes = retained_bytes.saturating_add(pin.retained_bytes);
+        }
+        let bytes = snapshot
+            .retained_bytes
+            .saturating_add(revision.len())
+            .saturating_add(std::mem::size_of::<LocalDocumentDirectoryPin>() + 64);
+        // Bound distinct revisions and their complete retained allocations.
         // Never evict an in-flight report to admit another one.
-        if pins.len() >= 64 {
+        if pins.len() >= MAX_PINNED_REVISIONS
+            || retained_bytes.saturating_add(bytes) > MAX_PINNED_BYTES
+        {
             return None;
         }
         let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
             revision: revision.to_owned(),
             snapshot,
+            retained_bytes: bytes,
         });
         pins.push(std::rc::Rc::downgrade(&pin));
         Some(pin)
@@ -254,6 +285,64 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
 }
 
 impl ActionDirectorySnapshot {
+    fn estimate_retained_bytes(&self) -> usize {
+        fn rows(rows: &[ActionDirectoryRow]) -> usize {
+            rows.iter().fold(0usize, |bytes, row| {
+                let strings = row
+                    .parent_resource
+                    .capacity()
+                    .saturating_add(row.resource.capacity())
+                    .saturating_add(row.resource_kind.capacity())
+                    .saturating_add(row.resource_label.capacity())
+                    .saturating_add(row.action.as_ref().map_or(0, String::capacity));
+                // Count into a sink, not a temporary JSON buffer. The generous
+                // multiplier covers nested Vec/enum/map slots, allocator headers
+                // and small owned values in the exported descriptor/contract.
+                // These are cloned wire data, not arbitrary application caches.
+                let nested = runtime_collab::wire_json_len(&row.descriptor)
+                    .saturating_add(runtime_collab::wire_json_len(&row.presentation))
+                    .saturating_add(row.visibility.as_ref().map_or(0, |visibility| {
+                        visibility
+                            .action
+                            .capacity()
+                            .saturating_add(runtime_collab::wire_json_len(&visibility.contract))
+                    }))
+                    .saturating_mul(32);
+                bytes.saturating_add(strings).saturating_add(nested)
+            })
+        }
+        fn row_slots(capacity: usize) -> usize {
+            capacity.saturating_mul(std::mem::size_of::<ActionDirectoryRow>())
+        }
+        // HashMap capacity is usable entries, not buckets. Doubling covers
+        // spare buckets/control bytes, including the small-table case.
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(64)
+            .saturating_add(row_slots(self.roots.capacity()))
+            .saturating_add(rows(&self.roots))
+            .saturating_add(
+                self.nodes
+                    .capacity()
+                    .saturating_mul(2 * (std::mem::size_of::<(String, DirectoryNode)>() + 16)),
+            )
+            .saturating_add(self.actions.capacity().saturating_mul(
+                2 * (std::mem::size_of::<(ActionAddress, ActionDirectoryRow)>() + 16),
+            ));
+        for (key, node) in &self.nodes {
+            bytes = bytes
+                .saturating_add(key.capacity())
+                .saturating_add(row_slots(node.rows.capacity()))
+                .saturating_add(rows(&node.rows));
+        }
+        for (address, row) in &self.actions {
+            bytes = bytes
+                .saturating_add(address.resource.capacity())
+                .saturating_add(address.action.capacity())
+                .saturating_add(rows(std::slice::from_ref(row)));
+        }
+        bytes
+    }
+
     pub fn build(
         resources: &[Resource],
         descriptors: &[ActionDescriptor],
@@ -277,6 +366,7 @@ impl ActionDirectorySnapshot {
         }
         builder.snapshot.effective_invocations =
             builder.effective.finish(builder.snapshot.actions.len());
+        builder.snapshot.retained_bytes = builder.snapshot.estimate_retained_bytes();
         builder.snapshot
     }
 }
