@@ -444,7 +444,9 @@ impl SearchFilters {
 
     pub fn scope_switch_wants_own_row(&self) -> bool {
         let b = self.search_banner_rect();
-        b.width() > 0.0 && self.search_scope_measured_track_w() > b.width() * SCOPE_TRACK_SHARE
+        !self.scopes.is_empty()
+            && b.width() > 0.0
+            && self.search_scope_measured_track_w() > b.width() * SCOPE_TRACK_SHARE
     }
 
     pub fn scope_switch_has_own_row(&self) -> bool {
@@ -463,6 +465,12 @@ impl SearchFilters {
         let b = self.search_band_for_targets();
         if b.width() <= 0.0 {
             return Rect::ZERO;
+        }
+        // A host that shows the scope elsewhere (as a token in the query
+        // field) configures no segments: no switch, and the kind chips get
+        // the whole row.
+        if self.scopes.is_empty() {
+            return Rect::new(b.x1, b.y0, b.x1, b.y0);
         }
         // Segments are as wide as the widest label needs (measured at
         // draw). While the switch shares the first row it is capped at a
@@ -695,6 +703,9 @@ impl SearchFilters {
         theme: &Theme,
         chip_text_style: &TextStyle,
     ) {
+        if self.scopes.is_empty() {
+            return;
+        }
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ground = crate::chrome::shell::panel_ground(theme);

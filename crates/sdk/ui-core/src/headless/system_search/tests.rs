@@ -119,6 +119,12 @@ fn global_search_owns_ime_and_restores_document_focus() {
     f.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("Trip".into())));
     assert_eq!(f.global_search_query(), Some("Trip"));
     assert!(!f.inspection_json().unwrap().contains("Insert table"));
+    // The first Escape clears what was typed; the next one closes.
+    f.send_host_event(&key_input(
+        &Key::Named(NamedKey::Escape),
+        ElementState::Pressed,
+    ));
+    assert_eq!(f.global_search_query(), Some(""));
     f.send_host_event(&key_input(
         &Key::Named(NamedKey::Escape),
         ElementState::Pressed,

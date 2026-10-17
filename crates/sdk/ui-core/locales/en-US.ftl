@@ -424,15 +424,6 @@ history-action-invalid = That History request isn't valid.
 palette-name = Command palette
 palette-results = Results
 palette-placeholder = Search…
-palette-hint-navigate = Navigate
-palette-hint-select = Select
-palette-hint-open = Open
-palette-hint-run = Run
-palette-hint-close = Close
-palette-result-count = { $count ->
-    [one] 1 result
-   *[other] { $count } results
-}
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
