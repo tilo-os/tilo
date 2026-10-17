@@ -810,7 +810,7 @@ readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
 package = "tilo-board-successor"
 # The selector's tests run the shipped tilo-verified-update with it, read the
 # shipped hardware definitions as profile fixtures, and hold the reader to the
-# module the installer still uses.
+# module the image builders still use.
 inputs = [
   "os/usr/libexec/tilo-verified-update",
   "os/hardware/profiles/*.json",

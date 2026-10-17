@@ -176,12 +176,12 @@ def trusted_path(root, relative, *, regular):
     return current
 
 
-# tilo-board-successor reads the installed profile, and the installer's
-# development target UKI resolves its pinned DTB, with a compiled copy of
-# read_profile, development_origin, validate_target_imgref, trusted_path and
-# resolve_profile (crates/system/board-successor/src/profile.rs). Change what
-# they accept in both places; crates/system/board-successor/tests/profile.rs
-# pins the copy.
+# tilo-board-successor reads the installed profile, the installer resolves its
+# update origin and its development target UKI its pinned DTB with a compiled
+# copy of read_profile, development_origin, validate_target_imgref,
+# trusted_path, install_update_origin and resolve_profile
+# (crates/system/board-successor/src/profile.rs). Change what they accept in
+# both places; crates/system/board-successor/tests/profile.rs pins the copy.
 def read_profile(root):
     candidate = root / PROFILE_PATH
     if not candidate.exists() and not candidate.is_symlink():
@@ -424,10 +424,6 @@ def main():
         development_build = len(sys.argv) == 7 and sys.argv[-1] == "--development-trust"
         if development_build:
             sys.argv.pop()
-        if len(sys.argv) == 3 and sys.argv[1] == "--install-update-origin":
-            # Runtime callers cannot redirect metadata to a writable path.
-            print(install_update_origin(Path("/"), sys.argv[2]))
-            return
         if len(sys.argv) != 6:
             raise ValueError("usage: hardware_profile.py PROFILE DEFINITIONS ARCHITECTURE FIRMWARE_ROOT TARGET_UPDATE_REF")
         name, directory, architecture, firmware_root, target_update_ref = sys.argv[1:]
