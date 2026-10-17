@@ -87,10 +87,13 @@ fn trusted_home_alias_is_resolved_but_copy_directory_links_are_not() {
     std::fs::create_dir(&home).unwrap();
     let alias = root.join("home-alias");
     std::os::unix::fs::symlink(&home, &alias).unwrap();
-    let paths = SessionPaths::beside(alias.join(".config/tilo/settings.json"))
+    let config = alias.join(".config/tilo");
+    let paths = SessionPaths::in_root(&config, config.join("session/settings.json"))
         .resolve_trusted_root(&alias)
         .unwrap();
-    assert_eq!(paths.copy, home.join(".config/tilo/settings.json"));
+    assert_eq!(paths.copy, home.join(".config/tilo/session/settings.json"));
+    assert_eq!(paths.person, home.join(".config/tilo/records/person.json"));
+    assert_eq!(paths.device, home.join(".config/tilo/records/device.json"));
     let session = SessionSettings::open_checked(paths.clone()).unwrap();
     session
         .update_section(
@@ -99,6 +102,8 @@ fn trusted_home_alias_is_resolved_but_copy_directory_links_are_not() {
         )
         .unwrap();
     assert_eq!(session.load()["region"]["units"], "metric");
+    assert!(paths.device.is_file());
+    assert!(!home.join(".config/tilo/session/records").exists());
     drop(session);
     std::fs::rename(home.join(".config/tilo"), home.join("private")).unwrap();
     std::os::unix::fs::symlink(home.join("private"), home.join(".config/tilo")).unwrap();
