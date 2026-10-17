@@ -86,6 +86,7 @@ fn edit(writer: &mut StatePeer, key: &SigningKey, now: SystemTime) -> crate::Nei
     doc.put(ROOT, "by agent", true).unwrap();
     doc.commit_edit("fixture", "by agent");
     writer
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), key, now)
         .unwrap()
 }

@@ -30,6 +30,7 @@ fn coverage_ahead_of_its_checkpoint_stays_restorable() {
     document.put(ROOT, "value", "next checkpoint").unwrap();
     document.commit();
     let checkpoint = governor
+        .publication_mut()
         .publish_document("test.app", "tab:1", document.save(), &key, now)
         .unwrap();
     let room = governor.room_message();
@@ -95,14 +96,10 @@ fn complete_bounded_restore_preserves_v4_v5_documents_and_metadata() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let v4 = peer.durable().unwrap();
     peer.select_admission_v5().unwrap();
-    peer.publish_document(
-        "test.app",
-        "tab:1",
-        peer.document("test.app", "tab:1").unwrap(),
-        &key,
-        now,
-    )
-    .unwrap();
+    let current_document = peer.document("test.app", "tab:1").unwrap();
+    peer.publication_mut()
+        .publish_document("test.app", "tab:1", current_document, &key, now)
+        .unwrap();
     let v5 = peer.durable().unwrap();
     for bytes in [v4, v5] {
         let expected = StatePeer::restore(
@@ -372,14 +369,10 @@ fn complete_bounded_restore_rejects_namespace_certificates_pending_coverage_and_
         assert!(checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).is_err());
     }
     peer.select_admission_v5().unwrap();
-    peer.publish_document(
-        "test.app",
-        "tab:1",
-        peer.document("test.app", "tab:1").unwrap(),
-        &key,
-        now,
-    )
-    .unwrap();
+    let current_document = peer.document("test.app", "tab:1").unwrap();
+    peer.publication_mut()
+        .publish_document("test.app", "tab:1", current_document, &key, now)
+        .unwrap();
     let bytes = peer.durable().unwrap();
     let mut durable: DurableV5<'_> = postcard::from_bytes(&bytes).unwrap();
     for doc in &mut durable.base.base.documents {

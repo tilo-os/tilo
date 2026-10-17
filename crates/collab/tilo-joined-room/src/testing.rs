@@ -279,6 +279,7 @@ pub fn raw_fixture_at(
         .author_media_policy(&policy, &governor_key, now)
         .unwrap();
     let messages = peer
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, now, 1)
         .unwrap();
     assert!(peer.validated_media_policy().unwrap().is_some());

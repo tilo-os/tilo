@@ -183,6 +183,7 @@ fn busy_room(messages_each: u64) -> BusyRoom {
     .unwrap();
     peer.select_admission_v5().unwrap();
     let opening = peer
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, now, 1)
         .unwrap();
     let mut sync = Vec::new();
@@ -219,7 +220,8 @@ fn busy_room(messages_each: u64) -> BusyRoom {
         );
         let generation = u64::from(author) + 2;
         bootstrap.extend(
-            peer.durable_mutation_messages(&before, &governor_key, now, generation)
+            peer.publication_mut()
+                .durable_mutation_messages(&before, &governor_key, now, generation)
                 .unwrap(),
         );
     }
@@ -238,7 +240,8 @@ fn busy_room(messages_each: u64) -> BusyRoom {
             .unwrap()
     );
     bootstrap.extend(
-        peer.durable_mutation_messages(&before, &governor_key, now, u64::from(AUTHORS) + 2)
+        peer.publication_mut()
+            .durable_mutation_messages(&before, &governor_key, now, u64::from(AUTHORS) + 2)
             .unwrap(),
     );
     let complete_bootstrap = join::JoinBootstrap {
