@@ -2413,6 +2413,72 @@ impl RecordOwners {
     }
 }
 
+/// The heads of what `doc` keeps without the changes `refused` names and
+/// every change made on top of one of them, and a [`RecordRefusal`] saying
+/// `reason` per action the withdrawn changes carried, in the order they were
+/// made.
+fn withdrawal(
+    doc: &mut AutoCommit,
+    refused: &[automerge::ChangeHash],
+    reason: &str,
+) -> (Vec<automerge::ChangeHash>, Vec<RecordRefusal>) {
+    let changes = doc.get_changes_meta(&[]);
+    let mut withdrawn: std::collections::HashSet<automerge::ChangeHash> =
+        std::collections::HashSet::new();
+    let mut refusals = Vec::new();
+    // The history lists every change after its dependencies.
+    for change in &changes {
+        if !refused.contains(&change.hash) && !change.deps.iter().any(|dep| withdrawn.contains(dep))
+        {
+            continue;
+        }
+        withdrawn.insert(change.hash);
+        let claimed = collab_types::ChangeClaim::of_change(
+            change.hash.0,
+            change.message.as_deref(),
+            Vec::new(),
+        );
+        if let Ok(claim) = claimed {
+            for (action, item) in claim.action.named() {
+                let refusal = RecordRefusal {
+                    action,
+                    item,
+                    reason: reason.to_owned(),
+                };
+                if !refusals.contains(&refusal) {
+                    refusals.push(refusal);
+                }
+            }
+        }
+    }
+    let depended: std::collections::HashSet<automerge::ChangeHash> = changes
+        .iter()
+        .filter(|change| !withdrawn.contains(&change.hash))
+        .flat_map(|change| change.deps.iter().copied())
+        .collect();
+    let kept = changes
+        .iter()
+        .map(|change| change.hash)
+        .filter(|hash| !withdrawn.contains(hash) && !depended.contains(hash))
+        .collect();
+    (kept, refusals)
+}
+
+/// An action whose change the room refused: the record withdrew it
+/// ([`RecordStore::withdraw_refused`]), and the app that holds the record is
+/// told ([`crate::widget::AppWidget::record_refused`]) as it is of an action
+/// refused on this device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordRefusal {
+    /// The verb's key, or the edited field's path
+    /// ([`collab_types::ClaimedAction::named`]).
+    pub action: String,
+    /// The item it acted on, if any.
+    pub item: Option<String>,
+    /// Why, for a person.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordSaveStatus {
     Saved,
@@ -3784,6 +3850,105 @@ impl RecordStore {
             collab_types::DocumentMutation::Incremental(changes),
         )
         .map(|(changed, _)| changed)
+    }
+
+    /// Withdraw from the open record `id` the changes `refused` names, which
+    /// the room refused, with every local change made on top of them, and
+    /// note one [`RecordRefusal`] per action they carried, saying `reason`
+    /// (for a person), for the app to take ([`Self::take_refusals`]).
+    ///
+    /// A refused change is shared state nowhere but here, and a peer holds
+    /// back every change that depends on one it never receives: kept, it
+    /// would show as sent forever and silence everything written after it.
+    /// The document becomes what it was without them, saved whole; local
+    /// undo starts over, since its steps may name withdrawn changes. A
+    /// replication frontier past them must be [`rebased`] onto the heads
+    /// this returns. Returns `None` when nothing was withdrawn: the record
+    /// holds none of them, or they are its creation (still noted).
+    ///
+    /// [`rebased`]: crate::state::DocumentFrontier::rebase
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy, or the document
+    /// does not rebuild.
+    pub fn withdraw_refused(
+        &self,
+        id: &RecordId,
+        refused: &[automerge::ChangeHash],
+        reason: &str,
+    ) -> Result<Option<Vec<automerge::ChangeHash>>, String> {
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy.to_string())?;
+        let parked = set
+            .open
+            .get_mut(id)
+            .ok_or_else(|| RecordOpenError::MissingRecord.to_string())?;
+        let Parked {
+            doc,
+            autosave,
+            history,
+            action_state,
+            ..
+        } = parked;
+        let doc = doc
+            .as_mut()
+            .ok_or_else(|| RecordOpenError::MissingRecord.to_string())?;
+        let withdrawn = crate::invocation_scope::with_record_loan(
+            self,
+            id,
+            doc,
+            |doc| -> Result<Option<Vec<automerge::ChangeHash>>, String> {
+                if !refused
+                    .iter()
+                    .any(|hash| doc.get_change_meta_by_hash(hash).is_some())
+                {
+                    return Ok(None);
+                }
+                // What was typed so far closes as its own step first.
+                action_state.finish_external(doc, history);
+                let (kept_heads, refusals) = withdrawal(doc, refused, reason);
+                action_state.refusals.extend(refusals);
+                if kept_heads.is_empty() {
+                    // The record's own creation was refused: it stays as this
+                    // device made it, a record nobody else holds, rather than
+                    // one with no identity.
+                    return Ok(None);
+                }
+                let actor = doc.get_actor().clone();
+                let mut rebuilt = doc
+                    .fork_at(&kept_heads)
+                    .map_err(|error| error.to_string())?;
+                rebuilt.set_actor(actor);
+                history.restart(&mut rebuilt);
+                action_state.generation = action_state
+                    .generation
+                    .and_then(|value| value.checked_add(1));
+                *doc = rebuilt;
+                Ok(Some(doc.get_heads()))
+            },
+        )?;
+        if withdrawn.is_some()
+            && let Some(writer) = autosave.as_mut()
+        {
+            // What was saved holds the withdrawn changes: only a whole save
+            // replaces it.
+            writer.request_checkpoint(doc);
+        }
+        Ok(withdrawn)
+    }
+
+    /// The refusals of record `id` noted since the last call
+    /// ([`Self::withdraw_refused`]).
+    pub fn take_refusals(&self, id: &RecordId) -> Vec<RecordRefusal> {
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return Vec::new();
+        };
+        set.open
+            .get_mut(id)
+            .map(|parked| std::mem::take(&mut parked.action_state.refusals))
+            .unwrap_or_default()
     }
 
     /// Changes to the open record `id` that `frontier` has not covered, for a
@@ -5281,5 +5446,75 @@ mod portable_tests {
         assert!(cache.pending_writes().is_empty());
         drop(reservation);
         assert!(store.reserve_record(&checkout).is_ok());
+    }
+
+    /// A change the room refused leaves the record with every change built
+    /// on it, each named for the app as the action it was; what came before
+    /// stays.
+    #[test]
+    fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
+        use collab_types::CommitNamed as _;
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_tab(77), RecordKind::new("tab"));
+        store.create_record(&checkout).unwrap();
+        let commit = |field: &str, value: &str| {
+            store
+                .with(&checkout.id, |doc| {
+                    doc.put(automerge::ROOT, field, value).unwrap();
+                    doc.commit_edit("test.note", field).unwrap()
+                })
+                .unwrap()
+        };
+        commit("title", "kept");
+        let refused = commit("body", "refused");
+        commit("footer", "built on it");
+        let heads = store
+            .withdraw_refused(&checkout.id, &[refused], "This room doesn't allow that.")
+            .unwrap()
+            .expect("something was withdrawn");
+        assert_eq!(
+            store.with(&checkout.id, AutoCommit::get_heads).unwrap(),
+            heads
+        );
+        assert_eq!(
+            store
+                .read(&checkout.id, |doc| str_at(doc, &ROOT, "title"))
+                .flatten()
+                .as_deref(),
+            Some("kept")
+        );
+        assert_eq!(
+            store
+                .read(&checkout.id, |doc| str_at(doc, &ROOT, "body"))
+                .flatten(),
+            None
+        );
+        assert_eq!(
+            store
+                .read(&checkout.id, |doc| str_at(doc, &ROOT, "footer"))
+                .flatten(),
+            None
+        );
+        let refusals = store.take_refusals(&checkout.id);
+        assert_eq!(
+            refusals
+                .iter()
+                .map(|refusal| refusal.action.as_str())
+                .collect::<Vec<_>>(),
+            ["body", "footer"]
+        );
+        assert!(
+            refusals
+                .iter()
+                .all(|refusal| refusal.reason == "This room doesn't allow that.")
+        );
+        assert!(store.take_refusals(&checkout.id).is_empty(), "told once");
+        assert_eq!(
+            store
+                .withdraw_refused(&checkout.id, &[refused], "again")
+                .unwrap(),
+            None,
+            "a change the record no longer holds withdraws nothing"
+        );
     }
 }

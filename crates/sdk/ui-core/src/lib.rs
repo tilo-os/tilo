@@ -367,7 +367,9 @@ pub use profiling::{
 pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
-pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use record::{
+    RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
+};
 pub use remote_actions::{
     CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
 };

@@ -260,6 +260,16 @@ impl UndoLog {
         self.open_next();
     }
 
+    /// Begin again over `doc`, a document whose history lost changes (the
+    /// room refused them): no step names a change it no longer holds. The
+    /// revision still moves forward, so a host sees the history changed.
+    pub fn restart(&mut self, doc: &mut AutoCommit) {
+        let revision = self.revision;
+        *self = Self::new(doc);
+        self.revision = revision;
+        self.bump();
+    }
+
     /// Who a change is by, as far as this window knows: the host's word for
     /// this session's steps, else the invoker its entry records.
     fn author_of<'v>(&'v self, version: &'v Version) -> Option<&'v str> {
