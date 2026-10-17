@@ -71,6 +71,8 @@ tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# The host's reading of a part's id, checked against the app's.
+neighbour-wire = { path = "../../crates/collab/neighbour-wire" }
 
 [lints]
 workspace = true
