@@ -87,6 +87,7 @@ pub mod settings_app;
 mod settings_write_tests;
 pub mod sidebar;
 pub mod speaker_setup;
+pub(crate) mod watch;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;

@@ -3,6 +3,7 @@
 //! which the area's effects drive whether or not its pane is open; the pane
 //! only shows it.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,6 +34,14 @@ pub trait PaneModel: 'static {
     fn next_wake(&self) -> Option<ui::time::Instant> {
         None
     }
+
+    /// Start following what the device reports, for a pane that shows the
+    /// model: the watches, monitor or thread that tell it of changes run
+    /// while a pane holds what this answers. Panes showing the model share
+    /// one, so recomposing a pane never restarts them.
+    fn follow(&mut self) -> Option<Rc<dyn Any>> {
+        None
+    }
 }
 
 /// A shared model, held by its area and shown by its pane.
@@ -50,12 +59,20 @@ pub struct ModelPane {
     catalog_revision: u64,
     composition_paint_dirty: bool,
     drawn_rect: Rect,
+    /// What keeps the model following the device while this pane shows it.
+    _following: Option<Rc<dyn Any>>,
 }
 
 impl ModelPane {
     pub fn new<M: PaneModel>(model: Shared<M>) -> Self {
+        Self::of(model)
+    }
+
+    fn of(model: Rc<RefCell<dyn PaneModel>>) -> Self {
+        let following = model.borrow_mut().follow();
         Self {
             model,
+            _following: following,
             composed: ui::widget::Composed::default(),
             composition_dirty: true,
             catalog_revision: ui::i18n::I18nManager::revision(),

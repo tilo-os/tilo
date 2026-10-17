@@ -113,7 +113,8 @@ zeroize.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
-tilo-files = { path = "../../crates/platform/tilo-files" }
+# The change-only directory watch the panes follow host snapshots with.
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true

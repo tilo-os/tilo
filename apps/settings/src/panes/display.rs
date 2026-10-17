@@ -18,6 +18,7 @@ pub(crate) mod shared_displays;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_clock::unix_now_ms;
 use ui::time::{Duration, Instant, SystemTime};
 
@@ -596,6 +597,12 @@ fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutpu
 /// External monitors among `outputs` whose brightness the system can set,
 /// keyed by output key, with their current level.
 fn read_output_brightness(outputs: &[DisplayOutput]) -> BTreeMap<String, f32> {
+    if !outputs
+        .iter()
+        .any(|output| output.connected && !output.builtin)
+    {
+        return BTreeMap::new();
+    }
     output_brightness_from(outputs, &os_actions::BrightnessService::global().levels())
 }
 
@@ -740,6 +747,10 @@ impl DisplayArea {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: whose displays, what the hardware offers, what awaits an answer, whether it changed"
+)]
 pub struct DisplayModel {
     cx: PaneCx,
     /// Whether the outputs, arrangement and transactions are this device's.
@@ -771,6 +782,15 @@ pub struct DisplayModel {
     >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
+    /// While a pane shows the displays: the watch on the compositor's
+    /// snapshots, which says when to read them again.
+    following: std::rc::Weak<crate::watch::Watched>,
+    /// A display change awaits the compositor or the person; its countdown
+    /// is looked at each second.
+    settling: bool,
+    /// The brightness service finished the monitor scan this model asked
+    /// for, so monitors that speak DDC/CI can gain their sliders.
+    levels_landed: Arc<AtomicBool>,
     hardware_probe: Option<crate::channel::Receiver<HardwareProbe>>,
     /// Why the panel brightness could not be read; the slider is then not
     /// offered at a made-up level.
@@ -916,6 +936,13 @@ impl DisplayModel {
         let outputs = read_outputs();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
+        let levels_landed = Arc::new(AtomicBool::new(false));
+        let landed = Arc::clone(&levels_landed);
+        let wake = ui::WakeHandle::new();
+        os_actions::BrightnessService::global().when_idle(Box::new(move || {
+            landed.store(true, Ordering::Release);
+            wake.wake();
+        }));
         Self {
             shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
@@ -940,6 +967,9 @@ impl DisplayModel {
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            following: std::rc::Weak::new(),
+            settling: false,
+            levels_landed,
             hardware_probe: Some(probe_rx),
             brightness_error,
             brightness_tx: Some(brightness_tx),
@@ -1020,6 +1050,9 @@ impl DisplayModel {
             host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
+            following: std::rc::Weak::new(),
+            settling: false,
+            levels_landed: Arc::new(AtomicBool::new(false)),
             hardware_probe: None,
             brightness_error: None,
             brightness_tx: None,
@@ -1096,15 +1129,8 @@ impl DisplayModel {
     }
 
     fn accept_host_reply(&mut self, reply: settings_store::display_control::DisplayReply) {
-        let pending = reply.transaction.as_ref().is_some_and(|transaction| {
-            matches!(
-                transaction.state,
-                DisplayTransactionState::Requested
-                    | DisplayTransactionState::AwaitingConfirmation
-                    | DisplayTransactionState::ConfirmRequested
-                    | DisplayTransactionState::RevertRequested
-            )
-        });
+        let pending = reply.transaction.as_ref().is_some_and(awaits_answer);
+        self.settling = pending;
         let same = self
             .host_state
             .as_ref()
@@ -1792,30 +1818,60 @@ impl DisplayModel {
         }
     }
 
-    /// Re-read the compositor's output snapshot when it moved, at most once
-    /// a second, and take in a settled display transaction.
+    /// Take in the compositor's answer to an inspection as soon as it
+    /// lands: its thread wakes the window.
+    fn take_host_reply(&mut self) {
+        let Some(receiver) = &self.host_probe else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(reply)) => {
+                self.host_probe = None;
+                self.accept_host_reply(reply);
+            }
+            Ok(Err(error)) => {
+                self.host_probe = None;
+                self.notice = Some(error);
+                self.changed = true;
+            }
+            Err(crate::channel::TryRecvError::Disconnected) => {
+                self.host_probe = None;
+            }
+            Err(crate::channel::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Whether to read the compositor's snapshots again. A shown pane
+    /// follows them: they are read when their watch says one (or the
+    /// settings file, which holds a transaction) changed, when the monitor
+    /// scan landed, and each second only while a change awaits an answer.
+    /// Otherwise, or when they cannot all be watched, at most once a second.
+    fn should_look(&self) -> bool {
+        let due = self.last_snapshot_check.elapsed() >= Duration::from_secs(1);
+        let Some(watched) = self
+            .following
+            .upgrade()
+            .filter(|watched| watched.is_complete())
+        else {
+            return due;
+        };
+        // Take both signals, so one change is read once.
+        let changed = watched.take();
+        let landed = self.levels_landed.swap(false, Ordering::AcqRel);
+        changed || landed || (self.settling && due)
+    }
+
+    /// Re-read the compositor's output snapshot when it moved
+    /// ([`Self::should_look`]), and take in a settled display transaction.
     fn poll_device(&mut self) {
-        if !self.of_device || self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
+        if !self.of_device {
+            return;
+        }
+        self.take_host_reply();
+        if !self.should_look() {
             return;
         }
         self.last_snapshot_check = ui::time::now();
-        if let Some(receiver) = &self.host_probe {
-            match receiver.try_recv() {
-                Ok(Ok(reply)) => {
-                    self.host_probe = None;
-                    self.accept_host_reply(reply);
-                }
-                Ok(Err(error)) => {
-                    self.host_probe = None;
-                    self.notice = Some(error);
-                    self.changed = true;
-                }
-                Err(crate::channel::TryRecvError::Disconnected) => {
-                    self.host_probe = None;
-                }
-                Err(crate::channel::TryRecvError::Empty) => {}
-            }
-        }
         if self.host_probe.is_none()
             && self
                 .host_poll_deadline
@@ -1824,15 +1880,7 @@ impl DisplayModel {
                 .host_state
                 .as_ref()
                 .and_then(|state| state.transaction.as_ref())
-                .is_some_and(|transaction| {
-                    matches!(
-                        transaction.state,
-                        DisplayTransactionState::Requested
-                            | DisplayTransactionState::AwaitingConfirmation
-                            | DisplayTransactionState::ConfirmRequested
-                            | DisplayTransactionState::RevertRequested
-                    )
-                })
+                .is_some_and(awaits_answer)
         {
             let (sender, receiver) = crate::channel::sync_channel(1);
             self.host_probe = Some(receiver);
@@ -1878,7 +1926,13 @@ impl DisplayModel {
             self.output_brightness = controllable;
             self.changed = true;
         }
-        if let Some(transaction) = self.transaction() {
+        let transaction = self.transaction();
+        self.settling = transaction.as_ref().is_some_and(awaits_answer)
+            && (self.host_state.is_none()
+                || self
+                    .host_poll_deadline
+                    .is_some_and(|deadline| ui::time::now() < deadline));
+        if let Some(transaction) = transaction {
             self.settle(&transaction);
         }
     }
@@ -2635,9 +2689,43 @@ impl PaneModel for DisplayModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        self.of_device
+        let followed = self
+            .following
+            .upgrade()
+            .is_some_and(|watched| watched.is_complete());
+        (self.of_device && (!followed || self.settling))
             .then(|| self.last_snapshot_check + Duration::from_secs(1))
     }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        if !self.of_device {
+            return None;
+        }
+        let files: Vec<std::path::PathBuf> = [
+            settings_store::hardware::display_snapshot_path(),
+            settings_store::device_displays::path(),
+            settings_store::person_displays::path(),
+            // The pending transaction is a section of the settings file.
+            settings_store::settings_path(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let watched =
+            crate::watch::shared(&mut self.following, || crate::watch::Watched::files(&files));
+        Some(watched)
+    }
+}
+
+/// Whether `transaction` still waits for the compositor or the person.
+fn awaits_answer(transaction: &DisplayTransaction) -> bool {
+    matches!(
+        transaction.state,
+        DisplayTransactionState::Requested
+            | DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::ConfirmRequested
+            | DisplayTransactionState::RevertRequested
+    )
 }
 
 /// The connected output `display`.
@@ -3312,6 +3400,67 @@ mod tests {
                 refresh_mhz: 60_000,
             }],
         )
+    }
+
+    /// A shown pane reads the compositor's display snapshot when its watch
+    /// says it changed, never on a timer; a pane whose snapshots cannot all
+    /// be watched, or whose change awaits confirmation, looks each second.
+    #[test]
+    fn followed_displays_are_read_on_a_change_not_on_a_timer() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let snapshot = settings_store::hardware::display_snapshot_path().unwrap();
+        std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        let long_ago = || ui::time::now().checked_sub(Duration::from_secs(5)).unwrap();
+        let mut pane = model(vec![panel()]);
+        pane.of_device = true;
+        let watched = Rc::new(crate::watch::Watched::by_hand());
+        pane.following = Rc::downgrade(&watched);
+
+        std::fs::write(&snapshot, "{}").unwrap();
+        pane.last_snapshot_check = long_ago();
+        assert!(
+            pane.poll(),
+            "the first look reads the snapshot that appeared"
+        );
+        assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
+
+        let read = pane.snapshot_stamp;
+        assert!(read.is_some());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&snapshot, "{\"moved\":1}").unwrap();
+        pane.last_snapshot_check = long_ago();
+        assert!(!pane.poll(), "nothing is read without the watch's word");
+        assert_eq!(pane.snapshot_stamp, read);
+
+        watched.touch();
+        assert!(pane.poll(), "the change is read once the watch reports it");
+        assert_ne!(pane.snapshot_stamp, read);
+        assert!(!pane.poll(), "and only once");
+
+        pane.settling = true;
+        assert!(
+            pane.next_wake().is_some(),
+            "a change awaiting confirmation counts down each second"
+        );
+        pane.settling = false;
+
+        let unwatchable = Rc::new(crate::watch::Watched::files(&[runtime
+            .path()
+            .join("absent")
+            .join("display-state.json")]));
+        pane.following = Rc::downgrade(&unwatchable);
+        assert!(
+            pane.next_wake().is_some(),
+            "snapshots that cannot be watched are read on the old timer"
+        );
+        drop(unwatchable);
+        assert!(
+            pane.next_wake().is_some(),
+            "a pane nobody shows keeps its timer for reads an effect asks for"
+        );
     }
 
     /// A brightness that could not be read is shown as that failure, not as
