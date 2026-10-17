@@ -690,6 +690,20 @@ impl AppActionBroker {
         self.state.has_finished_shortcut_runs()
     }
 
+    /// Agent runs of workspace tasks that ended since the last call, oldest
+    /// first, for the history recorder to record against the documents they
+    /// changed.
+    #[must_use]
+    pub fn take_ended_task_runs(&self) -> Vec<crate::task_runs::EndedTaskRun> {
+        self.state.take_ended_task_runs()
+    }
+
+    /// Whether an ended task run is waiting to be taken, without taking it.
+    #[must_use]
+    pub fn has_ended_task_runs(&self) -> bool {
+        self.state.has_ended_task_runs()
+    }
+
     /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the

@@ -909,3 +909,37 @@ fn directory_revision_describes_search_sources_without_making_them() {
     );
     assert_eq!(made.get(), 0, "the witness never makes a provider");
 }
+#[test]
+fn directory_names_a_resource_whole_wherever_a_listing_would_page_it() {
+    let (mut app, _) = declared_directory(137);
+    let named = |app: &mut App, name: &str| {
+        let mut query = directory_query("", "", 8, 65536, 1);
+        query.resource_name = name.into();
+        app.action_directory_page(query)
+    };
+    let ids = |page: &runtime_collab::ActionDirectoryPage| {
+        page.rows
+            .iter()
+            .map(|row| row.resource.clone())
+            .collect::<Vec<_>>()
+    };
+    // Unpublished, as between a write and the next publication, and then
+    // from the published snapshot: the same answer either way.
+    for published in [false, true] {
+        if published {
+            publish_declared_directory(&mut app);
+        }
+        let listed = app.action_directory_page(directory_query("", "", 128, 65536, 512));
+        assert!(
+            !ids(&listed).contains(&"declared:136".to_owned()),
+            "the listing's first page ends before it"
+        );
+        let page = named(&mut app, "declared 136");
+        assert_eq!(ids(&page), ["declared:136"], "published: {published}");
+        assert!(page.exhausted && page.next_cursor.is_empty());
+        assert!(page.rows[0].action.is_none());
+        let by_kind = named(&mut app, "declared");
+        assert_eq!(by_kind.rows.len(), 8, "a kind several share names each");
+        assert!(named(&mut app, "undeclared").rows.is_empty());
+    }
+}

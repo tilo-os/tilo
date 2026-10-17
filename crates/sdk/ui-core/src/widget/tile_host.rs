@@ -474,6 +474,7 @@ impl TileHost {
                 if let Some(tab_presents) = self.window_history {
                     history.remove_fallback_bar();
                     history.set_open_button(!tab_presents);
+                    history.set_window_presents(tab_presents);
                 }
                 self.history = Some(Box::new(history));
                 self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
@@ -499,6 +500,7 @@ impl TileHost {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(!tab_presents);
+            history.set_window_presents(tab_presents);
             self.structure_dirty = true;
         }
         if let Some(app) = self.app_history_mut() {
@@ -5512,13 +5514,31 @@ mod tests {
         driver.relayout();
         assert!(driver.targets().contains_key("activity_timeline"));
         assert_eq!(tab_history_control(&driver, 7), Some(true));
-        driver
-            .perform_semantic_named(
-                "tabs",
-                Some("tab-history:7"),
-                &crate::a11y::Action::Activate,
-            )
-            .unwrap();
+        assert!(
+            !driver.targets().contains_key("history-open"),
+            "open, History draws no toggle of its own: the tab's closes it"
+        );
+        let press_tab = |driver: &mut crate::headless::FrameHarness| {
+            driver
+                .perform_semantic_named(
+                    "tabs",
+                    Some("tab-history:7"),
+                    &crate::a11y::Action::Activate,
+                )
+                .unwrap();
+            driver.relayout();
+        };
+        press_tab(&mut driver);
+        assert!(!driver.targets().contains_key("activity_timeline"));
+        assert_eq!(tab_history_control(&driver, 7), Some(false));
+
+        // Escape leaves History as well.
+        press_tab(&mut driver);
+        assert!(driver.targets().contains_key("activity_timeline"));
+        driver.click_named("activity_timeline").unwrap();
+        driver.send(&crate::synthetic_input::named_key(
+            winit::keyboard::NamedKey::Escape,
+        ));
         driver.relayout();
         assert!(!driver.targets().contains_key("activity_timeline"));
         assert_eq!(tab_history_control(&driver, 7), Some(false));

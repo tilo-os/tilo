@@ -1,5 +1,6 @@
 counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
+tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
 
 standalone-history-title = Verlauf
@@ -94,7 +95,10 @@ history-mode-live-updates = Der aktuelle Inhalt wurde geändert
 history-mode-page = Seite
 history-mode-previous-page = Vorherige Seite
 history-mode-next-page = Nächste Seite
-history-mode-pending = Ausstehend #{ $id } von { $owner }: { $action } mit Argumenten { $arguments }
+history-mode-pending = „{ $action }“ wartet, bis du den Verlauf verlässt
+history-mode-pending-unnamed = Eine Aktion wartet, bis du den Verlauf verlässt
+history-mode-pending-held = „{ $action }“ wurde angehalten, während der Verlauf offen war
+history-mode-pending-held-unnamed = Eine Aktion wurde angehalten, während der Verlauf offen war
 history-mode-continue = Fortfahren
 history-mode-confirm = Bestätigen
 history-mode-cancel = Abbrechen

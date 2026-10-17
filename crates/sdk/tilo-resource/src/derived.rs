@@ -126,6 +126,16 @@ fn bound_declaration(
     decl.field = verb.field;
     decl.description.clone_from(&verb.description);
     decl.destructive = verb.destructive;
+    // Bound or not, the verb is undone the same way, and housekeeping
+    // stays housekeeping.
+    decl.tags.extend(
+        verb.tags
+            .iter()
+            .filter(|tag| {
+                *tag == tilo_actions::COMPENSATED_UNDO_TAG || *tag == tilo_actions::HOUSEKEEPING_TAG
+            })
+            .cloned(),
+    );
     Some(decl)
 }
 

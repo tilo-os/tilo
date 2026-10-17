@@ -181,6 +181,7 @@ fn hardware() -> DisplayHardwareSnapshot {
             hdr_unavailable_reason: None,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profile_labels: BTreeMap::new(),
         }],
         layout: vec![LiveOutputPlacement {

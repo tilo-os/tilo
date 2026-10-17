@@ -51,6 +51,9 @@ use super::client_scanout::{
 };
 use super::cursor_plane::{PlaneMoveWorker, PlaneMover};
 use super::kms_flip::{FlipTarget, KmsFlip};
+use super::output_link::{
+    AtomicLink, Completion, LinkFailure, LinkStep, LinkTarget, OutputLink, Power,
+};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
@@ -916,6 +919,36 @@ pub struct ConnectorSnapshot {
 }
 
 impl ConnectorSnapshot {
+    /// A connected connector without a card, for runtime tests: one
+    /// (all-zero) mode, and `monitor` as its EDID.
+    #[cfg(test)]
+    pub(super) fn fake(
+        connector_id: u32,
+        name: &str,
+        monitor: Option<settings_store::hardware::MonitorIdentity>,
+    ) -> Self {
+        // SAFETY: `Mode` is a transparent wrapper of the kernel's
+        // `drm_mode_modeinfo`, plain integers and a byte array, for which
+        // all-zero is a valid (if unusable) value.
+        let mode: Mode = unsafe { std::mem::zeroed() };
+        let handle = drm_re::control::RawResourceHandle::new(connector_id)
+            .map(connector::Handle::from)
+            .expect("a non-zero connector id");
+        Self {
+            connector_id,
+            handle,
+            mode,
+            modes: vec![mode],
+            connector_name: name.to_owned(),
+            config_key: name.to_owned(),
+            enabled: true,
+            physical_mm: None,
+            monitor,
+            mode_intent: None,
+            arranged: false,
+        }
+    }
+
     /// Every mode the connector advertises, in the kernel's order.
     pub fn advertised_modes(&self) -> Vec<settings_store::hardware::OutputMode> {
         self.modes.iter().map(output_mode).collect()
@@ -1114,64 +1147,33 @@ impl CardHandle {
         }
     }
 
-    /// Ask the hardware what is connected now; `force_probe` is on since a hotplug event is precisely when cached connector state is stale.
-    ///
-    /// A forced probe of every connector, plus an EDID read each, is slow
-    /// (hundreds of milliseconds per DP-MST sink) and runs on the input
-    /// thread. Only startup and udev hotplug call this; everything else
-    /// reads the runtime's copy of the last result.
+    /// Ask the hardware what is connected now (see [`probe_connected`]).
+    /// Only startup calls this on the loop thread; a hotplug probes through a
+    /// [`ConnectorProber`] on a worker thread.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
-        let res = match self.card.resource_handles() {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("DRM scanout: resource_handles during re-enumeration: {e}");
-                return Vec::new();
-            }
-        };
-        let mut out = Vec::new();
-        for &ch in res.connectors() {
-            let info = match self.card.get_connector(ch, true) {
-                Ok(i) => i,
-                Err(e) => {
-                    tracing::warn!(?ch, "DRM scanout: get_connector during re-enumeration: {e}");
-                    continue;
-                }
-            };
-            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let mode = pick_configured_mode(info.modes(), None);
-            if !connector_is_scanout_eligible(info.state(), info.interface(), mode.is_some()) {
-                continue;
-            }
-            let Some(mode) = mode else {
-                continue;
-            };
-            let monitor = self.read_monitor_identity(&connector_name);
-            out.push(ConnectorSnapshot {
-                connector_id: u32::from(ch),
-                handle: ch,
-                mode,
-                modes: info.modes().to_vec(),
-                config_key: connector_name.clone(),
-                connector_name,
-                enabled: true,
-                physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
-                monitor,
-                mode_intent: None,
-                arranged: false,
-            });
-        }
-        out
+        probe_connected(&self.card, &self.card_path)
     }
 
-    /// The connector's EDID identity, read from its sysfs node. The kernel
-    /// refreshes that blob on every probe, so it describes the monitor on
-    /// the port now rather than the one first seen there.
-    fn read_monitor_identity(
-        &self,
-        connector_name: &str,
-    ) -> Option<settings_store::hardware::MonitorIdentity> {
-        let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
-        crate::wayland::edid::parse_monitor_identity(&edid)
+    /// A duplicate of the card fd, to watch its event stream for readiness.
+    ///
+    /// # Errors
+    ///
+    /// The fd could not be duplicated.
+    pub fn event_fd(&self) -> std::io::Result<OwnedFd> {
+        self.card.0.try_clone()
+    }
+
+    /// A handle a worker thread can force-probe this card's connectors with.
+    ///
+    /// # Errors
+    ///
+    /// The card fd could not be duplicated.
+    pub fn prober(&self) -> Result<ConnectorProber, String> {
+        Ok(ConnectorProber {
+            card: self.card.try_clone()?,
+            device_id: self.device_id,
+            card_path: self.card_path.clone(),
+        })
     }
 
     /// The sink's HDR description, when its EDID advertises the PQ transfer
@@ -1189,12 +1191,7 @@ impl CardHandle {
 
     /// `/sys/class/drm/<cardN>-<connector>`.
     pub fn connector_sysfs(&self, connector_name: &str) -> std::path::PathBuf {
-        let card_name = self
-            .card_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("card0");
-        Path::new("/sys/class/drm").join(format!("{card_name}-{connector_name}"))
+        connector_sysfs(&self.card_path, connector_name)
     }
 
     /// Apply the key selected for the complete multi-card topology.  This
@@ -1297,6 +1294,8 @@ impl CardHandle {
                 hdr_unavailable_reason,
                 sink_vrr,
                 vrr_unavailable_reason,
+                // Set by the runtime, which knows which outputs failed to light.
+                unavailable_reason: None,
                 color_profile_labels: profiles.clone(),
             });
         }
@@ -1350,6 +1349,97 @@ impl CardHandle {
             scanout,
         })
     }
+}
+
+/// One card's connectors, probed off the compositor's loop thread: a dup of
+/// the card fd (the same open file description, so the forced probe runs as
+/// DRM master) and the sysfs path EDIDs are read from.
+pub struct ConnectorProber {
+    card: Card,
+    device_id: u64,
+    card_path: PathBuf,
+}
+
+impl ConnectorProber {
+    /// The card's `dev_t`, as [`CardHandle::device_id`].
+    pub fn device_id(&self) -> u64 {
+        self.device_id
+    }
+
+    /// Force-probe what is connected now ([`probe_connected`]).
+    pub fn connected(&self) -> Vec<ConnectorSnapshot> {
+        probe_connected(&self.card, &self.card_path)
+    }
+}
+
+/// `/sys/class/drm/<cardN>-<connector>`.
+fn connector_sysfs(card_path: &Path, connector_name: &str) -> PathBuf {
+    let card_name = card_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("card0");
+    Path::new("/sys/class/drm").join(format!("{card_name}-{connector_name}"))
+}
+
+/// The connector's EDID identity, read from its sysfs node. The kernel
+/// refreshes that blob on every probe, so it describes the monitor on the
+/// port now rather than the one first seen there.
+fn read_monitor_identity(
+    card_path: &Path,
+    connector_name: &str,
+) -> Option<settings_store::hardware::MonitorIdentity> {
+    let edid = std::fs::read(connector_sysfs(card_path, connector_name).join("edid")).ok()?;
+    crate::wayland::edid::parse_monitor_identity(&edid)
+}
+
+/// Ask the hardware what is connected now; `force_probe` is on since a
+/// hotplug event is precisely when cached connector state is stale.
+///
+/// A forced probe of every connector, plus an EDID read each, is slow:
+/// hundreds of milliseconds per DP-MST sink, and a DP sink whose AUX channel
+/// misbehaves holds it for longer. It therefore never runs on the
+/// compositor's loop thread after startup.
+fn probe_connected(card: &Card, card_path: &Path) -> Vec<ConnectorSnapshot> {
+    let res = match card.resource_handles() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("DRM scanout: resource_handles during re-enumeration: {e}");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for &ch in res.connectors() {
+        let info = match card.get_connector(ch, true) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!(?ch, "DRM scanout: get_connector during re-enumeration: {e}");
+                continue;
+            }
+        };
+        let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+        let mode = pick_configured_mode(info.modes(), None);
+        if !connector_is_scanout_eligible(info.state(), info.interface(), mode.is_some()) {
+            continue;
+        }
+        let Some(mode) = mode else {
+            continue;
+        };
+        let monitor = read_monitor_identity(card_path, &connector_name);
+        out.push(ConnectorSnapshot {
+            connector_id: u32::from(ch),
+            handle: ch,
+            mode,
+            modes: info.modes().to_vec(),
+            config_key: connector_name.clone(),
+            connector_name,
+            enabled: true,
+            physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
+            monitor,
+            mode_intent: None,
+            arranged: false,
+        });
+    }
+    out
 }
 
 /// Discover ICC profiles from the locations used by colord and the XDG base
@@ -1833,6 +1923,14 @@ pub struct DrmScanout {
     client_plane: ClientPlane,
     /// How page flips reach KMS: every flip goes through it.
     flip: KmsFlip,
+    /// This output's power, as nonblocking atomic modesets
+    /// ([`super::output_link`]). `None` where modesets stay a blocking
+    /// legacy `set_crtc`: flips are legacy, so nothing commits atomically.
+    link: Option<(OutputLink, LinkTarget)>,
+    /// The cursor plane holds this output's cursor buffer. An atomic output
+    /// binds it once proven up: the legacy cursor ioctl commits, and on a
+    /// CRTC still modesetting that commit waits for the modeset.
+    cursor_bound: bool,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -1965,20 +2063,9 @@ impl DrmScanout {
             .add_framebuffer(&buf1, 24, 32)
             .map_err(|e| format!("add_framebuffer[1]: {e}"))?;
 
-        // Modeset onto the first buffer.
-        card.set_crtc(crtc, Some(fb0), (0, 0), &[connector], Some(mode))
-            .map_err(|e| format!("set_crtc (modeset): {e}"))?;
-
-        // Keep one stable, machine-readable line in the persistent flight
-        // record. Structured tracing's pretty formatter is human-friendly but
-        // not a durable interchange format, and a physical performance gate
-        // must distinguish a real 144 Hz KMS mode from TILO_REFRESH_HZ merely
-        // pacing a 60 Hz panel at 144 callbacks per second.
-        eprintln!(
-            "tilo compositor: DRM scanout: modeset complete connector={} width={width} height={height} refresh_mhz={}",
-            u32::from(connector),
-            mode_refresh_mhz(&mode),
-        );
+        let use_pageflip = connector_uses_pageflip(&card, connector);
+        let flip = probe_flips(&card, connector, crtc, (width, height), use_pageflip);
+        let link = Self::first_modeset(&card, connector, mode, fb0, &flip)?;
 
         let adaptive_sync = AdaptiveSync::probe(&card, crtc, connector);
         let hdr_signal = HdrSignal::probe(&card, connector);
@@ -1988,16 +2075,20 @@ impl DrmScanout {
             tilo_accessibility_settings::AccessibilitySettings::load().effective_cursor_size();
         let cursor_dim = Self::cursor_plane_dim(&card);
         let (cursor_buffer, hw_cursor_active) =
-            match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim) {
+            match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim, link.is_none()) {
                 Ok(buf) => {
-                    // Centre it so a fresh boot shows the pointer before input arrives.
+                    // Centre it so a fresh boot shows the pointer before input
+                    // arrives. An atomic output's cursor is bound, and moved by
+                    // input, once the output is up.
                     let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
                     let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
-                    #[allow(
-                        deprecated,
-                        reason = "Legacy KMS centers the new cursor before input arrives."
-                    )]
-                    let _ = card.move_cursor(crtc, (center_x, center_y));
+                    if link.is_none() {
+                        #[allow(
+                            deprecated,
+                            reason = "Legacy KMS centers the new cursor before input arrives."
+                        )]
+                        let _ = card.move_cursor(crtc, (center_x, center_y));
+                    }
                     tracing::info!("DRM scanout: hardware cursor plane active");
                     (Some(buf), true)
                 }
@@ -2009,8 +2100,7 @@ impl DrmScanout {
                 }
             };
 
-        let use_pageflip = connector_uses_pageflip(&card, connector);
-        let flip = probe_flips(&card, connector, crtc, (width, height), use_pageflip);
+        let cursor_bound = link.is_none() && hw_cursor_active;
         Ok(Self {
             card,
             pci_bus_id,
@@ -2053,7 +2143,71 @@ impl DrmScanout {
             hdr_encoder: None,
             client_plane: ClientPlane::with_plane(flip.plane().cloned()),
             flip,
+            link,
+            cursor_bound,
         })
+    }
+
+    /// Light `connector` on `flip`'s CRTC at `mode`, showing `fb0`. Where
+    /// flips are atomic this only asks KMS, in a test commit, whether it
+    /// would; the presenter commits it, nonblocking, once it owns the output
+    /// ([`super::output_link`]). Elsewhere it is the legacy blocking
+    /// `set_crtc`.
+    fn first_modeset(
+        card: &Card,
+        connector: connector::Handle,
+        mode: Mode,
+        fb0: framebuffer::Handle,
+        flip: &KmsFlip,
+    ) -> Result<Option<(OutputLink, LinkTarget)>, String> {
+        let crtc = flip.target().crtc;
+        let (width, height) = flip.target().size;
+        let target = match flip.plane() {
+            Some(plane) => {
+                match LinkTarget::probe(card, connector, flip.target(), mode, plane.clone()) {
+                    Ok(target) => Some(target),
+                    Err(reason) => {
+                        eprintln!(
+                            "tilo compositor: DRM scanout: kms_modeset_api=legacy reason={reason:?} connector={}",
+                            u32::from(connector)
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let link = if let Some(target) = target {
+            // The loop thread only asks whether KMS would take the modeset;
+            // the presenter commits it, nonblocking, once it owns the output.
+            if let Err(error) = target.test_on(card, fb0) {
+                target.destroy(card);
+                return Err(format!("atomic modeset refused in a test commit: {error}"));
+            }
+            eprintln!(
+                "tilo compositor: DRM scanout: modeset queued connector={} width={width} height={height} refresh_mhz={} kms_modeset_api=atomic",
+                u32::from(connector),
+                mode_refresh_mhz(&mode),
+            );
+            Some((OutputLink::new(), target))
+        } else {
+            // Modeset onto the first buffer.
+            card.set_crtc(crtc, Some(fb0), (0, 0), &[connector], Some(mode))
+                .map_err(|e| format!("set_crtc (modeset): {e}"))?;
+            // Keep one stable, machine-readable line in the persistent flight
+            // record. Structured tracing's pretty formatter is human-friendly
+            // but not a durable interchange format, and a physical performance
+            // gate must distinguish a real 144 Hz KMS mode from
+            // TILO_REFRESH_HZ merely pacing a 60 Hz panel at 144 callbacks per
+            // second.
+            eprintln!(
+                "tilo compositor: DRM scanout: modeset complete connector={} width={width} height={height} refresh_mhz={}",
+                u32::from(connector),
+                mode_refresh_mhz(&mode),
+            );
+            None
+        };
+        Ok(link)
     }
 
     /// The cursor plane size the driver prefers, which is also the largest
@@ -2078,6 +2232,7 @@ impl DrmScanout {
         crtc: crtc::Handle,
         cursor_size: u32,
         cursor_dim: u32,
+        bind: bool,
     ) -> Result<DumbBuffer, String> {
         let mut cbuf = card
             .create_dumb_buffer((cursor_dim, cursor_dim), DrmFourcc::Argb8888, 32)
@@ -2089,6 +2244,9 @@ impl DrmScanout {
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
             let arrow = cursor::bitmap(CursorShape::Default, cursor_size.min(cursor_dim));
             paint_cursor_argb(map.as_mut(), pitch, Some(&arrow));
+        }
+        if !bind {
+            return Ok(cbuf);
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
         #[allow(
@@ -2431,7 +2589,9 @@ impl DrmScanout {
     /// flips: now when none is queued, otherwise just before the next one.
     pub fn set_adaptive_sync(&mut self, on: bool) {
         self.adaptive_sync.want(on);
-        if !self.flip_pending {
+        // An output not up yet writes it once it is (`on_link_up`): the
+        // write is a commit that would wait behind the modeset.
+        if !self.flip_pending && self.presentable() {
             self.apply_adaptive_sync();
         }
     }
@@ -2473,6 +2633,16 @@ impl DrmScanout {
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
         self.flip_queued_at = None;
+        if self.link.is_some() {
+            // Another DRM master may have left anything on the CRTC: one
+            // nonblocking full modeset, and what needs a CRTC that scans
+            // out (signal, adaptive sync, cursor) follows once it is up.
+            self.adaptive_sync.forget_applied();
+            self.hdr_signal.forget();
+            self.cursor_bound = false;
+            self.with_link(|link, device| link.resume(device, false));
+            return;
+        }
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -3159,23 +3329,28 @@ impl DrmScanout {
     /// Non-blocking drain of DRM events, clearing `flip_pending` on completion; fd is `O_NONBLOCK` so
     /// `EAGAIN` means no events, not failure. Single-output only — multi-output routes by crtc via [`Self::poll_flip_completions`] + [`Self::mark_flip_complete`].
     fn drain_flip_events(&mut self) {
-        if let Ok(events) = self.card.receive_events() {
-            for ev in events {
-                if let Event::PageFlip(_) = ev {
-                    self.log_flip_completion();
-                    self.flip_pending =
-                        inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
+        let events: Vec<_> = self
+            .card
+            .receive_events()
+            .map(Iterator::collect)
+            .unwrap_or_default();
+        for ev in events {
+            if let Event::PageFlip(flip) = ev {
+                if flip.crtc == self.crtc && self.complete_link_event(flip.frame) {
+                    continue;
                 }
+                self.log_flip_completion();
+                self.flip_pending = inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
             }
         }
     }
 
     /// Drain pending DRM events, returning the crtc of each flip completion. Every per-connector
     /// scanout dups the same open file description, so completions for all crtcs arrive on any one fd — must drain **once** and route via [`Self::mark_flip_complete`], or the first scanout wedges its siblings' `flip_pending` forever.
-    pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
+    pub fn poll_flip_completions(&mut self) -> Vec<(crtc::Handle, u32)> {
         self.poll_flip_events()
             .into_iter()
-            .map(|event| event.crtc)
+            .map(|event| (event.crtc, event.frame))
             .collect()
     }
 
@@ -3538,11 +3713,142 @@ impl DrmScanout {
         self.invalidate_xrgb_history();
     }
 
+    /// Run `step` on this output's link with the device it commits through,
+    /// lighting with the dumb front. `None` for a legacy output.
+    fn with_link<R>(
+        &mut self,
+        step: impl FnOnce(&mut OutputLink, &AtomicLink<'_>) -> R,
+    ) -> Option<R> {
+        let framebuffer = self.fb_at(self.front)?;
+        let (link, target) = self.link.as_mut()?;
+        let device = AtomicLink {
+            card: &self.card,
+            target,
+            framebuffer,
+        };
+        Some(step(link, &device))
+    }
+
+    /// A flip of the dumb pair is queued and its event not read yet.
+    pub fn ring_flip_pending(&self) -> bool {
+        self.flip_pending
+    }
+
+    /// This output's modesets are nonblocking atomic commits.
+    pub fn atomic_link(&self) -> bool {
+        self.link.is_some()
+    }
+
+    /// The output may present: a legacy output always, an atomic one once
+    /// its modeset completed and a vblank proved the link up.
+    pub fn presentable(&self) -> bool {
+        self.link
+            .as_ref()
+            .is_none_or(|(link, _)| link.presentable())
+    }
+
+    /// A modeset, a vblank proof or a wanted power change is still to
+    /// complete: the presenter reads the card's events and needs frames.
+    pub fn link_busy(&self) -> bool {
+        self.link.as_ref().is_some_and(|(link, _)| link.busy())
+    }
+
+    /// Why this output could not be lit, once that is known.
+    pub(super) fn link_failure(&self) -> Option<&LinkFailure> {
+        self.link.as_ref().and_then(|(link, _)| link.failure())
+    }
+
+    /// Commit what the link owes (a modeset a busy CRTC deferred, the first
+    /// one of a new output). `flip_unread`: a flip queued on this CRTC has
+    /// not had its event read.
+    pub fn service_link(&mut self, flip_unread: bool) {
+        self.with_link(|link, device| link.service(device, flip_unread));
+    }
+
+    /// Take a page-flip event for this output's CRTC. `true` when it was
+    /// the link's own (a modeset or its vblank proof), which no flip may
+    /// take.
+    pub fn complete_link_event(&mut self, frame: u32) -> bool {
+        let Some(completion) = self.with_link(|link, device| link.complete(frame, device)) else {
+            return false;
+        };
+        let Completion::Link(step) = completion else {
+            return false;
+        };
+        match step {
+            LinkStep::Up => self.on_link_up(),
+            LinkStep::Failed => {
+                let reason = self
+                    .link_failure()
+                    .map_or_else(String::new, LinkFailure::describe);
+                eprintln!(
+                    "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
+                    u32::from(self.connector)
+                );
+            }
+            LinkStep::Pending | LinkStep::Off => {}
+        }
+        true
+    }
+
+    /// The modeset completed and a vblank followed: restore what may only
+    /// be written to a CRTC that scans out, since each write is a commit
+    /// that would otherwise wait behind the modeset.
+    fn on_link_up(&mut self) {
+        // The flight record's stable mode line, as the legacy modeset writes
+        // it once `set_crtc` returns: this is when an atomic one is done.
+        eprintln!(
+            "tilo compositor: DRM scanout: modeset complete connector={} width={} height={} refresh_mhz={} kms_modeset_api=atomic",
+            u32::from(self.connector),
+            self.width,
+            self.height,
+            mode_refresh_mhz(&self.mode),
+        );
+        self.match_signal_to_dumb_front();
+        self.apply_adaptive_sync();
+        if self.hw_cursor_active
+            && !self.cursor_bound
+            && let Some(buf) = self.cursor_buffer.as_ref()
+        {
+            #[allow(
+                deprecated,
+                reason = "The legacy KMS cursor plane carries the hotspot virtual GPUs use to place the host pointer."
+            )]
+            match self
+                .card
+                .set_cursor2(self.crtc, Some(buf), self.cursor_hotspot())
+            {
+                Ok(()) => self.cursor_bound = true,
+                Err(error) => {
+                    tracing::warn!(
+                        "DRM scanout: binding the cursor plane failed ({error}); \
+                         falling back to the software cursor"
+                    );
+                    self.hw_cursor_active = false;
+                    self.invalidate_xrgb_history();
+                }
+            }
+        }
+    }
+
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
-    pub fn set_dpms(&mut self, on: bool) {
+    ///
+    /// An atomic output instead makes one nonblocking commit of its CRTC's
+    /// `ACTIVE` ([`super::output_link`]) and presents again once it is
+    /// proven up; `flip_unread` says a flip's event is still to be read.
+    /// The legacy DPMS property is not written there: on an atomic driver
+    /// it is a blocking commit of its own.
+    pub fn set_dpms(&mut self, on: bool, flip_unread: bool) {
         self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
+        let power = if on { Power::On } else { Power::Off };
+        if self
+            .with_link(|link, device| link.want(power, device, flip_unread))
+            .is_some()
+        {
+            return;
+        }
         self.set_dpms_property(on);
         if on {
             // Re-modeset the saved framebuffer + mode so the last frame is back on screen; the next `present` resumes normal blitting.
@@ -3614,6 +3920,9 @@ impl Drop for DrmScanout {
             if let Err(error) = self.card.destroy_framebuffer(fb) {
                 tracing::debug!(?fb, %error, "failed to destroy DRM framebuffer during teardown");
             }
+        }
+        if let Some((_, target)) = &self.link {
+            target.destroy(&self.card);
         }
     }
 }

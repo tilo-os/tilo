@@ -36,11 +36,39 @@ pub fn trigger_chords(armed: &[Armed<'_>]) -> Vec<ActionChord> {
         .collect()
 }
 
-/// Whether a change message says the change was made by run `run`.
-fn made_by_run(message: Option<&str>, run: RunId) -> Option<ActionContext> {
+/// The group a run stamps each of its changes with: a shortcut run's id, or
+/// the id of the workspace task an agent worked.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RunGroup {
+    pub kind: &'static str,
+    pub id: String,
+}
+
+impl RunGroup {
+    /// The group of shortcut run `run`.
+    #[must_use]
+    pub fn shortcut(run: RunId) -> Self {
+        Self {
+            kind: "shortcut",
+            id: run.0.to_string(),
+        }
+    }
+
+    /// The group of the agent's run of workspace task `task`.
+    #[must_use]
+    pub fn task(task: &str) -> Self {
+        Self {
+            kind: ui::history_source::steps::TASK_RUN,
+            id: task.to_owned(),
+        }
+    }
+}
+
+/// Whether a change message says the change was made by a run of `group`.
+fn made_by_run(message: Option<&str>, group: &RunGroup) -> Option<ActionContext> {
     let context = ActionContext::from_change_message(message?)?;
-    let group = context.group.as_ref()?;
-    (group.kind == "shortcut" && group.id == run.0.to_string()).then_some(context)
+    let stamped = context.group.as_ref()?;
+    (stamped.kind == group.kind && stamped.id == group.id).then_some(context)
 }
 
 /// One document's share of a run, with when it was first changed.
@@ -56,12 +84,18 @@ pub struct DocumentShare {
 /// change it. Reads through a shared reference, so a transaction still open
 /// in the document stays its producer's.
 pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<DocumentShare> {
+    group_share(&RunGroup::shortcut(run), record, doc)
+}
+
+/// Document `record`'s share of the run of `group`: [`document_share`] for
+/// a shortcut run or an agent's run of a task.
+pub fn group_share(group: &RunGroup, record: &str, doc: &AutoCommit) -> Option<DocumentShare> {
     let mut first: Option<(i64, String)> = None;
     let mut last = None;
     let mut app = String::new();
     let mut what: Vec<tilo_actions::Described> = Vec::new();
     for version in tilo_resource::history::committed_versions(doc) {
-        let Some(context) = made_by_run(version.message.as_deref(), run) else {
+        let Some(context) = made_by_run(version.message.as_deref(), group) else {
             continue;
         };
         if first.is_none() {
@@ -134,6 +168,30 @@ pub fn record_run_steps(
         Some(&decision),
         steps,
     )
+}
+
+/// Record the agent's run of a workspace task that `ended` in
+/// `coordinator`, made of `steps`, so Activity lists it under the task's
+/// title, attributed to the agent and the person it worked for, and the Task
+/// Center can undo it whole. `None` when there are no steps. The
+/// transaction is left open for the caller to commit.
+pub fn record_task_run_steps(
+    coordinator: &mut AutoCommit,
+    ended: &tilo_action_broker::task_runs::EndedTaskRun,
+    steps: &[ui::RunStep],
+) -> Option<String> {
+    let decision = format!("Task “{}” · {}", ended.title, ended.outcome);
+    let key = ui::record_run_with_details(
+        coordinator,
+        &ended.title,
+        Some(&ended.agent),
+        Some(&ended.person),
+        Some(ended.instruction.as_deref().unwrap_or(&ended.title)),
+        Some(&decision),
+        steps,
+    )?;
+    ui::history_source::runs::set_run_task(coordinator, &key, &ended.task_id);
+    Some(key)
 }
 
 /// [`record_run_steps`] with the steps found in `documents`.

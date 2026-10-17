@@ -196,6 +196,10 @@ pub struct DisplayOutputSnapshot {
     /// Why a sink that reports adaptive sync cannot use it here. Typed so
     /// Settings can explain it in the user's language.
     pub vrr_unavailable_reason: Option<AdaptiveSyncUnavailable>,
+    /// Why this connected display is dark: the compositor tried to light it
+    /// and could not. `None` for a display that is lit, or off by choice.
+    #[serde(default)]
+    pub unavailable_reason: Option<OutputUnavailable>,
     /// Stable profile identifier (currently the canonical ICC path) to a
     /// user-facing label. Only profiles in this map may be selected.
     pub color_profile_labels: BTreeMap<String, String>,
@@ -210,6 +214,21 @@ impl DisplayOutputSnapshot {
         OutputConfig::at_scale(self.scale)
     }
 }
+
+/// Why a connected display could not be lit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "snake_case")]
+pub enum OutputUnavailable {
+    /// The output was switched on but no frame reached the display: the
+    /// link to it did not come up (a `DisplayPort` link that failed training,
+    /// a cable or adapter fault). Reconnecting the display tries again.
+    LinkDown,
+    /// The graphics driver refused to switch the output on, or had no
+    /// display controller free for it.
+    DriverRejected,
+}
+
+crate::read_through_json_value!(OutputUnavailable);
 
 /// Why an HDR-capable sink cannot be driven in HDR by the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

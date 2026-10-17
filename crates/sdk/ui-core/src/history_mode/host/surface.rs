@@ -175,6 +175,22 @@ impl HistoryHost {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         let scale = ctx.scale_factor;
+        // Escape leaves History, as the History control does, unless the
+        // restore review (a modal of its own) is up.
+        if self.open
+            && self.review.is_none()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == winit::event::ElementState::Pressed
+                        && key.logical_key
+                            == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            )
+        {
+            self.request_close();
+            *ctx.handled = true;
+            return;
+        }
         let chrome_event = self.controls_event(event, scale);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
@@ -244,6 +260,15 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Authors are named by the room's participants; a name that arrived
+        // or changed shows on the next refresh.
+        if self
+            .controller
+            .as_mut()
+            .is_some_and(|controller| controller.follow_roster(presence))
+        {
+            self.toolbar_dirty = true;
+        }
         if self.has_toolbar_controls() {
             crate::standalone_history_host::bar_edge(
                 scene,
