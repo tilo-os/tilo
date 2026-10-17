@@ -5,7 +5,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 #[test]
 fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
-    let mut doc = crate::testing::demo_doc();
+    let mut doc = crate::testing::demo_chat();
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Text)

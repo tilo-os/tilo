@@ -42,9 +42,9 @@ pub(crate) const RECORD_ACTION_TYPE: &str = "tilo.app.record-action";
 
 /// One action of a record, as its published operation carries it.
 #[derive(Serialize, Deserialize)]
-struct RecordAction {
-    record: String,
-    action: EncodedAction,
+pub(crate) struct RecordAction {
+    pub(crate) record: String,
+    pub(crate) action: EncodedAction,
 }
 
 type Apply<P> = Box<dyn Fn(&<P as Resource>::Action, &ActionInvoker) -> Result<(), ActionError>>;
@@ -169,23 +169,31 @@ pub(crate) fn route(
 
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
+    route_operation(spec, RECORD_ACTION_TYPE, record)
+        // The room's roles do not reach a record of the person's own: the
+        // host lets only its person change it.
+        .of_kind(ActionKind::Read)
+        .with_need_of(|_| ActionNeed::of(ActionKind::Read))
+}
+
+/// The document action `spec` carried out as the operation `operation` on
+/// the record `record`, needing what it declares.
+pub(crate) fn route_operation(
+    spec: tilo_actions::ActionSpec,
+    operation: &'static str,
+    record: &str,
+) -> tilo_actions::ActionSpec {
     let record = record.to_owned();
-    spec.routed(RECORD_ACTION_TYPE, move |action| {
+    spec.routed(operation, move |action| {
         let routed = RecordAction {
             record: record.clone(),
             action,
         };
-        EncodedAction::encode_operation(RECORD_ACTION_TYPE, &routed).unwrap_or_else(|error| {
-            EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-                payload: error.to_string().into_bytes(),
-            }
+        EncodedAction::encode_operation(operation, &routed).unwrap_or_else(|error| EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+            payload: error.to_string().into_bytes(),
         })
     })
-    // The room's roles do not reach a record of the person's own: the host
-    // lets only its person change it.
-    .of_kind(ActionKind::Read)
-    .with_need_of(|_| ActionNeed::of(ActionKind::Read))
 }
 
 /// A held record with its type erased, as the host publishes and answers
@@ -198,6 +206,15 @@ pub(crate) trait RecordDoor {
     fn revision(&self) -> u64;
     fn publish(&self) -> tilo_actions::Resource;
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
+    /// [`Self::apply_encoded`], answering its invoker with what it made.
+    fn apply_answering(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.apply_encoded(action, invoker)
+            .map(|()| tilo_actions::ActionOutput::default())
+    }
 }
 
 impl<P: Resource> RecordDoor for Held<P> {
@@ -298,11 +315,41 @@ pub(crate) mod sealed {
 /// committed surface lists it.
 pub struct Records<'a> {
     storage: &'a ViewStorage,
+    /// The app's own record, as `Live` of its resource: what the actions of
+    /// a chain kept beside it read where they are invoked.
+    base: Option<Rc<dyn std::any::Any>>,
 }
 
 impl<'a> Records<'a> {
     pub(crate) fn new(storage: &'a ViewStorage) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            base: None,
+        }
+    }
+
+    pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>) -> Self {
+        self.base = Some(Rc::new(live));
+        self
+    }
+
+    /// The chain of `P` the app keeps beside its record
+    /// ([`Chain`](super::Chain)): its head is held and it is published
+    /// with the window.
+    pub fn chain<P: super::Chained>(&mut self) -> &mut Self {
+        let Some(base) = self
+            .base
+            .clone()
+            .and_then(|base| base.downcast::<Live<P::Base>>().ok())
+        else {
+            tracing::warn!(
+                kind = P::KIND,
+                "a chain's parts read the app's own resource as their base"
+            );
+            return self;
+        };
+        let _ = self.storage.chain::<P>(move || base.get());
+        self
     }
 
     /// The person's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).

@@ -1,7 +1,8 @@
-use super::tests::{id, room};
-use super::*;
+use super::tests::{Talk, id};
 use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
+use crate::messages::chat_part;
 use crate::model::AgentWorkState;
+use crate::parts::ChatPart;
 
 #[test]
 fn provider_terminal_state_and_accessibility_report_output_not_applied_actions() {
@@ -12,7 +13,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         (AgentFinish::Cancelled, "Stopped"),
         (AgentFinish::Failed, "Could not finish"),
     ] {
-        let mut replica = room();
+        let mut replica = Talk::new();
         for (sequence, output) in [
             (
                 1,
@@ -30,7 +31,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         ] {
             replica
                 .apply(
-                    Chat::STREAM_OUTPUT.with(chat::StreamOutput {
+                    ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
                         channel: id("c_general"),
                         reply: "terminal_reply".into(),
                         name: None,
@@ -44,8 +45,9 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
                 )
                 .unwrap();
         }
-        let chat = replica.state().unwrap();
-        let record = chat.messages.get(&id("terminal_reply")).unwrap();
+        let chat = replica.chat.state().unwrap();
+        let held = replica.messages();
+        let record = held.get(&id("terminal_reply")).unwrap().clone();
         let expected = AgentWorkState::ProviderFinished { outcome };
         assert_eq!(
             record
@@ -59,7 +61,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
                 .state,
             expected
         );
-        let reply = chat.message_row("terminal_reply").unwrap();
+        let reply = chat.message_row(&held, "terminal_reply").unwrap();
         assert_eq!(reply.text, "Retained partial answer 🦀");
         let work = reply.work.unwrap();
         assert_eq!(work.state, expected);

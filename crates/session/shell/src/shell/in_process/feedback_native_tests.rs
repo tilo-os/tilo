@@ -450,7 +450,7 @@ fn assert_retained_once(
                 .map_err(|error| error.to_string())?;
                 assert_eq!(
                     chat::projection::read(&document)
-                        .message_rows("feedback")
+                        .message_rows(&chat::messages::Messages::default(), "feedback")
                         .iter()
                         .filter(|message| message.id == format!("m_feedback_{}", submission.id))
                         .count(),

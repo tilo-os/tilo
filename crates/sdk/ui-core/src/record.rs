@@ -22,7 +22,7 @@
 
 pub mod bootstrap;
 pub mod capability;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::portable_storage::PortableStorage;
 mod portable;
@@ -227,6 +227,18 @@ impl RecordId {
             .then(|| index.parse().ok())
             .flatten()
             .map(|index| (Self(base.to_owned()), index))
+    }
+
+    /// The number of the part of the chain `self` whose document is kept
+    /// under `storage_key` ([`Self::storage_key`]), or `None` for any other
+    /// record's: what a store lists of a chain it holds parts of without
+    /// having opened them.
+    #[must_use]
+    pub fn part_of_storage_key(&self, storage_key: &str) -> Option<u64> {
+        let index = storage_key.strip_prefix("derived_part.")?;
+        let digits = index.bytes().take_while(u8::is_ascii_digit).count();
+        let index: u64 = index.get(..digits)?.parse().ok()?;
+        (self.part(index).storage_key() == storage_key).then_some(index)
     }
 
     /// `self` declared on-demand: a room's host does not replay it to a
@@ -1276,6 +1288,10 @@ pub struct RecordSet {
     /// A hydrated, host-acknowledged browser cache (Cloud portable sessions).
     portable: Option<PortableStorage>,
     pending: HashMap<RecordId, Reserved>,
+    /// The records lent out of the set to an action frame
+    /// ([`RecordStore::with_action_state`]): their documents are with the
+    /// frame, so the other records of the set stay open to it meanwhile.
+    lent: HashSet<RecordId>,
     next_reservation: u64,
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
@@ -1349,6 +1365,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            lent: HashSet::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             storage_wake: None,
@@ -1375,6 +1392,7 @@ impl RecordSet {
             backend: None,
             portable: None,
             pending: HashMap::new(),
+            lent: HashSet::new(),
             next_reservation: 0,
             native_initial: None,
             storage_wake: None,
@@ -1432,6 +1450,15 @@ impl RecordSet {
             .map(|checkout| (checkout.id.clone(), checkout.kind.clone()))
             .collect();
         found
+    }
+
+    /// [`RecordOpenError::Busy`] while `id` is lent to an action frame.
+    fn not_lent(&self, id: &RecordId) -> Result<(), RecordOpenError> {
+        if self.lent.contains(id) {
+            Err(RecordOpenError::Busy)
+        } else {
+            Ok(())
+        }
     }
 
     fn remember(&mut self, want: &RecordCheckout) {
@@ -2393,6 +2420,7 @@ impl RecordOwners {
             backend: self.portable.is_none().then(|| Rc::clone(&self.store)),
             portable: self.portable.clone(),
             pending: HashMap::new(),
+            lent: HashSet::new(),
             next_reservation: 0,
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
@@ -2894,6 +2922,36 @@ impl RecordReservation {
     }
 }
 
+/// A record lent to an action frame ([`RecordStore::with_action_state`]),
+/// returned to its set when the frame ends, however it ends.
+struct Lent<'a> {
+    store: &'a RecordStore,
+    id: &'a RecordId,
+    lent: Option<(
+        AutoCommit,
+        crate::state::UndoLog,
+        crate::bound_dispatch::RecordActionState,
+    )>,
+}
+
+impl Drop for Lent<'_> {
+    fn drop(&mut self) {
+        let Some((doc, history, action_state)) = self.lent.take() else {
+            return;
+        };
+        let Ok(mut set) = self.store.0.try_borrow_mut() else {
+            tracing::error!(record = %self.id, "a lent record could not be returned to its set");
+            return;
+        };
+        set.lent.remove(self.id);
+        if let Some(parked) = set.open.get_mut(self.id) {
+            parked.doc = Some(doc);
+            parked.history = history;
+            parked.action_state = action_state;
+        }
+    }
+}
+
 impl Drop for RecordReservation {
     fn drop(&mut self) {
         let mut set = self.store.0.borrow_mut();
@@ -2963,7 +3021,7 @@ impl RecordStore {
 
     /// Schedule this already committed History result through its existing writer.
     /// Do not sweep or close unrelated owners' unfinished edits.
-    pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
+    pub fn schedule_committed_history(&self, id: &RecordId) {
         let Ok(mut set) = self.0.try_borrow_mut() else {
             return;
         };
@@ -3056,6 +3114,49 @@ impl RecordStore {
         (set.package_id.clone(), set.home.clone())
     }
 
+    /// The numbers of the parts of the chain `base` ([`RecordId::part`])
+    /// this store holds, in order: those open here, and those kept on this
+    /// device without being open (synced in while no window had them).
+    /// Listing what is kept reads the store's index, so a caller on a frame
+    /// loop asks now and then, not every frame.
+    #[must_use]
+    pub fn held_parts(&self, base: &RecordId) -> Vec<u64> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let mut held: std::collections::BTreeSet<u64> = set
+            .open
+            .keys()
+            .chain(set.lent.iter())
+            .filter_map(RecordId::chain_part)
+            .filter(|(chain, _)| chain == base)
+            .map(|(_, index)| index)
+            .collect();
+        if !set.home.is_empty() {
+            let kept = match (
+                &set.portable,
+                set.backend.as_ref().or(set.documents.as_ref()),
+            ) {
+                (Some(cache), _) => cache.records(&set.package_id, &set.home),
+                (None, Some(store)) => store
+                    .records(&set.package_id, &set.home)
+                    .unwrap_or_default(),
+                (None, None) => Vec::new(),
+            };
+            // A portable cache keys a record by its id, a store by its
+            // storage key.
+            held.extend(kept.iter().filter_map(|key| {
+                base.part_of_storage_key(key).or_else(|| {
+                    RecordId::parse(key)?
+                        .chain_part()
+                        .filter(|(chain, _)| chain == base)
+                        .map(|(_, index)| index)
+                })
+            }));
+        }
+        held.into_iter().collect()
+    }
+
     /// Every [window default record](RecordId::window_default) of `kind`
     /// this package keeps in this room, sorted by id, each as last made
     /// durable: what an app that kept a record per window left behind once
@@ -3118,7 +3219,10 @@ impl RecordStore {
         &self,
         want: &RecordCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
-        self.0.borrow_mut().try_open_record(want)
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy)?
+            .try_open_record(want)
     }
 
     /// Reserve a New identity with its exclusive gate and no document/history/writer yet.
@@ -3129,7 +3233,7 @@ impl RecordStore {
         &self,
         want: &RecordCheckout,
     ) -> Result<RecordReservation, RecordOpenError> {
-        let mut set = self.0.borrow_mut();
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if !want.is_valid_local_storage_request() {
             return Err(RecordOpenError::IdentityMismatch);
         }
@@ -3177,7 +3281,7 @@ impl RecordStore {
     }
 
     pub fn is_ready(&self, id: &RecordId) -> bool {
-        self.0.borrow().peek(id).is_some()
+        self.0.try_borrow().is_ok_and(|set| set.peek(id).is_some())
     }
 
     /// Inspect durability without closing a typing transaction or scheduling work.
@@ -3615,6 +3719,7 @@ impl RecordStore {
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Result<R, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        set.not_lent(id)?;
         let document = set
             .open
             .get(id)
@@ -3624,6 +3729,12 @@ impl RecordStore {
     }
 
     /// One exclusive record admission for the document and owned action frame.
+    ///
+    /// The record's document, history and action state are lent out of the
+    /// set for the frame, so what the frame does may open, read and change
+    /// the set's other records (the parts of a chain beside the record it
+    /// shows); the record itself answers [`RecordOpenError::Busy`] to
+    /// anyone else until the frame returns it.
     pub(crate) fn with_action_state<R>(
         &self,
         id: &RecordId,
@@ -3633,14 +3744,29 @@ impl RecordStore {
             &mut crate::bound_dispatch::RecordActionState,
         ) -> R,
     ) -> Result<R, RecordOpenError> {
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        let parked = set.open.get_mut(id).ok_or(RecordOpenError::MissingRecord)?;
-        let doc = parked.doc.as_mut().ok_or(RecordOpenError::MissingRecord)?;
+        let mut loan = {
+            let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+            set.not_lent(id)?;
+            let parked = set.open.get_mut(id).ok_or(RecordOpenError::MissingRecord)?;
+            let doc = parked.doc.take().ok_or(RecordOpenError::MissingRecord)?;
+            let lent = (
+                doc,
+                std::mem::take(&mut parked.history),
+                std::mem::take(&mut parked.action_state),
+            );
+            set.lent.insert(id.clone());
+            Lent {
+                store: self,
+                id,
+                lent: Some(lent),
+            }
+        };
+        let (doc, history, state) = loan.lent.as_mut().ok_or(RecordOpenError::MissingRecord)?;
         Ok(crate::invocation_scope::with_record_loan(
             self,
             id,
             doc,
-            |doc| callback(doc, &mut parked.history, &mut parked.action_state),
+            |doc| callback(doc, history, state),
         ))
     }
 
@@ -3652,6 +3778,7 @@ impl RecordStore {
         RecordOpenError,
     > {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        set.not_lent(id)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         Ok(parked.action_state.invocation_provenance.clone())
     }
@@ -3687,6 +3814,7 @@ impl RecordStore {
     /// Returns `Busy` if the record set is borrowed, or `MissingRecord` if the record is not open.
     pub fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        set.not_lent(id)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         Ok(parked.action_state.generation)
     }
@@ -3700,6 +3828,7 @@ impl RecordStore {
         lifetime: uuid::Uuid,
     ) -> Result<crate::bound_dispatch::DocumentEditStamp, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        set.not_lent(id)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         let document = parked.doc.as_ref().ok_or(RecordOpenError::Busy)?;
         if parked
@@ -4006,6 +4135,13 @@ impl RecordStore {
             .map(|document| crate::invocation_scope::with_record_loan(self, id, document, f))
     }
 
+    /// Whether the store takes a write now: not while something reads or
+    /// changes it (a frame's read of a record holds it).
+    #[must_use]
+    pub fn takes_writes(&self) -> bool {
+        self.0.try_borrow_mut().is_ok()
+    }
+
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }
@@ -4017,7 +4153,7 @@ impl RecordStore {
         id: &RecordId,
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Option<R> {
-        let mut set = self.0.borrow_mut();
+        let mut set = self.0.try_borrow_mut().ok()?;
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
     }
@@ -4029,6 +4165,7 @@ impl RecordStore {
         read: impl FnOnce(&AutoCommit, &crate::state::UndoLog) -> R,
     ) -> Option<R> {
         let set = self.0.try_borrow().ok()?;
+        set.not_lent(id).ok()?;
         let parked = set.open.get(id)?;
         Some(read(parked.doc.as_ref()?, &parked.history))
     }

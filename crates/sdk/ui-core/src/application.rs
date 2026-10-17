@@ -731,6 +731,12 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// The store the record is kept in, with the app's other records of
+    /// the same room: what an app holding records beside its own (the
+    /// parts of a chain) opens them in, so they sync on the same routes.
+    pub fn records(&self) -> &RecordStore {
+        &self.records
+    }
     /// The per-window records this app's windows kept in this room before it
     /// [kept one record per room](ApplicationDefinition::keeps_room_record),
     /// read-only and sorted by id ([`RecordStore::window_records`]). Only a

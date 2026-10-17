@@ -1,5 +1,6 @@
-//! Immutable message pages over the chat record's storage: a channel's messages in the
-//! order of the record's message collection. No action publication or caller authority is
+//! Immutable message pages over the storage of a part of the chat's messages
+//! ([`crate::parts::ChatPart`]): a channel's messages in the order of the part's message
+//! collection. No action publication or caller authority is
 //! minted here.
 pub mod action;
 use automerge::AutoCommit;
@@ -79,14 +80,15 @@ fn read_source(
         }
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
-    let channels = source
-        .object(&source.root(), "channels", ObjType::Map)?
-        .ok_or(ReadError::Malformed)?;
-    source
-        .object(&channels, channel, ObjType::Map)?
-        .ok_or(ReadError::Malformed)?;
-    // The record keeps every channel's messages in one collection, each
-    // item `{ k: order key, v: message }` under its id: this channel's, in
+    // The chat record names its channels; a part of its messages
+    // ([`crate::parts::ChatPart`]) holds only messages.
+    if let Some(channels) = source.object(&source.root(), "channels", ObjType::Map)? {
+        source
+            .object(&channels, channel, ObjType::Map)?
+            .ok_or(ReadError::Malformed)?;
+    }
+    // A part keeps every channel's messages in one collection, each item
+    // `{ k: order key, v: message }` under its id: this channel's, in
     // collection order.
     let mut rows = Vec::new();
     if let Some(messages) = source.object(&source.root(), "messages", ObjType::Map)? {

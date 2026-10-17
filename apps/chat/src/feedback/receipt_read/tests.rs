@@ -7,7 +7,7 @@ fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
 }
 
 fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
-    let mut doc = crate::testing::demo_doc();
+    let mut doc = crate::testing::demo_chat();
     let channel = crate::testing::channels(&doc)
         .into_iter()
         .find(|channel| channel.kind == crate::model::ChannelKind::Text)

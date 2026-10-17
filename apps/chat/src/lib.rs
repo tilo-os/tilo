@@ -68,6 +68,7 @@ pub mod images;
 mod live_context;
 mod local_voice;
 pub mod mention;
+pub mod messages;
 pub mod model;
 mod moderation;
 pub mod paint;

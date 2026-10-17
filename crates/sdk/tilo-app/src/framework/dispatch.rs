@@ -1233,6 +1233,29 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// The dispatcher of a record the app keeps beside its own in the room,
+    /// published at `id` (the parts of a chain): its queued invocations are
+    /// addressed to `id`, `apply` applies one now, and what an action needs
+    /// is its own declared need, checked against the participant's roles in
+    /// the room as this resource's actions are.
+    pub(crate) fn for_room_record<C: Resource>(
+        &self,
+        id: &str,
+        read_only: bool,
+        apply: impl Fn(&C::Action) -> Result<(), ActionError> + 'static,
+    ) -> Dispatcher<C> {
+        let mut core = self.core.for_record(id, (C::KIND, C::LABEL), read_only);
+        core.permissions = Rc::clone(&self.core.permissions);
+        Dispatcher {
+            core,
+            group: Rc::default(),
+            permission_of: Rc::new(tilo_resource::need_of::<C>),
+            submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
+            group_now: None,
+            last: Rc::default(),
+        }
+    }
+
     /// The dispatcher of a resource nested in this one at `id` — a note's
     /// rich-text body, a draft's SQL — whose every edit is this resource's
     /// action `wrap(edit)`.
