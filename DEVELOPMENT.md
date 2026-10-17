@@ -640,7 +640,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
 | `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
 | `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
-| `xwayland-satellite` `Xwayland` (binaries) | `xwayland-satellite` `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge; they fail, not skip, without it |
+| `xwayland-satellite` `Xwayland` (binaries) | `tools/ci/install-xwayland-satellite.sh` (needs `xcb-util-cursor-devel` `open-sans-fonts`), `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge with Tilo's clipboard handoff patch; they fail, not skip, without it |
 
 The sandbox, language-server, and rollback mechanism tests require the binary
 tools listed above. Install them where Cargo runs, including inside a build

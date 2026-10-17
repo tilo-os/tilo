@@ -19,11 +19,13 @@ REBUILD_PATHS = {
     "tools/ci/check-build-env.sh",
     "tools/ci/install-android-ndk.sh",
     "tools/ci/install-pdfium.sh",
+    "tools/ci/install-xwayland-satellite.sh",
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",
     "tools/ci/windows/wine-prefix.sh",
 }
-REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/")
+REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/",
+                    "os/external-assets/xwayland-satellite/")
 WORKFLOW = ".forgejo/workflows/build-ci-builder.yml"
 
 
