@@ -11227,40 +11227,12 @@ mod tests {
         }
     }
 
-    /// Names the one test a re-executed test binary runs in its own process.
-    const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
-
-    /// Whether the calling test `name` (in this module) runs its body here:
-    /// only in a process that runs nothing else.
-    ///
-    /// An app's settings and live-activity channels are process-wide — one
-    /// app, one collaboration manager per process — and flush through the
-    /// transport that connected last (`SETTINGS_COMMAND_BRIDGE`). Any other
-    /// test's manager connecting in the same process takes over that route,
-    /// and the change it carries never reaches this test's broker. So the
-    /// test re-executes this binary for itself alone, as nextest's process
-    /// per test would, and here only checks that the child ran it and passed.
+    /// Whether the calling test `name` (in this module) runs its body here.
+    /// An app's settings and live-activity channels are process-wide and
+    /// flush through the transport that connected last, so another test's
+    /// manager connecting in the same process would take over the route.
     fn in_own_process(name: &str) -> bool {
-        let module = module_path!()
-            .split_once("::")
-            .map_or(module_path!(), |(_, path)| path);
-        let test = format!("{module}::{name}");
-        if std::env::var(OWN_PROCESS_TEST).is_ok_and(|own| own == test) {
-            return true;
-        }
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
-            .env(OWN_PROCESS_TEST, &test)
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success() && stdout.contains("test result: ok. 1 passed;"),
-            "{test} in its own process: {}\n{stdout}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        false
+        crate::testing::in_own_process(&crate::testing::test_path(module_path!(), name))
     }
 
     #[cfg(unix)]

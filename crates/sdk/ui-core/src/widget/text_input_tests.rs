@@ -4297,6 +4297,14 @@ fn submit_accessory_and_span_highlighting() {
 #[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
+    // The authenticated host it installs is process-wide: every field
+    // checking spelling on another thread would read its personal words.
+    if !crate::testing::in_own_process(&crate::testing::test_path(
+        module_path!(),
+        "shared_personal_words_protect_autocorrection_and_clear_stale_spelling",
+    )) {
+        return;
+    }
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
