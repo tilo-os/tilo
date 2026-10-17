@@ -70,6 +70,7 @@ pub mod mention;
 pub mod model;
 mod moderation;
 pub mod paint;
+pub mod parts;
 pub mod permissions;
 pub mod picker;
 pub mod preferences;

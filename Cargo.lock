@@ -1985,6 +1985,7 @@ dependencies = [
  "fnv",
  "image",
  "moderation-model",
+ "neighbour-wire",
  "runtime-dylib",
  "serde",
  "serde_json",
