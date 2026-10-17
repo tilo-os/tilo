@@ -144,6 +144,17 @@ pub enum ReplicaActor {
         /// The installer's standing bounded by the bot's grants.
         standing: policy::Standing,
     },
+    /// A room member whose action the host runs (commenting a person may do
+    /// but cannot publish as a document writer): their own current standing
+    /// and the room's sandbox, as the room's policy gave them to the host.
+    Member {
+        /// The member's current standing in the room.
+        standing: policy::Standing,
+        /// The room's sandbox capabilities.
+        sandbox: Vec<collab_types::caps::CapOverride>,
+        /// When the policy was read, for grant expiry.
+        unix_time: u64,
+    },
 }
 
 /// Why a record could not be held or merged.
@@ -233,6 +244,16 @@ impl Replica {
                     .acting_for(installer);
                 PermissionContext::from_standing(room, standing)
             }
+            ReplicaActor::Member {
+                standing,
+                sandbox,
+                unix_time,
+            } => PermissionContext::new(
+                ui::permissions::Actor::person(standing.person.clone()).in_room(room),
+                sandbox,
+                standing,
+            )
+            .at_unix_time(unix_time),
         };
         let (checkout, bytes, created) = match seed {
             Seed::New => {
