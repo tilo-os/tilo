@@ -125,6 +125,8 @@ mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_device;
 #[cfg(not(target_arch = "wasm32"))]
+mod offload_media;
+#[cfg(not(target_arch = "wasm32"))]
 mod offload_placement;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_route;
