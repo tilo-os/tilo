@@ -50,6 +50,10 @@ pub(crate) struct PendingClash {
     pub(crate) clashing: Vec<PathBuf>,
     pub(crate) folder: PathBuf,
     pub(crate) copy: bool,
+    /// For a paste through the desktop's clipboard: the clashing names the
+    /// host reported (the first few) and how many there are. The host
+    /// carries out the answer.
+    pub(crate) clipboard: Option<(Vec<String>, usize)>,
     hovered: Option<usize>,
     layout: Option<ModalLayout>,
 }
@@ -81,8 +85,17 @@ impl PendingClash {
             clashing,
             folder,
             copy,
+            clipboard: None,
             hovered: None,
             layout: None,
+        }
+    }
+
+    /// A clipboard paste into `folder` waiting for the answer.
+    pub(crate) fn clipboard(names: Vec<String>, count: usize, folder: PathBuf) -> Self {
+        Self {
+            clipboard: Some((names, count)),
+            ..Self::new(Vec::new(), Vec::new(), folder, true)
         }
     }
 
@@ -105,15 +118,22 @@ impl PendingClash {
 
     pub(crate) fn title(&self) -> String {
         let folder = name_of(&self.folder);
-        match self.clashing.as_slice() {
-            [one] => t_args(
-                "files-clash-title-one",
-                &[arg("name", name_of(one)), arg("folder", folder)],
+        let (first, count) = match &self.clipboard {
+            Some((names, count)) => (names.first().cloned(), *count),
+            None => (
+                self.clashing.first().map(|path| name_of(path)),
+                self.clashing.len(),
             ),
-            many => t_args(
+        };
+        match (count, first) {
+            (1, Some(name)) => t_args(
+                "files-clash-title-one",
+                &[arg("name", name), arg("folder", folder)],
+            ),
+            (count, _) => t_args(
                 "files-clash-title-many",
                 &[
-                    arg("count", ui::num::i64_of_usize(many.len())),
+                    arg("count", ui::num::i64_of_usize(count)),
                     arg("folder", folder),
                 ],
             ),
