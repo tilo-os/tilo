@@ -3754,7 +3754,7 @@ mod tests {
             "Imported Project brief",
             ui::widget::toast::ToastKind::Success,
         );
-        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining();
         app.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
@@ -3763,7 +3763,7 @@ mod tests {
             &PresenceCtx::default(),
         );
         assert_eq!(
-            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining(),
             lifetime,
             "the real Notes draw must preserve a capture's transient notification"
         );

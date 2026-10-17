@@ -180,6 +180,110 @@ impl Notice {
     }
 }
 
+/// How long a transient card has been up for someone to read, which is
+/// what its lifetime counts against. The clock runs only while the card is
+/// on screen and nobody holds it (the pointer on it, keyboard focus in it):
+/// a card that never fit on screen, or one being read, never runs out under
+/// the reader. [`ToastStack`] and the desktop's notification banners share
+/// it, so a toast and a banner leave by the same rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Dwell {
+    /// Time on screen, unheld, before the current run.
+    spent: Duration,
+    /// When the current run began; `None` while the clock is stopped.
+    since: Option<crate::time::Instant>,
+    /// When the card first came on screen.
+    first_shown: Option<crate::time::Instant>,
+}
+
+impl Dwell {
+    /// A card nobody has seen yet: nothing spent, the clock stopped.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            spent: Duration::ZERO,
+            since: None,
+            first_shown: None,
+        }
+    }
+
+    /// Time the card has been readable on screen at `now`.
+    #[must_use]
+    pub fn spent(&self, now: crate::time::Instant) -> Duration {
+        self.since.map_or(self.spent, |since| {
+            self.spent
+                .saturating_add(now.saturating_duration_since(since))
+        })
+    }
+
+    /// What is left of a `lifetime` at `now`.
+    #[must_use]
+    pub fn left(&self, lifetime: Duration, now: crate::time::Instant) -> Duration {
+        lifetime.saturating_sub(self.spent(now))
+    }
+
+    /// Whether a `lifetime` has run out at `now`.
+    #[must_use]
+    pub fn is_over(&self, lifetime: Duration, now: crate::time::Instant) -> bool {
+        self.left(lifetime, now).is_zero()
+    }
+
+    /// Say whether the card is `on_screen` and whether someone `held` it
+    /// at `now`. The clock runs exactly while it is on screen and unheld.
+    pub fn present(&mut self, now: crate::time::Instant, on_screen: bool, held: bool) {
+        if on_screen {
+            self.first_shown.get_or_insert(now);
+        }
+        match (on_screen && !held, self.since) {
+            (true, None) => self.since = Some(now),
+            (false, Some(_)) => {
+                self.spent = self.spent(now);
+                self.since = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Count `elapsed` against the card, for a host that advances by
+    /// frame deltas rather than reading a clock.
+    pub fn spend(&mut self, elapsed: Duration) {
+        self.spent = self.spent.saturating_add(elapsed);
+    }
+
+    /// Leave at least `floor` of a `lifetime` at `now`: a card the person
+    /// just let go of gets a moment before it starts to leave, instead of
+    /// fading the instant the pointer moves off it.
+    pub fn grant(&mut self, lifetime: Duration, now: crate::time::Instant, floor: Duration) {
+        let cap = lifetime.saturating_sub(floor);
+        if self.spent(now) > cap {
+            self.spent = cap;
+            if self.since.is_some() {
+                self.since = Some(now);
+            }
+        }
+    }
+
+    /// When a `lifetime` runs out while the clock keeps running; `None`
+    /// while it is stopped.
+    #[must_use]
+    pub fn ends_at(&self, lifetime: Duration) -> Option<crate::time::Instant> {
+        let since = self.since?;
+        since.checked_add(lifetime.saturating_sub(self.spent))
+    }
+
+    /// When the card first came on screen; `None` before it has.
+    #[must_use]
+    pub fn first_shown(&self) -> Option<crate::time::Instant> {
+        self.first_shown
+    }
+
+    /// Whether the clock is running.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.since.is_some()
+    }
+}
+
 /// A single toast entry held by a [`ToastStack`]. Entries are produced
 /// internally by [`ToastStack::push`]; shell code does not construct
 /// `Toast` values directly.
@@ -187,9 +291,18 @@ impl Notice {
 pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
-    pub ttl_remaining: Duration,
     /// What its one button does ("Undo"), if it has one.
     pub action: Option<String>,
+    lifetime: Duration,
+    dwell: Dwell,
+}
+
+impl Toast {
+    /// What is left of this toast's lifetime.
+    #[must_use]
+    pub fn ttl_remaining(&self) -> Duration {
+        self.lifetime.saturating_sub(self.dwell.spent)
+    }
 }
 
 /// Top-right notification stack with a configurable maximum entry count
@@ -321,8 +434,9 @@ impl ToastStack {
         let toast = Toast {
             text,
             kind,
-            ttl_remaining: self.default_ttl,
             action,
+            lifetime: self.default_ttl,
+            dwell: Dwell::new(),
         };
         self.toasts.push(toast);
         // Drop oldest entries until we are back within the cap.
@@ -355,18 +469,18 @@ impl ToastStack {
         };
     }
 
-    /// Advance time. Each toast's `ttl_remaining` is saturatingly
-    /// decremented by `dt`; entries that reach zero are removed. Expiry is
-    /// **paused while the pointer hovers the stack** so a toast can be read
-    /// or clicked without vanishing.
+    /// Advance time. `dt` counts against each toast's [`Dwell`]; entries
+    /// whose lifetime runs out are removed. Expiry is **paused while the
+    /// pointer hovers the stack** so a toast can be read or clicked without
+    /// vanishing.
     pub fn tick(&mut self, dt: Duration) {
         if self.hovered {
             return;
         }
         for t in &mut self.toasts {
-            t.ttl_remaining = t.ttl_remaining.saturating_sub(dt);
+            t.dwell.spend(dt);
         }
-        self.toasts.retain(|t| t.ttl_remaining > Duration::ZERO);
+        self.toasts.retain(|t| !t.ttl_remaining().is_zero());
     }
 
     /// Advance the toasts to `now`: the time since the last advance counts
@@ -495,14 +609,13 @@ fn stack_height(n: usize) -> f64 {
     }
 }
 
-/// The card radius: concentric with the controls inside it, never a pill.
-fn card_radius(theme: &Theme) -> f64 {
-    let radii = &theme.tokens.radii;
-    f64::from(
-        (radii.control + theme.tokens.spacing.s2)
-            .min(radii.panel)
-            .max(radii.detail),
-    )
+/// The radius of a floating card: a notification banner, a toast, and the
+/// status cards that stand in a column with them. One floating card is one
+/// shape everywhere, the floating Panel's (`radii.panel`), so a banner, the
+/// palette and a menu never disagree about their corners.
+#[must_use]
+pub fn card_radius(theme: &Theme) -> f64 {
+    crate::widget::floating_surface::radius(theme)
 }
 
 /// The card's padding: `(x, y)`.
@@ -1196,14 +1309,22 @@ pub fn choice_rects(band: Rect, gap: f64, secondary: f64, primary: f64) -> (Rect
 /// only keeps it registering over a window of the same tone. Under forced
 /// colours the theme's panel ground and its full border do the work
 /// instead.
-fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f32, theme: &Theme) {
+///
+/// Anything that stands in a column of cards (a locked-screen stand-in for
+/// them, the card for the ones that did not fit) paints this same body, so
+/// the column is one material and one shape.
+pub fn paint_card_surface(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    alpha: f32,
+    theme: &Theme,
+) {
     paint_surface(scene, transform, rect, card_radius(theme), alpha, theme);
 }
 
-/// The notification card's surface at `radius`: for anything that stands
-/// in a column of cards (a status pill above them, a locked-screen stand-in
-/// for them), so the column is one material.
-pub fn paint_surface(
+/// [`paint_card_surface`] at `radius`.
+fn paint_surface(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
@@ -1744,7 +1865,7 @@ impl Widget for ToastStack {
             return None;
         }
         let last = self.advanced_at?;
-        let soonest = self.toasts.iter().map(|t| t.ttl_remaining).min()?;
+        let soonest = self.toasts.iter().map(Toast::ttl_remaining).min()?;
         Some(last + soonest)
     }
 
@@ -1907,6 +2028,41 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use std::collections::HashMap;
+
+    /// A card's lifetime counts only time on screen and unheld: off screen
+    /// or under the pointer it keeps what it has left, and letting go of it
+    /// leaves a moment before it starts to leave.
+    #[test]
+    fn a_dwell_runs_only_while_shown_and_unheld() {
+        let lifetime = Duration::from_secs(5);
+        let t0 = crate::time::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut dwell = Dwell::new();
+        assert!(!dwell.is_over(lifetime, at(60_000)), "unseen never ends");
+        assert_eq!(dwell.first_shown(), None);
+        dwell.present(at(1_000), true, false);
+        assert_eq!(dwell.first_shown(), Some(at(1_000)));
+        assert_eq!(dwell.left(lifetime, at(3_000)), Duration::from_secs(3));
+        assert_eq!(dwell.ends_at(lifetime), Some(at(6_000)));
+        dwell.present(at(3_000), true, true);
+        assert!(!dwell.is_running());
+        assert_eq!(dwell.ends_at(lifetime), None);
+        assert_eq!(
+            dwell.left(lifetime, at(30_000)),
+            Duration::from_secs(3),
+            "a held card keeps its time"
+        );
+        dwell.present(at(30_000), false, false);
+        assert_eq!(dwell.left(lifetime, at(40_000)), Duration::from_secs(3));
+        dwell.present(at(40_000), true, false);
+        assert_eq!(dwell.first_shown(), Some(at(1_000)));
+        assert!(dwell.is_over(lifetime, at(43_000)));
+        dwell.grant(lifetime, at(43_000), Duration::from_secs(1));
+        assert_eq!(dwell.left(lifetime, at(43_000)), Duration::from_secs(1));
+        assert!(dwell.is_over(lifetime, at(44_000)));
+        dwell.spend(Duration::from_secs(9));
+        assert!(dwell.is_over(lifetime, at(43_000)));
+    }
 
     /// A stack that shows what it painted asks for no frame, so a pointer
     /// moving over a window with a notice up repaints nothing; a new or
