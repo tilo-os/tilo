@@ -217,6 +217,31 @@ impl KeyLatency {
     }
 }
 
+/// What in the shell took a key, for the `SLOW-KEY` line that reports a key
+/// whose handling held the loop: which shortcut ran, or which surface's key
+/// routing handled it. Set by the handler, read once per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyHandler {
+    /// A desktop shortcut's action.
+    Shortcut(settings_store::hardware::ShortcutAction),
+    /// A surface's own key routing (the search palette, the overview).
+    Surface(&'static str),
+}
+
+thread_local! {
+    static KEY_HANDLER: std::cell::Cell<Option<KeyHandler>> = const { std::cell::Cell::new(None) };
+}
+
+/// The shell is handling the current key as `handler`.
+pub fn note_key_handler(handler: KeyHandler) {
+    KEY_HANDLER.with(|slot| slot.set(Some(handler)));
+}
+
+/// What handled the key since the last call, clearing it.
+pub fn take_key_handler() -> Option<KeyHandler> {
+    KEY_HANDLER.with(std::cell::Cell::take)
+}
+
 /// The session's tracker. Input, commits and presentation all run on the
 /// compositor thread; the lock is uncontended.
 pub fn tracker() -> std::sync::MutexGuard<'static, KeyLatency> {
