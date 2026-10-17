@@ -321,6 +321,10 @@ pub struct WindowGroup {
     /// `needs_animation_frame` query can avoid waking for transitions that
     /// must snap to their endpoint.
     reduce_motion: bool,
+    /// What started the transition the strip is laying out; a shortcut or
+    /// action lands at once. Set by the row, see
+    /// [`GroupRow::set_motion_source`](super::GroupRow::set_motion_source).
+    motion_source: crate::tokens::MotionSource,
 }
 
 /// Height of the floating maximized-chrome chips. Off the 4 px grid, and
@@ -509,6 +513,7 @@ impl WindowGroup {
             close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
+            motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,
@@ -566,6 +571,35 @@ impl WindowGroup {
         self.arm_width_from_zero();
     }
 
+    /// A shortcut or action lands what it changed at once: the springs it
+    /// started (width, maximize) jump to their targets, a spawn shows the
+    /// group already in place, and the tab bar's chips settle.
+    pub(crate) fn set_motion_source(&mut self, source: crate::tokens::MotionSource) {
+        if self.motion_source == source {
+            return;
+        }
+        self.motion_source = source;
+        self.bar.set_motion_source(source);
+        if source.lands_at_once() {
+            if let Some(spring) = self.width_spring.as_mut() {
+                spring.snap(spring.target());
+                self.style_dirty = true;
+            }
+            if self.rect_spring.take().is_some() {
+                self.last_rect_step = None;
+                self.style_dirty = true;
+            }
+            if !self.is_closing() {
+                self.spawned_at = None;
+            }
+        }
+    }
+
+    /// Whether a transition starting now jumps to its end.
+    fn lands_at_once(&self) -> bool {
+        self.reduce_motion || self.motion_source.lands_at_once()
+    }
+
     pub(crate) fn set_reduce_motion(&mut self, on: bool) {
         self.reduce_motion = on;
         if on && let Some(spring) = self.width_spring.as_mut() {
@@ -607,7 +641,7 @@ impl WindowGroup {
 
     fn arm_width_from_zero(&mut self) {
         let target = f32_of_f64(self.resolved_width_px());
-        if self.reduce_motion {
+        if self.lands_at_once() {
             self.width_spring = None;
             return;
         }
@@ -620,7 +654,7 @@ impl WindowGroup {
 
     fn retarget_width(&mut self, from: f64, to: f64) {
         let to = f32_of_f64(to.max(0.0));
-        if self.reduce_motion {
+        if self.lands_at_once() {
             self.width_spring = None;
             return;
         }
@@ -1237,7 +1271,7 @@ impl WindowGroup {
     }
 
     fn begin_rect_spring_from_current(&mut self) {
-        if self.reduce_motion || self.rect.width() <= 1.0 || self.rect.height() <= 1.0 {
+        if self.lands_at_once() || self.rect.width() <= 1.0 || self.rect.height() <= 1.0 {
             self.rect_spring = None;
             self.last_rect_step = None;
             return;
@@ -1424,6 +1458,7 @@ impl WindowGroup {
             close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
+            motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,

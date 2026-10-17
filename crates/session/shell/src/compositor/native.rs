@@ -20309,7 +20309,9 @@ fn apply_shell_gesture(
                 switched = st.switch_workspace(dir);
             });
             if switched {
-                frame_builder.host_mut().start_workspace_switch_frames();
+                frame_builder
+                    .host_mut()
+                    .start_workspace_switch_frames(ui::tokens::MotionSource::Gesture);
             }
         }
         GestureAction::ShowOverview => {

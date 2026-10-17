@@ -2,6 +2,7 @@
 use crate::{composition::DesktopSurface, intents::LocalViewIntent};
 use std::collections::HashMap;
 use tilo_desktop_model::{DesktopTree, GroupId, StripId};
+use ui::tokens::MotionSource;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 
@@ -14,6 +15,12 @@ pub(crate) struct Navigation {
     pressed_group: Option<(StripId, GroupId)>,
     cursor: Option<Point>,
     manual_pan: Option<(StripId, GroupId)>,
+    /// What started the change being laid out, until the layout showing it
+    /// has run.
+    transition: Option<MotionSource>,
+    /// What started the latest focus change, until it is framed: a reveal
+    /// can wait for a layout pass that places its group.
+    reveal_source: Option<MotionSource>,
 }
 
 /// Geometry excludes the current pan and animated positions. Text edits and
@@ -66,6 +73,8 @@ impl DesktopSurface {
         // A retained caret is not a new gesture merely because chrome rebuilt.
         self.navigation.pending_focus = previous.navigation.pending_focus;
         self.navigation.manual_pan = previous.navigation.manual_pan;
+        self.navigation.transition = previous.navigation.transition;
+        self.navigation.reveal_source = previous.navigation.reveal_source;
         self.navigation.framed = std::mem::take(&mut previous.navigation.framed);
         if self.navigation.active_strip != previous.navigation.active_strip
             && let Some(strip) = self.navigation.active_strip
@@ -86,6 +95,43 @@ impl DesktopSurface {
         self.navigation.cursor = shown.navigation.cursor;
         self.navigation.pressed_group = None;
         shown.navigation.pressed_group = None;
+    }
+
+    /// `source` starts what the host does next to this desktop: a shortcut
+    /// or action shows its result on the next frame and a focus change only
+    /// slides the viewport, within `fast`, when its target is off screen; a
+    /// pointer or gesture keeps the full motion. Lasts until the layout that
+    /// shows the change has run.
+    pub fn begin_transition(&mut self, source: MotionSource) {
+        self.navigation.transition = Some(source);
+        self.navigation.reveal_source = Some(source);
+        self.push_motion_source(source);
+    }
+
+    fn push_motion_source(&mut self, source: MotionSource) {
+        for strip in self.strip_ids() {
+            if let Some(row) = self.row_mut(strip) {
+                row.set_motion_source(source);
+            }
+        }
+    }
+
+    /// Rows built since the transition began carry it too.
+    pub(crate) fn hold_transition(&mut self) {
+        if let Some(source) = self.navigation.transition {
+            self.push_motion_source(source);
+        }
+    }
+
+    /// The layout showing the change has run: later changes are nobody's
+    /// shortcut. A reveal still waiting for its group keeps its source.
+    pub(crate) fn end_transition(&mut self, reveal_pending: bool) {
+        if self.navigation.transition.take().is_some() {
+            self.push_motion_source(MotionSource::default());
+        }
+        if !reveal_pending {
+            self.navigation.reveal_source = None;
+        }
     }
 
     /// Hosts call this after applying local intents. The tree owns the local
@@ -126,7 +172,7 @@ impl DesktopSurface {
                 .map(|group| (strip, group))
             })
             .collect();
-        self.apply_navigation();
+        let _ = self.apply_navigation();
     }
 
     /// Native click policy keeps a clicked card under the cursor. Native
@@ -173,7 +219,10 @@ impl DesktopSurface {
         })
     }
 
-    pub(crate) fn apply_navigation(&mut self) {
+    /// Frame each strip's selected group. `true` while some strip's
+    /// selection could not be framed yet because its layout is not current.
+    pub(crate) fn apply_navigation(&mut self) -> bool {
+        let mut pending = false;
         let strips = self.strip_ids();
         let count: usize = strips
             .iter()
@@ -210,6 +259,12 @@ impl DesktopSurface {
                 self.navigation.manual_pan = Some((strip, group));
             }
             let Some(key) = self.navigation_key(strip, group) else {
+                pending |= self.navigation.active_strip == Some(strip)
+                    && self
+                        .navigation
+                        .framed
+                        .get(&strip)
+                        .is_none_or(|key| key.group != group);
                 continue;
             };
             if self.navigation.manual_pan == Some((strip, group)) {
@@ -219,11 +274,13 @@ impl DesktopSurface {
             if self.navigation.framed.get(&strip) == Some(&key) {
                 continue;
             }
+            let source = self.navigation.reveal_source.unwrap_or_default();
             if let Some(row) = self.row_mut(strip) {
-                row.scroll_group_into_view_animated(group, ui::time::now());
+                row.scroll_group_into_view_animated(group, ui::time::now(), source);
             }
             self.navigation.framed.insert(strip, key);
         }
+        pending
     }
 
     pub(crate) fn observe_focus_request(
@@ -271,6 +328,7 @@ impl DesktopSurface {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.navigation.reveal_source = None;
                 let Some(point) = self.navigation.cursor else {
                     return;
                 };
