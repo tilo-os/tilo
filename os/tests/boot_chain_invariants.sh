@@ -52,6 +52,26 @@ fi
 #    as /boot/EFI/Linux/bootc/bootc_composefs-<digest>.efi. An installed machine has
 #    the second, so globbing only the first finds no UKI on exactly the system an
 #    operator would re-run this on — and it would then report a missing initramfs.
+# Little-endian unsigned integer of WIDTH bytes at OFFSET in FILE.
+le_uint() { od -An -t "u$3" -j "$2" -N "$3" --endian=little "$1" | tr -d ' '; }
+
+# The VirtualSize of PE section NAME (at most 8 bytes) in FILE; prints nothing
+# when FILE has no such section.
+pe_section_size() {
+  local file="$1" want pe count base i at name
+  # Section names are NUL-padded to 8 bytes.
+  want="$(printf '%s' "$2" | od -An -tx1 | tr -d ' \n')0000000000000000"
+  want="${want:0:16}"
+  pe="$(le_uint "$file" 60 4)" || return 1
+  count="$(le_uint "$file" $((pe + 6)) 2)" || return 1
+  base=$((pe + 24 + $(le_uint "$file" $((pe + 20)) 2)))
+  for ((i = 0; i < count; i++)); do
+    at=$((base + i * 40))
+    name="$(od -An -tx1 -j "$at" -N 8 "$file" | tr -d ' \n')"
+    if [ "$name" = "$want" ]; then le_uint "$file" $((at + 8)) 4; return 0; fi
+  done
+}
+
 uki=""
 for candidate in "$OS_ROOT"/boot/EFI/Linux/*.efi "$OS_ROOT"/boot/EFI/Linux/*/*.efi; do
   [ -f "$candidate" ] && uki="$candidate" && break
@@ -64,19 +84,7 @@ for kver in "${kvers[@]}"; do
   elif [ -n "$uki" ]; then
     # The .initrd section is the initramfs on this layout. objcopy is not in
     # every image, so read the PE section table directly.
-    isize="$(python3 - "$uki" <<'EOPY' 2>/dev/null
-import struct, sys
-d = open(sys.argv[1], "rb").read()
-pe = struct.unpack_from("<I", d, 0x3C)[0]
-nsec = struct.unpack_from("<H", d, pe + 6)[0]
-base = pe + 24 + struct.unpack_from("<H", d, pe + 20)[0]
-for i in range(nsec):
-    o = base + i * 40
-    if d[o:o+8].rstrip(b"\0") == b".initrd":
-        print(struct.unpack_from("<I", d, o + 8)[0])
-        break
-EOPY
-)"
+    isize="$(pe_section_size "$uki" .initrd 2>/dev/null)"
     if [ -n "$isize" ] && [ "$isize" -gt 0 ] 2>/dev/null; then
       ok "initramfs is in the UKI for $kver ($uki, .initrd is $isize bytes)"
     else
