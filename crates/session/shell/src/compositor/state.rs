@@ -6639,7 +6639,14 @@ impl State {
         let id = surface_id(surface.wl_surface());
         self.withdraw_provisional_tab(id);
         self.client_input.promote_to_overlay(id);
-        let (out_w, out_h) = self.output_size;
+        // Bounded by the display it opens on, not by every display at once.
+        let (out_w, out_h) = self.focused_output_rect().map_or(self.output_size, |display| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "output geometry is bounded by the i32 Wayland logical coordinate space"
+            )]
+            (display.width().round() as i32, display.height().round() as i32)
+        });
         surface.with_pending_state(|pending| {
             pending.size = None;
             pending.bounds = (out_w > 0 && out_h > 0).then(|| (out_w, out_h).into());
@@ -6652,19 +6659,44 @@ impl State {
         );
     }
 
-    /// The system-modal prompts and where they sit: centred on the output.
+    /// The display the person is working on, in the logical desktop: the
+    /// one the shell's focus is on (it follows the pointer and the focused
+    /// window across displays), else the primary. The rule the shell's own
+    /// surfaces open by (`ShellOverlayHost::surface_area`).
+    pub(crate) fn focused_output_rect(&self) -> Option<Rect> {
+        let focused = self.workspace_tree.read().desktop.outputs.focused_display();
+        focused
+            .and_then(|id| {
+                self.output_rects
+                    .get(&crate::compositor::backend::OutputId(id))
+                    .copied()
+            })
+            .or_else(|| {
+                self.output_table
+                    .iter()
+                    .find_map(|output| self.output_rects.get(&output.id).copied())
+            })
+    }
+
+    /// The system-modal prompts and where they sit: centred on the display
+    /// the person is working on. Centred on the whole desktop, a prompt
+    /// straddled the seam between a laptop panel and the monitor beside it.
     pub fn system_modal_surfaces(&self) -> Vec<(SurfaceId, Rect)> {
-        let (out_w, out_h) = (
-            f64::from(self.output_size.0.max(0)),
-            f64::from(self.output_size.1.max(0)),
-        );
+        let display = self.focused_output_rect().unwrap_or_else(|| {
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.output_size.0.max(0)),
+                f64::from(self.output_size.1.max(0)),
+            )
+        });
         self.system_modals
             .iter()
             .filter_map(|&id| {
                 let (w, h) = crate::compositor::foreign::store().frame_size(id)?;
                 let (w, h) = (f64::from(w), f64::from(h));
-                let x = ((out_w - w) / 2.0).max(0.0).floor();
-                let y = ((out_h - h) / 2.0).max(0.0).floor();
+                let x = display.x0 + ((display.width() - w) / 2.0).max(0.0).floor();
+                let y = display.y0 + ((display.height() - h) / 2.0).max(0.0).floor();
                 Some((id, Rect::new(x, y, x + w, y + h)))
             })
             .collect()

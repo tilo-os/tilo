@@ -849,7 +849,8 @@ pub struct FrameBuilder {
     /// Pixel-exact final app frames shown only while a newly authorised
     /// secondary surface is preparing its first buffer.
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
-    osk_anchor_x: Option<f64>,
+    /// The centre of the field the on-screen keyboard types into.
+    osk_anchor: Option<vello::kurbo::Point>,
     osk_active: bool,
     /// [`crate::compositor::state::State::osk_commits`], for the state dump.
     osk_commits: u64,
@@ -1185,7 +1186,7 @@ impl FrameBuilder {
             session_locked: false,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
-            osk_anchor_x: None,
+            osk_anchor: None,
             osk_active: false,
             osk_commits: 0,
             osk_serves_shell: false,
@@ -1979,18 +1980,20 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
-    /// Dock the keyboard at the bottom of the output it serves. The release
-    /// gate taps its keys from the same placement
+    /// Dock the keyboard at the bottom of the output it serves: the one
+    /// holding the field it types into, else the display the person is
+    /// working on. The release gate taps its keys from the same placement
     /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
         if self.osk_overlay.is_none() {
             return;
         }
         let outputs = self.effective_outputs();
-        let anchor = self.osk_anchor_x.unwrap_or(0.0);
-        let output = outputs
-            .iter()
-            .find(|o| anchor >= o.x && anchor < o.x + o.width)
+        let focused = self.host.overlay_area().center();
+        let output = self
+            .osk_anchor
+            .and_then(|anchor| outputs.iter().find(|o| o.rect().contains(anchor)))
+            .or_else(|| outputs.iter().find(|o| o.rect().contains(focused)))
             .or_else(|| outputs.first());
         let Some(output) = output else { return };
 
@@ -2000,7 +2003,9 @@ impl FrameBuilder {
             .clamp(220.0, 380.0)
             .min((output.height - margin * 2.0).max(1.0));
         let x0 = output.x + (output.width - width) / 2.0;
-        let y0 = (output.height - height - margin).max(0.0);
+        // From the output's own top: a display beside a taller one, or
+        // below another, does not start at the desktop's top edge.
+        let y0 = output.y + (output.height - height - margin).max(0.0);
         if let Some(keyboard) = self.osk_overlay.as_mut() {
             keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
         }
@@ -4769,10 +4774,17 @@ impl FrameBuilder {
     ) {
         let anchor = focused_surface
             .and_then(|id| self.host.foreign_surface_rect(id))
-            .map(|rect| rect.center().x)
-            .or_else(|| shell_field.map(|field| f64::from(field.x) + f64::from(field.width) / 2.0));
+            .map(|rect| rect.center())
+            .or_else(|| {
+                shell_field.map(|field| {
+                    vello::kurbo::Point::new(
+                        f64::from(field.x) + f64::from(field.width) / 2.0,
+                        f64::from(field.y) + f64::from(field.height) / 2.0,
+                    )
+                })
+            });
         self.osk_serves_shell = shell_field.is_some();
-        self.osk_anchor_x = anchor;
+        self.osk_anchor = anchor;
         self.osk_active = active;
         match surface_id {
             Some(id)
