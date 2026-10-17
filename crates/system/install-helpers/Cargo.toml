@@ -87,6 +87,8 @@ serde_json.workspace = true
 sha2.workspace = true
 # The export cache's receipt: a private temporary file renamed into place.
 tempfile.workspace = true
+# The development code-refresh probe reads its boot-input fixture as a tar.
+tar.workspace = true
 tilo-pycompat = { path = "../tilo-pycompat" }
 # The development target UKI: the in-place UKI editor, and the hardware
 # profile's pinned DTB as hardware_profile.py resolves it.

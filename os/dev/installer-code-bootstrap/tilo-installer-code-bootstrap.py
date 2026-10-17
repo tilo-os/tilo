@@ -41,7 +41,7 @@ def start():
     require(receipt.get('schema') == 'tilo.installer-code-bootstrap.v1', 'invalid VM bootstrap receipt')
     for name, expected in receipt['files'].items():
         require(name in {'tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
-                         'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py'},
+                         'tilo-installer-code-protocol.py', 'tilo-vm-install-proof.py'},
                 'unexpected bootstrap file')
         file = ROOT / name
         require(file.is_file() and not file.is_symlink() and file.stat().st_uid == 0
@@ -49,7 +49,7 @@ def start():
                 and hashlib.sha256(file.read_bytes()).hexdigest() == expected,
                 'VM bootstrap content differs from host manifest')
     require(set(receipt['files']) == {'tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
-                                    'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py'},
+                                    'tilo-installer-code-protocol.py', 'tilo-vm-install-proof.py'},
             'incomplete bootstrap manifest')
     source = ROOT / 'tilo-vm-install-proof.py'
     require(DESTINATION.is_file() and not DESTINATION.is_symlink(), 'missing original proof emitter')

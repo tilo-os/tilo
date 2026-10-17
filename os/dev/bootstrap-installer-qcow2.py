@@ -20,7 +20,7 @@ import time
 
 SCHEMA = 'tilo.installer-code-bootstrap.v1'
 FILES = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
-         'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py')
+         'tilo-installer-code-protocol.py', 'tilo-vm-install-proof.py')
 # Where the checkout keeps each seeded file. Every one only ever runs from the
 # seed on old media (new media carry the compiled refresh daemon and proof
 # emitter), so they live with the host tooling.
