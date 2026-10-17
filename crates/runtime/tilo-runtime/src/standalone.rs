@@ -23,6 +23,9 @@ mod confirm;
 mod execution;
 mod files;
 mod joined;
+mod media_import;
+#[cfg(test)]
+mod media_import_tests;
 mod owner;
 mod rooms;
 mod workspace;
@@ -88,6 +91,12 @@ impl Drop for Standalone {
 }
 
 impl Standalone {
+    #[cfg(test)]
+    fn media_host(&self) -> &profile::MediaHost {
+        let Self { _media: media, .. } = self;
+        media
+    }
+
     fn start(root: &Path, stage: &mut dyn FnMut(&str), dev: bool) -> io::Result<Self> {
         stage("locking the profile");
         let lock = profile::lock(root)?;
@@ -158,6 +167,7 @@ impl Standalone {
                     apps: Arc::clone(&apps),
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
+                workspace_governance: Some(media_import::service(&workspace, &media)?),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
                 // The service the identity service answers key requests
                 // from: endpoints ask again when it says a channel changed.

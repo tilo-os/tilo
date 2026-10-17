@@ -243,6 +243,9 @@ other, then asks the device's route (`HostServices::action_offload`,
   weighs next time.
 
 Content named twice is one input on both paths, as a worker stages it.
+Missing room reachability never falls back to store residency. For explicitly
+selected old standalone-profile content, see [legacy media recovery](legacy-media-recovery.md);
+that owner action creates new references rather than inferring ownership.
 
 A session that owns its profile's content store — the standalone runtime
 (`tilo_runtime::standalone`) and the shell's compositor-free runtime host —
