@@ -1156,6 +1156,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                 | FilesEffect::OpenAccount { .. }
                 | FilesEffect::AccountDetails { .. }
                 | FilesEffect::Reauthenticate { .. }
+                | FilesEffect::OpenDrive { .. }
         ) && !ui::bound_dispatch::host_person_invocation_permitted()
         {
             return Err("Only the host's person may access their private cloud accounts".into());
