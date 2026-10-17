@@ -22,10 +22,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-/// Unpainted now, but `needs_animation_frame` and a regression test still
-/// gate on it.
-const DROP_ZONE_ANIM_MS: u64 = 140;
-
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
 /// Fade-in when `hover_drop_idx` changes gap; shorter than the layout spring.
@@ -355,7 +351,6 @@ pub struct TabBar {
     /// for a parent (e.g. `GroupRow`) to resolve the drop target.
     pub pending_detach: Option<(u64, Point)>,
     drop_zone_target: Option<usize>,
-    drop_zone_animated_at: Option<Instant>,
     /// Gap index where the drop-target line paints. Written from own-bar drag
     /// events and, for cross-group drags, [`Self::set_external_drag_hover`] called
     /// by `GroupRow` on every sibling bar.
@@ -398,6 +393,11 @@ pub struct TabBar {
     new_tab: bool,
     /// Per-tab content marks, keyed by tab id (a sidecar like the others).
     marks: HashMap<u64, TabMark>,
+    /// When each busy tab became busy: its arc turns for [`BUSY_TURNING`].
+    busy_since: HashMap<u64, Instant>,
+    /// The busy pose last drawn ([`Self::busy_pose_at`]); `None` when no
+    /// busy mark was drawn.
+    busy_drawn: Option<BusyPose>,
     /// The painted mark of each tab, aligned 1:1 with `tabs`.
     mark_rects: Vec<Rect>,
     /// A click on a sound mark, drained by [`TabBar::take_mark_click`].
@@ -521,6 +521,8 @@ impl TabBar {
             closable: true,
             new_tab: true,
             marks: HashMap::new(),
+            busy_since: HashMap::new(),
+            busy_drawn: None,
             mark_rects: Vec::new(),
             pending_mark: None,
             shows_group_focus: false,
@@ -538,7 +540,6 @@ impl TabBar {
             pending_activation: None,
             pending_detach: None,
             drop_zone_target: None,
-            drop_zone_animated_at: None,
             hover_drop_idx: None,
             hover_drop_animated_at: None,
             prev_tab_rects_by_id: HashMap::new(),
@@ -573,6 +574,11 @@ impl TabBar {
 
     /// Mark what tab `id`'s content is doing, or clear the mark.
     pub fn set_mark(&mut self, id: u64, mark: Option<TabMark>) {
+        if mark == Some(TabMark::Busy) {
+            self.busy_since.entry(id).or_insert_with(crate::time::now);
+        } else {
+            self.busy_since.remove(&id);
+        }
         match mark {
             Some(mark) => {
                 self.marks.insert(id, mark);
@@ -581,6 +587,34 @@ impl TabBar {
                 self.marks.remove(&id);
             }
         }
+    }
+
+    /// Whether tab `id`'s busy arc still turns at `now`: motion is on and it
+    /// has been busy for less than [`BUSY_TURNING`].
+    fn busy_turns(&self, id: u64, now: Instant) -> bool {
+        !self.reduce_motion
+            && self
+                .busy_since
+                .get(&id)
+                .is_some_and(|since| now.saturating_duration_since(*since) < BUSY_TURNING)
+    }
+
+    /// The pose busy arcs show at `now`: the indicator step while one
+    /// turns, still once all have come to rest.
+    fn busy_pose_at(&self, now: Instant) -> BusyPose {
+        let turning = self.busy_since.keys().any(|id| self.busy_turns(*id, now));
+        if turning {
+            BusyPose::Step(crate::animation::indicator_step(busy_epoch(), now))
+        } else {
+            BusyPose::Still
+        }
+    }
+
+    /// The next instant a busy arc changes: its next step while one turns,
+    /// or the moment the last turning one comes to rest.
+    fn busy_deadline(&self, now: Instant) -> Option<Instant> {
+        let turning = self.busy_since.keys().any(|id| self.busy_turns(*id, now));
+        turning.then(|| crate::animation::next_indicator_step(busy_epoch(), now))
     }
 
     /// Tab `id`'s mark, if any.
@@ -669,7 +703,6 @@ impl TabBar {
         self.inserted_at.clear();
         self.reveal_anim.clear();
         self.reveal_px.clear();
-        self.drop_zone_animated_at = None;
         self.hover_drop_animated_at = None;
     }
 
@@ -854,7 +887,7 @@ impl TabBar {
                 transform,
                 theme,
                 leading_glyph_rect(r),
-                mark,
+                (t.id, mark),
                 text_color,
             );
             ICON_W + ICON_GAP
@@ -940,18 +973,18 @@ impl TabBar {
         transform: Affine,
         theme: &Theme,
         rect: Rect,
-        mark: TabMark,
+        (id, mark): (u64, TabMark),
         ink: vello::peniko::Color,
     ) {
         match mark {
             TabMark::Busy => {
-                let turn = if self.reduce_motion {
-                    0.0
-                } else {
-                    let t = crate::time::now()
-                        .saturating_duration_since(busy_epoch())
-                        .as_secs_f64();
+                let now = crate::time::now();
+                let turn = if self.busy_turns(id, now) {
+                    // In indicator steps: the arc turns 30 times a second.
+                    let t = crate::animation::indicator_elapsed(busy_epoch(), now).as_secs_f64();
                     t.fract() * std::f64::consts::TAU
+                } else {
+                    0.0
                 };
                 let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
                 let arc = vello::kurbo::Arc::new(
@@ -2326,7 +2359,6 @@ impl TabBar {
         self.drag_offset = None;
         self.drag_lifted_at = None;
         self.drop_zone_target = None;
-        self.drop_zone_animated_at = None;
         self.hover_drop_idx = None;
         self.hover_drop_animated_at = None;
     }
@@ -3057,6 +3089,18 @@ fn square_at(c: Point, side: f64) -> Rect {
 /// `ICON_W` square, starting on the pill's text inset and centred on the
 /// pill's centre line. The title starts `ICON_GAP` after it — see
 /// [`title_x0`].
+/// What busy arcs show: a step of their turn, or the still ring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BusyPose {
+    Step(u64),
+    Still,
+}
+
+/// How long a busy mark turns. Past this it is the still three-quarter
+/// ring: a tab busy for long has said so, and an arc turning for minutes
+/// keeps the whole screen repainting for nothing.
+const BUSY_TURNING: Duration = Duration::from_secs(10);
+
 /// The instant a busy mark's turn is measured from, shared by every strip so
 /// two loading tabs turn together.
 fn busy_epoch() -> Instant {
@@ -3339,6 +3383,8 @@ impl Widget for TabBar {
         presence: &PresenceCtx,
     ) {
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
+        self.busy_drawn =
+            (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::time::now()));
         // Guards one stale frame after a detach/insert mutates `tabs` outside the
         // layout pass; next `apply_layout` fixes it.
         if self.tab_rects.len() != self.tabs.len() {
@@ -3693,12 +3739,37 @@ impl Widget for TabBar {
         }
     }
 
+    /// A dwell or an aim hold still to run out is a wait, not motion: the
+    /// host sleeps until it is due and [`Widget::update`] settles it.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let now = crate::time::now();
+        self.hover_intent
+            .deadline(now)
+            .into_iter()
+            .chain(self.busy_deadline(now))
+            .min()
+    }
+
+    /// A dwell or aim hold that came due opens (or hands over) its pill;
+    /// the relayout this asks for starts the reveal.
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let before = self.hover_intent.open();
+        self.settle_hover_intent();
+        // A busy arc's step (or its coming to rest) is due: paint it.
+        let now = crate::time::now();
+        let busy_step = self
+            .busy_drawn
+            .is_some_and(|drawn| drawn != self.busy_pose_at(now));
+        self.hover_intent.open() != before || busy_step
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        // Keep pumping redraws while any curve is in flight: drop-zone expand,
-        // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
-        let drop_zone = self
-            .drop_zone_animated_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS));
+        // Keep pumping redraws while any curve is in flight: layout spring,
+        // insert fade, close fade, drop-line fade-in, or reveal.
         let layout = self
             .layout_anim_started
             .is_some_and(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS));
@@ -3722,9 +3793,6 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
-        // A dwell or an aim hold still to run out: the next layout settles it.
-        let hover_intent = self.hover_intent.deadline(crate::time::now()).is_some();
-        let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
             && self
@@ -3734,16 +3802,7 @@ impl Widget for TabBar {
         // spring back runs by itself.
         let resisting =
             self.resist.is_some_and(|r| r.released_at.is_some()) && self.resist_offset().is_some();
-        drop_zone
-            || layout
-            || insert_fade
-            || close_fade
-            || hover_drop_fade
-            || reveal
-            || drag_lift
-            || hover_intent
-            || busy
-            || resisting
+        layout || insert_fade || close_fade || hover_drop_fade || reveal || drag_lift || resisting
     }
 }
 
@@ -4285,10 +4344,7 @@ impl TabBar {
             } else {
                 None
             };
-            if new_target != self.drop_zone_target {
-                self.drop_zone_target = new_target;
-                self.drop_zone_animated_at = Some(crate::time::now());
-            }
+            self.drop_zone_target = new_target;
             // Same gap drives the white-line indicator; cross-group hovers
             // reach it via `set_external_drag_hover`.
             if new_target != self.hover_drop_idx {
@@ -6002,11 +6058,6 @@ mod tests {
                 Some(1),
                 "cursor on B's left half → gap 1"
             );
-            // Sampled immediately after the target change — well within DROP_ZONE_ANIM_MS.
-            assert!(
-                b.needs_animation_frame(),
-                "drop-zone animation must request redraws"
-            );
 
             // Move cursor past pill C's midpoint → gap 3 (append).
             let event = WindowEvent::CursorMoved {
@@ -6024,7 +6075,8 @@ mod tests {
             dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
-                b.hover_intent.deadline(crate::time::now()).is_some() && b.needs_animation_frame(),
+                b.hover_intent.deadline(crate::time::now()).is_some()
+                    && b.next_wake_deadline().is_some(),
                 "release clears the drag target but keeps the resting pointer's \
                  hover dwell running, so the pill under it still opens",
             );
@@ -7721,8 +7773,8 @@ mod tests {
                 "opened {ms} ms in, before the dwell ran"
             );
             assert!(
-                b.needs_animation_frame(),
-                "a pending dwell must keep frames coming"
+                b.next_wake_deadline().is_some(),
+                "a pending dwell wakes the host when it is due"
             );
             ms += 10;
         }
@@ -7845,8 +7897,8 @@ mod tests {
             sample_at(&mut b, opened, 8, short, &theme);
             assert!(chips_open(&b, 1), "still heading for the chips");
             assert!(
-                b.needs_animation_frame(),
-                "a running hold must keep frames coming"
+                b.next_wake_deadline().is_some(),
+                "a running hold wakes the host when it runs out"
             );
             let hold = u64::try_from(AIM_HOLD.as_millis()).unwrap();
             layout_at(&mut b, opened, 8 + hold - 1, &theme);
@@ -8646,6 +8698,37 @@ mod tests {
         }
     }
 
+    /// A busy arc turns in indicator steps on wake deadlines — not on
+    /// animation frames — and comes to rest after [`BUSY_TURNING`].
+    #[test]
+    fn a_busy_arc_steps_on_deadlines_and_rests_after_a_while() {
+        let mut tabs = bar();
+        tabs.set_mark(3, Some(TabMark::Busy));
+        let since = tabs.busy_since[&3];
+        let now = since + Duration::from_millis(5);
+        assert!(!tabs.needs_animation_frame(), "a busy mark is not motion");
+        let due = tabs.busy_deadline(now).expect("the arc's next step");
+        assert_eq!(
+            due,
+            crate::animation::next_indicator_step(busy_epoch(), now)
+        );
+        tabs.busy_drawn = Some(tabs.busy_pose_at(now));
+        let doc = automerge::AutoCommit::new();
+        assert!(
+            crate::time::testing::with_monotonic_time(due, || {
+                Widget::update(&mut tabs, &doc, &automerge::ROOT)
+            }),
+            "the next step repaints"
+        );
+        let rested = since + BUSY_TURNING;
+        assert_eq!(
+            tabs.busy_deadline(rested),
+            None,
+            "a long-busy tab stands still"
+        );
+        assert_eq!(tabs.busy_pose_at(rested), BusyPose::Still);
+    }
+
     #[test]
     fn a_strip_of_fixed_views_has_no_close_or_new_tab_and_marks_paint_and_hit() {
         let theme = crate::theme::Theme {
@@ -8673,6 +8756,11 @@ mod tests {
         tabs.set_mark(2, Some(TabMark::Playing));
         tabs.set_mark(3, Some(TabMark::Busy));
         lay_out_at_width_with(&mut tabs, 600.0, &theme);
+        assert_eq!(
+            tabs.busy_deadline(crate::time::now()),
+            None,
+            "a busy mark under reduced motion stands still"
+        );
         let speaker = tabs
             .mark_rect(2)
             .expect("the mark stands in the leading slot");
@@ -8685,10 +8773,6 @@ mod tests {
             tabs.active_id(),
             1,
             "a click on the mark does not select the tab"
-        );
-        assert!(
-            tabs.needs_animation_frame() || theme.reduce_motion,
-            "a busy mark turns"
         );
         let node = Widget::accessibility(&tabs).unwrap();
         assert_eq!(

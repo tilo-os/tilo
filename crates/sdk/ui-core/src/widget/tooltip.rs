@@ -550,8 +550,30 @@ impl Widget for Tooltip {
         }
     }
 
+    /// The dwell is a wait, not motion: the host sleeps until the reveal is
+    /// due and [`Widget::update`] shows it.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.hover_since
+            .filter(|_| !self.is_visible)
+            .map(|since| since.checked_add(self.delay).unwrap_or(since))
+    }
+
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let due = self.hover_since.is_some_and(|since| {
+            !self.is_visible && crate::time::now().saturating_duration_since(since) >= self.delay
+        });
+        if due {
+            self.is_visible = true;
+        }
+        due
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        self.hover_since.is_some() && !self.is_visible
+        false
     }
 
     fn name(&self) -> &'static str {
@@ -709,6 +731,15 @@ impl TooltipHost {
     pub fn needs_frame(&self) -> bool {
         self.target.is_some() && !self.visible
     }
+
+    /// When a pending tooltip's dwell runs out: the host sleeps until then
+    /// and paints once, instead of pumping frames through the wait.
+    pub fn reveal_at(&self) -> Option<Instant> {
+        self.target
+            .as_ref()
+            .filter(|_| !self.visible)
+            .map(|t| t.since.checked_add(self.dwell).unwrap_or(t.since))
+    }
 }
 
 #[cfg(test)]
@@ -742,7 +773,12 @@ mod host_tests {
                 "new target changes state"
             );
             assert!(h.visible().is_none(), "not shown before the dwell elapses");
-            assert!(h.needs_frame(), "a pending reveal pumps frames");
+            assert!(h.needs_frame(), "a reveal is pending");
+            assert_eq!(
+                h.reveal_at(),
+                Some(t0 + Duration::from_millis(500)),
+                "the host wakes when the dwell runs out"
+            );
 
             // A tick short of the dwell keeps it hidden.
             h.tick(t0 + Duration::from_millis(300));
@@ -754,6 +790,7 @@ mod host_tests {
             assert_eq!(label, "Search");
             assert_eq!(anchor, Rect::new(0.0, 0.0, 40.0, 40.0));
             assert!(!h.needs_frame(), "no frame pump once shown");
+            assert_eq!(h.reveal_at(), None, "nothing left to wake for");
 
             // Leaving the region (pointer over nothing) hides it immediately.
             assert!(h.on_pointer(None, t0 + Duration::from_millis(650)));
@@ -907,16 +944,26 @@ mod tests {
             assert!(!t.is_visible(), "hides on hover-leave");
         }
 
-        // Case `delayed_tooltip_requests_frames_while_pending`.
+        // Case `delayed_tooltip_waits_on_a_deadline_while_pending`.
         {
             let mut t = Tooltip::new("Later")
                 .with_delay(Duration::from_millis(600))
                 .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
-            assert!(!t.needs_animation_frame());
+            assert_eq!(t.next_wake_deadline(), None);
             feed(&mut t, Point::new(10.0, 10.0)); // enter
-            // Pending (not yet visible) → host must keep pumping frames.
-            assert!(t.needs_animation_frame());
+            // Pending (not yet visible): the host sleeps until the reveal.
+            assert!(!t.needs_animation_frame(), "a dwell is not motion");
+            let due = t.next_wake_deadline().expect("the reveal is scheduled");
             assert!(!t.is_visible());
+            let doc = automerge::AutoCommit::new();
+            assert!(
+                crate::time::testing::with_monotonic_time(due, || {
+                    Widget::update(&mut t, &doc, &automerge::ROOT)
+                }),
+                "the due reveal asks for a frame"
+            );
+            assert!(t.is_visible());
+            assert_eq!(t.next_wake_deadline(), None);
         }
 
         // Case `accessibility_reports_tooltip_role_label_and_hidden`.

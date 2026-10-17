@@ -246,28 +246,13 @@ fn scroll_opt_disabled() -> bool {
     })
 }
 
-/// Whether an animation request should keep the event loop on its 60 Hz pump.
-/// Reduced-motion widgets paint their settled state without an animation
-/// redraw, so their raw demand must not keep an otherwise-idle app awake.
-#[cfg(feature = "native")]
-const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
-    needs_frame && !reduce_motion
-}
-
 #[cfg(test)]
-mod animation_pump_tests {
-    use super::{animation_pump_needed, continuation_publication};
+mod continuation_tests {
+    use super::continuation_publication;
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
-    fn animation_pump_sleeps_for_reduced_motion_and_clears_vanished_continuations() {
-        // Case `reduced_motion_does_not_keep_the_idle_loop_awake`.
-        {
-            assert!(animation_pump_needed(true, false));
-            assert!(!animation_pump_needed(true, true));
-            assert!(!animation_pump_needed(false, false));
-        }
-
+    fn vanished_continuations_clear_the_durable_projection() {
         // Case `continuation_disappearance_clears_the_durable_projection`.
         {
             let request = continuation_publication("ebook".into(), None, true);

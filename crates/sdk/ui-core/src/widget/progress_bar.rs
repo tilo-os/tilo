@@ -115,8 +115,11 @@ impl ProgressBarFace {
     /// clock.
     fn phase(&self, theme: &Theme) -> f64 {
         match self.started {
-            Some(started) if !theme.reduce_motion && !crate::time::wall_frozen() => f64::from(
-                (started.elapsed().as_secs_f32() % INDETERMINATE_PERIOD_SECS)
+            // In indicator steps (`crate::animation::indicator`): the
+            // segment moves 30 times a second, not at every refresh.
+            Some(started) if theme.motion().loops() && !crate::time::wall_frozen() => f64::from(
+                (crate::animation::indicator_elapsed(started, crate::time::now()).as_secs_f32()
+                    % INDETERMINATE_PERIOD_SECS)
                     / INDETERMINATE_PERIOD_SECS,
             ),
             _ => 0.5,
@@ -187,6 +190,10 @@ pub struct ProgressBar {
     reduce_motion: bool,
     last_segment: Rect,
     damage: [Rect; 2],
+    /// The indicator step last drawn, and whether that draw moved to a new
+    /// one: only then is the segment damage.
+    drawn_step: Option<u64>,
+    stepped: bool,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading"). When set, the bar becomes a
@@ -218,6 +225,8 @@ impl ProgressBar {
             reduce_motion: false,
             last_segment: Rect::ZERO,
             damage: [Rect::ZERO; 2],
+            drawn_step: None,
+            stepped: false,
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
@@ -237,6 +246,8 @@ impl ProgressBar {
             reduce_motion: false,
             last_segment: Rect::ZERO,
             damage: [Rect::ZERO; 2],
+            drawn_step: None,
+            stepped: false,
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
@@ -264,6 +275,16 @@ impl ProgressBar {
     pub fn level(mut self, thresholds: crate::widget::GaugeThresholds) -> Self {
         self.fill = BarFill::Level(thresholds);
         self
+    }
+
+    /// The segment changed in the last draw, or will in the next one.
+    fn segment_moves(&self) -> bool {
+        self.stepped
+            || self.drawn_step
+                != Some(crate::animation::indicator_step(
+                    self.start,
+                    crate::time::now(),
+                ))
     }
 
     fn face(&self) -> ProgressBarFace {
@@ -387,6 +408,12 @@ impl Widget for ProgressBar {
             self.rect,
         );
         if self.indeterminate {
+            let step = Some(crate::animation::indicator_step(
+                self.start,
+                crate::time::now(),
+            ));
+            self.stepped |= self.drawn_step != step;
+            self.drawn_step = step;
             self.damage = match (
                 self.last_segment.is_zero_area(),
                 current_segment.is_zero_area(),
@@ -438,13 +465,13 @@ impl Widget for ProgressBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || (self.indeterminate && !self.reduce_motion)
+        self.dirty || (self.indeterminate && !self.reduce_motion && self.segment_moves())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.dirty {
             regions.push(self.rect);
-        } else if self.indeterminate && !self.reduce_motion {
+        } else if self.indeterminate && !self.reduce_motion && self.stepped {
             regions.extend(
                 self.damage
                     .iter()
@@ -456,6 +483,7 @@ impl Widget for ProgressBar {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.stepped = false;
     }
 
     /// Indeterminate bars must keep the redraw loop pumping so the
@@ -668,6 +696,13 @@ mod tests {
             bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
             let _ = render(&mut bar);
             bar.mark_drawn();
+            // The next step moves the segment: that frame's damage is the
+            // segment alone.
+            let next = crate::animation::next_indicator_step(bar.start, crate::time::now());
+            crate::time::testing::with_monotonic_time(next, || {
+                let _ = render(&mut bar);
+            });
+            bar.dirty = false;
 
             let mut regions = Vec::new();
             bar.collect_damage(&mut regions);
