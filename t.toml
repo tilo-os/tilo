@@ -82,14 +82,15 @@ tilo-app-package-cli = ["apps/browser/tilo-app.toml"]
 tilo-app-template-smoke = ["crates/dev/tilo-app-cli/templates/**", "crates/dev/tilo-app-cli/src/lib.rs"]
 tilo-board-successor = ["os/usr/libexec/tilo-verified-update", "os/hardware/profiles/*.json", "os/dev/hardware_profile.py"]
 tilo-browser-peer = ["crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
-tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/**", "os/usr/libexec/tilo-firstboot-autologin-cleanup", "os/usr/libexec/tilo-session-recovery", "os/usr/lib/systemd/system/tilo-firstboot-user.service", "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service", "os/usr/lib/systemd/system/tilo-session-recovery.service", "os/etc/greetd/config.toml", "os/components.toml", "os/tests/oracles/**", "os/tests/test_firstboot_credential_transport.py", "os/tests/test_firstboot_home_seeds_native.py", "os/tests/test_firstboot_transaction.py", "os/tests/test_installer_firstboot_runtime.py", "os/tests/test_prepared_first_use_binding.py", "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs", "crates/session/installer/src/account_handoff.rs", "apps/imager/src/bin/tilo-installer-prepared-setup-extract/**"]
 tilo-pdf = ["tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -152,14 +153,15 @@ tilo-app-package-cli = ["apps/browser/tilo-app.toml"]
 tilo-app-template-smoke = ["crates/dev/tilo-app-cli/templates/**", "crates/dev/tilo-app-cli/src/lib.rs"]
 tilo-board-successor = ["os/usr/libexec/tilo-verified-update", "os/hardware/profiles/*.json", "os/dev/hardware_profile.py"]
 tilo-browser-peer = ["crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
-tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/**", "os/usr/libexec/tilo-firstboot-autologin-cleanup", "os/usr/libexec/tilo-session-recovery", "os/usr/lib/systemd/system/tilo-firstboot-user.service", "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service", "os/usr/lib/systemd/system/tilo-session-recovery.service", "os/etc/greetd/config.toml", "os/components.toml", "os/tests/oracles/**", "os/tests/test_firstboot_credential_transport.py", "os/tests/test_firstboot_home_seeds_native.py", "os/tests/test_firstboot_transaction.py", "os/tests/test_installer_firstboot_runtime.py", "os/tests/test_prepared_first_use_binding.py", "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs", "crates/session/installer/src/account_handoff.rs", "apps/imager/src/bin/tilo-installer-prepared-setup-extract/**"]
 tilo-pdf = ["tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -214,14 +216,15 @@ tilo-app-package-cli = ["apps/browser/tilo-app.toml"]
 tilo-app-template-smoke = ["crates/dev/tilo-app-cli/templates/**", "crates/dev/tilo-app-cli/src/lib.rs"]
 tilo-board-successor = ["os/usr/libexec/tilo-verified-update", "os/hardware/profiles/*.json", "os/dev/hardware_profile.py"]
 tilo-browser-peer = ["crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
-tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/**", "os/usr/libexec/tilo-firstboot-autologin-cleanup", "os/usr/libexec/tilo-session-recovery", "os/usr/lib/systemd/system/tilo-firstboot-user.service", "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service", "os/usr/lib/systemd/system/tilo-session-recovery.service", "os/etc/greetd/config.toml", "os/components.toml", "os/tests/oracles/**", "os/tests/test_firstboot_credential_transport.py", "os/tests/test_firstboot_home_seeds_native.py", "os/tests/test_firstboot_transaction.py", "os/tests/test_installer_firstboot_runtime.py", "os/tests/test_prepared_first_use_binding.py", "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs", "crates/session/installer/src/account_handoff.rs", "apps/imager/src/bin/tilo-installer-prepared-setup-extract/**"]
 tilo-pdf = ["tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -276,14 +279,15 @@ tilo-app-package-cli = ["apps/browser/tilo-app.toml"]
 tilo-app-template-smoke = ["crates/dev/tilo-app-cli/templates/**", "crates/dev/tilo-app-cli/src/lib.rs"]
 tilo-board-successor = ["os/usr/libexec/tilo-verified-update", "os/hardware/profiles/*.json", "os/dev/hardware_profile.py"]
 tilo-browser-peer = ["crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
-tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit", "keys/release/**"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-firstboot-user", "crates/system/firstboot-files/**", "os/usr/libexec/tilo-firstboot-autologin-cleanup", "os/usr/libexec/tilo-session-recovery", "os/usr/lib/systemd/system/tilo-firstboot-user.service", "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service", "os/usr/lib/systemd/system/tilo-session-recovery.service", "os/etc/greetd/config.toml", "os/components.toml", "os/tests/oracles/**", "os/tests/test_firstboot_credential_transport.py", "os/tests/test_firstboot_home_seeds_native.py", "os/tests/test_firstboot_transaction.py", "os/tests/test_installer_firstboot_runtime.py", "os/tests/test_prepared_first_use_binding.py", "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs", "crates/session/installer/src/account_handoff.rs", "apps/imager/src/bin/tilo-installer-prepared-setup-extract/**"]
 tilo-pdf = ["tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -444,6 +448,38 @@ requires = ["arch=x86_64"]
 # job sandbox refuses on x86_64; a micro-VM has it.
 isolation = "vm"
 run = "bash tools/run-security-boundary-invariants.sh"
+cost = "minutes"
+
+# Release trust as installed systems apply it: the committed operational certificates still
+# chain to the release root, certify the KMS keys CI signs with and have time left
+# (tools/signing/release_trust.py), and skopeo, the verifier bootc updates through, accepts the
+# shipped policy's release chain and refuses expired, foreign, revoked and unlogged signatures
+# (os/tests/release_trust_chain_native.py). Root in a micro-VM step, for the packages it installs.
+[[check]]
+name = "release-trust"
+run = """
+dnf install -y --setopt=install_weak_deps=False skopeo openssl >/dev/null
+python3 tools/signing/release_trust.py check-committed
+python3 os/tests/release_trust_chain_native.py
+"""
+inputs = ["keys/**", "tools/signing/**", "os/etc/containers/**", "os/tests/release_trust_chain_native.py"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "minutes"
+
+# The certificates again every day, uncached: one nearing expiry fails here, with the renewal
+# step in its message, two weeks before signing would refuse it.
+[[check]]
+name = "release-trust-expiry"
+run = """
+dnf install -y --setopt=install_weak_deps=False openssl >/dev/null
+python3 tools/signing/release_trust.py check-committed
+"""
+inputs = ["keys/**", "tools/signing/release_trust.py"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cache = false
+on = ["schedule:20 5 * * *", "dispatch"]
 cost = "minutes"
 
 # The visual goldens of each package that has them, alone so the software
@@ -630,6 +666,14 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_runtime_dylib_lazy_link.py", "tools/with-test-environment.sh"]
 
+[[check]]
+name = "suite-release-trust"
+run = "python3 tools/ci/suites.py run --jobs 8 --group release-trust"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
+requires = ["arch=x86_64"]
+inputs = ["keys/**", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "os/etc/containers/**", "os/tests/test_container_signature_policy.py", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/publish/lib.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/signing/**", "tools/with-test-environment.sh"]
+
 # It writes fixtures next to its sources and reads Git history, and as root builds bubblewrap namespaces and gives fixtures other owners, which the capability-less job sandbox cannot.
 [[check]]
 name = "suite-os"
@@ -640,7 +684,7 @@ requires = ["arch=x86_64"]
 writable_sources = true
 git = true
 isolation = "vm"
-inputs = ["apps/staging-handoff-model/**", "crates/system/extension-helper/src/machine.rs", "crates/system/install-helpers/src/staging_handoff.rs", "crates/system/install-helpers/src/staging_handoff/**", "crates/system/install-helpers/tests/fixtures/**", "os/**", "os/dev/test-assemble-app-runtime.py", "os/dev/test-export-sdk-compiler.py", "os/dev/test-install-copy-scratch-cleanup.sh", "os/dev/test-install-copy-scratch.py", "os/kernel/tests/test-cc-wrapper.sh", "os/kernel/tests/test-signing-identity.py", "os/kernel/tests/test_preprocessing_wrapper.py", "os/scripts/installer-receive-fixture/test_delivery.py", "os/scripts/installer-receive-fixture/test_prerequisite_image.py", "os/scripts/installer-source-fixture/test_bounded_native.py", "os/scripts/installer-source-fixture/test_source.py", "os/tests/airplay_encrypted_session_test.sh", "os/tests/board_audio_contract.sh", "os/tests/board_generation_series.py", "os/tests/board_release_promotion.py", "os/tests/board_session.sh", "os/tests/boot_chain_source.sh", "os/tests/boot_health_greeter.sh", "os/tests/bootc_transient_state.sh", "os/tests/cage_session_env.sh", "os/tests/composefs_digest_parse.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/data_consumer_capability_test.py", "os/tests/dev_base_inputs_tree.sh", "os/tests/disk_image_firstboot_seed.sh", "os/tests/disk_image_mirror_policy.sh", "os/tests/disk_image_mtools_esp.sh", "os/tests/disk_image_root_podman_store.sh", "os/tests/disk_image_user_labels.sh", "os/tests/disk_sectors_test.py", "os/tests/dnf_layer_repro.sh", "os/tests/dracut_tilo_root_contract.sh", "os/tests/encrypted_boot_mount_contract.sh", "os/tests/esp_generator.sh", "os/tests/firstboot_autologin_cleanup.sh", "os/tests/firstboot_password_hash.sh", "os/tests/installer_offline_target_test.py", "os/tests/installer_target_artifacts.py", "os/tests/installer_target_modes.py", "os/tests/interactive_priority.sh", "os/tests/internal_bundle_test.py", "os/tests/local_boot_esp.sh", "os/tests/nearby_cleanup_test.py", "os/tests/nearby_privileged_processes_test.sh", "os/tests/podman_build_flags.sh", "os/tests/portal_config_validity.sh", "os/tests/release_sbom_verification.sh", "os/tests/rockchip_boot_gap.sh", "os/tests/rockchip_loader_test.py", "os/tests/sealed_extensions.sh", "os/tests/security_audit_kconfig.sh", "os/tests/setup_handoff_transport.sh", "os/tests/test-installer-cycle-runtime.py", "os/tests/test_allocate_windows_direct_final_install.py", "os/tests/test_boot_unit_ordering.py", "os/tests/test_bootc_registry_wrapper.py", "os/tests/test_broker_signing_runner.py", "os/tests/test_cache_reconstruction_approval.py", "os/tests/test_cargo_freshness.py", "os/tests/test_complete_initramfs_rebind.py", "os/tests/test_container_signature_policy.py", "os/tests/test_copy_windows_direct_final_install.py", "os/tests/test_create_development_disk.py", "os/tests/test_dev_builder_staging.py", "os/tests/test_dev_tools_sysext.py", "os/tests/test_development_boot.py", "os/tests/test_development_composefs.py", "os/tests/test_development_loader.py", "os/tests/test_development_prediction.py", "os/tests/test_development_signer.py", "os/tests/test_development_source.py", "os/tests/test_development_trust.py", "os/tests/test_development_windows_guest.py", "os/tests/test_development_wine_repository.py", "os/tests/test_download_dev_installer.py", "os/tests/test_fetch_windows_direct_manifests.py", "os/tests/test_fetch_windows_guest_assets.py", "os/tests/test_finalization_driver.py", "os/tests/test_finalization_staging.py", "os/tests/test_flatpak_defaults.py", "os/tests/test_forgejo_dev_installer_metadata.py", "os/tests/test_guest_loader_inspection.py", "os/tests/test_hardlink_identical.py", "os/tests/test_hardware_firmware_artifact.py", "os/tests/test_identity_public_key.py", "os/tests/test_image_build_script_copies.py", "os/tests/test_image_cohort_archives.py", "os/tests/test_initramfs_module_policy.py", "os/tests/test_initramfs_trust.py", "os/tests/test_install_purpose.py", "os/tests/test_installed_development_disk.py", "os/tests/test_installer_bootc_helper.py", "os/tests/test_installer_cmdline_projection.py", "os/tests/test_installer_code_refresh.py", "os/tests/test_installer_dev_target_uki.py", "os/tests/test_installer_overlay.py", "os/tests/test_kernel_checkpoint_restore.py", "os/tests/test_kernel_config_values.py", "os/tests/test_kernel_failure_checkpoint.py", "os/tests/test_local_image_epoch.py", "os/tests/test_loop_partition_nodes.py", "os/tests/test_native_builder_artifact.py", "os/tests/test_native_payload_durability.py", "os/tests/test_native_reconstruction_approval.py", "os/tests/test_native_resume.py", "os/tests/test_native_resume_admission.py", "os/tests/test_no_ui_toolkits.py", "os/tests/test_oci_archive_layer_report.py", "os/tests/test_oci_image_diff.py", "os/tests/test_oci_rechunk.py", "os/tests/test_optional_service_consumer.py", "os/tests/test_pack_apps_cleanup.py", "os/tests/test_prepare_windows_direct_source.py", "os/tests/test_private_disk_image.py", "os/tests/test_probe_kvm.py", "os/tests/test_profile_installer_qcow2.py", "os/tests/test_raw_rootfs_receipt.py", "os/tests/test_read_fat32_efi.py", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_reconstructed_partials.py", "os/tests/test_reseal_image.py", "os/tests/test_retain_development_rootfs.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/test_secureboot_evidence.py", "os/tests/test_seed_env_runtime.py", "os/tests/test_service_candidate_bridge.py", "os/tests/test_shipped_runtimes.py", "os/tests/test_sign_development_rootfs.py", "os/tests/test_signing_recovery.py", "os/tests/test_signing_spool_transport.py", "os/tests/test_stage_kernel_checkpoint.py", "os/tests/test_supervised_disk.py", "os/tests/test_supervised_install_lane.py", "os/tests/test_tls_registry_fixture.py", "os/tests/test_verify_board_initramfs.py", "os/tests/test_verify_rpm_files.py", "os/tests/test_vm_install_image_proof.py", "os/tests/test_windows_direct_dev_admission.py", "os/tests/test_windows_direct_dev_provenance.py", "os/tests/test_windows_direct_provenance.py", "os/tests/test_windows_dualboot_preflight.py", "os/tests/test_windows_provider_candidates.py", "os/tests/validation_access.sh", "os/tests/vm_boot_readiness_test.py", "os/tests/vm_firmware_selection.sh", "os/tests/vm_release_gate_invariants.sh", "os/tests/windows_direct_install_orchestrator_test.py", "os/tests/windows_guest_powershell_syntax.py", "os/tests/windows_owner_backend.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/image_size.py", "tools/with-test-environment.sh"]
+inputs = ["apps/staging-handoff-model/**", "crates/system/extension-helper/src/machine.rs", "crates/system/install-helpers/src/staging_handoff.rs", "crates/system/install-helpers/src/staging_handoff/**", "crates/system/install-helpers/tests/fixtures/**", "os/**", "os/dev/test-assemble-app-runtime.py", "os/dev/test-export-sdk-compiler.py", "os/dev/test-install-copy-scratch-cleanup.sh", "os/dev/test-install-copy-scratch.py", "os/kernel/tests/test-cc-wrapper.sh", "os/kernel/tests/test-signing-identity.py", "os/kernel/tests/test_preprocessing_wrapper.py", "os/scripts/installer-receive-fixture/test_delivery.py", "os/scripts/installer-receive-fixture/test_prerequisite_image.py", "os/scripts/installer-source-fixture/test_bounded_native.py", "os/scripts/installer-source-fixture/test_source.py", "os/tests/airplay_encrypted_session_test.sh", "os/tests/board_audio_contract.sh", "os/tests/board_generation_series.py", "os/tests/board_release_promotion.py", "os/tests/board_session.sh", "os/tests/boot_chain_source.sh", "os/tests/boot_health_greeter.sh", "os/tests/bootc_transient_state.sh", "os/tests/cage_session_env.sh", "os/tests/composefs_digest_parse.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/data_consumer_capability_test.py", "os/tests/dev_base_inputs_tree.sh", "os/tests/disk_image_firstboot_seed.sh", "os/tests/disk_image_mirror_policy.sh", "os/tests/disk_image_mtools_esp.sh", "os/tests/disk_image_root_podman_store.sh", "os/tests/disk_image_user_labels.sh", "os/tests/disk_sectors_test.py", "os/tests/dnf_layer_repro.sh", "os/tests/dracut_tilo_root_contract.sh", "os/tests/encrypted_boot_mount_contract.sh", "os/tests/esp_generator.sh", "os/tests/firstboot_autologin_cleanup.sh", "os/tests/firstboot_password_hash.sh", "os/tests/installer_offline_target_test.py", "os/tests/installer_target_artifacts.py", "os/tests/installer_target_modes.py", "os/tests/interactive_priority.sh", "os/tests/internal_bundle_test.py", "os/tests/local_boot_esp.sh", "os/tests/nearby_cleanup_test.py", "os/tests/nearby_privileged_processes_test.sh", "os/tests/podman_build_flags.sh", "os/tests/portal_config_validity.sh", "os/tests/release_sbom_verification.sh", "os/tests/rockchip_boot_gap.sh", "os/tests/rockchip_loader_test.py", "os/tests/sealed_extensions.sh", "os/tests/security_audit_kconfig.sh", "os/tests/setup_handoff_transport.sh", "os/tests/test-installer-cycle-runtime.py", "os/tests/test_allocate_windows_direct_final_install.py", "os/tests/test_boot_unit_ordering.py", "os/tests/test_bootc_registry_wrapper.py", "os/tests/test_broker_signing_runner.py", "os/tests/test_cache_reconstruction_approval.py", "os/tests/test_cargo_freshness.py", "os/tests/test_complete_initramfs_rebind.py", "os/tests/test_copy_windows_direct_final_install.py", "os/tests/test_create_development_disk.py", "os/tests/test_dev_builder_staging.py", "os/tests/test_dev_tools_sysext.py", "os/tests/test_development_boot.py", "os/tests/test_development_composefs.py", "os/tests/test_development_loader.py", "os/tests/test_development_prediction.py", "os/tests/test_development_signer.py", "os/tests/test_development_source.py", "os/tests/test_development_trust.py", "os/tests/test_development_windows_guest.py", "os/tests/test_development_wine_repository.py", "os/tests/test_download_dev_installer.py", "os/tests/test_fetch_windows_direct_manifests.py", "os/tests/test_fetch_windows_guest_assets.py", "os/tests/test_finalization_driver.py", "os/tests/test_finalization_staging.py", "os/tests/test_flatpak_defaults.py", "os/tests/test_forgejo_dev_installer_metadata.py", "os/tests/test_guest_loader_inspection.py", "os/tests/test_hardlink_identical.py", "os/tests/test_hardware_firmware_artifact.py", "os/tests/test_identity_public_key.py", "os/tests/test_image_build_script_copies.py", "os/tests/test_image_cohort_archives.py", "os/tests/test_initramfs_module_policy.py", "os/tests/test_initramfs_trust.py", "os/tests/test_install_purpose.py", "os/tests/test_installed_development_disk.py", "os/tests/test_installer_bootc_helper.py", "os/tests/test_installer_cmdline_projection.py", "os/tests/test_installer_code_refresh.py", "os/tests/test_installer_dev_target_uki.py", "os/tests/test_installer_overlay.py", "os/tests/test_kernel_checkpoint_restore.py", "os/tests/test_kernel_config_values.py", "os/tests/test_kernel_failure_checkpoint.py", "os/tests/test_local_image_epoch.py", "os/tests/test_loop_partition_nodes.py", "os/tests/test_native_builder_artifact.py", "os/tests/test_native_payload_durability.py", "os/tests/test_native_reconstruction_approval.py", "os/tests/test_native_resume.py", "os/tests/test_native_resume_admission.py", "os/tests/test_no_ui_toolkits.py", "os/tests/test_oci_archive_layer_report.py", "os/tests/test_oci_image_diff.py", "os/tests/test_oci_rechunk.py", "os/tests/test_optional_service_consumer.py", "os/tests/test_pack_apps_cleanup.py", "os/tests/test_prepare_windows_direct_source.py", "os/tests/test_private_disk_image.py", "os/tests/test_probe_kvm.py", "os/tests/test_profile_installer_qcow2.py", "os/tests/test_raw_rootfs_receipt.py", "os/tests/test_read_fat32_efi.py", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_reconstructed_partials.py", "os/tests/test_reseal_image.py", "os/tests/test_retain_development_rootfs.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/test_secureboot_evidence.py", "os/tests/test_seed_env_runtime.py", "os/tests/test_service_candidate_bridge.py", "os/tests/test_shipped_runtimes.py", "os/tests/test_sign_development_rootfs.py", "os/tests/test_signing_recovery.py", "os/tests/test_signing_spool_transport.py", "os/tests/test_stage_kernel_checkpoint.py", "os/tests/test_supervised_disk.py", "os/tests/test_supervised_install_lane.py", "os/tests/test_tls_registry_fixture.py", "os/tests/test_verify_board_initramfs.py", "os/tests/test_verify_rpm_files.py", "os/tests/test_vm_install_image_proof.py", "os/tests/test_windows_direct_dev_admission.py", "os/tests/test_windows_direct_dev_provenance.py", "os/tests/test_windows_direct_provenance.py", "os/tests/test_windows_dualboot_preflight.py", "os/tests/test_windows_provider_candidates.py", "os/tests/validation_access.sh", "os/tests/vm_boot_readiness_test.py", "os/tests/vm_firmware_selection.sh", "os/tests/vm_release_gate_invariants.sh", "os/tests/windows_direct_install_orchestrator_test.py", "os/tests/windows_guest_powershell_syntax.py", "os/tests/windows_owner_backend.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/image_size.py", "tools/with-test-environment.sh"]
 
 [[check]]
 name = "suite-native-store-autoclear"
@@ -2323,7 +2367,7 @@ default = false
 name = "sign-room-service"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-room-service"]
 outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature", "/target/publish/room-service/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2335,7 +2379,7 @@ on = ["stable"]
 name = "publish-room-service"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/room-service /target/publish/room-service 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-room-service"]
 optional_needs = ["sign-room-service"]
 outputs = ["/target/publish/room-service/receipt.json"]
@@ -2391,7 +2435,7 @@ cache = false
 name = "sign-web-entry"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry/release"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["carry-web-entry"]
 outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/web-entry/release/signature", "/target/publish/web-entry/release/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2403,7 +2447,7 @@ on = ["stable"]
 name = "publish-web-entry"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-web-entry"]
 optional_needs = ["sign-web-entry", "carry-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
@@ -2440,7 +2484,7 @@ default = false
 name = "publish-registry-server"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2468,7 +2512,7 @@ default = false
 name = "sign-release-rehearsal"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-release-rehearsal"]
 outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/release-rehearsal/signature", "/target/publish/release-rehearsal/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2480,7 +2524,7 @@ on = ["dispatch", "tag:v0-rehearsal-*"]
 name = "publish-release-rehearsal"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/release-rehearsal /target/publish/release-rehearsal 'dev:dev-{commit}' 'release:sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-release-rehearsal"]
 optional_needs = ["sign-release-rehearsal"]
 outputs = ["/target/publish/release-rehearsal/receipt.json"]
@@ -2512,7 +2556,7 @@ default = false
 name = "publish-ci-fast"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-fast /target/publish/ci-fast 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-ci-fast", "image-ci-fast-smoke"]
 outputs = ["/target/publish/ci-fast/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2540,7 +2584,7 @@ default = false
 name = "publish-ci-control"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /target/publish/ci-control 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-ci-control", "image-ci-fast-smoke"]
 outputs = ["/target/publish/ci-control/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2597,7 +2641,7 @@ run = """
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index 'sha-{commit}'
 bash tools/ci/publish/oci-anonymous.sh registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-anonymous.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "tools/ci/publish/oci-anonymous.sh"]
 needs = ["image-release-tools"]
 outputs = ["/target/publish/release-tools/index/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -2660,7 +2704,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/pub
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -2676,7 +2720,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/pub
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
@@ -2692,7 +2736,7 @@ bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /tar
 bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/aarch64 'dev:dev-{commit}-aarch64' 'release:{commit}-aarch64'
 bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "rust-toolchain.toml"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "rust-toolchain.toml"]
 needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
 optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
@@ -3178,7 +3222,7 @@ default = false
 name = "sign-relay"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-relay"]
 outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/dry-run.pub", "/target/publish/relay/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -3190,7 +3234,7 @@ on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 name = "publish-relay"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-relay /target/publish/relay '{version}' 'sha-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-relay", "sign-relay"]
 outputs = ["/target/publish/relay/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -3223,9 +3267,9 @@ default = false
 name = "sign-legacy-guest"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-legacy-guest", "legacy-guest-e2e"]
-outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json"]
+outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/dry-run.pub", "/target/publish/legacy-guest/image/bundle.json", "/target/publish/legacy-guest/image/certified/**"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=any"]
@@ -3238,7 +3282,7 @@ run = """
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image 'x86_64-{commit}'
 bash tools/ci/publish/legacy-guest.sh pins /target/publish/legacy-guest/image
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
 needs = ["image-legacy-guest", "legacy-guest-e2e", "sign-legacy-guest"]
 outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
@@ -3419,7 +3463,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpm
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index
 bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "tools/ci/publish/oci-attest.sh"]
 needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "provenance-rpms"]
 outputs = ["/target/publish/rpms/x86_64/payload.json", "/target/publish/rpms/x86_64/signature", "/target/publish/rpms/x86_64/dry-run.pub", "/target/publish/rpms/x86_64/bundle.json", "/target/publish/rpms/aarch64/payload.json", "/target/publish/rpms/aarch64/signature", "/target/publish/rpms/aarch64/dry-run.pub", "/target/publish/rpms/aarch64/bundle.json", "/target/publish/rpms/index/payload.json", "/target/publish/rpms/index/signature", "/target/publish/rpms/index/dry-run.pub", "/target/publish/rpms/index/bundle.json", "/target/publish/rpms/index/attestation.json", "/target/publish/rpms/index/attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -3435,7 +3479,7 @@ bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/aarch64 'once:set-{fingerprint}-aarch64'
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/rpms /target/publish/rpms/index 'once:set-{fingerprint}'
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-rpms", "image-rpms-x86_64", "image-rpms-aarch64", "sign-rpms"]
 outputs = ["/target/publish/rpms/x86_64/receipt.json", "/target/publish/rpms/aarch64/receipt.json", "/target/publish/rpms/index/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -3478,7 +3522,7 @@ run = """
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/x86_64
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64"]
 outputs = ["/target/publish/kernel-buildroot/x86_64/payload.json", "/target/publish/kernel-buildroot/x86_64/signature", "/target/publish/kernel-buildroot/x86_64/dry-run.pub", "/target/publish/kernel-buildroot/x86_64/bundle.json", "/target/publish/kernel-buildroot/aarch64/payload.json", "/target/publish/kernel-buildroot/aarch64/signature", "/target/publish/kernel-buildroot/aarch64/dry-run.pub", "/target/publish/kernel-buildroot/aarch64/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -3494,7 +3538,7 @@ bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-b
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64 'sha-{commit}-aarch64'
 bash tools/ci/publish/kernel-buildroot.sh pins /target/publish/kernel-buildroot/x86_64 /target/publish/kernel-buildroot/aarch64
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "tools/ci/publish/kernel-buildroot.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
 needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64", "sign-kernel-buildroot"]
 outputs = ["/target/publish/kernel-buildroot/x86_64/receipt.json", "/target/publish/kernel-buildroot/aarch64/receipt.json", "/target/publish/kernel-buildroot/pins.env"]
 pointers = { kernel-buildroot = "/target/publish/kernel-buildroot/pins.env" }
@@ -3557,7 +3601,7 @@ bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/pu
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64
 bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "tools/ci/publish/oci-attest.sh"]
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "provenance-kernel", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
 outputs = ["/target/publish/kernel/x86_64/payload.json", "/target/publish/kernel/x86_64/signature", "/target/publish/kernel/x86_64/dry-run.pub", "/target/publish/kernel/x86_64/bundle.json", "/target/publish/kernel/aarch64/payload.json", "/target/publish/kernel/aarch64/signature", "/target/publish/kernel/aarch64/dry-run.pub", "/target/publish/kernel/aarch64/bundle.json", "/target/publish/kernel/x86_64/attestation.json", "/target/publish/kernel/x86_64/attestation.bundle.json", "/target/publish/kernel/aarch64/attestation.json", "/target/publish/kernel/aarch64/attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -3573,7 +3617,7 @@ bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'sha-{commit}-aarch64'
 bash tools/ci/publish/kernel.sh pins /target/publish/kernel
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel.sh"]
 needs = ["image-kernel-x86_64", "image-kernel-aarch64", "kernel-acceptance-x86_64", "kernel-acceptance-aarch64", "sign-kernel"]
 outputs = ["/target/publish/kernel/x86_64/receipt.json", "/target/publish/kernel/aarch64/receipt.json", "/target/publish/kernel/pins.env"]
 pointers = { kernel = "/target/publish/kernel/pins.env" }
@@ -3976,7 +4020,7 @@ default = false
 name = "publish-fex-buildroot"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-buildroot-candidate /target/publish/fex-buildroot '{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-fex-buildroot"]
 outputs = ["/target/publish/fex-buildroot/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -4003,7 +4047,7 @@ default = false
 name = "publish-fex-x86-sdk"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate /target/publish/fex-x86-sdk '{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-fex-x86-sdk"]
 outputs = ["/target/publish/fex-x86-sdk/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -4054,7 +4098,7 @@ run = """
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
 bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "tools/ci/publish/oci-attest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "tools/ci/publish/oci-attest.sh"]
 needs = ["image-fex-payload", "provenance-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk"]
 outputs = ["/target/publish/fex-payload/payload.json", "/target/publish/fex-payload/signature", "/target/publish/fex-payload/dry-run.pub", "/target/publish/fex-payload/attestation.json"]
 id_token = ["tilo-dev-signing"]
@@ -4069,7 +4113,7 @@ run = '''
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-payload-candidate /target/publish/fex-payload '{commit}'
 sed -n 's/.*"image":"\([^"]*\)".*/\1/p' /target/publish/fex-payload/receipt.json > /target/publish/fex-payload/reference
 '''
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-fex-payload", "publish-fex-buildroot", "publish-fex-x86-sdk", "sign-fex-payload"]
 outputs = ["/target/publish/fex-payload/receipt.json", "/target/publish/fex-payload/reference"]
 pointers = { fex-payload-candidate = "/target/publish/fex-payload/reference" }
@@ -4097,7 +4141,7 @@ default = false
 name = "publish-wine-tools"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-tools /target/publish/wine-tools 'candidate-{commit}'"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-wine-tools"]
 outputs = ["/target/publish/wine-tools/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -4426,7 +4470,7 @@ publish = "true"
 [[check]]
 name = "publish-extension-manifests"
 run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/x86_64 /target/extension-manifests/aarch64"
-inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub", "tools/ci/publish/extension-manifests.sh", "tools/ci/publish/lib.sh"]
+inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub", "keys/release/**", "keys/operational/**", "tools/signing/sign-blob-certified.sh", "tools/ci/publish/extension-manifests.sh", "tools/ci/publish/lib.sh"]
 needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
 id_token = ["tilo-extension-manifests"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }

@@ -848,6 +848,65 @@ fn empty_activation_reads_neither_rpm_nor_the_network() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Images with the release root take certified manifests only.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_image_with_the_release_root_installs_from_a_certified_bundle() {
+    let machine = Machine::new();
+    machine.certify();
+    machine.manifest(
+        &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
+        None,
+    );
+    assert_eq!(machine.run("install"), 0, "{}", machine.status());
+    let url = machine.manifest_url(None);
+    let requests: Vec<String> = machine
+        .host
+        .requests
+        .borrow()
+        .iter()
+        .map(|(u, _)| u.clone())
+        .collect();
+    assert!(requests.contains(&format!("{url}.bundle")), "{requests:?}");
+    assert!(!requests.contains(&format!("{url}.sig")), "{requests:?}");
+    let kept = machine
+        .layout
+        .bases("media-codecs")
+        .join(machine.fingerprint());
+    assert!(kept.join("manifest.json.bundle").is_file());
+    assert!(!kept.join("manifest.json.sig").exists());
+    // Activation verifies the kept bundle again.
+    fs::remove_dir_all(machine.codecs()).unwrap();
+    assert_eq!(machine.run("activate"), 0);
+    assert!(machine.codecs().is_dir());
+}
+
+#[test]
+fn an_image_with_the_release_root_refuses_a_bare_signature() {
+    let machine = Machine::new();
+    machine.manifest(
+        &[machine.artifact(rpm("libavcodec-freeworld", "1.0"))],
+        None,
+    );
+    // Published for key-pinned images only: no bundle beside the manifest.
+    machine.certify();
+    assert_eq!(machine.run("install"), 1);
+    assert!(!machine.codecs().exists());
+    assert_eq!(machine.host.merges.get(), 0);
+}
+
+#[test]
+fn a_kept_bare_signature_does_not_activate_on_an_image_with_the_root() {
+    let machine = Machine::new();
+    install(&machine, false);
+    // The next image carries the root: what the old one kept no longer counts.
+    machine.certify();
+    machine.run("activate");
+    assert!(!machine.codecs().exists());
+}
+
 fn install(machine: &Machine, mesa: bool) {
     let codecs = vec![machine.artifact(rpm("libavcodec-freeworld", "1.0"))];
     let mesa = mesa.then(|| vec![machine.artifact(rpm("mesa-va-drivers-freeworld", "25.2.4"))]);

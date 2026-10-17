@@ -15,10 +15,11 @@ use sha2::{Digest, Sha256};
 
 use crate::host::{Header, Host, HttpError, set_times};
 use crate::model::{
-    self, ARCHITECTURES, Artifact, Base, Catalogue, MAX_MANIFEST_BYTES, MAX_SIGNATURE_BYTES,
-    MAX_TEXT, Manifest, OFFLINE_MESSAGE, OPENH264_WAITING_MESSAGE, PROGRESS_STEPS, Part,
-    RAW_FORMAT, RAW_SUFFIX, UNPUBLISHED_MESSAGE, UPDATE_MESSAGE, codec_runtime_complete, is_id,
-    is_online, is_sha256, manifest_part_fits, next_state, parse_manifest,
+    self, ARCHITECTURES, Artifact, Base, Catalogue, MAX_BUNDLE_BYTES, MAX_MANIFEST_BYTES,
+    MAX_SIGNATURE_BYTES, MAX_TEXT, Manifest, OFFLINE_MESSAGE, OPENH264_WAITING_MESSAGE,
+    PROGRESS_STEPS, Part, RAW_FORMAT, RAW_SUFFIX, UNPUBLISHED_MESSAGE, UPDATE_MESSAGE,
+    codec_runtime_complete, is_id, is_online, is_sha256, manifest_part_fits, next_state,
+    parse_manifest,
 };
 use crate::py;
 use crate::{At, Error, Result};
@@ -120,6 +121,35 @@ impl Layout {
 
     pub fn trust_key(&self) -> PathBuf {
         self.at("/usr/share/tilo/extensions.pub")
+    }
+
+    /// Tilo's offline release root. An image that carries it verifies
+    /// manifests only through an operational certificate the root issued.
+    pub fn release_root(&self) -> PathBuf {
+        self.at("/usr/share/tilo/release/root.crt")
+    }
+
+    /// The transparency log's key, which dates a certified signature.
+    pub fn rekor_key(&self) -> PathBuf {
+        self.at("/usr/share/tilo/release/rekor.pub")
+    }
+
+    /// The revocation epoch and identity domain certificates must name.
+    pub fn release_trust(&self) -> PathBuf {
+        self.at("/usr/share/tilo/release/trust.env")
+    }
+
+    /// Whether manifests must be certified under the release root, rather
+    /// than signed by the extension-manifest key alone.
+    pub fn certified(&self) -> bool {
+        self.release_root().symlink_metadata().is_ok()
+    }
+
+    /// The file published beside a manifest, and kept beside a verified one,
+    /// that authenticates it: a Rekor bundle with the operational certificate
+    /// on an image with the release root, a bare signature otherwise.
+    pub fn signature_suffix(&self) -> &'static str {
+        if self.certified() { ".bundle" } else { ".sig" }
     }
 
     pub fn os_release(&self) -> PathBuf {
@@ -1090,7 +1120,12 @@ fn fetch_manifest(
     status.progress("Fetching the signed manifest", &[])?;
     let url = catalogue.manifest_url(&base.rpm_arch, &base.fingerprint);
     let data = fetch_small(host, &url, MAX_MANIFEST_BYTES)?;
-    let signature = fetch_small(host, &format!("{url}.sig"), MAX_SIGNATURE_BYTES)?;
+    let limit = if layout.certified() {
+        MAX_BUNDLE_BYTES
+    } else {
+        MAX_SIGNATURE_BYTES
+    };
+    let signature = fetch_small(host, &format!("{url}{}", layout.signature_suffix()), limit)?;
     host.verify_signature(
         layout,
         &data,
@@ -1113,7 +1148,7 @@ fn keep_manifest(layout: &Layout, ident: &str, base: &Base, fetched: &Fetched) -
     chmod(&layout.bases(ident), 0o755)?;
     chmod(&directory, 0o755)?;
     write_atomic(
-        &directory.join("manifest.json.sig"),
+        &directory.join(format!("manifest.json{}", layout.signature_suffix())),
         &fetched.signature,
         0o644,
     )?;
@@ -1149,7 +1184,7 @@ fn kept_manifests(
         let loaded = (|| {
             let manifest_path = entry.join("manifest.json");
             let data = fs::read(&manifest_path).at(&manifest_path)?;
-            let signature_path = entry.join("manifest.json.sig");
+            let signature_path = entry.join(format!("manifest.json{}", layout.signature_suffix()));
             let signature = fs::read(&signature_path).at(&signature_path)?;
             host.verify_signature(
                 layout,

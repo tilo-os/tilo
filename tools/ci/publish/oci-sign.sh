@@ -9,6 +9,11 @@
 # verify with a plain `cosign verify --key keys/cosign.pub` (the kernel buildroot, the
 # env-runtime) need that log entry, since such a verification requires one.
 #
+# A repository installed systems verify (lib.sh device_verified) gets, once the release root
+# exists, one more signature per operational certificate (keys/operational/os-images.crt and, after
+# a revocation, its .bridge.crt): tools/signing/sign-blob-certified.sh logs it under the
+# certificate, and OUT/certified/N.{sig,bundle,crt,epoch} keep it for oci-publish.sh.
+#
 # With TILO_PUBLISH_DRY_RUN set, a throwaway key made here signs instead of the one in KMS, with
 # no identity token and no transparency log, and its public half is kept as OUT/dry-run.pub for
 # oci-publish.sh's dry run to verify against. T_REF says what the run pretends to sign for.
@@ -34,7 +39,7 @@ fi
 expected=$(cat "$out/digest")
 actual=$(archive_digest "$out/image.oci.tar")
 [[ $actual == "$expected" ]] || die "the archive is $actual, the build recorded $expected"
-rm -f "$out/dry-run.pub"
+rm -rf "$out/dry-run.pub" "$out/certified"
 use_cosign
 signing_payload "$repository" "$expected" > "$out/payload.json"
 if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
@@ -60,5 +65,21 @@ else
     --output-signature "$out/signature" "$out/payload.json"
   cosign verify-blob --insecure-ignore-tlog=true --key "$public_key" \
     --signature "$out/signature" "$out/payload.json"
+fi
+if [[ $run_channel == release && -e $repo_root/keys/release/root.crt ]] && device_verified "$repository"; then
+  . "$repo_root/keys/release/trust.env"
+  mkdir -p "$out/certified"
+  n=0
+  for cert in "$repo_root/keys/operational/os-images.crt" "$repo_root/keys/operational/os-images.bridge.crt"; do
+    [[ -e $cert ]] || continue
+    epoch=$TILO_RELEASE_EPOCH
+    [[ $cert == *.bridge.crt ]] && epoch=$((TILO_RELEASE_EPOCH - 1))
+    n=$((n + 1))
+    bash "$repo_root/tools/signing/sign-blob-certified.sh" os-images "$cert" "$out/payload.json" \
+      "$out/certified/$n" "$epoch"
+    cp "$cert" "$out/certified/$n.crt"
+    printf '%s\n' "$epoch" > "$out/certified/$n.epoch"
+  done
+  ((n)) || die "keys/release/root.crt exists but keys/operational/os-images.crt does not"
 fi
 printf 'signed %s@%s\n' "$repository" "$expected"

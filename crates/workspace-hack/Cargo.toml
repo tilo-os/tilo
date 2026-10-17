@@ -139,7 +139,8 @@ num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
 p256-594e8ee84c453af0 = { package = "p256", version = "0.13", features = ["ecdh"] }
-p384 = { version = "0.13" }
+p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"] }
+p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
@@ -378,7 +379,8 @@ num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
 p256-594e8ee84c453af0 = { package = "p256", version = "0.13", features = ["ecdh"] }
-p384 = { version = "0.13" }
+p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"] }
+p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }

@@ -8,6 +8,7 @@ cosign "signs" with the blob's SHA-256 so a signature over other bytes fails.
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -98,6 +99,13 @@ FAKE_COSIGN = textwrap.dedent("""\
         assert value("--key").startswith("hashivault://"), args
         assert "--tlog-upload=false" in args and "--yes" in args, args
         Path(value("--output-signature")).write_text(expected)
+    elif args[0] == "verify-blob" and value("--bundle"):
+        # A certified signature: the operational certificate under the root.
+        assert value("--certificate-chain").endswith("keys/release/root.crt"), args
+        assert value("--certificate-identity") == "extension-manifests@signing.tilo.so", args
+        assert value("--certificate-oidc-issuer").startswith("https://signing.tilo.so/"), args
+        bundle = "bundle:" + hashlib.sha256(blob).hexdigest()
+        sys.exit(0 if Path(value("--bundle")).read_text() == bundle else 1)
     elif args[0] == "verify-blob":
         assert value("--key").endswith("keys/extensions.pub"), args
         sys.exit(0 if Path(value("--signature")).read_text() == expected else 1)
@@ -122,6 +130,8 @@ def manifest(revision=20261003120000, sha256="ef" * 32, image_byte="ab"):
 
 
 class Publish(unittest.TestCase):
+    script = PUBLISH
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -151,7 +161,7 @@ class Publish(unittest.TestCase):
         log = self.root / "requests.log"
         log.unlink(missing_ok=True)
         mode = ["--sign-only"] if sign_only else []
-        result = subprocess.run(["bash", str(PUBLISH), *mode, str(path)], capture_output=True, text=True,
+        result = subprocess.run(["bash", str(self.script), *mode, str(path)], capture_output=True, text=True,
                                 env={**self.env, **env}, cwd=REPO)
         requests = log.read_text().splitlines() if log.exists() else []
         return result, requests
@@ -248,6 +258,83 @@ class Publish(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.stored("manifest.json").exists())
 
+
+# What tools/signing/sign-blob-certified.sh does, minus KMS and Rekor: the bare
+# signature the fake cosign accepts, and a bundle naming the same bytes.
+FAKE_CERTIFIED = textwrap.dedent("""\
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $1 == extension-manifests && $2 == */keys/operational/extension-manifests.crt ]]
+    digest=$(sha256sum "$3" | cut -d' ' -f1)
+    printf 'sig:%s' "$digest" > "$4.sig"
+    printf 'bundle:%s' "$digest" > "$4.bundle"
+    """)
+
+
+class CertifiedPublish(Publish):
+    """After the root ceremony: a scratch copy of the repository with a release
+    root and an operational certificate, where certified signing is faked."""
+
+    def setUp(self):
+        super().setUp()
+        tree = self.root / "repo"
+        for relative in ("tools/extensions/publish.sh", "tools/extensions/resolve.py",
+                         "tools/upload_immutable_packages.sh", "os/dev/configure-cosign-kms.sh",
+                         "keys/extensions.pub", "keys/release/trust.env"):
+            (tree / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / relative, tree / relative)
+        (tree / "keys/release/root.crt").write_text("root fixture\n")
+        (tree / "keys/operational").mkdir()
+        (tree / "keys/operational/extension-manifests.crt").write_text("certificate fixture\n")
+        (tree / "tools/signing").mkdir()
+        (tree / "tools/signing/sign-blob-certified.sh").write_text(FAKE_CERTIFIED)
+        self.tree = tree
+        self.script = tree / "tools/extensions/publish.sh"
+
+    def bundle_of(self, data: bytes) -> str:
+        return "bundle:" + hashlib.sha256(data).hexdigest()
+
+    def test_first_publication_writes_the_revision_and_the_newest_pair(self):
+        result, requests = self.publish(manifest())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = sorted(p.name for p in self.stored("").iterdir())
+        self.assertEqual(files, ["manifest-r20261003120000.json", "manifest-r20261003120000.json.bundle",
+                                 "manifest-r20261003120000.json.sig", "manifest.json", "manifest.json.bundle",
+                                 "manifest.json.sig"])
+        data = self.stored("manifest.json").read_bytes()
+        self.assertEqual(self.stored("manifest.json.bundle").read_text(), self.bundle_of(data))
+        self.assertEqual(self.stored("manifest-r20261003120000.json.bundle").read_text(), self.bundle_of(data))
+        puts = [r.split()[1].rsplit("/", 1)[1] for r in requests if r.startswith("PUT")]
+        self.assertLess(puts.index("manifest.json"), puts.index("manifest.json.bundle"))
+
+    def test_sign_only_produces_verified_signature_without_registry_or_activation(self):
+        document = manifest()
+        self.env.pop("TILO_PACKAGE_TOKEN")
+        self.env.pop("TILO_PACKAGE_PUBLIC_BASE_URL")
+        result, requests = self.publish(document, sign_only=True,
+            TILO_EXPECTED_EXTENSION_CONTENT_SHA256=resolver.qualification_digest(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(requests, [])
+        source = self.root / "manifest.json"
+        self.assertEqual(source.with_suffix(".json.bundle").read_text(), self.bundle_of(source.read_bytes()))
+
+    def test_a_publication_from_before_the_root_is_certified(self):
+        # Published for key-pinned images only: the bundle images with the root
+        # need is missing, so the same content is published again.
+        self.assertEqual(self.publish(manifest())[0].returncode, 0)
+        self.stored("manifest.json.bundle").unlink()
+        result, _ = self.publish(manifest(revision=20261004120000))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("has no valid signature; replacing it", result.stdout)
+        self.assertEqual(self.stored("manifest.json.bundle").read_text(),
+                         self.bundle_of(self.stored("manifest.json").read_bytes()))
+
+    def test_a_root_without_an_operational_certificate_publishes_nothing(self):
+        (self.tree / "keys/operational/extension-manifests.crt").unlink()
+        result, requests = self.publish(manifest())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("run the ceremony", result.stderr)
+        self.assertEqual(requests, [])
 
 
 class SigningAuthority(unittest.TestCase):

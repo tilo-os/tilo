@@ -1074,7 +1074,7 @@ default = false
 [[matrix.check]]
 name = "publish-extension-manifests"
 run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/x86_64 /target/extension-manifests/aarch64"
-inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub"]
+inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub", "keys/release/**", "keys/operational/**", "tools/signing/sign-blob-certified.sh"]
 needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
 # The extension-manifest key, not the OS release key: devices verify manifests only against
 # keys/extensions.pub. Its role trusts only this audience, which no other check asks for.

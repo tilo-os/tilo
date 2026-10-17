@@ -297,6 +297,16 @@ impl Machine {
         }
     }
 
+    /// Make this an image that carries the release root, as one built after
+    /// the root ceremony does. The fake signature check stays keyed; the end
+    /// to end suite puts real trust material here.
+    pub fn certify(&self) {
+        fs::create_dir_all(self.layout.release_root().parent().unwrap()).unwrap();
+        fs::write(self.layout.release_root(), "root\n").unwrap();
+        fs::write(self.layout.rekor_key(), "rekor\n").unwrap();
+        fs::write(self.layout.release_trust(), "TILO_RELEASE_EPOCH=1\n").unwrap();
+    }
+
     pub fn fingerprint(&self) -> String {
         tilo_extension::base_packages_sha256(&self.host.packages.borrow())
     }
@@ -375,7 +385,10 @@ impl Machine {
     pub fn publish(&self, data: &[u8], key: &[u8], fingerprint: Option<&str>) {
         let url = self.manifest_url(fingerprint);
         let mut web = self.host.web.borrow_mut();
-        web.insert(format!("{url}.sig"), sign(key, data));
+        web.insert(
+            format!("{url}{}", self.layout.signature_suffix()),
+            sign(key, data),
+        );
         web.insert(url, data.to_vec());
     }
 

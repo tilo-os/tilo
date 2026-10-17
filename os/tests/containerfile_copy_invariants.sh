@@ -239,7 +239,10 @@ containerfile="$repo/os/Containerfile"
 # rows in place of the RPM. The digest covers every expanded manifest output.
 # Relay metadata is owned only by its component, not a second rootfs COPY:
 # the same six files and 0644 modes are staged for component assembly below.
-expected_contract=02715ea8918fe056cd64264c9ad0a1a7b010df30ceef551a00b2fefeda64ce11
+# The release trust directory (keys/release: the transparency log key, the
+# trust epoch and, after the root ceremony, the root certificate) is staged
+# with the other trust inputs.
+expected_contract=bfc7ff4615e7d58ea4a9aff2cd43ca48cf328ec729e64c5dc2bc8fb747c879c5
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

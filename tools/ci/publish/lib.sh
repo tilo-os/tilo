@@ -98,3 +98,14 @@ archive_digest() {
 signing_payload() {
   printf '{"critical":{"identity":{"docker-reference":"%s"},"image":{"docker-manifest-digest":"%s"},"type":"cosign container image signature"},"optional":null}' "$1" "$2"
 }
+
+# Repositories installed systems verify through /etc/containers/policy.json
+# (tools/signing/release_trust.py, SIGNED_REPOSITORIES). Once the release root exists
+# (keys/release/root.crt), their releases also carry certified signatures: oci-sign.sh writes
+# OUT/certified/N.{sig,bundle,crt,epoch}, oci-publish.sh attaches and verifies them.
+device_verified() {
+  case $1 in
+    registry.tilo.so/tilo/tilo | code.tilo.so/tilo/tilo | registry.tilo.so/tilo/legacy-guest) return 0 ;;
+    *) return 1 ;;
+  esac
+}

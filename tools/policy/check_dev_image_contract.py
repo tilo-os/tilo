@@ -50,7 +50,7 @@ WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a sess
                "runs sshd; if it is ever tagged, pushed or installed as the production image, every "
                "machine that updates from it inherits all three")
 WHY_INTEGRATION = ("tilo-ci holds unsigned OS images that skipped the release signing, attestation and "
-                   "generation gates; the default policy would let an installed system switch to one")
+                   "generation gates; an installed system that admitted it could switch to one")
 WHY_LEAK = ("production images are built from os/Containerfile* and must never contain dev-only "
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.
@@ -268,8 +268,8 @@ def check_production_policy(repo: Path) -> list[Finding]:
     findings = []
     docker = policy.get("transports", {}).get("docker", {})
     for repository, why, admitted in (
-        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, and the default policy "
-         "would accept them", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
+        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, so the production policy "
+         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
         (INTEGRATION_REPOSITORY, WHY_INTEGRATION, "nothing on an installed system may pull it."),
     ):
         scope = docker.get(repository)

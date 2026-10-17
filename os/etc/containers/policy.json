@@ -1,6 +1,8 @@
 {
   "default": [
-    { "type": "insecureAcceptAnything" }
+    {
+      "type": "reject"
+    }
   ],
   "transports": {
     "docker": {
@@ -8,40 +10,141 @@
         {
           "type": "sigstoreSigned",
           "keyPath": "/usr/share/tilo/cosign.pub",
-          "signedIdentity": { "type": "matchRepository" }
+          "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "code.tilo.so/tilo/tilo-ci": [
+        {
+          "type": "reject"
+        }
+      ],
+      "code.tilo.so/tilo/tilo-dev": [
+        {
+          "type": "reject"
         }
       ],
       "code.tilo.so/tilo/tilo-vm": [
-        { "type": "reject" }
-      ],
-      "code.tilo.so/tilo/tilo-ci": [
-        { "type": "reject" }
-      ],
-      "code.tilo.so/tilo/tilo-dev": [
-        { "type": "reject" }
-      ],
-      "registry.tilo.so/tilo/tilo": [
         {
-          "type": "sigstoreSigned",
-          "keyPath": "/usr/share/tilo/cosign.pub",
-          "signedIdentity": { "type": "matchRepository" }
+          "type": "reject"
+        }
+      ],
+      "docker.io": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "gcr.io": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "ghcr.io": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "mcr.microsoft.com": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "public.ecr.aws": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "quay.io": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "registry.access.redhat.com": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "registry.fedoraproject.org": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ],
+      "registry.gitlab.com": [
+        {
+          "type": "insecureAcceptAnything"
         }
       ],
       "registry.tilo.so/tilo/legacy-guest": [
         {
           "type": "sigstoreSigned",
           "keyPath": "/usr/share/tilo/cosign.pub",
-          "signedIdentity": { "type": "matchRepository" }
+          "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "registry.tilo.so/tilo/tilo": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/usr/share/tilo/cosign.pub",
+          "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "registry.tilo.so/tilo/tilo-ci": [
+        {
+          "type": "reject"
+        }
+      ],
+      "registry.tilo.so/tilo/tilo-dev": [
+        {
+          "type": "reject"
         }
       ],
       "registry.tilo.so/tilo/tilo-vm": [
-        { "type": "reject" }
-      ],
-      "registry.tilo.so/tilo/tilo-ci": [
-        { "type": "reject" }
-      ],
-      "registry.tilo.so/tilo/tilo-dev": [
-        { "type": "reject" }
+        {
+          "type": "reject"
+        }
+      ]
+    },
+    "containers-storage": {
+      "": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ]
+    },
+    "dir": {
+      "": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ]
+    },
+    "docker-archive": {
+      "": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ]
+    },
+    "oci": {
+      "": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ]
+    },
+    "oci-archive": {
+      "": [
+        {
+          "type": "insecureAcceptAnything"
+        }
       ]
     }
   }
