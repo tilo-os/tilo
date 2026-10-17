@@ -387,6 +387,79 @@ fn notebook_text(doc: &automerge::AutoCommit) -> Option<String> {
     )
 }
 
+fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    // A device of the owner's root that the room never enrolled.
+    let sibling_key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+        getrandom::SysRng,
+    ));
+    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let mut sibling_cert = tilo_user_identity::DeviceCert {
+        user_public_key: owner_root.verifying_key().to_bytes(),
+        device_public_key: sibling_key.verifying_key().to_bytes(),
+        device_label: "Another laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut sibling_cert, &owner_root).unwrap();
+    (sibling_key, sibling_cert)
+}
+
+async fn assert_page_reads_welcome(
+    watcher: &tilo_browser_peer::PeerHandle,
+    workspace_id: u64,
+    route: &tilo_browser_peer::DocumentRoute,
+) {
+    use collab_types::DocumentMutation;
+    use tilo_automerge::ApplyIncoming;
+    use tilo_browser_peer::PeerEvent;
+
+    let mut ready = false;
+    let mut doc = automerge::AutoCommit::new();
+    let events = std::sync::Mutex::new(Vec::new());
+    wait_for(
+        "the watching page to read the welcome note",
+        || {
+            for event in watcher.drain() {
+                match &event {
+                    PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
+                        ready = true;
+                    }
+                    // The room's other apps arrive too; only the note is read.
+                    PeerEvent::Document(document) if document.route == *route => {
+                        match document.mutation() {
+                            Some(DocumentMutation::Snapshot(bytes)) => {
+                                doc = automerge::AutoCommit::load(&bytes).unwrap();
+                            }
+                            Some(DocumentMutation::Incremental(bytes)) => {
+                                doc.load_incoming(&bytes).unwrap();
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
+                }
+                events.lock().unwrap().push(match &event {
+                    PeerEvent::Document(document) => format!("{:?}", document.route),
+                    other => format!("{other:?}"),
+                });
+            }
+            (ready && notebook_text(&doc)?.contains("Try this:")).then_some(())
+        },
+        || {
+            format!(
+                "{:?}; status {:?}",
+                events.lock().unwrap(),
+                watcher.status()
+            )
+        },
+    )
+    .await;
+    let status = watcher.status();
+    assert!(status.failures.is_empty(), "{:?}", status.failures);
+}
+
 /// The homepage embed's path through the real room process: a page whose
 /// device the room certified as its spectator person subscribes, receives
 /// the room's welcome note, and has every write refused; the owner's root
@@ -421,21 +494,7 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
     let (watching_key, watching_cert) = spectate(&mut room);
     let (writing_key, writing_cert) = spectate(&mut room);
-    // A device of the owner's root that the room never enrolled.
-    let sibling_key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
-        getrandom::SysRng,
-    ));
-    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
-    let mut sibling_cert = tilo_user_identity::DeviceCert {
-        user_public_key: owner_root.verifying_key().to_bytes(),
-        device_public_key: sibling_key.verifying_key().to_bytes(),
-        device_label: "Another laptop".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_device_cert(&mut sibling_cert, &owner_root).unwrap();
+    let (sibling_key, sibling_cert) = unenrolled_owner_device();
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let host_cert = tilo_browser_peer::carrier::host_info(&Plain(plain))
@@ -453,49 +512,7 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
         watcher.join(workspace_id).unwrap();
         watcher.open_route(route.clone()).unwrap();
-        let mut ready = false;
-        let mut doc = automerge::AutoCommit::new();
-        let events = std::sync::Mutex::new(Vec::new());
-        wait_for(
-            "the watching page to read the welcome note",
-            || {
-                for event in watcher.drain() {
-                    match &event {
-                        PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
-                            ready = true;
-                        }
-                        // The room's other apps arrive too; only the note is read.
-                        PeerEvent::Document(document) if document.route == route => {
-                            match document.mutation() {
-                                Some(DocumentMutation::Snapshot(bytes)) => {
-                                    doc = automerge::AutoCommit::load(&bytes).unwrap();
-                                }
-                                Some(DocumentMutation::Incremental(bytes)) => {
-                                    doc.load_incremental(&bytes).unwrap();
-                                }
-                                None => {}
-                            }
-                        }
-                        _ => {}
-                    }
-                    events.lock().unwrap().push(match &event {
-                        PeerEvent::Document(document) => format!("{:?}", document.route),
-                        other => format!("{other:?}"),
-                    });
-                }
-                (ready && notebook_text(&doc)?.contains("Try this:")).then_some(())
-            },
-            || {
-                format!(
-                    "{:?}; status {:?}",
-                    events.lock().unwrap(),
-                    watcher.status()
-                )
-            },
-        )
-        .await;
-        let status = watcher.status();
-        assert!(status.failures.is_empty(), "{:?}", status.failures);
+        assert_page_reads_welcome(&watcher, workspace_id, &route).await;
 
         // A page of the spectator person that does not say it only watches
         // still writes nothing: the host refuses it.

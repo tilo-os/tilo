@@ -102,6 +102,7 @@ fn the_request_is_the_persons_own_words_without_context_or_conversation() {
     let envelope = |instruction: &str| TaskRunEnvelope {
         version: 1,
         task_id: "task:3".into(),
+        presentation_version: None,
         title: "Summarise".into(),
         instruction: Some(instruction.into()),
         subject: None,

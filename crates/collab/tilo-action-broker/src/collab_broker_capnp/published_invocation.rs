@@ -84,7 +84,10 @@ impl OriginalInvocationData {
         scope.valid()
             && self.spec.kind == tilo_actions::OperationKind::Effect
             && self.spec.contract.kind >= needed
-            && self.execution.as_ref().is_none_or(|lease| lease.is_live())
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
             && selected_open_v2_action_matches(
                 &self.request.address,
                 self.request.argument.as_deref(),
@@ -280,7 +283,9 @@ impl OriginalInvocationData {
         if restricted || original.agent_id().is_some() || certificate.capabilities.foreign {
             return Err("private conversations require the original certified person".into());
         }
-        Ok(certificate.clone())
+        let certificate = certificate.clone();
+        drop(original);
+        Ok(certificate)
     }
 
     fn person_conversation_peer(&self, argument: &serde_json::Value) -> Option<String> {

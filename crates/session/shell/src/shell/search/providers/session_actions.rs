@@ -631,7 +631,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn retirement_rows_leave_the_cached_index_when_the_session_locks() {
-        let mut chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
         let provider = SessionActionsProvider::new(SessionActionPolicy::new(
             tilo_power_mgmt::InhibitRegistry::new(),
         ));
