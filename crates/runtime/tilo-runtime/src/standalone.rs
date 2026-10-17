@@ -123,29 +123,21 @@ impl Standalone {
             dev,
             channel_keys.keys.clone(),
         )?;
-        let rooms = Arc::new(Rooms {
-            profile: Arc::clone(&workspace),
-            joined: Arc::clone(&joined),
-        });
+        let rooms = Arc::new(Rooms::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
         let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
-            Arc::new(AttachedSurfaces {
-                apps: Arc::clone(&apps),
-                dev,
-            }),
+            &apps,
+            dev,
         )?;
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
         let (policy_origin, policy_time) = execution_policy_clock()?;
-        let owners = Arc::new(Owners {
-            own: owner,
-            joined: Arc::clone(&joined),
-        });
+        let owners = Arc::new(Owners::new(owner, &joined));
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
             Some(rooms as Arc<dyn WorkspaceAuthority>),
@@ -182,12 +174,7 @@ impl Standalone {
         // confirmation, is put to them in the runtime's native prompt.
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
-        if let Some(actions) = broker.app_action_broker() {
-            actions.set_app_action_consent(Arc::new(confirm::ConfirmationPrompt {
-                person: actor.clone(),
-                apps: Arc::clone(&apps),
-            }));
-        }
+        confirm::ask_the_person(&broker, &actor, &apps);
         let author = files::Author {
             person: identity.user_public_key,
             device,
@@ -792,14 +779,20 @@ fn joined_rooms(
 
 /// The identity service apps sign with: over `rooms`, handing out route
 /// keys from `keys`, and in the person's own room only for the records of
-/// theirs an app's surface declares.
+/// theirs an app's surface declares (see [`AttachedSurfaces`] for `apps`
+/// and `dev`).
 fn identity_service(
     socket: PathBuf,
     rooms: Arc<dyn WorkspaceMembership>,
     keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
-    person: Arc<AttachedSurfaces>,
+    apps: &Arc<apps::Apps>,
+    dev: bool,
 ) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
-    tilo_identity_host::broker::spawn(socket, rooms, keys, person)
+    let person = AttachedSurfaces {
+        apps: Arc::clone(apps),
+        dev,
+    };
+    tilo_identity_host::broker::spawn(socket, rooms, keys, Arc::new(person))
 }
 
 /// The person-record kinds of the surfaces this runtime holds. Started with
