@@ -72,7 +72,9 @@ pub use external_moderation::{
 };
 pub mod namespace;
 pub mod pending;
+mod report_evidence;
 pub mod retention;
+pub use report_evidence::report_evidence_digest;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
