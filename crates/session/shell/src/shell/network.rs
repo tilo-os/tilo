@@ -2241,6 +2241,28 @@ impl ShellNetwork {
             .map_err(|error| format!("workspace-control transport is unavailable: {error}"))
     }
 
+    /// Ask a session's target for a keyframe through its selected route; the
+    /// session gate refuses before consent and after every close edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session refuses or the actor transport is
+    /// unavailable.
+    pub fn publish_workspace_control_keyframe_request(
+        &self,
+        session: &crate::network::WorkspaceControlSession,
+        seq: u64,
+    ) -> Result<(), String> {
+        let msg = session.keyframe_request(seq).map_err(str::to_owned)?;
+        self.cmd_tx
+            .try_send(NetCmd::PublishWorkspaceControl {
+                ws: session.workspace(),
+                msg,
+                route: session.route(),
+            })
+            .map_err(|error| format!("workspace-control transport is unavailable: {error}"))
+    }
+
     pub fn subscribe_workspace_control(
         &self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<WorkspaceControlNetworkEvent> {
@@ -2529,6 +2551,7 @@ impl ShellNetwork {
                 | NeighbourMsg::SurfaceFrame { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::SurfaceKeyframeRequest { .. }
                 | NeighbourMsg::PermissionGrant { .. }
         ) {
             return false;
@@ -7348,6 +7371,7 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
             | NeighbourMsg::RemoteInput { .. }
+            | NeighbourMsg::SurfaceKeyframeRequest { .. }
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
@@ -7587,6 +7611,7 @@ impl ShellNetwork {
             NeighbourMsg::PresenceMoved { peer, .. }
             | NeighbourMsg::PresenceCleared { peer, .. }
             | NeighbourMsg::RemoteInput { peer, .. }
+            | NeighbourMsg::SurfaceKeyframeRequest { peer, .. }
             | NeighbourMsg::PermissionRequest { peer, .. }
             | NeighbourMsg::Heartbeat { peer, .. }
             | NeighbourMsg::MediaCapabilities { peer, .. }

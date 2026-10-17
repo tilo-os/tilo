@@ -115,9 +115,15 @@ The receiving side can still lose units (a saturated actor queue, a failed
 read, the bound on frames held before a stream's start), so each
 `SurfaceFrame` carries `seq`, its place in the owner's encoded sequence. The
 peer view feeds its decoder only a keyframe or the delta that continues the
-chain; after a gap it holds deltas back until the owner's next keyframe, and
-it drops units older than one it already decoded. The shell's inbox keeps
-every frame in arrival order rather than replacing older ones.
+chain; after a gap it holds deltas back and asks the owner for a keyframe
+(`SurfaceKeyframeRequest`, naming the unit it could not use), and it drops
+units older than one it already decoded. The owner forces at most one
+keyframe per 250 ms and none for a request a keyframe already answers, then
+encodes a frame at once so a still window recovers too. The shell's inbox
+keeps every frame in arrival order rather than replacing older ones. The same
+rule (`neighbour_wire::unit_chain`) gates the Remote app's workspace-control
+decoder, which asks through the consented route, and the relay's browser
+bridge, which ends the members' group and asks the session itself.
 
 ### Remote input replay
 ```

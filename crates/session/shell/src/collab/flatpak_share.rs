@@ -18,7 +18,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::collab::colorimetry::Colorimetry;
 use crate::collab::encoder::{
@@ -41,6 +41,12 @@ use tilo_lock::MutexRecover as _;
 /// Software-encoder FPS ceiling — a CPU encoder can't sustain more on a
 /// typical laptop; hardware backends lift this.
 const SOFTWARE_FPS_CEILING: u32 = 30;
+
+/// The least time between two keyframes forced at viewers' requests. Every
+/// viewer of a share decodes the same stream, so one keyframe answers all of
+/// them; this bounds what viewers asking repeatedly (or a hostile one) cost
+/// the encoder and the link.
+pub const KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Frame waiting in the encoder's staging slot: source bytes/handle paired
 /// with capture time so the wire preserves moment-of-capture, not
@@ -308,6 +314,10 @@ pub struct SharedFlatpakSession {
     stream_sender: Arc<SurfaceStreamSender>,
     /// Sequence of a paint share's frames, which bypass the encoder.
     paint_seq: AtomicU64,
+    /// `seq` of the newest keyframe encoded, plus one; `0` before the first.
+    keyframe_after: AtomicU64,
+    /// When a viewer's request last forced a keyframe.
+    keyframe_requested: Mutex<Option<Instant>>,
     color_override: Arc<Mutex<ColorOverride>>,
     /// The workspace tab holding the window, announced with the stream so a
     /// viewer shows it in exactly that tab; `0` names none.
@@ -494,6 +504,8 @@ impl SharedFlatpakSession {
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
             paint_seq: AtomicU64::new(0),
+            keyframe_after: AtomicU64::new(0),
+            keyframe_requested: Mutex::new(None),
             color_override: Arc::new(Mutex::new(None)),
             tab: 0,
         }
@@ -857,6 +869,10 @@ impl SharedFlatpakSession {
                         return None;
                     }
                 };
+                if stats.keyframe {
+                    self.keyframe_after
+                        .fetch_max(seq.saturating_add(1), Ordering::AcqRel);
+                }
                 Some(EncodedFrame {
                     surface: self.surface_id,
                     source_peer: self.host_user_id,
@@ -875,6 +891,27 @@ impl SharedFlatpakSession {
                 None
             }
         }
+    }
+
+    /// A viewer could not use unit `seq` (one before it went missing, or its
+    /// decoder rejected one): make the next unit a keyframe. Refused when a
+    /// keyframe after `seq` is already on its way, since that answers it, or
+    /// within [`KEYFRAME_REQUEST_INTERVAL`] of the last forced one. Returns
+    /// whether a keyframe was forced, so the caller encodes a frame even
+    /// when the window is not changing.
+    pub fn request_keyframe(&self, seq: u64, now: Instant) -> bool {
+        if self.paint || seq < self.keyframe_after.load(Ordering::Acquire) {
+            return false;
+        }
+        let mut requested = self.keyframe_requested.lock_recover();
+        if requested.is_some_and(|at| now.saturating_duration_since(at) < KEYFRAME_REQUEST_INTERVAL)
+        {
+            return false;
+        }
+        *requested = Some(now);
+        drop(requested);
+        self.encoder.lock_recover().force_keyframe();
+        true
     }
 
     /// Register a peer as a viewer with the given read-only state (flip

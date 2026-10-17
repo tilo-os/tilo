@@ -19,6 +19,7 @@ pub mod hdr_metadata;
 pub mod presence_slot;
 pub mod record_sync;
 pub mod retention;
+pub mod unit_chain;
 
 pub use presence_slot::PresenceSlot;
 pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
@@ -456,6 +457,18 @@ pub enum NeighbourMsg {
         /// [`Self::MlsAccessRequest`]; receivers ignore it.
         delivery: u64,
     },
+    /// Viewer `peer` cannot continue decoding `surface`: a unit before
+    /// [`Self::SurfaceFrame::seq`] `seq` never reached it, or its decoder
+    /// rejected one, and the deltas after reference what it lacks. The owner
+    /// answers with a keyframe instead of leaving the viewer frozen until its
+    /// periodic one. `seq` is the unit the viewer could not use; the owner
+    /// ignores a request its last keyframe already answers. Appended to
+    /// preserve every existing Postcard discriminant.
+    SurfaceKeyframeRequest {
+        peer: PeerId,
+        surface: SurfaceId,
+        seq: u64,
+    },
 }
 
 impl NeighbourMsg {
@@ -515,7 +528,8 @@ impl NeighbourMsg {
             | Self::MlsGovernanceAck { .. }
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
-            | Self::RecordContentPiece { .. } => false,
+            | Self::RecordContentPiece { .. }
+            | Self::SurfaceKeyframeRequest { .. } => false,
         }
     }
 
@@ -565,6 +579,7 @@ impl NeighbourMsg {
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::RecordContentPiece { .. } => "RecordContentPiece",
             Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
+            Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
         }
     }
 }
@@ -794,6 +809,14 @@ mod tests {
                     surface: 7,
                     source_peer: 0xABCD,
                     ts: 1_700_000_004,
+                },
+            ),
+            (
+                "surface keyframe request",
+                NeighbourMsg::SurfaceKeyframeRequest {
+                    peer: 3,
+                    surface: 7,
+                    seq: 300,
                 },
             ),
         ]
@@ -1045,7 +1068,7 @@ mod tests {
         );
     }
 
-    const VARIANT_COUNT: usize = 29;
+    const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1090,6 +1113,7 @@ mod tests {
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
+        ("surface keyframe request", "1d0307ac02"),
         ("remote input", "07030704deadbeef"),
         ("permission request", "08050c73686172652d73637265656e"),
         ("permission grant", "09050c73686172652d73637265656e"),

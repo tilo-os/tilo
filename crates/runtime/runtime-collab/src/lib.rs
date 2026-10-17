@@ -125,6 +125,11 @@ pub enum WorkspaceControlEvent {
         surface: u64,
         encoded_h264: Vec<u8>,
         timestamp: u64,
+        /// The unit's place in the target's encoded sequence. A gap means a
+        /// unit was lost on the way: the deltas after it cannot be decoded
+        /// until a keyframe, which [`WorkspaceControlInput::RequestKeyframe`]
+        /// asks for.
+        seq: u64,
     },
     Closed(WorkspaceControlCloseReason),
 }
@@ -146,6 +151,12 @@ pub enum WorkspaceControlInput {
     },
     KeyboardFocus {
         focused: bool,
+    },
+    /// Unit `seq` of the stream could not be decoded (one before it went
+    /// missing, or the decoder rejected one): ask the target for a keyframe.
+    /// Allowed for a session with a live stream, read-only or not.
+    RequestKeyframe {
+        seq: u64,
     },
 }
 
