@@ -42,14 +42,35 @@ def reap():
             return False
 
 
+def owned_fields(pid, birth):
+    stat = Path(f'/proc/{pid}/stat').read_text()
+    fields = stat[stat.rindex(')') + 2:].split()
+    if int(fields[1]) == os.getpid() and fields[19] == birth:
+        return fields
+    return None
+
+
+def describe_children(sent):
+    states = []
+    for pid, birth in children():
+        try:
+            fields = owned_fields(pid, birth)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if fields is not None:
+            signals = ','.join(action.name for action in (signal.SIGTERM, signal.SIGKILL)
+                               if (pid, birth, action) in sent) or 'none'
+            states.append(f'pid={pid} birth={birth} state={fields[0]} sent={signals}')
+    return '; '.join(states) or 'no visible owned children (waitpid not yet proven)'
+
+
 def quiesce():
     started = time.monotonic()
+    kill_deadline = None
     sent = set()
     while not reap():
         elapsed = time.monotonic() - started
-        if elapsed > 5:
-            raise RuntimeError('owned browser descendants did not exit; profile must remain')
-        action = signal.SIGKILL if elapsed > 2 else signal.SIGTERM
+        action = signal.SIGKILL if kill_deadline is not None or elapsed > 2 else signal.SIGTERM
         for pid, birth in children():
             key = (pid, birth, action)
             if key in sent:
@@ -61,9 +82,7 @@ def quiesce():
             try:
                 # Bind the snapshot to the opened process before signalling: a
                 # PID reused after discovery must never target another job.
-                stat = Path(f'/proc/{pid}/stat').read_text()
-                fields = stat[stat.rindex(')') + 2:].split()
-                if int(fields[1]) != os.getpid() or fields[19] != birth:
+                if owned_fields(pid, birth) is None:
                     continue
                 signal.pidfd_send_signal(descriptor, action)
             except (FileNotFoundError, ProcessLookupError):
@@ -71,6 +90,19 @@ def quiesce():
             finally:
                 os.close(descriptor)
             sent.add(key)
+        if action == signal.SIGKILL:
+            if kill_deadline is None:
+                # A starved supervisor may first run again after the TERM
+                # budget has elapsed. Always attempt KILL before starting its
+                # bounded reaping window; never renew it for adopted children.
+                kill_deadline = time.monotonic() + 3
+                print(f'owned browser KILL phase: {describe_children(sent)}',
+                      file=sys.stderr, flush=True)
+            elif time.monotonic() >= kill_deadline:
+                if reap():
+                    return
+                raise RuntimeError('owned browser descendants did not exit; profile must remain; '
+                                   + describe_children(sent))
         time.sleep(0.01)
 
 

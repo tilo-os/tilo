@@ -3,7 +3,7 @@ ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::t;
     use std::collections::BTreeMap;
 
     fn messages(source: &str) -> BTreeMap<&str, &str> {

@@ -44,7 +44,10 @@ impl ProviderAdmin for FakeAdminBackend {
                 return Err(ModelError::new(ErrorKind::PermissionDenied));
             }
             state.config = config;
-            state.revision += 1;
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .expect("test revision overflow");
             Ok(ProviderSnapshot {
                 config: state.config.clone(),
                 revision: state.revision.to_string(),

@@ -1,9 +1,16 @@
 //! Mounted standalone host adapter for the shared provider contract.
 use super::app::{ProviderSettingsApp, ProviderSurface};
-use super::*;
+use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
+use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use agent_provider_config::protocol::{ErrorKind, ModelError};
+use agent_provider_config::{ProviderConfig, ProviderProfile};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use ui::framework::testing::TestApp;
+use ui::lock::MutexRecover as _;
+use ui::tilo_resource::Effect;
 
 fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<ProviderSettingsApp> {
     let mut app = TestApp::for_person_with_lent(
@@ -31,6 +38,7 @@ fn invoke(
     app: &mut TestApp<ProviderSettingsApp>,
     effect: ProviderEffect,
 ) -> Result<(), ui::tilo_actions::DoorError> {
+    let effect = host_effect(effect);
     let row = row_for(&effect);
     let mut arguments = effect.arguments();
     if row != "model-providers.root" {

@@ -204,44 +204,45 @@ fn protocol(slug: &str) -> Result<ProviderProtocol, String> {
 }
 
 fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
-    let mut result = Vec::new();
-    let offer = |effect: ProviderEffect| ProviderEffect::from(effect).bound();
-    for selected in &profile.models {
-        result.push(
-            LiveRow::new(
-                format!(
-                    "settings.agent-provider-model:{}:{}",
-                    hex::encode(&profile.id),
-                    hex::encode(&selected.id)
-                ),
-                "settings.agent-provider-model",
-                selected.display_label().to_owned(),
-            )
-            .operation(offer(ProviderEffect::InspectModelRequestLimits {
-                provider: profile.id.clone(),
-                model: selected.id.clone(),
-            }))
-            .operation(
-                ProviderEffect::from(ProviderEffect::SetModelRequestLimits {
-                    provider: profile.id.clone(),
-                    model: selected.id.clone(),
-                    max_output_tokens: None,
-                    runtime_context_tokens: None,
-                    plan_timeout_ms: None,
-                })
-                .bound_asking(&[
-                    "max_output_tokens",
-                    "runtime_context_tokens",
-                    "plan_timeout_ms",
-                ]),
-            ),
-        );
-    }
-    result
+    profile
+        .models
+        .iter()
+        .map(|selected| request_limit_row(profile, selected))
+        .collect()
+}
+
+fn request_limit_row(profile: &ProviderProfile, selected: &ModelDescriptor) -> LiveRow {
+    LiveRow::new(
+        format!(
+            "settings.agent-provider-model:{}:{}",
+            hex::encode(&profile.id),
+            hex::encode(&selected.id)
+        ),
+        "settings.agent-provider-model",
+        selected.display_label().to_owned(),
+    )
+    .effect(&ProviderEffect::InspectModelRequestLimits {
+        provider: profile.id.clone(),
+        model: selected.id.clone(),
+    })
+    .operation(
+        ProviderEffect::SetModelRequestLimits {
+            provider: profile.id.clone(),
+            model: selected.id.clone(),
+            max_output_tokens: None,
+            runtime_context_tokens: None,
+            plan_timeout_ms: None,
+        }
+        .bound_asking(&[
+            "max_output_tokens",
+            "runtime_context_tokens",
+            "plan_timeout_ms",
+        ]),
+    )
 }
 
 fn provider_row(profile: &ProviderProfile) -> LiveRow {
-    let offer = |effect: ProviderEffect| ProviderEffect::from(effect).bound();
+    let offer = |effect: ProviderEffect| effect.bound();
     let id = profile.id.clone();
     let row = LiveRow::new(
         format!("settings.agent-provider:{id}"),
@@ -260,34 +261,34 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
     }));
     let row = row
         .operation(
-            ProviderEffect::from(ProviderEffect::SetProviderDetails {
+            ProviderEffect::SetProviderDetails {
                 provider: id.clone(),
                 label: profile.label.clone(),
                 endpoint: profile.endpoint.clone(),
                 model: profile.default_model.clone(),
-            })
+            }
             .bound_asking(&["label", "endpoint", "model"]),
         )
         .operation(
-            ProviderEffect::from(ProviderEffect::SetProviderProtocol {
+            ProviderEffect::SetProviderProtocol {
                 provider: id.clone(),
                 protocol: protocol_slug(profile.protocol).into(),
-            })
+            }
             .bound_asking(&["protocol"]),
         );
     if profile.location == EndpointLocation::Hosted && profile.sign_in.is_none() {
         row.operation(
-            ProviderEffect::from(ProviderEffect::SaveProviderKey {
+            ProviderEffect::SaveProviderKey {
                 provider: id,
                 key: None,
-            })
+            }
             .bound_asking(&["key"]),
         )
         .operation(
-            ProviderEffect::from(ProviderEffect::MigrateProviderKey {
+            ProviderEffect::MigrateProviderKey {
                 provider: profile.id.clone(),
                 original_endpoint: String::new(),
-            })
+            }
             .bound_asking(&["original_endpoint"]),
         )
         .operation(offer(ProviderEffect::RemoveLegacyProviderKey {
@@ -365,8 +366,37 @@ impl<H: PanelBindings> ProviderPanel<H> {
             button
         }
     }
-    fn bind(&self, button: Button, binding: impl Binds<ProviderEffect, ()>) -> Button {
-        self.cx.bind(self.admit(button), binding)
+    fn bind_row(
+        &self,
+        button: Button,
+        row: LiveRow,
+        binding: impl Binds<ProviderEffect, ()>,
+    ) -> Button {
+        let row = row.into_resource();
+        let Some(spec) = row
+            .actions
+            .iter()
+            .find(|spec| spec.id == binding.action_id())
+        else {
+            return button.unavailable();
+        };
+        // Entity arguments belong to the published row operation, not its caller.
+        // Keep draft reads deferred until activation and out of binding metadata.
+        // Normal action-bound controls follow live permissions; the host resolves
+        // this row's current operation again before dispatch or confirmation.
+        let asked: Vec<_> = spec
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
+        match ui::tilo_actions::ActionBinding::fallible(&row, spec, move |input| {
+            let mut args = binding.arguments(input)?;
+            args.retain(|name, _| asked.contains(name));
+            Ok(args)
+        }) {
+            Ok(binding) => self.admit(button).bind_action(binding),
+            Err(_) => button.unavailable(),
+        }
     }
     fn bind_invocation(&self, button: Button, effect: ProviderEffect) -> Button {
         // A failed initial load can always be retried.
@@ -376,6 +406,41 @@ impl<H: PanelBindings> ProviderPanel<H> {
             } else {
                 self.admit(button)
             };
+        let arguments = effect.arguments();
+        if let Some(provider) = arguments
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+        {
+            let row_id = match arguments.get("model").and_then(serde_json::Value::as_str) {
+                Some(model)
+                    if matches!(
+                        effect,
+                        ProviderEffect::SetModelRequestLimits { .. }
+                            | ProviderEffect::InspectModelRequestLimits { .. }
+                    ) =>
+                {
+                    format!(
+                        "settings.agent-provider-model:{}:{}",
+                        hex::encode(provider),
+                        hex::encode(model)
+                    )
+                }
+                _ => format!("settings.agent-provider:{provider}"),
+            };
+            let Some(row) = self.rows().into_iter().find(|row| row.id() == row_id) else {
+                return button.unavailable();
+            };
+            let row = row.into_resource();
+            let Some(spec) = row.actions.iter().find(|spec| spec.id == effect.id()) else {
+                return button.unavailable();
+            };
+            let mut arguments = arguments;
+            arguments.retain(|name, _| spec.params().iter().any(|param| param.name == *name));
+            return match ui::tilo_actions::ActionBinding::static_json(&row, spec, arguments) {
+                Ok(binding) => button.bind_action(binding),
+                Err(_) => button.unavailable(),
+            };
+        }
         self.cx.bind_invocation(button, effect)
     }
     pub fn sections(&self) -> Vec<SettingsSection> {
@@ -396,6 +461,10 @@ impl<H: PanelBindings> ProviderPanel<H> {
         sections.push(self.request_limits_card());
         sections
     }
+    /// Inspect the configured deployment limits for a provider's model.
+    ///
+    /// # Errors
+    /// Returns an error when the provider or model is unavailable.
     pub fn inspect_limits(&self, provider: &str, model: &str) -> Result<serde_json::Value, String> {
         let config = self.provider_config().clone();
         let selected = config
@@ -516,6 +585,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 
     /// Apply a provider change to the person's settings.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported effects, missing profiles or invalid details.
     pub fn proposed_config(&self, effect: ProviderEffect) -> Result<ProviderConfig, String> {
         let mut config = self.provider_config().clone();
         match effect {
@@ -614,10 +686,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .clone()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the hosted-provider editor keeps each credential and endpoint control together"
-    )]
     pub fn hosted_profiles(&self) -> SettingsSection {
         self.hosted_profiles_with_sign_in(true)
     }
@@ -669,257 +737,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .filter(|profile| profile.location != EndpointLocation::ThisDevice)
             .filter(|profile| include_sign_in || profile.sign_in.is_none())
         {
-            let location = location_shown(profile.location);
-            body.push(value_row(profile.display_label(), &location));
-            let profile_id = profile.id.clone();
-            let fields = self.field_buffers(profile);
-            let label = fields
-                .label
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            let endpoint = fields
-                .endpoint
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            let model = fields
-                .model
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            body.push(field_row(
-                &t("agent-placeholder-name"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-label-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.label))
-                        .with_initial_value(&label)
-                        .with_placeholder(t("agent-placeholder-name")),
-                ),
-            ));
-            body.push(field_row(
-                &t("agent-placeholder-url"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-url-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.endpoint))
-                        .with_initial_value(&endpoint)
-                        .with_placeholder(t("agent-placeholder-url")),
-                ),
-            ));
-            body.push(field_row(
-                &t("agent-placeholder-model"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-model-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.model))
-                        .with_initial_value(&model)
-                        .with_placeholder(t("agent-placeholder-model")),
-                ),
-            ));
-            let alternate_protocol = match profile.protocol {
-                ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
-                ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
-            };
-            let alternate_protocol_label = t_args(
-                "agent-use-protocol",
-                &[("protocol", alternate_protocol.label().into())],
-            );
-            let save_id = profile_id.clone();
-            let save_fields = fields.clone();
-            let read = |field: &Arc<Mutex<String>>| {
-                field.lock().map(|value| value.clone()).unwrap_or_default()
-            };
-            body.push(row(Box::new(
-                Row::new()
-                    .push(Box::new(self.bind(
-                        Button::new(
-                            &format!("agent-models-save-provider-{profile_id}"),
-                            &t("agent-save-details"),
-                        ),
-                        identity(ProviderEffect::SET_PROVIDER_DETAILS).map(move |()| {
-                            let model = read(&save_fields.model);
-                            (
-                                save_id.clone(),
-                                read(&save_fields.label),
-                                read(&save_fields.endpoint),
-                                (!model.trim().is_empty()).then_some(model),
-                            )
-                        }),
-                    )))
-                    .push(widgets::gap(ui::tokens::SpacingStep::S2))
-                    .push(Box::new(self.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-protocol-{profile_id}"),
-                            &alternate_protocol_label,
-                        ),
-                        ProviderEffect::SetProviderProtocol {
-                            provider: profile_id.clone(),
-                            protocol: protocol_slug(alternate_protocol).into(),
-                        },
-                    )))
-                    .push(widgets::gap(ui::tokens::SpacingStep::S2))
-                    .push(Box::new(self.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-enabled-{profile_id}"),
-                            &if profile.enabled {
-                                t("agent-disable")
-                            } else {
-                                t("agent-enable")
-                            },
-                        ),
-                        ProviderEffect::SetProviderEnabled {
-                            provider: profile_id.clone(),
-                            on: !profile.enabled,
-                        },
-                    )))
-                    .push(widgets::gap(ui::tokens::SpacingStep::S2))
-                    .push(Box::new(self.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-remove-provider-{profile_id}"),
-                            &t("agent-remove-provider"),
-                        ),
-                        ProviderEffect::RemoveProvider {
-                            provider: profile_id.clone(),
-                        },
-                    ))),
-            )));
-            let protocol = t("agent-protocol");
-            body.push(value_row(&protocol, profile.protocol.label()));
-            if profile.sign_in.is_some() {
-                body.push(note(&t("agent-sign-in-custody")));
-            } else {
-                let buffer = self.key_buffer(&profile_id);
-                let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
-                let (configured, configured_error) = match self.keys.get(&profile_id) {
-                    Some(Ok(status)) => (matches!(status, CredentialStatus::Configured), None),
-                    Some(Err(error)) => (false, Some(error.clone())),
-                    None => (false, None),
-                };
-                if let Some(error) = configured_error {
-                    body.push(row(widgets::error_caption(&t_args(
-                        "agent-key-read-error",
-                        &[("error", error.into())],
-                    ))));
-                }
-                if matches!(
-                    self.keys.get(&profile_id),
-                    Some(Ok(CredentialStatus::MigrationRequired))
-                ) {
-                    body.push(note(&t("agent-key-migration-required")));
-                    let original = Arc::clone(&fields.original_endpoint);
-                    let initial_original = original
-                        .lock()
-                        .map(|value| value.clone())
-                        .unwrap_or_default();
-                    body.push(field_row(
-                        &t("agent-original-endpoint"),
-                        Box::new(
-                            TextInput::local()
-                                .with_id(&format!("agent-models-original-endpoint-{profile_id}"))
-                                .with_external_buffer(Arc::clone(&original))
-                                .with_initial_value(&initial_original)
-                                .with_placeholder(t("agent-original-endpoint")),
-                        ),
-                    ));
-                    let migrate_id = profile_id.clone();
-                    body.push(row(Box::new(
-                        self.bind(
-                            Button::new(
-                                &format!("agent-models-migrate-key-{profile_id}"),
-                                &t("agent-migrate-key"),
-                            )
-                            .with_enabled(can_admin),
-                            identity(ProviderEffect::MIGRATE_PROVIDER_KEY).map(move |()| {
-                                let endpoint = original
-                                    .lock()
-                                    .map(|value| value.clone())
-                                    .unwrap_or_default();
-                                (migrate_id.clone(), endpoint)
-                            }),
-                        ),
-                    )));
-                    body.push(row(Box::new(
-                        self.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-legacy-key-{profile_id}"),
-                                &t("agent-remove-legacy-key"),
-                            )
-                            .with_enabled(can_admin),
-                            ProviderEffect::RemoveLegacyProviderKey {
-                                provider: profile_id.clone(),
-                            },
-                        ),
-                    )));
-                }
-                body.push(field_row(
-                    &t("agent-placeholder-key"),
-                    Box::new(
-                        TextInput::local()
-                            .with_id(&format!("agent-models-api-key-{profile_id}"))
-                            .with_external_buffer(buffer)
-                            .with_initial_value(&initial)
-                            .with_secret(true)
-                            .with_placeholder(t("agent-placeholder-key")),
-                    ),
-                ));
-                body.push(row(Box::new(
-                    Row::new()
-                        .push(Box::new(
-                            self.bind_invocation(
-                                Button::new(
-                                    &format!("agent-models-set-api-key-{profile_id}"),
-                                    &if configured {
-                                        t("agent-replace-key")
-                                    } else {
-                                        t("agent-save-key")
-                                    },
-                                )
-                                .with_enabled(can_admin),
-                                ProviderEffect::SaveProviderKey {
-                                    provider: profile_id.clone(),
-                                    key: None,
-                                },
-                            ),
-                        ))
-                        .push(Box::new(
-                            self.bind_invocation(
-                                Button::new(
-                                    &format!("agent-models-remove-api-key-{profile_id}"),
-                                    &t("agent-remove-key"),
-                                )
-                                .with_enabled(can_admin),
-                                ProviderEffect::RemoveProviderKey {
-                                    provider: profile_id.clone(),
-                                },
-                            ),
-                        )),
-                )));
-                // why: a key-status sentence or badge is a status line, not a label/control pair.
-                body.push(row(if configured {
-                    Box::new(Text::new(&t("agent-key-stored")).dimmed())
-                } else if self.needs_key(profile) {
-                    semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
-                } else {
-                    Box::new(Text::new(&t("agent-key-none")).dimmed())
-                }));
-            }
-            if profile.default_model.is_some() {
-                body.push(row(Box::new(self.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-default-{profile_id}"),
-                        &if config.default_profile.as_deref() == Some(&profile.id) {
-                            t("agent-default-current")
-                        } else {
-                            t("agent-use-default")
-                        },
-                    ),
-                    ProviderEffect::SetDefaultProvider {
-                        provider: profile_id.clone(),
-                    },
-                ))));
-            }
+            self.profile_body(&mut body, profile, can_admin);
         }
         for issue in config.validation_errors() {
             body.push(note(&t_args(
@@ -928,6 +746,289 @@ impl<H: PanelBindings> ProviderPanel<H> {
             )));
         }
         card(&t("agent-hosted-title"), rows(body))
+    }
+
+    fn profile_fields(&self, body: &mut Vec<Item>, profile: &ProviderProfile) {
+        let location = location_shown(profile.location);
+        body.push(value_row(profile.display_label(), &location));
+        let profile_id = profile.id.clone();
+        let fields = self.field_buffers(profile);
+        let label = fields
+            .label
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let endpoint = fields
+            .endpoint
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let model = fields
+            .model
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        body.push(field_row(
+            &t("agent-placeholder-name"),
+            Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-label-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.label))
+                    .with_initial_value(&label)
+                    .with_placeholder(t("agent-placeholder-name")),
+            ),
+        ));
+        body.push(field_row(
+            &t("agent-placeholder-url"),
+            Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-url-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.endpoint))
+                    .with_initial_value(&endpoint)
+                    .with_placeholder(t("agent-placeholder-url")),
+            ),
+        ));
+        body.push(field_row(
+            &t("agent-placeholder-model"),
+            Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-model-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.model))
+                    .with_initial_value(&model)
+                    .with_placeholder(t("agent-placeholder-model")),
+            ),
+        ));
+    }
+
+    fn profile_actions(&self, body: &mut Vec<Item>, profile: &ProviderProfile) {
+        let profile_id = profile.id.clone();
+        let fields = self.field_buffers(profile);
+        let alternate_protocol = match profile.protocol {
+            ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
+            ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
+        };
+        let alternate_protocol_label = t_args(
+            "agent-use-protocol",
+            &[("protocol", alternate_protocol.label().into())],
+        );
+        let save_id = profile_id.clone();
+        let save_fields = fields;
+        let read = |field: &Arc<Mutex<String>>| {
+            field.lock().map(|value| value.clone()).unwrap_or_default()
+        };
+        body.push(row(Box::new(
+            Row::new()
+                .push(Box::new(self.bind_row(
+                    Button::new(
+                        &format!("agent-models-save-provider-{profile_id}"),
+                        &t("agent-save-details"),
+                    ),
+                    provider_row(profile),
+                    identity(ProviderEffect::SET_PROVIDER_DETAILS).map(move |()| {
+                        let model = read(&save_fields.model);
+                        (
+                            save_id.clone(),
+                            read(&save_fields.label),
+                            read(&save_fields.endpoint),
+                            (!model.trim().is_empty()).then_some(model),
+                        )
+                    }),
+                )))
+                .push(widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-protocol-{profile_id}"),
+                        &alternate_protocol_label,
+                    ),
+                    ProviderEffect::SetProviderProtocol {
+                        provider: profile_id.clone(),
+                        protocol: protocol_slug(alternate_protocol).into(),
+                    },
+                )))
+                .push(widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-enabled-{profile_id}"),
+                        &if profile.enabled {
+                            t("agent-disable")
+                        } else {
+                            t("agent-enable")
+                        },
+                    ),
+                    ProviderEffect::SetProviderEnabled {
+                        provider: profile_id.clone(),
+                        on: !profile.enabled,
+                    },
+                )))
+                .push(widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        &t("agent-remove-provider"),
+                    ),
+                    ProviderEffect::RemoveProvider {
+                        provider: profile_id,
+                    },
+                ))),
+        )));
+    }
+
+    fn key_migration(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
+        let profile_id = profile.id.clone();
+        let fields = self.field_buffers(profile);
+        if matches!(
+            self.keys.get(&profile_id),
+            Some(Ok(CredentialStatus::MigrationRequired))
+        ) {
+            body.push(note(&t("agent-key-migration-required")));
+            let original = Arc::clone(&fields.original_endpoint);
+            let initial_original = original
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
+            body.push(field_row(
+                &t("agent-original-endpoint"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-original-endpoint-{profile_id}"))
+                        .with_external_buffer(Arc::clone(&original))
+                        .with_initial_value(&initial_original)
+                        .with_placeholder(t("agent-original-endpoint")),
+                ),
+            ));
+            let migrate_id = profile_id.clone();
+            body.push(row(Box::new(
+                self.bind_row(
+                    Button::new(
+                        &format!("agent-models-migrate-key-{profile_id}"),
+                        &t("agent-migrate-key"),
+                    )
+                    .with_enabled(can_admin),
+                    provider_row(profile),
+                    identity(ProviderEffect::MIGRATE_PROVIDER_KEY).map(move |()| {
+                        let endpoint = original
+                            .lock()
+                            .map(|value| value.clone())
+                            .unwrap_or_default();
+                        (migrate_id.clone(), endpoint)
+                    }),
+                ),
+            )));
+            body.push(row(Box::new(
+                self.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-legacy-key-{profile_id}"),
+                        &t("agent-remove-legacy-key"),
+                    )
+                    .with_enabled(can_admin),
+                    ProviderEffect::RemoveLegacyProviderKey {
+                        provider: profile_id,
+                    },
+                ),
+            )));
+        }
+    }
+
+    fn profile_credentials(
+        &self,
+        body: &mut Vec<Item>,
+        profile: &ProviderProfile,
+        can_admin: bool,
+    ) {
+        let profile_id = profile.id.clone();
+        if profile.sign_in.is_some() {
+            body.push(note(&t("agent-sign-in-custody")));
+        } else {
+            let buffer = self.key_buffer(&profile_id);
+            let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
+            let (configured, configured_error) = match self.keys.get(&profile_id) {
+                Some(Ok(status)) => (matches!(status, CredentialStatus::Configured), None),
+                Some(Err(error)) => (false, Some(error.clone())),
+                None => (false, None),
+            };
+            if let Some(error) = configured_error {
+                body.push(row(widgets::error_caption(&t_args(
+                    "agent-key-read-error",
+                    &[("error", error.into())],
+                ))));
+            }
+            self.key_migration(body, profile, can_admin);
+            body.push(field_row(
+                &t("agent-placeholder-key"),
+                Box::new(
+                    TextInput::local()
+                        .with_id(&format!("agent-models-api-key-{profile_id}"))
+                        .with_external_buffer(buffer)
+                        .with_initial_value(&initial)
+                        .with_secret(true)
+                        .with_placeholder(t("agent-placeholder-key")),
+                ),
+            ));
+            body.push(row(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        self.bind_invocation(
+                            Button::new(
+                                &format!("agent-models-set-api-key-{profile_id}"),
+                                &if configured {
+                                    t("agent-replace-key")
+                                } else {
+                                    t("agent-save-key")
+                                },
+                            )
+                            .with_enabled(can_admin),
+                            ProviderEffect::SaveProviderKey {
+                                provider: profile_id.clone(),
+                                key: None,
+                            },
+                        ),
+                    ))
+                    .push(Box::new(
+                        self.bind_invocation(
+                            Button::new(
+                                &format!("agent-models-remove-api-key-{profile_id}"),
+                                &t("agent-remove-key"),
+                            )
+                            .with_enabled(can_admin),
+                            ProviderEffect::RemoveProviderKey {
+                                provider: profile_id,
+                            },
+                        ),
+                    )),
+            )));
+            // why: a key-status sentence or badge is a status line, not a label/control pair.
+            body.push(row(if configured {
+                Box::new(Text::new(&t("agent-key-stored")).dimmed())
+            } else if self.needs_key(profile) {
+                semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
+            } else {
+                Box::new(Text::new(&t("agent-key-none")).dimmed())
+            }));
+        }
+    }
+
+    fn profile_body(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
+        let profile_id = profile.id.clone();
+        self.profile_fields(body, profile);
+        self.profile_actions(body, profile);
+        let protocol = t("agent-protocol");
+        body.push(value_row(&protocol, profile.protocol.label()));
+        self.profile_credentials(body, profile, can_admin);
+        if profile.default_model.is_some() {
+            body.push(row(Box::new(self.bind_invocation(
+                Button::new(
+                    &format!("agent-models-default-{profile_id}"),
+                    &if self.provider_config().default_profile.as_deref() == Some(&profile.id) {
+                        t("agent-default-current")
+                    } else {
+                        t("agent-use-default")
+                    },
+                ),
+                ProviderEffect::SetDefaultProvider {
+                    provider: profile_id,
+                },
+            ))));
+        }
     }
 
     pub fn request_limit_buffers(
@@ -1015,11 +1116,12 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 let model = selected.id.clone();
                 body.push(row(Box::new(
                     Row::new()
-                        .push(Box::new(self.bind(
+                        .push(Box::new(self.bind_row(
                             Button::new(
                                 &format!("agent-model-limit-save-{widget_id}"),
                                 &t("agent-save-details"),
                             ),
+                            request_limit_row(profile, selected),
                             identity(ProviderEffect::SET_MODEL_REQUEST_LIMITS).map(move |()| {
                                 (
                                     provider.clone(),
@@ -1050,6 +1152,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 }
 /// Change only the selected model's policy, retaining other profile metadata.
+///
+/// # Errors
+/// Returns an error for a missing model or limits outside its supported range.
 pub fn set_model_limits(
     config: &mut ProviderConfig,
     provider: &str,

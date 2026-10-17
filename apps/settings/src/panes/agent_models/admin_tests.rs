@@ -4,8 +4,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agent_provider_config::management::AdminFuture;
 use ui::framework::testing::TestApp;
 
-use super::*;
+use super::{AgentModelsEffect, PaneCx, ProviderPanel, SettingsApp, SettingsEffect};
+use crate::panes::model::PaneModel;
 use crate::{SettingsShell, effects::NavigationEffect};
+use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use agent_provider_config::protocol::{ErrorKind, ModelError};
+use agent_provider_config::{ProviderConfig, ProviderProfile};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use ui::lock::MutexRecover as _;
+use ui::tilo_resource::Effect;
 include!("../../../../../crates/sdk/provider-settings-ui/src/fake_backend.rs");
 
 fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
@@ -70,6 +78,18 @@ fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
     } else {
         invoke(app, effect).unwrap();
     }
+}
+
+fn start(app: &mut TestApp<SettingsShell>, effect: &AgentModelsEffect) {
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: ui::tilo_actions::ActionAddress::new(row_for(effect), effect.id()),
+    };
+    let mut arguments = effect.arguments();
+    arguments.remove("provider");
+    app.harness()
+        .start_bound_job_for(None, &address, &arguments, true)
+        .unwrap();
 }
 
 fn config(app: &mut TestApp<SettingsShell>) -> ProviderConfig {
@@ -186,20 +206,19 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
             })
             .unwrap();
         draft.project.set("project-b".into());
-        let effect = SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
+        let effect = AgentModelsEffect::SetVertexProvider {
             provider: Some(id.clone()),
             project: "project-b".into(),
             location: Some("global".into()),
             model: Some("gemini-2.5-pro".into()),
-        });
+        };
         backend.delay.store(true, Ordering::SeqCst);
         if conflict {
             backend.state.lock_recover().revision += 1;
         } else {
             backend.state.lock_recover().fail_next = true;
         }
-        app.start_effect_on(&format!("settings.agent-provider:{id}"), &effect)
-            .unwrap();
+        start(&mut app, &effect);
         with_panel(&mut app, |panel| assert!(panel.admin_pending.is_some()));
         assert!(
             invoke(
@@ -230,8 +249,7 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
                 .as_deref(),
             Some("project-a")
         );
-        app.effect_on(&format!("settings.agent-provider:{id}"), &effect)
-            .unwrap();
+        invoke(&mut app, effect).unwrap();
         assert_eq!(
             config(&mut app).profiles[0]
                 .sign_in
@@ -245,7 +263,13 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
 }
 
 mod shared_contract {
-    use super::*;
+    use super::{
+        AgentModelsEffect, CredentialStatus, FakeAdminBackend, Ordering, ProviderProfile,
+        SettingsEffect, assert_private, config, invoke, key_buffer, mount, run, with_panel,
+    };
+    use provider_settings_ui::widgets;
+    use std::sync::Arc;
+    use ui::lock::MutexRecover as _;
     // The native public effect adapter retains all existing ids and parameter shapes.
     type ProviderEffect = AgentModelsEffect;
     fn host_effect(effect: ProviderEffect) -> SettingsEffect {
