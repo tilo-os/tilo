@@ -94,6 +94,8 @@ pub struct EventData {
     pub title: String,
     pub start: String,
     pub end: String,
+    #[serde(default)]
+    pub end_later_fold: bool,
     pub all_day: bool,
     pub location: String,
     pub color: usize,
@@ -139,6 +141,7 @@ impl Default for EventData {
             title: String::new(),
             start: String::new(),
             end: String::new(),
+            end_later_fold: false,
             all_day: false,
             location: String::new(),
             color: 0,
@@ -174,6 +177,8 @@ pub struct OccurrenceOverrideData {
     pub cancelled: bool,
     pub start: String,
     pub end: String,
+    #[serde(default)]
+    pub end_later_fold: bool,
     pub title: String,
     pub location: String,
 }
@@ -185,6 +190,7 @@ impl EventData {
             title: e.title.clone(),
             start: e.start.format(DT_FMT).to_string(),
             end: e.end.format(DT_FMT).to_string(),
+            end_later_fold: e.end_later_fold,
             all_day: e.all_day,
             location: e.location.clone(),
             color: e.color.index(),
@@ -242,7 +248,7 @@ impl EventData {
             .map(AttendeeData::to_attendee)
             .collect::<Option<Vec<_>>>()?;
         let organizer = parse_optional_id(&self.organizer)?;
-        if start > end
+        if !crate::timezone::valid_span(&timezone, start, end, self.end_later_fold)
             || self.color >= Palette::ALL.len()
             || !matches!(self.reminder, -1 | 10 | 30 | 60)
             || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
@@ -257,6 +263,7 @@ impl EventData {
             title: self.title.clone(),
             start,
             end,
+            end_later_fold: self.end_later_fold,
             all_day: self.all_day,
             location: self.location.clone(),
             color: Palette::from_index(self.color),
@@ -361,6 +368,7 @@ impl OccurrenceOverrideData {
             end: value
                 .end
                 .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+            end_later_fold: value.end_later_fold,
             title: value.title.clone().unwrap_or_default(),
             location: value.location.clone().unwrap_or_default(),
         }
@@ -377,7 +385,7 @@ impl OccurrenceOverrideData {
         } else {
             Some(NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?)
         };
-        if start.zip(end).is_some_and(|(start, end)| start > end) {
+        if !self.end_later_fold && start.zip(end).is_some_and(|(start, end)| start > end) {
             return None;
         }
         Some(OccurrenceOverride {
@@ -390,6 +398,7 @@ impl OccurrenceOverrideData {
             cancelled: self.cancelled,
             start,
             end,
+            end_later_fold: self.end_later_fold,
             title: (!self.title.is_empty()).then(|| self.title.clone()),
             location: (!self.location.is_empty()).then(|| self.location.clone()),
         })
