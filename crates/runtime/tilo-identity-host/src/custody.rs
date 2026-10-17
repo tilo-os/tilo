@@ -53,36 +53,57 @@ impl HostIdentity {
             let store =
                 crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
             let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
-            let mut selected = registry
-                .workspace_identities
-                .iter()
-                .filter_map(|(room, id)| {
-                    let room = RoomId::parse(room)?;
-                    (room_topic(room) == ws).then_some(id)
-                });
-            let selected_id = selected
-                .next()
-                .or(registry.default_identity.as_ref())
-                .ok_or("native identity selection missing")?;
-            if selected.next().is_some() {
-                return Err("ambiguous native identity topic".into());
-            }
-            let profile = registry
-                .identities
-                .get(selected_id)
-                .ok_or("selected native identity is absent")?;
-            let cert = tilo_user_identity::persist::read_device_cert(
-                &paths.device_cert_for_user(&profile.user_public_key),
-            )
-            .map_err(|e| e.to_string())?;
-            if cert.user_public_key != profile.user_public_key {
-                return Err("native certificate root differs from selection".into());
-            }
-            let fleet =
-                crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), paths.clone())
-                    .load(selected_id)
+            // A device enrolled without the root (a node's session) has no
+            // identity selection: it acts with its own certificate, for the
+            // person whose user key it holds, and keeps no fleet of its own.
+            let enrolled = registry.default_identity.is_none()
+                && registry.workspace_identities.is_empty()
+                && tilo_user_identity::persist::joined_device_is_ready(
+                    paths,
+                    tilo_clock::unix_now_ns(),
+                )
+                .unwrap_or(false);
+            if enrolled {
+                let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
                     .map_err(|e| e.to_string())?;
-            (cert, fleet.revocations)
+                let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+                    .map_err(|e| e.to_string())?;
+                if cert.user_public_key != user {
+                    return Err("enrolled certificate root differs from its user key".into());
+                }
+                (cert, Vec::new())
+            } else {
+                let mut selected = registry
+                    .workspace_identities
+                    .iter()
+                    .filter_map(|(room, id)| {
+                        let room = RoomId::parse(room)?;
+                        (room_topic(room) == ws).then_some(id)
+                    });
+                let selected_id = selected
+                    .next()
+                    .or(registry.default_identity.as_ref())
+                    .ok_or("native identity selection missing")?;
+                if selected.next().is_some() {
+                    return Err("ambiguous native identity topic".into());
+                }
+                let profile = registry
+                    .identities
+                    .get(selected_id)
+                    .ok_or("selected native identity is absent")?;
+                let cert = tilo_user_identity::persist::read_device_cert(
+                    &paths.device_cert_for_user(&profile.user_public_key),
+                )
+                .map_err(|e| e.to_string())?;
+                if cert.user_public_key != profile.user_public_key {
+                    return Err("native certificate root differs from selection".into());
+                }
+                let fleet =
+                    crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), paths.clone())
+                        .load(selected_id)
+                        .map_err(|e| e.to_string())?;
+                (cert, fleet.revocations)
+            }
         } else {
             (
                 self.workspace_device_certs
