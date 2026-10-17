@@ -180,6 +180,13 @@ fn write_observation(
     Ok(())
 }
 
+fn rejected(reason: String) -> capnp::Error {
+    capnp::Error::failed(format!(
+        "{}{reason}",
+        runtime_collab::LOCAL_DOCUMENT_REJECTED
+    ))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the RPC keeps capture, asynchronous resolution, serialized revalidation and exact-owner admission observation together"
@@ -190,10 +197,9 @@ pub(super) fn admit(
     mut results: channel_handle::AdmitLocalDocumentActionResults,
 ) -> Promise<(), capnp::Error> {
     let parsed = (|| {
-        let request =
-            Request::decode(params.get()?.get_request()?).map_err(capnp::Error::failed)?;
-        if request.bound_invocation().map_err(capnp::Error::failed)? != request.invocation {
-            return Err(capnp::Error::failed(
+        let request = Request::decode(params.get()?.get_request()?).map_err(rejected)?;
+        if request.bound_invocation().map_err(rejected)? != request.invocation {
+            return Err(rejected(
                 "local report invocation does not bind capture".into(),
             ));
         }
@@ -202,20 +208,18 @@ pub(super) fn admit(
             .state
             .revalidate_admission(&route, &channel.verified_identity)?;
         if admitted.certificate.is_none() {
-            return Err(capnp::Error::failed(
-                "original SDK caller certificate missing".into(),
-            ));
+            return Err(rejected("original SDK caller certificate missing".into()));
         }
         let time = channel
             .state
             .registered_policy_time()
-            .map_err(capnp::Error::failed)?
-            .ok_or_else(|| capnp::Error::failed("original policy time unavailable".into()))?;
+            .map_err(rejected)?
+            .ok_or_else(|| rejected("original policy time unavailable".into()))?;
         Ok((request, route, admitted, time))
     })();
     let (request, route, admitted, time) = match parsed {
         Ok(value) => value,
-        Err(error) => return Promise::err(error),
+        Err(error) => return Promise::err(rejected(error.to_string())),
     };
     Promise::from_future(async move {
         let state = &channel.state;
@@ -255,25 +259,27 @@ pub(super) fn admit(
         let current = state.revalidate_admission(&route, &admitted)?;
         offer
             .check_registration(state, &channel.directories, peer)
-            .map_err(capnp::Error::failed)?;
+            .map_err(rejected)?;
         let offered = offer.offered(peer);
         if offered.0.route != route || !offer.has_original_worker() {
-            return Err(capnp::Error::failed(
+            return Err(rejected(
                 "local document report route or worker changed".into(),
             ));
         }
         let target = state
             .host_workers
             .lock()
-            .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
+            .map_err(|_| rejected("worker registry unavailable".into()))?
             .get(&peer)
             .cloned()
-            .ok_or_else(|| capnp::Error::failed("original worker retired".into()))?;
-        state.revalidate_admission(&route, &target)?;
+            .ok_or_else(|| rejected("original worker retired".into()))?;
+        state
+            .revalidate_admission(&route, &target)
+            .map_err(|error| rejected(error.to_string()))?;
         let certificate = current
             .certificate
             .as_ref()
-            .ok_or_else(|| capnp::Error::failed("original caller certificate missing".into()))?;
+            .ok_or_else(|| rejected("original caller certificate missing".into()))?;
         let owner = InvocationOwner::AuthenticatedLocal {
             root: certificate.user_public_key,
             device: certificate.device_public_key,

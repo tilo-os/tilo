@@ -68,7 +68,9 @@ fn local_component_action_drains_exact_pre_execution_snapshot_and_alias() {
         .app
         .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
             request_id,
-            result: Err("the captured directory was refused".into()),
+            result: Err(runtime_collab::LocalDocumentActionError::Uncertain(
+                "reply lost after admission".into(),
+            )),
         });
     assert!(fixture.app.document_sync_status().is_some());
     assert!(
@@ -240,4 +242,318 @@ fn model_action_outside_local_input_does_not_create_a_local_report() {
             CollabRequest::ReportLocalDocumentAction { .. }
         ))
     );
+}
+
+fn capture_address(fixture: &mut ActionFixture) -> tilo_actions::ActionAddress {
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.publish_action_surface();
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[0], "bound:probe")
+        .unwrap();
+    tilo_actions::ActionAddress::new(alias, "apply")
+}
+
+fn capture_reports(
+    sent: &Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+) -> Vec<(u64, runtime_collab::LocalDocumentActionReport)> {
+    sent.borrow()
+        .iter()
+        .filter_map(|(_, request)| match request {
+            CollabRequest::ReportLocalDocumentAction { request_id, report } => {
+                Some((*request_id, report.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn capture_reply(
+    request_id: u64,
+    invocation: uuid::Uuid,
+    update: tilo_actions::InvocationUpdate,
+    admission: bool,
+) -> CollabEvent {
+    CollabEvent::LocalDocumentActionReported {
+        request_id,
+        result: Ok(runtime_collab::PublishedInvocationObservation {
+            host: [1; 16],
+            invocation: *invocation.as_bytes(),
+            result: Some(runtime_collab::PublishedInvocationResult {
+                id: request_id,
+                update_json: serde_json::to_string(&update).unwrap(),
+                admission_json: admission.then(|| "{\"private_admission\":true}".into()),
+                terminal_json: None,
+                uncertain: false,
+                cancellation_requested: false,
+            }),
+        }),
+    }
+}
+
+#[test]
+fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let address = capture_address(&mut fixture);
+    for index in 0..195 {
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .unwrap();
+        let (request_id, report) = capture_reports(&sent).pop().unwrap();
+        let invocation = tilo_actions::InvocationId(report.invocation);
+        let reply = match index % 3 {
+            0 => CollabEvent::LocalDocumentActionReported {
+                request_id,
+                result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                    "policy refused".into(),
+                )),
+            },
+            1 => capture_reply(
+                request_id,
+                report.invocation,
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: None,
+                },
+                false,
+            ),
+            _ => capture_reply(
+                request_id,
+                report.invocation,
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "refused".into(),
+                        message: "policy refused".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+                false,
+            ),
+        };
+        fixture.app.apply_collab_event_for_test(reply);
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+        assert_eq!(fixture.app.local_input_capture.custody_size(), 0);
+        assert!(
+            fixture
+                .app
+                .actions
+                .local_document_directory_pins
+                .iter()
+                .all(|pin| pin.strong_count() == 0)
+        );
+        assert!(fixture.app.document_sync_status().is_some());
+    }
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let (request_id, report) = capture_reports(&sent).pop().unwrap();
+    fixture.app.apply_collab_event_for_test(capture_reply(
+        request_id,
+        report.invocation,
+        tilo_actions::InvocationUpdate::Accepted {
+            invocation: tilo_actions::InvocationId(report.invocation),
+        },
+        true,
+    ));
+    assert_eq!(capture_reports(&sent).len(), 196);
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+    assert_eq!(fixture.app.local_document_action_admissions().count(), 1);
+}
+
+struct RecoveringCapturePeer {
+    sent: Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+    connected: Rc<std::cell::Cell<bool>>,
+    reject_enqueue: Rc<std::cell::Cell<bool>>,
+}
+impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
+    fn is_connected(&self) -> bool {
+        self.connected.get()
+    }
+    fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        Vec::new()
+    }
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        route: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.sent.borrow_mut().push((route, request));
+        if self.reject_enqueue.get() {
+            Err("transport queue temporarily unavailable".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn uncertain_and_enqueue_failed_captures_recover_exact_uuid_without_redispatch() {
+    for enqueue_failure in [false, true] {
+        let mut fixture = ActionFixture::broker();
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let connected = Rc::new(std::cell::Cell::new(true));
+        let reject_enqueue = Rc::new(std::cell::Cell::new(enqueue_failure));
+        fixture.app.collaboration.manager =
+            CollaborationManager::with_peer_transport(RecoveringCapturePeer {
+                sent: sent.clone(),
+                connected: connected.clone(),
+                reject_enqueue: reject_enqueue.clone(),
+            });
+        let address = capture_address(&mut fixture);
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .unwrap();
+        let (request_id, original) = capture_reports(&sent).pop().unwrap();
+        let heads = fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| {
+                doc.clone().get_heads()
+            })
+            .unwrap();
+        if !enqueue_failure {
+            fixture
+                .app
+                .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+                    request_id,
+                    result: Err(runtime_collab::LocalDocumentActionError::Uncertain(
+                        "reply lost".into(),
+                    )),
+                });
+        }
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+        assert!(fixture.app.document_sync_status().is_some());
+        for _ in 0..20 {
+            fixture.app.poll_and_apply_collab_events();
+        }
+        assert_eq!(capture_reports(&sent).len(), 1, "backoff must not spin");
+        connected.set(false);
+        fixture.app.poll_and_apply_collab_events();
+        reject_enqueue.set(false);
+        connected.set(true);
+        fixture.app.poll_and_apply_collab_events();
+        let reports = capture_reports(&sent);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[1].0, request_id);
+        assert_eq!(reports[1].1.encode().unwrap(), original.encode().unwrap());
+        assert_eq!(
+            fixture
+                .records
+                .read(&fixture.bindings[0].checkout.id, |doc| doc
+                    .clone()
+                    .get_heads())
+                .unwrap(),
+            heads
+        );
+        fixture.app.apply_collab_event_for_test(capture_reply(
+            request_id,
+            original.invocation,
+            tilo_actions::InvocationUpdate::Accepted {
+                invocation: tilo_actions::InvocationId(original.invocation),
+            },
+            true,
+        ));
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+        assert_eq!(fixture.app.local_input_capture.custody_size(), 0);
+        assert!(
+            fixture
+                .app
+                .actions
+                .local_document_directory_pins
+                .iter()
+                .all(|pin| pin.strong_count() == 0)
+        );
+        fixture.app.local_input_capture.retry_now();
+        fixture.app.poll_and_apply_collab_events();
+        assert_eq!(capture_reports(&sent).len(), 2);
+    }
+}
+
+#[test]
+fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliation() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let address = capture_address(&mut fixture);
+    for _ in 0..64 {
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .unwrap();
+        let (request_id, _) = capture_reports(&sent).pop().unwrap();
+        fixture
+            .app
+            .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+                request_id,
+                result: Err(runtime_collab::LocalDocumentActionError::Uncertain(
+                    "reply lost".into(),
+                )),
+            });
+    }
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 64);
+    assert!(fixture.app.local_input_capture.custody_size() < 4 * 1024 * 1024);
+    let heads = fixture
+        .records
+        .read(&fixture.bindings[0].checkout.id, |doc| {
+            doc.clone().get_heads()
+        })
+        .unwrap();
+    let _ = fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new());
+    assert_eq!(capture_reports(&sent).len(), 64);
+    assert_eq!(
+        fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| doc
+                .clone()
+                .get_heads())
+            .unwrap(),
+        heads
+    );
+    assert_eq!(
+        fixture
+            .app
+            .actions
+            .local_document_directory_pins
+            .iter()
+            .filter(|pin| pin.strong_count() > 0)
+            .count(),
+        64
+    );
+    for (request_id, _) in capture_reports(&sent) {
+        fixture
+            .app
+            .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+                request_id,
+                result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                    "policy refused".into(),
+                )),
+            });
+    }
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+    assert_eq!(capture_reports(&sent).len(), 65);
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
 }

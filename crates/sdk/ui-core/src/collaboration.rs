@@ -827,7 +827,10 @@ pub enum CollabEvent {
     /// Private admission/status or refusal, never a document publication permit.
     LocalDocumentActionReported {
         request_id: u64,
-        result: Result<runtime_collab::PublishedInvocationObservation, String>,
+        result: Result<
+            runtime_collab::PublishedInvocationObservation,
+            runtime_collab::LocalDocumentActionError,
+        >,
     },
     PublishedInvocationResult {
         request_id: u64,
@@ -1654,13 +1657,14 @@ impl CollaborationManager {
         route: RouteSpec,
         request_id: u64,
         capture: crate::local_document_action::CapturedAction,
-    ) -> Result<(), String> {
-        let report = Self::local_document_action_report(capture)?;
+    ) -> Result<(), runtime_collab::LocalDocumentActionError> {
+        let report = Self::local_document_action_report(capture)
+            .map_err(runtime_collab::LocalDocumentActionError::Rejected)?;
         self.try_send_to_route(
             route,
             CollabRequest::ReportLocalDocumentAction { request_id, report },
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| runtime_collab::LocalDocumentActionError::Uncertain(error.to_string()))
     }
 
     fn local_document_action_report(
