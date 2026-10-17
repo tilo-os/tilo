@@ -149,7 +149,8 @@ use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, Collabor
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
 use tilo_desktop::notifications::{
-    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
+    NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
@@ -2993,6 +2994,9 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
+        if !self.notification_stack.rect().contains(p) {
+            self.release_banner_keyboard();
+        }
         self.with_maximized_group(|group| group.note_maximized_press(p));
         if let Some((display, bar)) = self.top_bar_reveal_geometry() {
             self.top_bar_reveal.on_press(p, display, bar);
@@ -10477,6 +10481,15 @@ impl ShellOverlayHost {
     /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
+        // Resting on the banner stack holds its banners; leaving it into the
+        // window under it lets them go, though that window takes the motion.
+        if let Some(chrome) = self.chrome.clone()
+            && self
+                .notification_stack
+                .note_pointer(&ChromeNotifications::new(&chrome), Some(p))
+        {
+            chrome.borrow_mut().bump();
+        }
         // The maximized window's bar reads the pointer's path even while the
         // client under it takes the motion (`top_edge_reveal`).
         self.with_maximized_group(|group| {
@@ -11536,7 +11549,13 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines).drill_in()
+        let quiet = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| ChromeNotifications::new(chrome).quiet_status().is_some());
+        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines)
+            .drill_in()
+            .quiet(quiet)
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -14580,6 +14599,10 @@ impl ShellOverlayHost {
             return true;
         }
         let configured_action = self.configured_shortcut_action(logical_key, modifiers);
+        if self.handle_banner_keyboard(logical_key, configured_action, shift_down, repeat, handled)
+        {
+            return true;
+        }
         let shortcut_pressed = |action| configured_action == Some(action);
         // F1 is the fixed, hardware-neutral desktop help key. The configured
         // shortcut is a second route to the exact same guide.
@@ -15212,6 +15235,67 @@ impl ShellOverlayHost {
     /// Super+V, Super+A, Super+F, Super+Alt+8, Ctrl+Alt+Delete by
     /// default). Returns `false` for any other action. A held chord acts
     /// once: every action here is an edge, not a step.
+    /// Keyboard focus in the banner stack. The Notifications chord moves
+    /// focus into the newest banner when one is on screen (pressed again,
+    /// it opens the centre as before); the stack then takes the arrows,
+    /// Tab, Return, Space and Escape, and any other key gives focus back to
+    /// the window. Returns whether the key was taken.
+    fn handle_banner_keyboard(
+        &mut self,
+        key: &Key,
+        action: Option<settings_store::hardware::ShortcutAction>,
+        shift: bool,
+        repeat: bool,
+        handled: &mut bool,
+    ) -> bool {
+        use settings_store::hardware::ShortcutAction;
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let host = ChromeNotifications::new(&chrome);
+        let chord = action == Some(ShortcutAction::Notifications);
+        if !self.notification_stack.has_keyboard_focus() {
+            if chord && !repeat && self.notification_stack.focus_newest(&host) {
+                chrome.borrow_mut().bump();
+                *handled = true;
+                return true;
+            }
+            return false;
+        }
+        if !chord && self.notification_stack.handle_key(&host, key, shift) {
+            chrome.borrow_mut().bump();
+            *handled = true;
+            return true;
+        }
+        if self.notification_stack.release_keyboard(&host) {
+            chrome.borrow_mut().bump();
+        }
+        false
+    }
+
+    /// Whether the banner stack holds keyboard focus and acts on `key`, so
+    /// the window behind it must not get it.
+    pub fn banner_owns_key(&self, key: &Key) -> bool {
+        self.notification_stack.owns_key(key)
+    }
+
+    /// Whether keyboard focus is in the banner stack.
+    pub fn banner_has_keyboard(&self) -> bool {
+        self.notification_stack.has_keyboard_focus()
+    }
+
+    /// Give keyboard focus back from the banner stack to the window: a key
+    /// the stack does not act on went there, or a press landed elsewhere.
+    pub fn release_banner_keyboard(&mut self) {
+        if let Some(chrome) = self.chrome.clone()
+            && self
+                .notification_stack
+                .release_keyboard(&ChromeNotifications::new(&chrome))
+        {
+            chrome.borrow_mut().bump();
+        }
+    }
+
     fn handle_desktop_chord(
         &mut self,
         action: settings_store::hardware::ShortcutAction,

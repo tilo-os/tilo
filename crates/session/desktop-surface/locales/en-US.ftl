@@ -570,7 +570,7 @@ notification-lock-count = { $count ->
     [one] 1 notification
    *[other] { $count } notifications
 }
-notification-dnd-held = { $status } · { $count } held
+notification-more = { $count } more
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo

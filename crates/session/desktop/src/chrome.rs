@@ -219,6 +219,9 @@ pub struct DesktopChromeSnapshot {
     pub overlays: ChromeOverlays,
     pub fullscreen: bool,
     pub notification_badge: u32,
+    /// Fresh banners are being held (Do Not Disturb, presenting, a focus
+    /// schedule): the bar's status cluster shows a silenced bell.
+    pub notifications_quiet: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,

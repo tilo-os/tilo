@@ -2615,9 +2615,9 @@ impl ShellDriver {
 
     fn scene_notifications(&mut self) {
         use tilo_desktop::notifications::{Notification, NotificationSeverity};
-        // Backdate `created_at` past the slide-in window: at t=0 a
-        // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
-        // pushes it entirely off-screen-right.
+        // On screen since past the slide-in window: at t=0 a toast's
+        // `enter` progress is ~0 and `slide_dx == TOAST_WIDTH` pushes it
+        // entirely off-screen-right.
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2634,14 +2634,14 @@ impl ShellDriver {
                     .with_app_name("Chat")
                     .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new("Lena shared “Q3 plan”", "You can edit it.")
                     .with_app_name("Files")
                     .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new(
@@ -2651,7 +2651,7 @@ impl ShellDriver {
                 .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Warning)
                 .with_dismiss_after(Duration::from_secs(60))
-                .with_created_at(settled_at),
+                .with_shown_at(settled_at),
             );
         });
     }
@@ -2666,7 +2666,7 @@ impl ShellDriver {
                 Notification::new("Build finished", "All 524 tests passed")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
         });
     }
@@ -2683,11 +2683,11 @@ impl ShellDriver {
                 Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             // Engage Do-Not-Disturb, then post two more — these are
-            // suppressed from the banner surface and held in
-            // history, so the DND pill reads "… · 2 held".
+            // suppressed from the banner surface and held in history.
+            // No card says so over the work: the bar's bell is silenced.
             st.set_dnd(true);
             st.push_notification_full(
                 Notification::new("Slow network", "Peer sync delayed")

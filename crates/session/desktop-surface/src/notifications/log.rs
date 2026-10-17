@@ -16,6 +16,11 @@ use super::model::{ContinuityNotificationId, MAX_HISTORY, MAX_NOTIFICATIONS, Not
 /// How long Clear all stays reversible.
 pub const CLEAR_UNDO_WINDOW: Duration = Duration::from_secs(8);
 
+/// What a banner the person just let go of (the pointer left the stack,
+/// keyboard focus went back to their window) has left at least, so it does
+/// not start fading the moment they stop holding it.
+pub const RELEASE_GRACE: Duration = Duration::from_millis(1500);
+
 #[derive(Debug)]
 struct PendingClear {
     notifications: Vec<Notification>,
@@ -44,6 +49,9 @@ pub struct NotificationLog {
     pending_clear: Option<PendingClear>,
     /// Set by every history mutation; the host persists and clears it.
     history_dirty: bool,
+    /// Whether the person held the banners at the last
+    /// [`Self::present`]: letting go grants [`RELEASE_GRACE`].
+    held: bool,
 }
 
 impl NotificationLog {
@@ -83,6 +91,29 @@ impl NotificationLog {
     /// Drop every live banner matching `matches` without retiring it.
     pub fn discard_active_where(&mut self, matches: impl Fn(&Notification) -> bool) {
         self.active.retain(|n| !matches(n));
+    }
+
+    /// Say which live banners the stack has `on_screen` at `now`, and
+    /// whether the person `held` them (the pointer on the stack, keyboard
+    /// focus in a banner). A banner's time runs only while it is on screen
+    /// and unheld, so one that waited off screen, or that is being read,
+    /// keeps all it had; letting go leaves each at least
+    /// [`RELEASE_GRACE`].
+    pub fn present(&mut self, now: Instant, on_screen: &[u64], held: bool) {
+        let released = self.held && !held;
+        self.held = held;
+        for n in &mut self.active {
+            let shown = on_screen.contains(&n.id);
+            n.dwell.present(now, shown, held);
+            if released && shown {
+                n.dwell.grant(n.dismiss_after, now, RELEASE_GRACE);
+            }
+        }
+    }
+
+    /// Whether the person held the banners at the last [`Self::present`].
+    pub fn held(&self) -> bool {
+        self.held
     }
 
     /// Take every banner whose dwell has run out at `now`, oldest first.
@@ -211,9 +242,12 @@ impl NotificationLog {
         };
         let same_origin = |n: &&mut Notification| n.remote_route.as_ref() == Some(route);
         if let Some(existing) = self.active.iter_mut().find(same_origin) {
-            let id = existing.id;
+            let (id, dwell) = (existing.id, existing.dwell);
             *existing = replacement.clone();
             existing.id = id;
+            // The banner the person is reading stays where it is in its
+            // time on screen, rather than sliding in again.
+            existing.dwell = dwell;
             return true;
         }
         if let Some(existing) = self.history.iter_mut().find(same_origin) {
@@ -277,12 +311,51 @@ mod tests {
     #[test]
     fn expiry_takes_only_elapsed_banners() {
         let mut log = NotificationLog::default();
-        let _ =
-            log.show(Notification::new("quick", "").with_dismiss_after(Duration::from_millis(50)));
-        let _ = log.show(Notification::new("slow", ""));
-        let expired = log.take_expired(ui::time::now() + Duration::from_millis(200));
+        let now = ui::time::now();
+        let quick = Notification::new("quick", "").with_dismiss_after(Duration::from_millis(50));
+        let slow = Notification::new("slow", "");
+        let shown = [quick.id, slow.id];
+        let _ = log.show(quick);
+        let _ = log.show(slow);
+        log.present(now, &shown, false);
+        let expired = log.take_expired(now + Duration::from_millis(200));
         assert_eq!(titles(&expired), ["quick"]);
         assert_eq!(titles(log.active()), ["slow"]);
+    }
+
+    /// A banner ages only on screen and unheld: one that did not fit, or
+    /// one under the pointer, outlives its dismiss window; letting go of
+    /// it leaves a moment before it leaves.
+    #[test]
+    fn banners_age_only_on_screen_and_unheld() {
+        let mut log = NotificationLog::default();
+        let t0 = ui::time::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let seen = Notification::new("seen", "");
+        let unseen = Notification::new("unseen", "");
+        let seen_id = seen.id;
+        let _ = log.show(unseen);
+        let _ = log.show(seen);
+        log.present(t0, &[seen_id], false);
+        assert!(log.take_expired(at(4_000)).is_empty());
+        log.present(at(4_000), &[seen_id], true);
+        assert!(log.held());
+        assert!(
+            log.take_expired(at(60_000)).is_empty(),
+            "a banner under the pointer never leaves"
+        );
+        log.present(at(60_000), &[seen_id], false);
+        assert!(log.take_expired(at(60_000 + 1_400)).is_empty());
+        assert_eq!(
+            titles(&log.take_expired(at(60_000 + 1_500))),
+            ["seen"],
+            "let go, it leaves after the grace"
+        );
+        assert_eq!(
+            titles(log.active()),
+            ["unseen"],
+            "a banner never on screen never expires"
+        );
     }
 
     #[test]
