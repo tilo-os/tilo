@@ -142,6 +142,76 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
 }
 
 #[test]
+fn fold_conflicts_are_presented_after_opening_the_event() {
+    let source = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-a@example.com\r\nSUMMARY:First fold meeting\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261018T025000\r\nDURATION:PT30M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+        "RECURRENCE-ID;TZID=Europe/Berlin:20261025T025000\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-c@example.com\r\nSUMMARY:Touching endpoint\r\n",
+        "DTSTART:20261025T011500Z\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-d@example.com\r\nSUMMARY:Other timezone overlap\r\n",
+        "DTSTART:20261025T005500Z\r\nDURATION:PT10M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-e@example.com\r\nSUMMARY:Floating overlap\r\n",
+        "DTSTART:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-f@example.com\r\nSUMMARY:All day overlap\r\n",
+        "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026\r\nEND:VEVENT\r\n",
+        "END:VCALENDAR\r\n",
+    );
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new();
+    app.model = replica.state().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+    let id = app
+        .model
+        .events
+        .iter()
+        .find(|e| e.title == "First fold meeting")
+        .unwrap()
+        .id;
+    app.show_calendar();
+    app.view = View::Day;
+    app.anchor = day;
+    let mut h = Harness::mount(app, 1200, 1900);
+    h.relayout();
+    let area = h.app.view_rect();
+    let g = TimelineInteraction::test_geometry(area);
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
+    // Above the 02:50 event, so this gesture opens the first meeting.
+    h.click(Point::new(block.center().x, block.y0 + 1.0));
+    h.mouse_button(ElementState::Released);
+    h.relayout();
+    assert_eq!(h.app.selection, Some(Sel::Event(id)));
+    assert!(h.app.detail_open);
+    assert!(h.app.form.conflict.area() > 0.0);
+    let semantics = h.app.accessibility().unwrap();
+    let warning = semantics
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .find(|name| name.starts_with("Schedule conflict:"))
+        .unwrap();
+    for title in [
+        "Overlapping fold meeting",
+        "Other timezone overlap",
+        "All day overlap",
+    ] {
+        assert!(warning.contains(title), "missing {title}: {warning}");
+    }
+    // Floating comparisons deliberately remain in the authored wall domain:
+    // the first meeting ends at 02:15, so it does not overlap floating 02:50.
+    assert!(!warning.contains("Floating overlap"));
+    assert!(!warning.contains("Touching endpoint"));
+}
+
+#[test]
 fn readonly_sync_observes_pending_actions_without_committing_document() {
     let mut app = CalendarApp::new_demo();
     let mut doc = demo_document(&app);
