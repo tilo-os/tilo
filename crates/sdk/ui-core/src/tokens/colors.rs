@@ -87,11 +87,6 @@ pub const REGION_MIN_STEP: f64 = 0.015;
 /// contrast.
 const LIFT_FALLBACK_ALPHA: u8 = 38;
 
-/// How far [`Colors::glass_film`] carries the raised tier past itself, so a
-/// translucent film (which gives back strength through its own alpha) still
-/// lands above an opaque surface instead of under it.
-const GLASS_FILM_LIFT: u8 = 46;
-
 /// Stock opacity of the floating-chrome material over its blurred backdrop:
 /// the compositor blurs what is behind a panel and tints it with
 /// [`Surfaces::overlay`] at 72 %. A theme sets its own
@@ -1188,9 +1183,7 @@ impl Colors {
         mix8(self.surfaces.base, self.lift_target(), t)
     }
 
-    /// The colour a lift moves *toward*. Named apart from [`Colors::lift`]
-    /// because it also anchors [`Colors::glass_film`]: a material and a flat
-    /// wash must agree which way is "away from the ground".
+    /// The colour a lift moves *toward*.
     pub fn lift_target(&self) -> Color {
         use crate::a11y::relative_luminance;
         let base = self.surfaces.base;
@@ -1208,18 +1201,6 @@ impl Colors {
         use crate::a11y::relative_luminance;
         let base = self.surfaces.base;
         relative_luminance(self.lift_target()) >= relative_luminance(base)
-    }
-
-    /// The colour of the film a glass selector is made of: the raised tier
-    /// carried one derived step further (`GLASS_FILM_LIFT`), opaque (alpha
-    /// belongs to the state painting it, not the material).
-    pub fn glass_film(&self) -> Color {
-        let step = if self.lifts_bright() {
-            Color::WHITE
-        } else {
-            Color::BLACK
-        };
-        composite(with_alpha(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
     /// The hairline separating a window tile from the desktop. Painted

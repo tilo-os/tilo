@@ -2221,6 +2221,7 @@ impl FrameBuilder {
                     blur_px: surface.blur_px * scale,
                     below: self.below_to_scene(below),
                     ground: surface.ground,
+                    over_desktop: surface.over_desktop,
                 })
             })
             .collect();

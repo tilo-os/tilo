@@ -85,6 +85,26 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
     apply_motion_character(&mut tokens.motion, character);
     tokens.motion_character = character;
+    tokens.selector = if document.palette.high_contrast {
+        crate::tokens::SelectorFinish::OPAQUE
+    } else {
+        let selector = document.material.selector;
+        crate::tokens::SelectorFinish {
+            rim_span: clamp_to(
+                selector.rim_span,
+                &crate::tokens::SelectorFinish::RIM_SPAN_ADMITTED,
+            ),
+            rim_alpha: clamp_to(
+                selector.rim_alpha,
+                &crate::tokens::SelectorFinish::RIM_ALPHA_ADMITTED,
+            ),
+            hover_alpha: clamp_to(
+                selector.hover_alpha,
+                &crate::tokens::SelectorFinish::HOVER_ALPHA_ADMITTED,
+            ),
+            ..selector
+        }
+    };
     tokens
 }
 
@@ -1171,9 +1191,16 @@ mod tests {
             doc.shape.window_radius = 28.0;
             doc.type_.base_size = 16.0;
             doc.motion.character = 0.0;
+            let selector = crate::tokens::SelectorFinish {
+                strip: crate::tokens::StripMaterial::Opaque,
+                rim_span: 0.3,
+                rim_alpha: 0.1,
+                hover_alpha: 0.8,
+            };
             doc.material = ThemeMaterial {
                 blur: 40.0,
                 tint_opacity: 0.9,
+                selector,
             };
             doc.emphasis = Emphasis::Tinted { hue: 150.0 };
             let theme = Theme::from_document(&doc).unwrap();
@@ -1189,6 +1216,7 @@ mod tests {
             );
             assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
             assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
+            assert_eq!(theme.tokens.selector, selector);
             let fill = Oklch::from_color(theme.tokens.colors.intent.inverted);
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }

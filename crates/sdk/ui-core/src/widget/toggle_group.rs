@@ -13,9 +13,11 @@
 //! repeats on): every segment is its own toggle, each as wide as its label,
 //! wrapping onto further rows when the strip runs out of room.
 //!
-//! Page tabs ([`SegmentedStyle::Tabs`]) start flush: the first label and its
-//! underline sit on the strip's leading edge, each tab as wide as its label,
-//! and a strip longer than its room scrolls sideways instead of eliding.
+//! Page tabs ([`SegmentedStyle::Tabs`]) start flush: the first tab sits on
+//! the strip's leading edge, each tab as wide as its label and its padding,
+//! the chosen one a selector lift (`crate::chrome::paint_selector`) like a
+//! window's tabs; a strip longer than its room scrolls sideways instead of
+//! eliding.
 //!
 //! [`ToggleGroup::from_state`] binds the choice to typed view state instead
 //! of a callback. [`ToggleGroup::vertical`] stacks icon segments into a tool
@@ -37,7 +39,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{SelectionState, selection_tier_on};
+use crate::chrome::{SelectionState, SelectionTier, selection_tier_on};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::text_render::{TextRenderer, TextStyle};
@@ -1138,15 +1140,14 @@ impl StripMetrics {
         (w + 2.0 * self.pad_x).max(self.height).ceil()
     }
 
-    /// A tab's natural width: its label and the padding between tabs; the
-    /// first tab has none before it, so its label starts the strip.
-    fn tab_natural(&self, label: &str, first: bool, text: &mut TextRenderer) -> f64 {
+    /// A tab's natural width: its label and the padding either side of it,
+    /// inside the lift that marks the chosen tab.
+    fn tab_natural(&self, label: &str, text: &mut TextRenderer) -> f64 {
         let w = f64::from(
             text.measure_style(label, None, &self.label.clone().strong())
                 .0,
         );
-        let lead = if first { 0.0 } else { self.pad_x };
-        (lead + w + self.pad_x).ceil()
+        (w + 2.0 * self.pad_x).ceil()
     }
 
     /// Each segment's `(full, short)` natural widths in `style`.
@@ -1158,10 +1159,9 @@ impl StripMetrics {
     ) -> Vec<(f64, f64)> {
         segments
             .iter()
-            .enumerate()
-            .map(|(i, segment)| {
+            .map(|segment| {
                 if style == SegmentedStyle::Tabs && segment.icon.is_none() {
-                    let full = self.tab_natural(&segment.label, i == 0, text);
+                    let full = self.tab_natural(&segment.label, text);
                     return (full, full);
                 }
                 let icon = segment.icon.is_some();
@@ -1202,36 +1202,55 @@ pub fn segment_colors(
     hovered: bool,
 ) -> (Option<Color>, Color) {
     let colors = &theme.tokens.colors;
-    let ground = match style {
-        SegmentedStyle::Segmented => colors.surfaces.raised,
-        SegmentedStyle::Tabs | SegmentedStyle::Quiet => colors.surfaces.content,
-    };
-    let tier = selection_tier_on(theme, SelectionState::new(selected, hovered, false), ground);
-    let chosen = selection_tier_on(theme, SelectionState::active(true), ground).fill;
-    let hover = selection_tier_on(theme, SelectionState::new(false, true, false), ground).fill;
+    let ground = segment_ground(theme, style);
+    let tier = segment_tier(theme, style, SelectionState::new(selected, hovered, false));
+    let chosen = segment_tier(theme, style, SelectionState::active(true)).fill;
+    let hover = segment_tier(theme, style, SelectionState::new(false, true, false)).fill;
     // Resolved over the ground and its hover lift at once, so an idle label
     // does not change colour under the pointer.
-    let quiet_ink = colors.ink_on_any(&[ground, hover], colors.text_dim, ON_FILL_MIN_CONTRAST);
+    let quiet_ink = colors.ink_on_any(
+        &[ground, crate::tokens::colors::composite(hover, ground)],
+        colors.text_dim,
+        ON_FILL_MIN_CONTRAST,
+    );
+    let fill = (selected || hovered).then_some(tier.fill);
+    let ink = if selected {
+        colors.ink_on_any(&[chosen], colors.text_primary, ON_FILL_MIN_CONTRAST)
+    } else {
+        quiet_ink
+    };
+    (fill, ink)
+}
+
+/// The ground a strip of `style` stands its segments on: its own track, or
+/// the window ground.
+fn segment_ground(theme: &Theme, style: SegmentedStyle) -> Color {
+    let surfaces = &theme.tokens.colors.surfaces;
     match style {
-        SegmentedStyle::Segmented | SegmentedStyle::Quiet => {
-            let fill = (selected || hovered).then_some(tier.fill);
-            let ink = if selected {
-                colors.ink_on_any(&[chosen], colors.text_primary, ON_FILL_MIN_CONTRAST)
-            } else {
-                quiet_ink
-            };
-            (fill, ink)
+        SegmentedStyle::Segmented => surfaces.raised,
+        SegmentedStyle::Tabs | SegmentedStyle::Quiet => surfaces.content,
+    }
+}
+
+/// How one segment of `style` paints for `state`. A segment and a page tab
+/// are selectors, painted like every other ([`crate::chrome::selector_tier`]):
+/// the chosen one is the lift with its edge and lit rim. A quiet strip's
+/// chosen segment is the bare lift of its ground, as a selected row's is.
+fn segment_tier(
+    theme: &Theme,
+    style: SegmentedStyle,
+    state: SelectionState,
+) -> crate::chrome::SelectionTier {
+    let ground = segment_ground(theme, style);
+    match style {
+        SegmentedStyle::Segmented | SegmentedStyle::Tabs => {
+            crate::chrome::selector_tier(theme, state, ground)
         }
-        SegmentedStyle::Tabs => {
-            // An inactive tab's label holds its colour under the pointer;
-            // the underline alone marks the chosen one.
-            let ink = if selected {
-                colors.ink_on_any(&[ground], colors.text_primary, ON_FILL_MIN_CONTRAST)
-            } else {
-                quiet_ink
-            };
-            (None, ink)
-        }
+        SegmentedStyle::Quiet => SelectionTier {
+            border: None,
+            inner_glow: None,
+            ..selection_tier_on(theme, state, ground)
+        },
     }
 }
 
@@ -1403,11 +1422,11 @@ impl<'a> SegmentedFace<'a> {
 
 impl ToggleGroup {
     /// The track (and its separators) under a [`SegmentedStyle::Segmented`]
-    /// strip, or the underline of [`SegmentedStyle::Tabs`].
+    /// strip. Tabs and a quiet strip have none: they stand on the window
+    /// ground.
     fn paint_ground(
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
         theme: &Theme,
         face: &SegmentedFace<'_>,
         metrics: &StripMetrics,
@@ -1475,27 +1494,7 @@ impl ToggleGroup {
                     );
                 }
             }
-            SegmentedStyle::Tabs => {
-                if let (Some(seg), Some(item)) = (
-                    face.segments.get(face.selected),
-                    face.items.get(face.selected),
-                ) {
-                    // The underline runs under the label: flush with the
-                    // strip's leading edge on the first tab.
-                    let thickness = 2.0 * f64::from(theme.ui_scale);
-                    let (x0, x1) =
-                        tab_label_span(seg, face.selected == 0, item.label, metrics, text_renderer);
-                    let bar = Rect::new(x0, seg.y1 - thickness, x1, seg.y1);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        colors.text_primary,
-                        None,
-                        &RoundedRect::from_rect(bar, thickness / 2.0),
-                    );
-                }
-            }
-            SegmentedStyle::Quiet => {}
+            SegmentedStyle::Tabs | SegmentedStyle::Quiet => {}
         }
     }
 
@@ -1533,45 +1532,29 @@ impl ToggleGroup {
             Some(chosen) => chosen.get(i).copied().unwrap_or(false),
             None => i == face.selected,
         };
-        Self::paint_ground(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            face,
-            &metrics,
-            outer,
-        );
+        Self::paint_ground(scene, transform, theme, face, &metrics, outer);
 
-        // The thumb (and the hover lift) of every style but tabs: a lift set
+        // The thumb (and the hover lift) of every style: a selector set
         // concentrically inside the segment.
-        if face.style != SegmentedStyle::Tabs {
-            for (i, seg) in segs.iter().enumerate() {
-                let selected = is_on(i);
-                let hovered = hovered == Some(i) && !selected;
-                let (Some(fill), _) = segment_colors(theme, face.style, selected, hovered) else {
-                    continue;
-                };
-                let thumb = seg.inset(-metrics.inset);
-                let shape = RoundedRect::from_rect(thumb, metrics.thumb_radius);
-                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-                let ground = if face.style == SegmentedStyle::Segmented {
-                    theme.tokens.colors.surfaces.raised
-                } else {
-                    theme.tokens.colors.surfaces.content
-                };
-                let tier =
-                    selection_tier_on(theme, SelectionState::new(selected, hovered, false), ground);
-                if let Some(border) = tier.border {
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        border,
-                        None,
-                        &crate::surface::edge_outline(thumb, metrics.thumb_radius),
-                    );
-                }
+        for (i, seg) in segs.iter().enumerate() {
+            let selected = is_on(i);
+            let hovered = hovered == Some(i) && !selected;
+            if !(selected || hovered) {
+                continue;
             }
+            let tier = segment_tier(
+                theme,
+                face.style,
+                SelectionState::new(selected, hovered, false),
+            );
+            let body = RoundedRect::from_rect(seg.inset(-metrics.inset), metrics.thumb_radius);
+            crate::chrome::paint_selector(
+                scene,
+                transform,
+                &body,
+                crate::chrome::SelectorRole::Item(&tier),
+                theme,
+            );
         }
 
         // Segment labels are `Label`s; the chosen one is set `.strong()` so
@@ -1611,7 +1594,7 @@ impl ToggleGroup {
             };
             let tabs = face.style == SegmentedStyle::Tabs;
             let pad = metrics.pad_x.min(seg.width() / 4.0);
-            let lead = if tabs && i == 0 { 0.0 } else { pad };
+            let lead = pad;
             let room = (seg.width() - lead - pad).max(1.0);
             let full_w = f64::from(text_renderer.measure_style(item.label, None, style).0);
             let label = match item.short {
@@ -1881,20 +1864,15 @@ impl ToggleGroup {
     }
 }
 
-/// Where a tab's label runs in `seg`: from the leading edge on the first
-/// tab, after the padding on the rest.
+/// Where a tab's label runs in `seg`: after its padding.
+#[cfg(test)]
 fn tab_label_span(
     seg: &Rect,
-    first: bool,
     label: &str,
     metrics: &StripMetrics,
     text: &mut TextRenderer,
 ) -> (f64, f64) {
-    let lead = if first {
-        0.0
-    } else {
-        metrics.pad_x.min(seg.width() / 4.0)
-    };
+    let lead = metrics.pad_x.min(seg.width() / 4.0);
     let width = f64::from(
         text.measure_style(label, None, &metrics.label.clone().strong())
             .0,
@@ -3145,6 +3123,7 @@ mod tests {
                 let colors = &theme.tokens.colors;
                 for (style, ground) in [
                     (SegmentedStyle::Segmented, colors.surfaces.raised),
+                    (SegmentedStyle::Tabs, colors.surfaces.content),
                     (SegmentedStyle::Quiet, colors.surfaces.content),
                 ] {
                     let (fill, ink) = segment_colors(&theme, style, true, false);
@@ -3171,12 +3150,25 @@ mod tests {
                         theme.name
                     );
                     let (hover, hover_ink) = segment_colors(&theme, style, false, true);
-                    assert!(hover.is_some(), "a hovered segment lifts halfway");
+                    assert!(hover.is_some(), "a hovered segment lifts");
                     assert_eq!(hover_ink, idle_ink, "the label holds its colour on hover");
                 }
-                let (fill, ink) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
-                assert_eq!(fill, None, "a tab is marked by its underline");
-                assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
+                // A page tab is a selector like a window's tab: the same
+                // tier, so the two read as one family.
+                let (fill, _) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
+                assert_eq!(
+                    fill,
+                    Some(
+                        crate::chrome::selector_tier(
+                            &theme,
+                            SelectionState::active(true),
+                            colors.surfaces.content
+                        )
+                        .fill
+                    ),
+                    "{}: a chosen tab is the selector lift of the window ground",
+                    theme.name
+                );
             }
         }
     }
@@ -3416,10 +3408,10 @@ mod tests {
             );
             assert!((rects[0].x0 - 10.0).abs() < 1e-9);
             let metrics = StripMetrics::of(ControlSize::Regular, &theme);
-            let (x0, _) = tab_label_span(&rects[0], true, "Overview", &metrics, &mut text);
+            let (x0, _) = tab_label_span(&rects[0], "Overview", &metrics, &mut text);
             assert!(
-                (x0 - 10.0).abs() < 1e-9,
-                "the first label sits on the strip's edge"
+                (x0 - 10.0 - metrics.pad_x).abs() < 1e-9,
+                "the first label sits its padding inside the first tab"
             );
 
             let mut g = ToggleGroup::new(labels, 4).with_style(SegmentedStyle::Tabs);
