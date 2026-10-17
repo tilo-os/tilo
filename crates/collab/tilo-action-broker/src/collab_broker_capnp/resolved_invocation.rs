@@ -9,6 +9,11 @@ use super::{
     validate_directory_target_input, validate_directory_text,
 };
 
+enum ResolutionRevision<'a> {
+    Live(&'a str),
+    RetainedLocal(&'a str),
+}
+
 struct CapturedResolution {
     registered: RegisteredActionDirectory,
     worker: Option<PrivateWorkerRegistration>,
@@ -51,6 +56,10 @@ fn check_registration(
     Ok(())
 }
 impl ResolvedOffer {
+    pub(super) fn has_original_worker(&self) -> bool {
+        self.worker.is_some()
+    }
+
     pub(super) fn check_registration(
         &self,
         state: &CapnpBrokerState,
@@ -195,7 +204,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         cluster: &str,
         peer: u64,
-        revision: &str,
+        revision: ResolutionRevision<'_>,
         resource: &str,
         action: &str,
     ) -> Result<CapturedResolution, String> {
@@ -213,18 +222,32 @@ impl CapnpBrokerState {
             .map_err(|_| "worker registry unavailable")?
             .get(&peer)
             .and_then(|current| current.worker_registration.clone());
-        let resolution = tokio::time::timeout(
-            Duration::from_secs(2),
-            self.resolve_action_directory_for_actor(
-                directories,
-                actor,
-                cluster,
-                peer,
-                revision,
-                resource,
-                action,
-            ),
-        )
+        let resolution = tokio::time::timeout(Duration::from_secs(2), async {
+            match revision {
+                ResolutionRevision::Live(revision) => {
+                    self.resolve_action_directory_for_actor(
+                        directories,
+                        actor,
+                        cluster,
+                        peer,
+                        revision,
+                        resource,
+                        action,
+                    )
+                    .await
+                }
+                ResolutionRevision::RetainedLocal(revision) => {
+                    self.resolve_local_document_directory_for_actor(
+                        directories,
+                        actor,
+                        cluster,
+                        peer,
+                        (revision, resource, action),
+                    )
+                    .await
+                }
+            }
+        })
         .await
         .map_err(|_| "action directory resolution timeout")??;
         check_registration(&registered, worker.as_ref(), self, directories, peer)?;
@@ -262,7 +285,52 @@ impl CapnpBrokerState {
                 actor,
                 cluster,
                 peer,
-                revision,
+                ResolutionRevision::Live(revision),
+                resource,
+                action,
+            )
+            .await?;
+        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = captured.resolution
+        else {
+            return Err("directory revision or action changed".into());
+        };
+        let published = published_directory_action(&row).map_err(|error| error.to_string())?;
+        Ok(ResolvedOffer {
+            registered: captured.registered,
+            published,
+            worker: captured.worker,
+            _permit: captured.permit,
+        })
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "runs on the broker's single-threaded LocalSet"
+    )]
+    pub(super) async fn resolve_local_document_offer(
+        &self,
+        directories: &LocalActionDirectoryRegistry,
+        actor: &BrokerActor,
+        cluster: &str,
+        peer: u64,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<ResolvedOffer, String> {
+        validate_directory_identifier(
+            revision,
+            "invocation revision",
+            DIRECTORY_MAX_QUERY_REVISION_BYTES,
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+        let captured = self
+            .capture_directory_resolution(
+                directories,
+                actor,
+                cluster,
+                peer,
+                ResolutionRevision::RetainedLocal(revision),
                 resource,
                 action,
             )
@@ -352,7 +420,7 @@ pub(super) fn resolve(
                 &admitted.broker_actor(),
                 &route.cluster_id,
                 peer,
-                &revision,
+                ResolutionRevision::Live(&revision),
                 &resource,
                 &action,
             )

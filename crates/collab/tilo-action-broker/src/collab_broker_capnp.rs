@@ -15,6 +15,7 @@
 
 mod approved_checks;
 mod external_moderation;
+mod local_document_action;
 pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
@@ -4977,6 +4978,66 @@ impl CapnpBrokerState {
         }
     }
 
+    /// Resolve only a retained pre-input snapshot; never used for delivery.
+    #[expect(
+        clippy::future_not_send,
+        reason = "directory capabilities are Rc-backed on the broker LocalSet"
+    )]
+    async fn resolve_local_document_directory_for_actor(
+        &self,
+        directories: &LocalActionDirectoryRegistry,
+        actor: &BrokerActor,
+        cluster_id: &str,
+        peer_id: u64,
+        target: (&str, &str, &str),
+    ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
+        let (revision, resource, action) = target;
+        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+            .map_err(|error| error.to_string())?;
+        if revision.is_empty() {
+            return Err("local admission requires an exact retained revision".into());
+        }
+        let registered = directories
+            .registered(peer_id, cluster_id)
+            .map_err(|error| error.to_string())?;
+        let decoded = runtime_collab::resolve_local_document_action(
+            &registered.directory,
+            revision,
+            resource,
+            action,
+            u64::from(Self::DIRECTORY_MAX_BYTES),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        match decoded {
+            runtime_collab::ActionDirectoryResolution::Found {
+                row,
+                revision: resolved,
+            } if resolved.as_deref() == Some(revision)
+                && row.resource == resource
+                && row.action.as_deref() == Some(action)
+                && permits_directory_row(
+                    self,
+                    cluster_id,
+                    actor,
+                    &registered.app_id,
+                    registered.publishing_person.as_deref(),
+                    &row,
+                )
+                .map_err(|error| error.to_string())? =>
+            {
+                Ok(runtime_collab::ActionDirectoryResolution::Found {
+                    row,
+                    revision: resolved,
+                })
+            }
+            runtime_collab::ActionDirectoryResolution::Found { .. } => {
+                Ok(runtime_collab::ActionDirectoryResolution::NotFound)
+            }
+            other => Ok(other),
+        }
+    }
+
     /// Atomically resolve and start a directory action on the broker
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
@@ -5656,10 +5717,6 @@ impl CapnpBrokerState {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a freshly offered live action and its durable identity are consumed into one invocation job while all checks remain atomic"
-    )]
     fn dispatch_invocation_from_offered_owned(
         &self,
         peer_id: u64,
@@ -5667,6 +5724,42 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
+        self.admit_invocation_from_offered_owned(peer_id, offered, inputs, provenance, None)
+    }
+
+    /// Shared semantic admission; a local mutation report is never delivered.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a freshly offered live action and its durable identity are consumed into one admission while all checks remain atomic"
+    )]
+    fn admit_invocation_from_offered_owned(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        provenance: AdmissionProvenance<'_>,
+        local_report: Option<&crate::local_document_action::Request>,
+    ) -> Result<InvocationJob, String> {
+        if local_report.is_some()
+            && (!matches!(
+                offered.1.operation_kind,
+                tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
+            ) || (offered.1.operation_kind == tilo_actions::OperationKind::View
+                && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
+                || provenance.durable.is_some()
+                || !matches!(
+                    provenance.origin.as_ref(),
+                    Some(InvocationCaller::Local { .. })
+                ))
+        {
+            return Err(
+                "local action report requires authenticated document or read-only view admission"
+                    .into(),
+            );
+        }
+        let typed_local_arguments = local_report
+            .map(|report| report.typed_arguments(&offered.1.params))
+            .transpose()?;
         let InvocationInputs {
             original_request,
             requested,
@@ -5840,8 +5933,10 @@ impl CapnpBrokerState {
             .invocation_subscribers
             .lock()
             .ok()
-            .and_then(|subscribers| subscribers.get(&peer_id).cloned())
-            .ok_or_else(|| "the application has no invocation stream".to_string())?;
+            .and_then(|subscribers| subscribers.get(&peer_id).cloned());
+        if local_report.is_none() && sender.is_none() {
+            return Err("the application has no invocation stream".into());
+        }
         if offered.0.route.cluster_id.is_empty() {
             return Err("the application is not attached to a workspace".into());
         }
@@ -6022,6 +6117,16 @@ impl CapnpBrokerState {
                     }),
                 }
             };
+            let request = match local_report {
+                Some(report) => serde_json::json!({
+                    "kind": "local-document-action-report-v1",
+                    "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
+                    "resolved_request": request,
+                    "report": report,
+                    "typed_arguments": typed_local_arguments,
+                }),
+                None => request,
+            };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
@@ -6029,7 +6134,15 @@ impl CapnpBrokerState {
                 "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
-                context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
+                context.before_admission(
+                    self,
+                    journal.host(),
+                    peer_id,
+                    &offered,
+                    sender
+                        .as_ref()
+                        .ok_or("application invocation stream unavailable")?,
+                )?;
             }
             let admission = if owner.verified_actor().is_some() {
                 let mut facts = invocation_journal::evidence_facts(&key, &intent)?;
@@ -6062,6 +6175,13 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
+        if local_report.is_some() {
+            // The app reports speculative local execution (possibly a read/no-op).
+            // Retain only admission, never execution, offload, or success evidence.
+            self.spend_once_grants(&offered.0.route.cluster_id, &spent);
+            return Ok(InvocationJob { id, completion: rx });
+        }
+        let sender = sender.ok_or("application invocation stream unavailable")?;
         if offered.0.app_id == "so.tilo.desktop"
             && offered.1.resource == workspace_checkpoints::RESOURCE
         {
@@ -11341,6 +11461,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         results: channel_handle::CancelDurablePublishedInvocationResults,
     ) -> Promise<(), capnp::Error> {
         durable_local_invocation::cancel(&self, &params, results)
+    }
+
+    fn admit_local_document_action(
+        self: Rc<Self>,
+        params: channel_handle::AdmitLocalDocumentActionParams,
+        results: channel_handle::AdmitLocalDocumentActionResults,
+    ) -> Promise<(), capnp::Error> {
+        local_document_action::admit(self, &params, results)
     }
 
     fn invoke_resolved_published_action(
