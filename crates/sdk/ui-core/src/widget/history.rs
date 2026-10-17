@@ -482,6 +482,11 @@ impl EntryKind {
 /// so the label freshens naturally as `now` advances — no clock plumbing
 /// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
+    // A change that recorded no time carries the epoch: it has no time to
+    // show, not one from decades ago.
+    if ts <= SystemTime::UNIX_EPOCH {
+        return String::new();
+    }
     let secs = now.duration_since(ts).unwrap_or_default().as_secs();
     crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
@@ -730,6 +735,11 @@ mod tests {
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(259_200)),
                 "3 days ago"
+            );
+            assert_eq!(
+                format_relative_time(SystemTime::UNIX_EPOCH, base),
+                "",
+                "a change that recorded no time shows none, not decades ago"
             );
         }
 

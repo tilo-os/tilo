@@ -116,6 +116,21 @@ impl AuthorDirectory {
         self.register(&principal_key(principal), author);
     }
 
+    /// Name the room's participants as its roster names them (participant
+    /// id, name): a change written under a participant's key, or under their
+    /// handle, reads as theirs instead of as an unknown participant.
+    pub fn register_roster<'a>(&mut self, people: impl IntoIterator<Item = (&'a str, &'a str)>) {
+        for (id, name) in people {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let author = author_coloured(name, short_id(id), self.colour_for(id));
+            self.register(id, author.clone());
+            self.register_person(id, author);
+        }
+    }
+
     /// Bind the actor id `actor_hex` a delegated agent writes as (its own
     /// device key) to that agent: its changes read as the agent's, on behalf
     /// of its person, wherever this directory names authors.

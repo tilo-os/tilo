@@ -547,10 +547,14 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect::<Vec<_>>();
     assert!(
-        labels
+        labels.iter().any(|label| label.contains("“Export”")),
+        "the held control is named by its action's label: {labels:?}"
+    );
+    assert!(
+        !labels
             .iter()
-            .any(|label| { label.contains("phrase-owner") && label.contains("alpha payload") }),
-        "returned public AX tree exposes exact owner and arguments: {labels:?}"
+            .any(|label| label.contains("alpha payload") || label.contains("component ")),
+        "internal owners and raw arguments are never shown: {labels:?}"
     );
 
     driver

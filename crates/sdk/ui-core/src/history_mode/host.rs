@@ -119,6 +119,10 @@ pub struct HistoryHost {
     app_presents_button: bool,
     /// The app's header row shows the sync status, so this bar does not.
     app_presents_status: bool,
+    /// The desktop window's tab row presents the History control, open and
+    /// closed: this History draws no toggle of its own, and closes from the
+    /// tab, or with Escape.
+    window_presents: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -258,6 +262,15 @@ impl HistoryHost {
         }
     }
 
+    /// The desktop window's tab row presents this History's control (see
+    /// `window_presents`).
+    pub(crate) fn set_window_presents(&mut self, presents: bool) {
+        if self.window_presents != presents {
+            self.window_presents = presents;
+            self.rebuild_toolbar();
+        }
+    }
+
     /// Whether this History can be opened at all: its owner is valid.
     pub(crate) fn offers_control(&self) -> bool {
         !self.invalid_owner
@@ -327,6 +340,7 @@ impl HistoryHost {
             fallback_bar: true,
             app_presents_button: false,
             app_presents_status: false,
+            window_presents: false,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -619,6 +633,7 @@ impl HistoryHost {
                 }
             }
             self.pending_control_recovery = waiting;
+            self.name_pending_controls(live, doc);
             // The failed entry traversal could not observe direct-take output.
             // Its uncertainty remains visible even after sealed queues recover.
             self.toolbar_dirty = true;
@@ -778,10 +793,18 @@ impl HistoryHost {
             };
             self.pending_controls.capture(origin, invocation, witness);
         }
+        self.name_pending_controls(live, doc);
         // Capture can run with the preceding frame's raw maps still admitted.
         // Replace controls only when the runner has discarded those maps.
         self.toolbar_dirty = true;
         true
+    }
+    /// Name the held controls as their actions are declared, so the review
+    /// row says what each would do instead of showing internal addresses.
+    fn name_pending_controls(&mut self, live: &dyn Widget, doc: &AutoCommit) {
+        self.pending_controls.name_items(|origin, invocation| {
+            crate::bound_dispatch::control_label(live, doc, &origin.target(), &invocation.address)
+        });
     }
     pub(crate) fn capture_embedded_pending_controls(
         &mut self,
@@ -1521,7 +1544,9 @@ impl HistoryHost {
             return;
         }
         if self.selected.is_empty() {
-            if (self.fallback_bar && self.open_button && !self.app_presents_button) || self.open {
+            if (self.fallback_bar && self.open_button && !self.app_presents_button)
+                || (self.open && !self.window_presents)
+            {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     Row::new()
@@ -1536,20 +1561,26 @@ impl HistoryHost {
                 ));
             }
             for review in self.pending_controls.review() {
-                let mut row = Row::new().push(Box::new(Text::new(&I18nManager::format(
-                    "history-mode-pending",
-                    &[
-                        ("id", review.id.value().to_string().into()),
-                        ("owner", review.owner.clone().into()),
-                        ("action", review.invocation.address.encode().into()),
-                        (
-                            "arguments",
-                            serde_json::Value::Object(review.invocation.arguments.clone())
-                                .to_string()
-                                .into(),
-                        ),
-                    ],
-                ))));
+                // Named as the action's declaration names it; ids, owners and
+                // raw arguments are internal and never shown to people.
+                // While History shows, it waits; once left, it was held.
+                let held = !matches!(
+                    review.status,
+                    super::pending_controls::PendingControlStatus::Suspended
+                );
+                let text = match (&review.label, held) {
+                    (Some(action), false) => I18nManager::format(
+                        "history-mode-pending",
+                        &[("action", action.clone().into())],
+                    ),
+                    (Some(action), true) => I18nManager::format(
+                        "history-mode-pending-held",
+                        &[("action", action.clone().into())],
+                    ),
+                    (None, false) => I18nManager::lookup_plain("history-mode-pending-unnamed"),
+                    (None, true) => I18nManager::lookup_plain("history-mode-pending-held-unnamed"),
+                };
+                let mut row = Row::new().push(Box::new(Text::new(&text)));
                 let label = match review.status {
                     super::pending_controls::PendingControlStatus::Ready => {
                         Some("history-mode-continue")
