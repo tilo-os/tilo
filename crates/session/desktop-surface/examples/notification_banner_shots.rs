@@ -77,6 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]
         } else if variant.as_deref() == Some("not-saved") {
             vec![not_saved()?]
+        } else if variant.as_deref() == Some("overflow") {
+            // More than fit: the rest fold into one card that opens the
+            // centre, and the newest holds keyboard focus.
+            (1..=6)
+                .map(|n| {
+                    Notification::new(format!("Build {n} finished"), "All tests passed")
+                        .with_app_name("Terminal")
+                })
+                .collect()
         } else {
             let mut ask = HostAction {
                 id: "keep-identity".into(),
@@ -117,6 +126,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut TextRenderer::new(),
             &theme,
         );
+        if variant.as_deref() == Some("overflow") && stack.focus_newest(&host) {
+            scene = Scene::new();
+            stack.draw(
+                &host,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+        }
         OffscreenRenderer::new(width, HEIGHT).render_png(
             &scene,
             theme.tokens.colors.surfaces.base,

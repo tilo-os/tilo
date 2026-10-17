@@ -588,9 +588,9 @@ impl NotificationStack {
                 .max(TOAST_HEIGHT);
             // The rest fold into the "more" card; a banner that is not the
             // last must leave room for it.
-            let rest = banners.len().saturating_sub(index.saturating_add(1));
-            let reserve = if rest > 0 {
-                Self::more_card(ctx, width, rest).1 + TOAST_GAP
+            let below = banners.len().saturating_sub(index.saturating_add(1));
+            let reserve = if below > 0 {
+                Self::more_card(ctx, width, below).1 + TOAST_GAP
             } else {
                 0.0
             };
@@ -957,7 +957,8 @@ pub(super) mod tests {
             self.log.borrow_mut().present(now, on_screen, held);
         }
         fn open_center(&self) {
-            self.centre_opened.set(self.centre_opened.get() + 1);
+            self.centre_opened
+                .set(self.centre_opened.get().saturating_add(1));
         }
         fn dismiss(&self, id: u64) {
             let taken = self.log.borrow_mut().take_active(id);
