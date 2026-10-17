@@ -309,19 +309,18 @@ pub fn place(
                 })
         });
         let to = Affine::translate(offset);
-        match mark.transform {
-            Some(transform) => mark.transform = Some((to * Affine::new(transform)).as_coeffs()),
-            None => {
-                mark.shape = mark.shape.translated(offset.x, offset.y);
-                // Like the geometry, an untransformed gradient is in artwork units.
-                if let Some(gradient) = &mut mark.gradient {
-                    for point in [&mut gradient.from, &mut gradient.to]
-                        .into_iter()
-                        .chain(gradient.focal.iter_mut())
-                    {
-                        point[0] += offset.x;
-                        point[1] += offset.y;
-                    }
+        if let Some(transform) = mark.transform {
+            mark.transform = Some((to * Affine::new(transform)).as_coeffs());
+        } else {
+            mark.shape = mark.shape.translated(offset.x, offset.y);
+            // Like the geometry, an untransformed gradient is in artwork units.
+            if let Some(gradient) = &mut mark.gradient {
+                for point in [&mut gradient.from, &mut gradient.to]
+                    .into_iter()
+                    .chain(gradient.focal.iter_mut())
+                {
+                    point[0] += offset.x;
+                    point[1] += offset.y;
                 }
             }
         }
