@@ -104,6 +104,31 @@ class AppCopyTests(unittest.TestCase):
                        'fn title() { t("history-title"); }\n')
             self.assertEqual(copy.missing_copy(root), [])
 
+    def test_compared_states_inside_a_resolver_are_not_keys(self):
+        source = '''
+        fn row() {
+            t(if id == "nextcloud" { "net-nextcloud-add" } else { "net-other-add" });
+            t(if "stale" != state { "net-fresh" } else { "net-stale" });
+        }
+        '''
+        self.assertEqual(self.keys(source),
+                         {"net-nextcloud-add", "net-other-add", "net-fresh", "net-stale"})
+
+    def test_settings_resolves_the_shared_provider_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            shared = "agent-cancel = Cancel\n"
+            self.crate(root, "crates/sdk/provider-settings-ui",
+                       {"en-US": shared, "de-DE": shared}, "")
+            own = "settings-x = X\n"
+            self.crate(root, "apps/settings", {"en-US": own, "de-DE": own},
+                       'fn pane() { t("agent-cancel"); t("agent-absent"); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "apps/settings/src/view.rs:1: de-DE lacks agent-absent",
+                "apps/settings/src/view.rs:1: en-US lacks agent-absent",
+            ])
+
     def test_every_actual_source_key_is_in_its_catalogues(self):
         self.assertEqual(copy.missing_copy(copy.ROOT), [])
 
