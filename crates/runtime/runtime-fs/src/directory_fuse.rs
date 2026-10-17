@@ -1237,6 +1237,7 @@ impl Filesystem for DirectoryFilesystem {
                     node.name = Some(new.clone());
                 }
             }
+            drop(table);
             Ok::<_, io::Error>(())
         })();
         match result {
@@ -1367,10 +1368,8 @@ mod tests {
     ) {
         // Actual native metadata pins consume descriptors even without byte
         // opens. Capacity refusal must leave the old unlinked inode pinned.
-        let mut serial = 0;
         while table.nodes.len() < RESIDENT_NODES {
-            let name = format!("capacity-{serial}");
-            serial += 1;
+            let name = format!("capacity-{}", table.nodes.len());
             std::fs::write(disk.join(&name), b"capacity").unwrap();
             fs.observe(table, ROOT, &EntryName::new(name.into()).unwrap())
                 .unwrap();
