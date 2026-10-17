@@ -138,7 +138,9 @@ pub fn pump(relay: &mut MemoryRelay) {
                 if let Some(inbox) = inboxes.get_mut(&from) {
                     inbox.push_back(CollabEvent::LocalDocumentActionReported {
                         request_id,
-                        result: Err("memory relay has no authenticated admission authority".into()),
+                        result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                            "memory relay has no authenticated admission authority".into(),
+                        )),
                     });
                 }
             }

@@ -4304,11 +4304,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
+        app.drain_local_input_capture();
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(app.local_input_capture_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
@@ -4342,6 +4344,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(app.local_input_capture_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),

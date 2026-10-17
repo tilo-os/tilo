@@ -3918,6 +3918,39 @@ impl LocalDocumentActionReport {
     }
 }
 
+/// Explicit pre-admission rejection marker. Unmarked RPC errors may follow a
+/// committed admission and must never release the caller's recovery custody.
+pub const LOCAL_DOCUMENT_REJECTED: &str = "local-document-rejected: ";
+
+/// A rejection is definitive; an uncertain outcome must retain the exact UUID.
+#[derive(Clone, Debug)]
+pub enum LocalDocumentActionError {
+    Rejected(String),
+    Uncertain(String),
+}
+
+impl std::fmt::Display for LocalDocumentActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(message) | Self::Uncertain(message) => f.write_str(message),
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<NotAvailable> for LocalDocumentActionError {
+    fn from(error: NotAvailable) -> Self {
+        Self::Uncertain(error.to_string())
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<capnp::Error> for LocalDocumentActionError {
+    fn from(error: capnp::Error) -> Self {
+        Self::Uncertain(error.to_string())
+    }
+}
+
 #[cfg(feature = "client")]
 impl ChannelHandle {
     /// Report speculative local document work on this authenticated session.
@@ -3928,11 +3961,25 @@ impl ChannelHandle {
     pub async fn admit_local_document_action(
         &self,
         report: &LocalDocumentActionReport,
-    ) -> Result<PublishedInvocationObservation, NotAvailable> {
-        let bytes = report.encode().map_err(capnp::Error::failed)?;
+    ) -> Result<PublishedInvocationObservation, LocalDocumentActionError> {
+        let bytes = report
+            .encode()
+            .map_err(LocalDocumentActionError::Rejected)?;
         let mut request = self.inner.admit_local_document_action_request();
         request.get().set_request(&bytes);
-        let reply = request.send().promise.await?;
+        let reply = request.send().promise.await.map_err(|error| {
+            if error.kind == capnp::ErrorKind::Failed {
+                // Two-party Cap'n Proto prefixes exception reasons on receipt.
+                let reason = error
+                    .extra
+                    .strip_prefix("remote exception: ")
+                    .unwrap_or(&error.extra);
+                if let Some(reason) = reason.strip_prefix(LOCAL_DOCUMENT_REJECTED) {
+                    return LocalDocumentActionError::Rejected(reason.to_owned());
+                }
+            }
+            LocalDocumentActionError::Uncertain(error.to_string())
+        })?;
         let result = reply.get()?;
         reliable_size(result.total_size()?)?;
         let observation = result.get_observation()?;
@@ -4228,7 +4275,12 @@ mod local_document_action_transport_tests {
                     .borrow_mut()
                     .push(params.get()?.get_request()?.to_vec());
                 if self.refuse {
-                    return Err(capnp::Error::failed("local document policy refused".into()));
+                    let reason = if self.wrong_id {
+                        "admission journal outcome unknown".to_owned()
+                    } else {
+                        format!("{LOCAL_DOCUMENT_REJECTED}local document policy refused")
+                    };
+                    return Err(capnp::Error::failed(reason));
                 }
                 let mut out = results.get().init_observation();
                 out.set_host(&[9; 16]);
@@ -4274,7 +4326,7 @@ mod local_document_action_transport_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn refusal_or_wrong_invocation_never_retries_or_falls_back() {
-        for (wrong_id, refuse) in [(true, false), (false, true)] {
+        for (wrong_id, refuse) in [(true, false), (false, true), (true, true)] {
             let received = Rc::new(RefCell::new(Vec::new()));
             crate::resolved_invocation_tests::over_wire(
                 Server {
@@ -4283,12 +4335,15 @@ mod local_document_action_transport_tests {
                     refuse,
                 },
                 |channel| async move {
-                    assert!(
-                        channel
-                            .admit_local_document_action(&report())
-                            .await
-                            .is_err()
-                    );
+                    let error = channel
+                        .admit_local_document_action(&report())
+                        .await
+                        .unwrap_err();
+                    if refuse && !wrong_id {
+                        assert!(matches!(error, LocalDocumentActionError::Rejected(_)));
+                    } else {
+                        assert!(matches!(error, LocalDocumentActionError::Uncertain(_)));
+                    }
                 },
             )
             .await;

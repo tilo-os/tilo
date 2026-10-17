@@ -11,19 +11,42 @@ pub(super) struct LocalInputCapture {
     retained: std::collections::VecDeque<(crate::local_document_action::CapturedAction, String)>,
     retained_bytes: usize,
     evicted: u64,
+    transport_connected: bool,
     pub(super) failure: Option<String>,
 }
 
 struct PendingCapture {
     capture: crate::local_document_action::CapturedAction,
-    _route: crate::collaboration::RouteSpec,
+    route: crate::collaboration::RouteSpec,
     _lease: crate::local_document_action::Lease,
+    retry_at: crate::time::Instant,
+    retry_delay: crate::time::Duration,
 }
 
 impl LocalInputCapture {
     #[cfg(test)]
     pub(super) fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn retry_now(&mut self) {
+        for pending in self.pending.values_mut() {
+            pending.retry_at = crate::time::now();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn custody_size(&self) -> usize {
+        self.pending
+            .values()
+            .map(|pending| retained_size(&pending.capture, ""))
+            .sum()
+    }
+
+    #[cfg(test)]
+    pub(super) fn route_count(&self) -> usize {
+        self.queues.len()
     }
 }
 
@@ -175,6 +198,7 @@ impl App {
 
     pub(super) fn drain_local_input_capture(&mut self) {
         let mut failures = Vec::new();
+        let now = crate::time::now();
         let queues: Vec<_> = self
             .local_input_capture
             .queues
@@ -184,36 +208,67 @@ impl App {
         for (route, queue) in queues {
             failures.extend(queue.take_refusals());
             for (capture, lease) in queue.drain_leased() {
-                let invocation = capture.invocation;
-                let request_id = invocation.as_u64_pair().0;
-                if self.local_input_capture.pending.contains_key(&request_id) {
-                    failures.push("local action observation replies are still pending".into());
-                    continue;
+                let mut request_id = capture.invocation.as_u64_pair().0;
+                while self.local_input_capture.pending.contains_key(&request_id) {
+                    request_id = request_id.wrapping_add(1);
                 }
                 if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
                     failures.push(error);
                 }
-                match self
+                // Transfer custody before enqueueing: send failure must not
+                // discard an action already applied to the local document.
+                self.local_input_capture.pending.insert(
+                    request_id,
+                    PendingCapture {
+                        capture,
+                        route: route.clone(),
+                        _lease: lease,
+                        retry_at: now,
+                        retry_delay: crate::time::Duration::from_secs(1),
+                    },
+                );
+            }
+        }
+        let connected = self.collaboration.manager.is_connected();
+        if connected && !self.local_input_capture.transport_connected {
+            for pending in self.local_input_capture.pending.values_mut() {
+                pending.retry_at = now;
+            }
+        }
+        self.local_input_capture.transport_connected = connected;
+        let mut rejected = Vec::new();
+        if connected {
+            // A bounded amount of nonblocking enqueue work per pump. Retrying
+            // reports is not dispatch: the original UUID, snapshot and mutations
+            // are reused, and the document action is never executed again.
+            for (request_id, pending) in self
+                .local_input_capture
+                .pending
+                .iter_mut()
+                .filter(|(_, pending)| pending.retry_at <= now)
+                .take(4)
+            {
+                let result = self
                     .collaboration
                     .manager
                     .report_local_document_action_to_route(
-                        route.clone(),
-                        request_id,
-                        capture.clone(),
-                    ) {
-                    Ok(()) => {
-                        self.local_input_capture.pending.insert(
-                            request_id,
-                            PendingCapture {
-                                capture,
-                                _route: route.clone(),
-                                _lease: lease,
-                            },
-                        );
+                        pending.route.clone(),
+                        *request_id,
+                        pending.capture.clone(),
+                    );
+                pending.retry_at = now + pending.retry_delay;
+                pending.retry_delay =
+                    (pending.retry_delay * 2).min(crate::time::Duration::from_secs(30));
+                if let Err(error) = result {
+                    if matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_)) {
+                        rejected.push(*request_id);
                     }
-                    Err(error) => failures.push(error),
+                    failures.push(error.to_string());
                 }
             }
+        }
+        for request_id in rejected {
+            self.local_input_capture.pending.remove(&request_id);
         }
         // Never retire a route's capacity accounting while replies are in
         // flight, including unknown outcomes that still own snapshot leases.
@@ -235,6 +290,20 @@ impl App {
         }
     }
 
+    pub(super) fn local_input_capture_deadline(&self) -> Option<crate::time::Instant> {
+        self.collaboration
+            .manager
+            .is_connected()
+            .then(|| {
+                self.local_input_capture
+                    .pending
+                    .values()
+                    .map(|pending| pending.retry_at)
+                    .min()
+            })
+            .flatten()
+    }
+
     fn local_input_capture_failed(&mut self, error: &str) {
         tracing::warn!(%error, "local document action observation was not confirmed");
         self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
@@ -246,35 +315,47 @@ impl App {
     pub(super) fn observe_local_input_capture(
         &mut self,
         request_id: u64,
-        result: Result<runtime_collab::PublishedInvocationObservation, String>,
+        result: Result<
+            runtime_collab::PublishedInvocationObservation,
+            runtime_collab::LocalDocumentActionError,
+        >,
     ) {
         let Some(pending) = self.local_input_capture.pending.get(&request_id) else {
             return;
         };
         let invocation = pending.capture.invocation;
+        use runtime_collab::LocalDocumentActionError::{Rejected, Uncertain};
         let result = result.and_then(|observation| {
             if observation.invocation != *invocation.as_bytes() {
-                return Err("local action observation invocation mismatch".into());
+                return Err(Uncertain(
+                    "local action observation invocation mismatch".into(),
+                ));
             }
             let result = observation
                 .result
-                .ok_or("local action observation has no outcome")?;
-            if result.uncertain || result.admission_json.is_none() {
-                return Err("local action admission was not confirmed".into());
+                .ok_or_else(|| Uncertain("local action observation has no outcome".into()))?;
+            let update: tilo_actions::InvocationUpdate = serde_json::from_str(&result.update_json)
+                .map_err(|error| Uncertain(error.to_string()))?;
+            if update.invocation().0 != invocation {
+                return Err(Uncertain("local action update invocation mismatch".into()));
             }
-            let update: tilo_actions::InvocationUpdate =
-                serde_json::from_str(&result.update_json).map_err(|error| error.to_string())?;
-            if update.invocation().0 != invocation
-                || matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { .. }
-                        | tilo_actions::InvocationUpdate::Cancelled { .. }
-                )
-            {
-                return Err("local action observation was refused".into());
+            if result.uncertain {
+                return Err(Uncertain("local action admission was not confirmed".into()));
             }
-            // Admission is private status only, not a document-publication permit.
-            Ok(result.admission_json.unwrap())
+            // A known terminal refusal need not carry an admission. Release
+            // custody before the next input needs the frozen directory's pin.
+            if matches!(
+                update,
+                tilo_actions::InvocationUpdate::Failed { .. }
+                    | tilo_actions::InvocationUpdate::Cancelled { .. }
+            ) {
+                return Err(Rejected("local action observation was refused".into()));
+            }
+            // Admission is private status only, never completion or a signed
+            // document-publication permit.
+            result
+                .admission_json
+                .ok_or_else(|| Uncertain("local action admission was not confirmed".into()))
         });
         match result {
             Ok(admission) => {
@@ -284,7 +365,7 @@ impl App {
                     .remove(&request_id)
                     .unwrap();
                 if let Err(error) = self.stage_local_action_evidence(
-                    &pending._route,
+                    &pending.route,
                     &pending.capture,
                     Some(&admission),
                 ) {
@@ -303,9 +384,13 @@ impl App {
                     );
                 }
             }
-            // Unknown or malformed outcomes retain the exact capture, lease and
-            // directory pin. Never replace their identity or retry as new work.
-            Err(error) => self.local_input_capture_failed(&error),
+            Err(Rejected(error)) => {
+                self.local_input_capture.pending.remove(&request_id);
+                self.local_input_capture_failed(&error);
+            }
+            // Unknown or malformed replies keep custody until a bounded,
+            // backoff-paced exact-UUID report reconciles their outcome.
+            Err(Uncertain(error)) => self.local_input_capture_failed(&error),
         }
     }
 }
@@ -341,6 +426,60 @@ mod tests {
         fn locus(&self) -> tilo_actions::ExecutionLocus {
             tilo_actions::ExecutionLocus::ClientLocal
         }
+    }
+
+    #[test]
+    fn retired_route_is_released_after_uncertain_capture_is_reconciled() {
+        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        app.collaboration.manager =
+            crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+        let queue = Queue::new();
+        app.local_input_capture.queues.insert(
+            RouteSpec::app("retired", uuid::Uuid::new_v4()),
+            queue.clone(),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let mut host = crate::action_host::ActionHost::new();
+        {
+            let _scope = queue.enter("snapshot".into());
+            let _invocation = crate::local_document_action::with_invocation(
+                crate::local_document_action::PublishedInvocation {
+                    resource: "body".into(),
+                    action: "read".into(),
+                    arguments: serde_json::Map::new(),
+                },
+            );
+            host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+        }
+        app.drain_local_input_capture();
+        let request_id = requests
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::ReportLocalDocumentAction { request_id, .. } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        app.observe_local_input_capture(
+            request_id,
+            Err(runtime_collab::LocalDocumentActionError::Uncertain(
+                "reply lost".into(),
+            )),
+        );
+        app.drain_local_input_capture();
+        assert!(queue.has_outstanding());
+        assert_eq!(app.local_input_capture.route_count(), 1);
+        app.observe_local_input_capture(
+            request_id,
+            Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "worker retired".into(),
+            )),
+        );
+        app.drain_local_input_capture();
+        assert!(!queue.has_outstanding());
+        assert_eq!(app.local_input_capture.route_count(), 0);
+        assert_eq!(app.local_input_capture.pending_count(), 0);
     }
 
     #[test]

@@ -453,6 +453,7 @@ impl App {
             self.apply_collab_event_for_test(event);
         }
         self.collaboration.manager.finish_event_batch();
+        self.drain_local_input_capture();
     }
 
     /// Apply a document envelope received on the unqualified room route.
@@ -736,6 +737,7 @@ impl App {
             }
         }
         self.collaboration.manager.finish_event_batch();
+        self.drain_local_input_capture();
         (any, action_surface_may_have_changed)
     }
 

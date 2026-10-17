@@ -1803,7 +1803,10 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
                         }
                     }
                 }
-                Err(error) => meter.string_capacity(error),
+                Err(
+                    runtime_collab::LocalDocumentActionError::Rejected(error)
+                    | runtime_collab::LocalDocumentActionError::Uncertain(error),
+                ) => meter.string_capacity(error),
             }
             "LocalDocumentActionReported"
         }
@@ -7355,8 +7358,12 @@ async fn dispatch_sdk_request(
                 route.channel.admit_local_document_action(&report),
             )
             .await
-            .map_err(|_| "local document report timed out; admission may be unknown".to_owned())
-            .and_then(|result| result.map_err(|error| error.to_string()));
+            .map_err(|_| {
+                runtime_collab::LocalDocumentActionError::Uncertain(
+                    "local document report timed out; admission may be unknown".to_owned(),
+                )
+            })
+            .and_then(std::convert::identity);
             let _ = inbound_tx
                 .send_durable(CollabEvent::LocalDocumentActionReported { request_id, result });
         }
