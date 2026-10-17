@@ -4,7 +4,7 @@
 //! process start (`prepare_native_renderer`). On a Wayland display the launch
 //! also builds winit's event loop and the primary window at once, and hands
 //! the window to that thread, which creates and configures its surface while
-//! the app constructs.
+//! the app constructs, and while a thread beside it builds vello's pipelines.
 //!
 //! Without this, a launch constructed its app first and only then built the
 //! event loop (the Wayland connection and two roundtrips), created its window
@@ -27,7 +27,7 @@ use winit::event_loop::EventLoop;
 use winit::window::{Window, WindowId};
 
 use super::{
-    EARLY_EVENT_LOOP, EARLY_WINDOW, PreparedRenderer, RenderContext, UserEvent,
+    EARLY_EVENT_LOOP, EARLY_WINDOW, NativeRendererPlan, PreparedRenderer, RenderContext, UserEvent,
     create_native_renderer, primary_window_app_id, primary_window_attributes, window_surface,
 };
 
@@ -88,20 +88,26 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
                     .devices
                     .get(device_id)
                     .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
-                let renderer = create_native_renderer(device)?;
+                // vello's pipelines and the early window's surface need only
+                // the device, not each other, and the first frame waits for
+                // both: they are made side by side.
+                let plan = NativeRendererPlan::for_device(device);
+                let gpu = device.device.clone();
+                let (renderer, surface) =
+                    renderer_beside_surface(&mut context, &plan, &gpu, &window_wanted);
+                let device = context
+                    .devices
+                    .get(device_id)
+                    .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
+                let renderer = plan.finish(device, renderer?);
                 tilo_startup_metrics::mark("native-render-prepare-done");
                 let mut prepared = PreparedRenderer {
                     context,
                     device_id,
                     renderer,
                 };
-                // The early window, once the launch made it (or `Err` at
-                // once when it made none): its surface is made and
-                // configured here while the app constructs.
-                let surface = window_wanted
-                    .recv()
-                    .ok()
-                    .and_then(|window| prepare_window_surface(&mut prepared, window));
+                let surface =
+                    surface.and_then(|surface| adopt_window_surface(&mut prepared, surface));
                 Ok(StartupRender { prepared, surface })
             };
             let _ = sender.send(prepare());
@@ -119,22 +125,55 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
     }
 }
 
-/// The surface of the window the launch made early, configured, on the
-/// renderer preparation's thread. The renderer is rebuilt when the surface
-/// can be presented only from another device. `None` leaves the surface to
-/// the first redraw, as without an early window.
-fn prepare_window_surface(
-    prepared: &mut PreparedRenderer,
+/// vello's renderer built from `plan` on a scoped thread of its own, while
+/// this one makes the early window's surface once the launch made the window
+/// (or at once without a surface when it made none). The build needs only the
+/// device; the surface needs the context.
+fn renderer_beside_surface(
+    context: &mut RenderContext,
+    plan: &NativeRendererPlan,
+    gpu: &vello::wgpu::Device,
+    window_wanted: &mpsc::Receiver<Arc<Window>>,
+) -> (
+    Result<vello::Renderer, String>,
+    Option<(WindowId, vello::util::RenderSurface<'static>)>,
+) {
+    std::thread::scope(|scope| {
+        let building = scope.spawn(|| plan.build(gpu));
+        let surface = window_wanted
+            .recv()
+            .ok()
+            .and_then(|window| early_window_surface(context, window));
+        let renderer = building
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (renderer, surface)
+    })
+}
+
+/// The early window's surface, created and configured. `None` leaves the
+/// surface to the first redraw, as without an early window.
+fn early_window_surface(
+    context: &mut RenderContext,
     window: Arc<Window>,
 ) -> Option<(WindowId, vello::util::RenderSurface<'static>)> {
     let id = window.id();
-    let surface = match window_surface(&mut prepared.context, window, false) {
-        Ok(surface) => surface,
+    match window_surface(context, window, false) {
+        Ok(surface) => Some((id, surface)),
         Err(error) => {
             tracing::warn!(%error, "could not prepare the window's surface; the first redraw makes it");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// Keep the early window's configured surface for the first redraw. The
+/// renderer is rebuilt when the surface can be presented only from another
+/// device.
+fn adopt_window_surface(
+    prepared: &mut PreparedRenderer,
+    (id, surface): (WindowId, vello::util::RenderSurface<'static>),
+) -> Option<(WindowId, vello::util::RenderSurface<'static>)> {
     if surface.dev_id != prepared.device_id {
         let device = prepared.context.devices.get(surface.dev_id)?;
         tilo_startup_metrics::mark("native-render-prepare-discarded");
