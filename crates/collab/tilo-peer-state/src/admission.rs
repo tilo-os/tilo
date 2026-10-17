@@ -192,7 +192,11 @@ impl WriterKey {
 /// Every admission copies the peer it is decided in, and the index grows
 /// with every write a room keeps: its settled entries are shared between
 /// copies, so a copy costs the few entries since they last settled, not the
-/// whole index.
+/// whole index. The settled entries also keep their encoding: a durable
+/// copy of the index each governance change re-encodes only the entries
+/// since they last settled, and the index is stored as its settled and its
+/// recent entries apart, so whoever writes it to disk can tell the large
+/// part it already wrote by pointer.
 ///
 /// Once a compaction this peer admitted folds a record's writes into one
 /// snapshot, their exact entries give way to one mark per writer: every
@@ -203,7 +207,7 @@ impl WriterKey {
 /// write the room ever kept.
 #[derive(Clone, Default)]
 pub(crate) struct ExactAdmissions {
-    settled: std::sync::Arc<BTreeMap<AdmissionKey, [u8; 32]>>,
+    settled: std::sync::Arc<Settled>,
     /// Entries since the last settling, none of them in `settled`.
     recent: BTreeMap<AdmissionKey, [u8; 32]>,
     entry_bytes: usize,
@@ -211,6 +215,29 @@ pub(crate) struct ExactAdmissions {
     marks: std::sync::Arc<BTreeMap<WriterKey, u64>>,
     mark_bytes: usize,
 }
+/// The settled entries of an [`ExactAdmissions`] and, once asked for, their
+/// encoding as the index's first wire map.
+#[derive(Default)]
+struct Settled {
+    entries: BTreeMap<AdmissionKey, [u8; 32]>,
+    encoded: std::sync::OnceLock<std::sync::Arc<[u8]>>,
+}
+impl Clone for Settled {
+    /// A copy is only ever made to be changed: it starts unencoded.
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            encoded: std::sync::OnceLock::new(),
+        }
+    }
+}
+impl std::ops::Deref for Settled {
+    type Target = BTreeMap<AdmissionKey, [u8; 32]>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
 /// Entries an index keeps apart before it settles them.
 const RECENT_ADMISSIONS: usize = 256;
 fn count_bytes(mut count: usize) -> usize {
@@ -258,8 +285,24 @@ impl ExactAdmissions {
         self.entry_bytes = self.entry_bytes.saturating_add(bytes);
         if self.recent.len() >= RECENT_ADMISSIONS {
             let recent = std::mem::take(&mut self.recent);
-            std::sync::Arc::make_mut(&mut self.settled).extend(recent);
+            self.settled_mut().extend(recent);
         }
+    }
+    /// Add a decoded entry `check` measured as `bytes` to the settled or
+    /// the recent entries, as the wire index placed it.
+    fn add_decoded(
+        &mut self,
+        settled: bool,
+        key: AdmissionKey,
+        operation_id: [u8; 32],
+        bytes: usize,
+    ) {
+        if settled {
+            self.settled_mut().insert(key, operation_id);
+        } else {
+            self.recent.insert(key, operation_id);
+        }
+        self.entry_bytes = self.entry_bytes.saturating_add(bytes);
     }
     /// A compaction of `record` of `app` folded every write of each listed
     /// author up to its sequence: their exact entries become that author's
@@ -306,7 +349,7 @@ impl ExactAdmissions {
                     operation_id,
                 })?;
                 if next.recent.remove(&key).is_none() {
-                    std::sync::Arc::make_mut(&mut next.settled).remove(&key);
+                    next.settled_mut().remove(&key);
                 }
                 next.entry_bytes = next.entry_bytes.saturating_sub(bytes);
             }
@@ -328,6 +371,22 @@ impl ExactAdmissions {
         *self = next;
         Ok(())
     }
+    /// The settled entries to change: no longer shared, and unencoded.
+    fn settled_mut(&mut self) -> &mut BTreeMap<AdmissionKey, [u8; 32]> {
+        let settled = std::sync::Arc::make_mut(&mut self.settled);
+        settled.encoded = std::sync::OnceLock::new();
+        &mut settled.entries
+    }
+    /// Whether `self` and `before` share their settled entries and marks:
+    /// then everything either holds beyond them is in its recent entries.
+    pub(crate) fn shares_settled(&self, before: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.settled, &before.settled)
+            && std::sync::Arc::ptr_eq(&self.marks, &before.marks)
+    }
+    /// The entries since the index last settled, in key order.
+    pub(crate) fn recent(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
+        self.recent.iter()
+    }
     /// Whether the index holds more than half of what it may: its sealed
     /// records' histories are then worth compacting, which folds their
     /// entries into marks.
@@ -339,30 +398,21 @@ impl ExactAdmissions {
     fn total_bytes(&self, more: usize, bytes: usize) -> usize {
         self.entry_bytes
             .saturating_add(bytes)
-            .saturating_add(count_bytes(self.len().saturating_add(more)))
+            // One count for each of the two entry maps, at most the whole.
+            .saturating_add(count_bytes(self.len().saturating_add(more)).saturating_mul(2))
             .saturating_add(self.mark_bytes)
             .saturating_add(count_bytes(self.marks.len()))
     }
-    /// The entries as the canonical index map: in key order, every one once.
-    pub(super) fn serialize_entries<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap as _;
-        let mut map = serializer.serialize_map(Some(self.len()))?;
-        for (key, operation_id) in self.iter() {
-            map.serialize_entry(key, operation_id)?;
-        }
-        map.end()
-    }
-    /// The canonical index: its entries, then its marks.
+    /// The canonical index: its settled entries, its recent entries (each
+    /// map in key order, no key in both), then its marks.
     pub(super) fn serialize_index<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeTuple as _;
-        let mut tuple = serializer.serialize_tuple(2)?;
-        tuple.serialize_element(&resources::WireEntries(self))?;
+        let mut tuple = serializer.serialize_tuple(3)?;
+        tuple.serialize_element(&self.settled.entries)?;
+        tuple.serialize_element(&self.recent)?;
         tuple.serialize_element(&*self.marks)?;
         tuple.end()
     }
@@ -427,12 +477,29 @@ impl ExactAdmissions {
         Ok(())
     }
     pub(crate) fn encode(&self) -> Result<Vec<u8>, AdmissionError> {
-        let bytes = postcard::to_allocvec(&resources::WireIndexRef(self))
-            .map_err(|e| AdmissionError::Rejected(e.to_string()))?;
-        if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
+        let (settled, rest) = self.encode_parts()?;
+        let mut bytes = Vec::with_capacity(settled.len().saturating_add(rest.len()));
+        bytes.extend_from_slice(&settled);
+        bytes.extend_from_slice(&rest);
+        Ok(bytes)
+    }
+    /// [`Self::encode`] in two parts: the settled entries, shared and
+    /// encoded once per settling, then the rest.
+    pub(crate) fn encode_parts(&self) -> Result<(std::sync::Arc<[u8]>, Vec<u8>), AdmissionError> {
+        let rejected = |e: postcard::Error| AdmissionError::Rejected(e.to_string());
+        let settled = if let Some(settled) = self.settled.encoded.get() {
+            settled.clone()
+        } else {
+            let encoded: std::sync::Arc<[u8]> = postcard::to_allocvec(&self.settled.entries)
+                .map_err(rejected)?
+                .into();
+            self.settled.encoded.get_or_init(|| encoded).clone()
+        };
+        let rest = postcard::to_allocvec(&(&self.recent, &*self.marks)).map_err(rejected)?;
+        if settled.len().saturating_add(rest.len()) > MAX_EXACT_ADMISSION_BYTES {
             return Err(AdmissionError::ResourceLimit);
         }
-        Ok(bytes)
+        Ok((settled, rest))
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, AdmissionError> {
         resources::decode_index(bytes)
@@ -528,12 +595,15 @@ mod tests {
         let mut entries: BTreeMap<_, _> = index.iter().map(|(k, v)| (k.clone(), *v)).collect();
         entries.insert(admission(1, 3, 1).key, [1; 32]);
         let marks: BTreeMap<_, _> = index.marks().map(|(k, v)| (k.clone(), v)).collect();
-        let forged = postcard::to_allocvec(&(entries, marks)).unwrap();
+        let forged =
+            postcard::to_allocvec(&(entries, BTreeMap::<AdmissionKey, [u8; 32]>::new(), marks))
+                .unwrap();
         assert!(ExactAdmissions::decode(&forged).is_err());
     }
 
-    /// Copies share the settled entries; the index still reads and encodes
-    /// as one map in key order, and decodes back to the same bytes.
+    /// Copies share the settled entries; the index still reads as one map
+    /// in key order, encodes its settled and recent entries apart, and
+    /// decodes back to the same bytes.
     #[test]
     fn a_copy_shares_settled_admissions_and_encodes_one_ordered_index() {
         let admission = |sequence: u64| DocumentAdmission {
@@ -553,6 +623,7 @@ mod tests {
         }
         let copy = index.clone();
         assert!(std::sync::Arc::ptr_eq(&index.settled, &copy.settled));
+        assert!(copy.shares_settled(&index));
         assert!(copy.recent.len() < RECENT_ADMISSIONS);
         let keys: Vec<_> = index.iter().map(|(key, _)| key.clone()).collect();
         let mut sorted = keys.clone();
@@ -560,12 +631,32 @@ mod tests {
         assert_eq!(keys, sorted);
         assert_eq!(keys.len(), RECENT_ADMISSIONS + 40);
         let bytes = index.encode().unwrap();
-        let whole: BTreeMap<_, _> = index.iter().map(|(k, v)| (k.clone(), *v)).collect();
         let marks = BTreeMap::<WriterKey, u64>::new();
-        assert_eq!(bytes, postcard::to_allocvec(&(whole, marks)).unwrap());
         assert_eq!(
-            ExactAdmissions::decode(&bytes).unwrap().encode().unwrap(),
-            bytes
+            bytes,
+            postcard::to_allocvec(&(&index.settled.entries, &index.recent, marks)).unwrap()
+        );
+        let decoded = ExactAdmissions::decode(&bytes).unwrap();
+        assert_eq!(decoded.encode().unwrap(), bytes);
+        assert_eq!(decoded.recent.len(), index.recent.len());
+
+        // The settled part is encoded once and shared by every copy until
+        // the entries settle again.
+        let (settled, _) = index.encode_parts().unwrap();
+        let (again, _) = copy.encode_parts().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&settled, &again));
+        let mut grown = copy;
+        for sequence in 1000..1000 + RECENT_ADMISSIONS as u64 {
+            grown.insert(&admission(sequence)).unwrap();
+        }
+        assert!(!grown.shares_settled(&index));
+        let (resettled, _) = grown.encode_parts().unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&settled, &resettled));
+        assert_eq!(
+            ExactAdmissions::decode(&grown.encode().unwrap())
+                .unwrap()
+                .len(),
+            grown.len()
         );
     }
 }

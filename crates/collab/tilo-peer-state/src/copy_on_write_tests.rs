@@ -8,7 +8,7 @@ use crate::{AdmissionError, InputDisposition};
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 /// A native peer holding a small record and a large untouched one.
-fn two_records() -> (StatePeer, SigningKey, SystemTime) {
+pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let mut native = StatePeer::new(
         ROOM,
@@ -47,7 +47,11 @@ fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     (native, b, now)
 }
 
-fn incremental(author: &mut StatePeer, key: &SigningKey, now: SystemTime) -> NeighbourMsg {
+pub(crate) fn incremental(
+    author: &mut StatePeer,
+    key: &SigningKey,
+    now: SystemTime,
+) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),

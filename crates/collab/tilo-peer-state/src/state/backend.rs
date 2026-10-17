@@ -6,6 +6,8 @@ use super::{
     VerifiedCertificate, err, now_ns, room,
 };
 use crate::resources::native::NativeDocument;
+use crate::shared::Shared;
+use std::sync::{Arc, OnceLock};
 pub(super) mod access;
 pub(super) mod delivery_policy;
 mod durable;
@@ -51,7 +53,7 @@ impl Storage for LegacyNative {
     type Document = CachedDocument;
     type Checkpoint = AcceptedCheckpoint;
     type Retention = ();
-    type CertificateRoster = BTreeMap<[u8; 32], VerifiedCertificate>;
+    type CertificateRoster = Shared<BTreeMap<[u8; 32], VerifiedCertificate>>;
     type RevocationUnion = RevocationList;
     type ExactEvidence = ExactAdmissions;
     fn certificate<'a>(
@@ -117,12 +119,30 @@ pub(super) struct PeerDocument<S: Storage> {
 /// a copy of the state, and a busy record's history holds thousands of
 /// writes: it is kept in shared chunks, so a copy costs a pointer per chunk
 /// and a write copies at most the chunk it joins, not the whole history.
+/// Each chunk keeps its encoding once made, so a durable copy of the history
+/// encodes only the chunk a write joined.
 #[derive(Clone, Default)]
 pub(crate) struct SealedLog {
-    chunks: Vec<std::sync::Arc<Vec<collab_types::SignedOp>>>,
+    chunks: Vec<Arc<SealedChunk>>,
     len: usize,
     /// The payload bytes of every write held.
     bytes: usize,
+}
+
+#[derive(Default)]
+struct SealedChunk {
+    ops: Vec<collab_types::SignedOp>,
+    /// The concatenated postcard encoding of `ops`, once asked for.
+    encoded: OnceLock<Vec<u8>>,
+}
+impl Clone for SealedChunk {
+    /// A copy is only ever made to be changed: it starts unencoded.
+    fn clone(&self) -> Self {
+        Self {
+            ops: self.ops.clone(),
+            encoded: OnceLock::new(),
+        }
+    }
 }
 
 /// Writes one shared chunk of a [`SealedLog`] holds.
@@ -140,7 +160,7 @@ impl SealedLog {
         self.bytes
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = &collab_types::SignedOp> {
-        self.chunks.iter().flat_map(|chunk| chunk.iter())
+        self.chunks.iter().flat_map(|chunk| chunk.ops.iter())
     }
     pub(crate) fn first(&self) -> Option<&collab_types::SignedOp> {
         self.iter().next()
@@ -152,9 +172,34 @@ impl SealedLog {
         self.len = self.len.saturating_add(1);
         self.bytes = self.bytes.saturating_add(op.payload.len());
         match self.chunks.last_mut() {
-            Some(chunk) if chunk.len() < SEALED_CHUNK => std::sync::Arc::make_mut(chunk).push(op),
-            _ => self.chunks.push(std::sync::Arc::new(vec![op])),
+            Some(chunk) if chunk.ops.len() < SEALED_CHUNK => {
+                let chunk = Arc::make_mut(chunk);
+                chunk.encoded = OnceLock::new();
+                chunk.ops.push(op);
+            }
+            _ => self.chunks.push(Arc::new(SealedChunk {
+                ops: vec![op],
+                encoded: OnceLock::new(),
+            })),
         }
+    }
+    /// Append the postcard encoding of `(route, every write held)` to
+    /// `out`: what `postcard` makes of `(Route, Vec<SignedOp>)`, with each
+    /// chunk encoded once per state of it.
+    pub(super) fn encode_into(&self, route: &Route, out: Vec<u8>) -> Result<Vec<u8>, String> {
+        let mut out = postcard::to_extend(&(route, self.len), out).map_err(err)?;
+        for chunk in &self.chunks {
+            if let Some(encoded) = chunk.encoded.get() {
+                out.extend_from_slice(encoded);
+                continue;
+            }
+            let mut encoded = Vec::new();
+            for op in &chunk.ops {
+                encoded = postcard::to_extend(op, encoded).map_err(err)?;
+            }
+            out.extend_from_slice(chunk.encoded.get_or_init(|| encoded));
+        }
+        Ok(out)
     }
 }
 
@@ -175,6 +220,81 @@ impl<'a> IntoIterator for &'a SealedLog {
         Box::new(self.iter())
     }
 }
+/// A record as a peer keeps it: shared between copies of the peer until one
+/// changes it, with its durable encoding made at most once per state of it.
+/// Mutable access (`DerefMut`) detaches a shared copy and drops the
+/// encoding, so no change outlives a stale one.
+pub(super) struct StoredDocument<S: Storage> {
+    document: Arc<PeerDocument<S>>,
+    encoded: Arc<OnceLock<EncodedDocument>>,
+}
+/// A record's part of a durable peer encoding.
+pub(super) struct EncodedDocument {
+    pub(super) route: Route,
+    /// Its `DurableDocument`.
+    pub(super) document: Arc<[u8]>,
+    /// Its `(Route, Vec<SignedOp>)` sealed history entry, when it holds
+    /// sealed writes.
+    pub(super) sealed: Option<Arc<[u8]>>,
+}
+impl<S: Storage> Clone for StoredDocument<S> {
+    fn clone(&self) -> Self {
+        Self {
+            document: Arc::clone(&self.document),
+            encoded: Arc::clone(&self.encoded),
+        }
+    }
+}
+impl<S: Storage> From<PeerDocument<S>> for StoredDocument<S> {
+    fn from(document: PeerDocument<S>) -> Self {
+        Self {
+            document: Arc::new(document),
+            encoded: Arc::default(),
+        }
+    }
+}
+impl<S: Storage> std::ops::Deref for StoredDocument<S> {
+    type Target = PeerDocument<S>;
+    fn deref(&self) -> &PeerDocument<S> {
+        &self.document
+    }
+}
+impl std::ops::DerefMut for StoredDocument<LegacyNative> {
+    fn deref_mut(&mut self) -> &mut PeerDocument<LegacyNative> {
+        self.encoded = Arc::default();
+        Arc::make_mut(&mut self.document)
+    }
+}
+impl<S: Storage> StoredDocument<S> {
+    /// Whether `a` and `b` are copies of one record state no copy changed.
+    pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.document, &b.document)
+    }
+    /// Install the sealed history a restore validated for this record, which
+    /// the restore holds alone.
+    pub(super) fn restore_sealed(&mut self, sealed: SealedLog) -> Result<(), String> {
+        self.encoded = Arc::default();
+        Arc::get_mut(&mut self.document)
+            .ok_or("restored record is shared")?
+            .sealed = sealed;
+        Ok(())
+    }
+    /// The record's durable encoding as `encode` makes it for `route`,
+    /// made once per state of the record.
+    pub(super) fn encoded(
+        &self,
+        route: &Route,
+        encode: impl FnOnce() -> Result<EncodedDocument, String>,
+    ) -> Result<&EncodedDocument, String> {
+        if let Some(encoded) = self.encoded.get() {
+            return Ok(encoded);
+        }
+        let encoded = encode()?;
+        debug_assert_eq!(&encoded.route, route);
+        Ok(self.encoded.get_or_init(|| encoded))
+    }
+}
+
 impl Clone for PeerDocument<LegacyNative> {
     fn clone(&self) -> Self {
         Self {
@@ -193,12 +313,12 @@ pub(super) struct PeerCore<S: Storage> {
     pub(super) authority: DeviceCert,
     pub(super) certificates: S::CertificateRoster,
     pub(super) revocations: S::RevocationUnion,
-    pub(super) receipts: BTreeMap<String, Vec<u8>>,
+    pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
     pub(super) room_doc: Option<S::Room>,
-    pub(super) documents: BTreeMap<Route, PeerDocument<S>>,
+    pub(super) documents: Shared<BTreeMap<Route, StoredDocument<S>>>,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
-    pub(super) checkpoint_times: BTreeMap<Route, SystemTime>,
+    pub(super) checkpoint_times: Shared<BTreeMap<Route, SystemTime>>,
     pub(super) exact_admissions: S::ExactEvidence,
     pub(super) admission_v5: bool,
     // Transient native cut context is never part of the durable DTO.
