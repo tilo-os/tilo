@@ -29,6 +29,13 @@ name = "tilo-accounts-engine-check"
 path = "src/check.rs"
 required-features = ["thin"]
 
+# Executed against this actual thin SDK by the signed runtime publisher: the
+# protected-grant protocol of the account custody this engine ships.
+[[bin]]
+name = "tilo-runtime-account-capability"
+path = "src/bin/tilo-runtime-account-capability.rs"
+required-features = ["thin"]
+
 [features]
 thin = [
     "dep:runtime-dylib",
