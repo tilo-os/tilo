@@ -3284,6 +3284,8 @@ struct Witness {
 }
 
 struct ConfirmationGrant {
+    /// Only set after consuming a host-issued witness for these exact arguments.
+    host_witnessed: bool,
     peer_id: u64,
     resource: String,
     action: String,
@@ -5135,6 +5137,7 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.id.clone(),
+                host_witnessed: false,
                 expires: now
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or(ActionDirectoryBridgeError::Unavailable)?,
@@ -5503,6 +5506,7 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
+                host_witnessed: false,
                 expires: std::time::Instant::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
@@ -5913,7 +5917,9 @@ impl CapnpBrokerState {
                 .map_err(|_| "the confirmation registry is unavailable".to_string())?
                 .remove(token)
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
-            if grant.expires < std::time::Instant::now()
+            if (requires_store_witness(&offered.0.app_id, &offered.1.action)
+                && !grant.host_witnessed)
+                || grant.expires < std::time::Instant::now()
                 || grant.peer_id != peer_id
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
@@ -6398,6 +6404,17 @@ impl CapnpBrokerState {
             return Err(ActionHostError::ConfirmationRequired);
         }
         self.mint_confirmation_grant(peer_id, offered, argument, actor)
+            .and_then(|token| {
+                if witnessed {
+                    self.confirmation_grants
+                        .lock()
+                        .map_err(|_| "the confirmation registry is unavailable".to_owned())?
+                        .get_mut(&token)
+                        .ok_or("the confirmation grant disappeared")?
+                        .host_witnessed = true;
+                }
+                Ok(token)
+            })
             .map(Some)
             .map_err(|reason| ActionHostError::Unavailable { reason })
     }
@@ -6432,6 +6449,7 @@ impl CapnpBrokerState {
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
                 actor: actor.id.clone(),
+                host_witnessed: false,
                 expires,
             },
         );
@@ -6941,7 +6959,7 @@ impl CapnpBrokerState {
                 durable_local_invocation::LocalCaller,
                 tilo_actions::InvocationId,
             )>,
-            bool,
+            (bool, Option<&str>),
         ),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -6982,7 +7000,7 @@ impl CapnpBrokerState {
                 durable_local_invocation::LocalCaller,
                 tilo_actions::InvocationId,
             )>,
-            bool,
+            (bool, Option<&str>),
         ),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
@@ -7028,7 +7046,7 @@ impl CapnpBrokerState {
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
             consequential,
-            confirmed,
+            confirmed: confirmed.0,
         };
         if let Some(binding) = &run.native {
             let (caller, invocation) =
@@ -7046,7 +7064,7 @@ impl CapnpBrokerState {
                         caller,
                         *invocation,
                         (surface.clone(), descriptor.clone()),
-                        confirmed || consequential,
+                        (confirmed.0 || consequential, confirmed.1),
                     )
                 })
         } else {
@@ -10987,7 +11005,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        (None, false),
+                        (None, (false, None)),
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {

@@ -523,7 +523,7 @@ mod external_moderation_rpc_tests {
                         .unwrap();
                     let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
-                    let (actor, origin) = room.caller();
+                    let (actor, _) = room.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
                     assert!(matches!(
@@ -537,26 +537,34 @@ mod external_moderation_rpc_tests {
                         ),
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
-                    let result = room.state.start_invocation_confirmed_for_origin(
-                        980,
-                        &offered.resource,
-                        action,
-                        InvocationInputs {
-                            original_request: None,
-                            requested: None,
-                            caller: None,
-                            execution: None,
-                            argument: Some(&exact),
-                            actor: &actor,
-                            confirmation_token: None,
-                            context: None,
-                        },
-                        Some(origin),
-                    );
-                    let error = result
-                        .err()
-                        .expect("Store disclosure always requires a host grant");
-                    assert!(error.contains("confirmation"), "{error}");
+                    // A generic internal/native-task approval is not evidence
+                    // that the host showed this external disclosure.
+                    let generic = room
+                        .state
+                        .mint_confirmation_grant(980, &offered, Some(&exact), &actor)
+                        .unwrap();
+                    for token in [None, Some(generic.as_str())] {
+                        let result = room.state.start_invocation_confirmed_for_origin(
+                            980,
+                            &offered.resource,
+                            action,
+                            InvocationInputs {
+                                original_request: None,
+                                requested: None,
+                                caller: None,
+                                execution: None,
+                                argument: Some(&exact),
+                                actor: &actor,
+                                confirmation_token: token,
+                                context: None,
+                            },
+                            Some(room.caller().1),
+                        );
+                        let error = result
+                            .err()
+                            .expect("Store disclosure always requires a host grant");
+                        assert!(error.contains("confirmation"), "{error}");
+                    }
                 }
             })
             .await;

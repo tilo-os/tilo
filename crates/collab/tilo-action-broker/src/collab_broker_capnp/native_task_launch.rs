@@ -31,6 +31,7 @@ pub(super) struct NativeLaunch {
     /// The person confirmed this retained action as asked first; `argument`
     /// is then what they confirmed.
     confirmed: bool,
+    witness: Option<String>,
 }
 
 impl NativeLaunch {
@@ -322,7 +323,7 @@ impl NativeLaunch {
         Ok(())
     }
 
-    pub(super) fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
+    pub(super) async fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
@@ -368,24 +369,61 @@ impl NativeLaunch {
             );
         }
         self.check_retained_contract(state, &offered.1)?;
-        state
-            .admit_task_action(
-                self.run.clone(),
-                &self.lease,
-                runtime_collab::TaskAction {
-                    peer_id: peer,
-                    provider: &self.provider,
-                    resource: &self.resource,
-                    action: &self.action,
-                    argument: self.argument.as_deref(),
-                },
-                (
-                    Some(&(self.caller.clone(), self.invocation)),
-                    self.confirmed,
-                ),
-                offered,
-            )
-            .map(|job| job.id)
+        let mut admitted = self.clone();
+        let mut confirmation = None;
+        // Application-directory providers can name an action that was never
+        // retained. Once published, it needs the same exact disclosure gate.
+        if super::requires_store_witness(&self.app, &self.action) && self.witness.is_none() {
+            if let super::native_task_confirmation::NativeGate::Confirmed {
+                argument,
+                confirmation: id,
+            } = state
+                .native_confirmation_for(
+                    &self.run,
+                    &self.lease,
+                    (&self.app, &offered.1),
+                    (&self.resource, &self.action),
+                    self.argument.as_deref(),
+                )
+                .await?
+            {
+                admitted.argument = Some(argument);
+                admitted.confirmed = true;
+                confirmation = Some(id);
+            }
+            admitted.witness = state
+                .native_store_witness(
+                    (&admitted.run, &admitted.lease, admitted.confirmed),
+                    (&admitted.app, &offered.1),
+                    admitted.argument.as_deref(),
+                    &admitted.caller,
+                )
+                .await?;
+            admitted.check(state)?;
+            state.check_native_store_offer(&offered)?;
+        }
+        let job = state.admit_task_action(
+            admitted.run.clone(),
+            &admitted.lease,
+            runtime_collab::TaskAction {
+                peer_id: peer,
+                provider: &self.provider,
+                resource: &self.resource,
+                action: &self.action,
+                argument: admitted.argument.as_deref(),
+            },
+            (
+                Some(&(admitted.caller.clone(), admitted.invocation)),
+                (admitted.confirmed, admitted.witness.as_deref()),
+            ),
+            offered,
+        )?;
+        if let Some(id) = confirmation {
+            if let Err(error) = state.settle_native_confirmation(&admitted.run, &id).await {
+                tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
+            }
+        }
+        Ok(job.id)
     }
 }
 
@@ -540,6 +578,7 @@ impl CapnpBrokerState {
             retained,
             bootstrap,
             confirmed: false,
+            witness: None,
         })
     }
 
@@ -569,6 +608,16 @@ impl CapnpBrokerState {
             native.argument = Some(argument);
             native.confirmed = true;
             confirmation = Some(id);
+        }
+        if let Some(retained) = &native.retained {
+            native.witness = self
+                .native_store_witness(
+                    (&native.run, reask.lease, native.confirmed),
+                    (&native.app, retained),
+                    native.argument.as_deref(),
+                    &native.caller,
+                )
+                .await?;
         }
         let destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.

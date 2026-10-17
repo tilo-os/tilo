@@ -84,6 +84,113 @@ fn needs_witness(reply: &RemoteActionMessage) -> bool {
 }
 
 impl CapnpBrokerState {
+    /// A question must not outlive the publisher or the contract it showed.
+    pub(super) fn check_native_store_offer(
+        &self,
+        offered: &(super::PublishedSurface, super::PublishedAction),
+    ) -> Result<(), String> {
+        let current = self
+            .surfaces
+            .lock()
+            .map_err(|_| "task surface unavailable")?
+            .get(&offered.0.peer_id)
+            .and_then(|surface| surface.action_projection(&offered.1.resource, &offered.1.action))
+            .ok_or("Store action retired while awaiting confirmation")?;
+        if !current.0.live
+            || current.0.route != offered.0.route
+            || current.0.app_id != offered.0.app_id
+            || current.1.contract != offered.1.contract
+            || current.1.params != offered.1.params
+        {
+            return Err("Store action changed while awaiting confirmation".into());
+        }
+        Ok(())
+    }
+
+    /// Native task approval is not a disclosure witness. Ask on the same typed
+    /// host sheet as ordinary Store invocations, after any Task Center edits.
+    /// Dispatch consumes the returned witness, and revalidates task authority.
+    pub(super) async fn native_store_witness(
+        &self,
+        (run, lease, confirmed): (&super::PendingTaskRun, &str, bool),
+        (app, offered): (&str, &super::PublishedAction),
+        argument: Option<&str>,
+        caller: &super::durable_local_invocation::LocalCaller,
+    ) -> Result<Option<String>, String> {
+        if !requires_store_witness(app, &offered.action) {
+            return Ok(None);
+        }
+        let mut binding = run.native.clone().ok_or("native task binding absent")?;
+        binding.revision = runtime_collab::native_task_revision(lease)
+            .ok_or("invalid native lease")?
+            .1;
+        let actor = binding.actor()?;
+        let service = self
+            .native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?;
+        service.authorize_action(
+            &run.cluster_id,
+            &run.agent_id,
+            &crate::services::NativeTaskActionRequirement {
+                binding: Some(binding.clone()),
+                app: app.into(),
+                resource_kind: offered.resource_kind.clone(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                need: offered.contract.need(),
+                consequential: !matches!(
+                    offered.contract.confirmation_for_argument(argument),
+                    tilo_actions::ConfirmationPolicy::None
+                ),
+                confirmed,
+            },
+        )?;
+        let current = caller.current(self)?;
+        let argument_value = argument.map_or(tilo_actions::remote::InvokeArgument::None, |text| {
+            tilo_actions::remote::InvokeArgument::Text(text.into())
+        });
+        let moderation = crate::app_actions::ModerationConsentPreview::from_argument(
+            &offered.action,
+            &argument_value,
+            &current.verified.user_public_key,
+        )
+        .ok_or("Store disclosure arguments are invalid")?;
+        let question = Question {
+            request: AppActionConsentRequest {
+                handle: format!("confirm:{}", uuid::Uuid::new_v4()),
+                room: run.cluster_id.clone(),
+                person: binding.starter.ok_or("native task starter absent")?,
+                app_id: run.agent_id.clone(),
+                target_app: app.into(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                resource_label: offered.resource_label.clone(),
+                action_label: offered.action_label.clone(),
+                risk: offered.contract.risk,
+                needs_confirmation: true,
+                confirming: true,
+                moderation: Some(moderation),
+            },
+            actor,
+            shown: None,
+        };
+        let answer = self
+            .ask_person(&question)
+            .ok_or("host confirmation unavailable")?
+            .await
+            .map_err(|_| "host confirmation ended")?;
+        if answer == AppActionConsent::Deny {
+            return Err("Store disclosure declined".into());
+        }
+        self.witness_confirmation(
+            question.actor.id(),
+            (&offered.resource, &offered.action),
+            argument,
+        )
+        .map(Some)
+        .ok_or_else(|| "host confirmation unavailable".into())
+    }
+
     /// Ask the person `caller` acts for — `person`, or the person its
     /// delegation names — to confirm `request` on their own device, showing
     /// the caller waiting meanwhile. The answer is the token naming their
