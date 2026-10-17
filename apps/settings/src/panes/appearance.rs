@@ -539,42 +539,13 @@ impl AppearancePane {
             ]),
         );
 
-        let resolved = self.prefs().resolve_theme();
-        let motion = if resolved.reduce_motion {
-            t("settings-appearance-on")
-        } else {
-            t("settings-appearance-off")
-        };
-        let preview = card(
-            &t("settings-appearance-applied-card"),
-            rows(vec![
-                value_row(&t("settings-appearance-active-theme"), &resolved.name),
-                value_row(
-                    &t("settings-appearance-ui-scale"),
-                    &format!("{:.0}%", f64::from(resolved.ui_scale) * 100.0),
-                ),
-                value_row(
-                    &t("settings-appearance-text-scale"),
-                    &format!("{:.0}%", f64::from(resolved.text_scale) * 100.0),
-                ),
-                value_row(&t("settings-appearance-reduced-motion"), &motion),
-            ]),
-        );
-
-        let explainer = card(
-            &t("settings-appearance-shared-card"),
-            rows(vec![note(&t("settings-appearance-shared-body"))]),
-        );
-
         crate::widgets::cards(vec![
-            self.wallpaper_card(),
             theme_card,
+            self.wallpaper_card(),
             self.schedule_card(),
             desktop_card,
             self.desk_widgets_card(),
             access_card,
-            preview,
-            explainer,
         ])
     }
 

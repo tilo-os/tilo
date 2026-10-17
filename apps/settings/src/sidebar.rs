@@ -60,7 +60,9 @@ pub fn sections() -> Vec<NavSection> {
         .map(|section| {
             let items = Category::in_section(section)
                 .map(|category| {
-                    NavItem::new(category.slug(), category.label()).icon(category.icon())
+                    NavItem::new(category.slug(), category.label())
+                        .icon(category.icon())
+                        .search_terms(category.search_terms())
                 })
                 .collect();
             NavSection::new(section.slug(), section.label(), items).filterable()
@@ -100,9 +102,44 @@ mod tests {
     }
 
     #[test]
-    fn every_category_has_its_own_icon_family_member() {
-        // Sound and Speakers are different things and read differently.
-        assert_ne!(Category::Sound.icon(), Category::Speakers.icon());
+    fn every_category_has_its_own_icon() {
+        let mut icons = std::collections::HashSet::new();
+        for category in Category::ALL {
+            assert!(
+                icons.insert(category.icon()),
+                "{category:?} shares its icon with another page"
+            );
+        }
+    }
+
+    /// Typing what a page holds finds the page, and the row says which
+    /// setting matched: "where is the keyboard layout".
+    #[test]
+    fn the_filter_finds_pages_by_the_settings_on_them() {
+        let request = ui::LocalState::new(None);
+        let cx =
+            crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
+        for (query, page) in [
+            ("layout", Category::Keyboard),
+            ("qwertz", Category::Keyboard),
+            ("wifi", Category::Network),
+            ("battery", Category::Power),
+            ("dark mode", Category::Appearance),
+            ("tap to click", Category::Pointing),
+            ("disable touchpad while typing", Category::Pointing),
+        ] {
+            let mut widget = build(&cx, Category::Network, query, &request);
+            let list = widget
+                .as_any_mut()
+                .unwrap()
+                .downcast_mut::<ui::widget::NavList>()
+                .unwrap();
+            let shown = list.visible_item_ids();
+            assert!(
+                shown.iter().any(|id| id == page.slug()),
+                "{query:?} shows {page:?}, got {shown:?}"
+            );
+        }
     }
 
     #[test]

@@ -1190,11 +1190,6 @@ impl TimeDatePane {
         let auto_row = self.auto_row();
         let zone_row = self.zone_row();
 
-        let clock_format = if self.h24 {
-            t("time-clock-24h")
-        } else {
-            t("time-clock-12h")
-        };
         let automatic = self.sync_status.ntp_enabled.unwrap_or(false);
         let sync = match self.sync_status.synchronized {
             Some(true) => t("time-sync-ok"),
@@ -1207,19 +1202,13 @@ impl TimeDatePane {
             .source
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
-        let mapped = self.timezone_points.len();
+        // The map says something only when it has nothing to show.
         let map_note = if !self.read {
-            t("time-reading")
-        } else if mapped == 0 {
-            t("time-map-empty")
+            Some(t("time-reading"))
+        } else if self.timezone_points.is_empty() {
+            Some(t("time-map-empty"))
         } else {
-            t_args(
-                "time-map-count",
-                &[(
-                    "mapped",
-                    ArgValue::from(i64::try_from(mapped).unwrap_or(i64::MAX)),
-                )],
-            )
+            None
         };
 
         let clock = card(
@@ -1240,48 +1229,29 @@ impl TimeDatePane {
             ]),
         );
 
-        let formats = card(
-            &t("time-display-title"),
-            rows(vec![
-                value_row(&t("time-clock-format"), &clock_format),
-                note(&t("time-display-caption")),
-            ]),
-        );
-
-        let map = card(
-            &t("time-map-title"),
-            rows(vec![
-                block(Box::new(
-                    TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
-                        .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE))),
-                )),
-                note(&map_note),
-            ]),
-        );
+        let mut map_rows = vec![block(Box::new(
+            TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
+                .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE))),
+        ))];
+        map_rows.extend(map_note.as_deref().map(note));
+        let map = card(&t("time-map-title"), rows(map_rows));
 
         let source = card(
             &t("time-source-title"),
             rows(match &self.status_error {
-                _ if !self.read => vec![
-                    value_row(&t("time-sync"), &t("time-reading")),
-                    note(&t("time-source-caption")),
-                ],
-                Some(error) => vec![
-                    error_row(
-                        &t("time-sync"),
-                        &t_args("time-status-error", &[("error", error.as_str().into())]),
-                    ),
-                    note(&t("time-source-caption")),
-                ],
+                _ if !self.read => vec![value_row(&t("time-sync"), &t("time-reading"))],
+                Some(error) => vec![error_row(
+                    &t("time-sync"),
+                    &t_args("time-status-error", &[("error", error.as_str().into())]),
+                )],
                 None => vec![
                     value_row(&t("time-sync"), &sync),
                     value_row(&t("time-source"), &source_name),
-                    note(&t("time-source-caption")),
                 ],
             }),
         );
 
-        let mut cards = vec![clock, map, source, formats];
+        let mut cards = vec![clock, map, source];
         if let Some(notice) = &self.notice_shown {
             cards.insert(0, card(&t("time-notice-title"), rows(vec![note(notice)])));
         }

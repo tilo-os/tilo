@@ -407,10 +407,10 @@ impl PowerState {
                 if let Some(error) = capability_error {
                     details.push(format!("capabilities: {error}"));
                 }
-                Some(t_args(
-                    "power-profile-service-unavailable",
-                    &[("details", ArgValue::from(details.join("; ")))],
-                ))
+                // What failed is for the log; the person learns only that
+                // profiles cannot be chosen here.
+                tracing::warn!(details = %details.join("; "), "power profiles are unavailable");
+                Some(t("power-profile-unavailable"))
             }
         };
         Self {
@@ -680,14 +680,14 @@ impl PowerPane {
                 ]),
             )];
         }
-        let charge = format!("{}%", state.battery.capacity);
+        // One row says the charge and what the battery is doing: "72%, on
+        // battery".
         let status = battery_status_shown(&state.battery);
         let mut battery_rows: Vec<Item> = vec![
             block(Box::new(ProgressBar::new(
                 state.battery.capacity as f32 / 100.0,
             ))),
-            value_row(&t("power-charge"), &charge),
-            value_row(&t("power-status"), &status),
+            value_row(&t("power-charge"), &status),
         ];
         if let Some(cycles) = state.battery.cycle_count {
             battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
