@@ -20,9 +20,9 @@ import {failureMessage, refusedByHost, startArrival, STOPPED_DRAWING} from './ar
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
-import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
@@ -578,7 +578,17 @@ export async function startEntryPage({mode}) {
         const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
         try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
       }
-      const peer = await connectPeer({origin, room, identity, runtime, displayName});
+      // This tab's own device key: a new one where other tabs hold the
+      // others. A room admits each device once, through an invitation (or
+      // as its host's owner, above), so in a room joined by invitation a new
+      // device of the person cannot get in by itself: said plainly, and the
+      // key, which no host has seen, is not kept.
+      const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
+      if (custody.created && !kept.owner) {
+        await custody.destroy();
+        throw new CustodyError('custody-busy', 'A new device of this person needs an invitation to this room');
+      }
+      const peer = await withCustody(custody, () => connectPeer({origin, room, identity, runtime, displayName, custody}));
       keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
       return peer;
     },
@@ -609,7 +619,10 @@ export async function startEntryPage({mode}) {
     connectMember: async ({origin, room, account}) => {
       const {userPublicKey, profile, device} = account;
       const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
-      return withCustody(custody, () => connectPeer({origin, room, userPublicKey, profile, device, custody,
+      // The account names the profile's first device; a tab that took
+      // another of its device keys is that device, with its own namespace.
+      return withCustody(custody, () => connectPeer({origin, room, userPublicKey, profile, custody,
+        device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
   };

@@ -34,6 +34,7 @@ function harness({actions = [], window = 'a1', share = true} = {}) {
   const posts = [];
   const peer = {
     participant: {label: 'Ann', color: '#112233'},
+    userPublicKey: 'ab'.repeat(32),
     async here(win, list) { posts.push({window: win, actions: list}); return [{device: 'me', status: 'Working on Notes'}]; },
   };
   const fetches = [];
@@ -75,7 +76,8 @@ test('the page posts its window and steps, pushes everyone\'s lines and the spec
   assert.deepEqual(h.calls.find(([kind]) => kind === 'watching'), ['watching', 2]);
   assert.deepEqual(h.fetches, ['https://rooms.example/presence']);
   const people = h.calls.find(([kind]) => kind === 'people')[1];
-  assert.deepEqual(people.own, {publisher: 'me', kind: 'person', label: 'Ann', color: '#112233'});
+  // With its person, so the desktop counts the person's other tabs as them.
+  assert.deepEqual(people.own, {publisher: 'me', kind: 'person', label: 'Ann', color: '#112233', user: 'ab'.repeat(32)});
   assert.deepEqual(people.members.map(m => m.publisher), ['bob']);
   assert.equal(h.timers.at(-1).ms, TICK_MS);
   here.stop();

@@ -64,7 +64,11 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   function pushPeople() {
     if (stopped || !active()) return;
     const live = layer();
-    const own = peer?.participant ? {publisher: live?.publisherId ?? '', kind: 'person', ...peer.participant} : null;
+    // With its person, so the desktop counts this person's other devices
+    // (their other tabs) as them rather than as someone else.
+    const own = peer?.participant
+      ? {publisher: live?.publisherId ?? '', kind: 'person', ...peer.participant, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
+      : null;
     const json = JSON.stringify({own, members: liveMembers(live, seen)});
     if (json === peopleKey) return;
     peopleKey = json;

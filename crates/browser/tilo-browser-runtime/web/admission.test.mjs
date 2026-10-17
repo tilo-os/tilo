@@ -115,14 +115,27 @@ test('no access says the same thing for a missing and a private room', async () 
   }
 });
 
-test('a member whose device key another tab holds is told so, not that the host refused them', async () => {
-  // The page decides what a refusal means for the remembered room: another
-  // tab of this browser says nothing about the host.
+test('a member whose device keys other tabs hold gets in as a new device, or is told so, never refused', async () => {
+  const busy = () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
+  // Where the page holds the person's root, this tab is a new device of theirs.
+  const reconnected = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => busy(),
+    reconnect: async ({origin, room: wanted}) => ({origin, room: wanted, admission: 'reconnect'}),
+  });
+  assert.deepEqual(await admit({scope: room, deps: reconnected.deps}),
+    {peer: {origin: room.host, room: room.room, admission: 'reconnect'}});
+  // Where it cannot, the page says other tabs hold them: another tab of this
+  // browser says nothing about the host.
   const {deps} = doors({
     readAccounts: async () => [{userPublicKey: 'ab'}],
-    connectMember: async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); },
+    connectMember: async () => busy(),
+    reconnect: async () => null,
   });
   await assert.rejects(admit({scope: room, deps}), {name: 'CustodyError', code: 'custody-busy'});
+  // As where the room cannot admit a new device of the person by itself.
+  const uninvited = doors({reconnect: async () => busy()});
+  await assert.rejects(admit({scope: room, deps: uninvited.deps}), {name: 'CustodyError', code: 'custody-busy'});
   const missing = doors({
     readAccounts: async () => [{userPublicKey: 'ab'}],
     connectMember: async () => { throw new CustodyError('custody-missing', 'This account has no existing browser device'); },
