@@ -1,7 +1,8 @@
 # Code Editor — Tilo application manifest.
 #
 # The project tree lives in the CRDT; the editor opens and saves files through
-# the consented host paths below.
+# the consented host paths below, and opens the source files it is handed
+# (see [providers]).
 #
 # The PTY the terminal tab needs comes from the devpts bwrap mounts at
 # /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
@@ -81,6 +82,63 @@ type            = "gui"
 splash-segments = ["bin/code-editor[0x0:0x400000]"]
 splash-budget   = 250
 
+# Source files open here: Files, search and a drop hand Code the file, with a
+# read grant on it, the same way every other app is handed its documents.
+# Markdown, JSON and HTML are left to Notes, Chip Design and Browser, which
+# claim them; plain `.txt` to whatever the person uses for text.
 [providers]
-mime = []
-ext  = []
+mime = [
+    "text/rust",
+    "text/x-rust",
+    "text/x-python",
+    "text/x-python3",
+    "text/javascript",
+    "application/javascript",
+    "text/x-typescript",
+    "application/typescript",
+    "text/css",
+    "application/toml",
+    "application/x-toml",
+    "application/yaml",
+    "application/x-yaml",
+    "text/x-yaml",
+    "text/yaml",
+    "application/x-sh",
+    "text/x-shellscript",
+    "text/x-csrc",
+    "text/x-chdr",
+    "text/x-c",
+    "text/x-c++src",
+    "text/x-c++hdr",
+    "text/x-c++",
+    "text/x-go",
+    "text/x-verilog",
+    "text/x-systemverilog",
+]
+ext  = [
+    "rs",
+    "toml",
+    "py",
+    "js",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "css",
+    "yaml",
+    "yml",
+    "sh",
+    "bash",
+    "zsh",
+    "c",
+    "h",
+    "cpp",
+    "cc",
+    "cxx",
+    "hpp",
+    "go",
+    "v",
+    "vh",
+    "sv",
+    "svh",
+]
