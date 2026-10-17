@@ -182,7 +182,7 @@ impl DictationSurface {
                 || self.preview.is_some() && self.preview_rect(geometry).contains(point))
     }
     pub(crate) fn surface_rect(&self, geometry: LayerGeometry<'_>) -> Rect {
-        let area = geometry.focused_output.unwrap_or(geometry.viewport);
+        let area = geometry.display_for(None);
         let spacing = ui::tokens::Spacing::BASE;
         let pad = f64::from(spacing.s4);
         Rect::new(

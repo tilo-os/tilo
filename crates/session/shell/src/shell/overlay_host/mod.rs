@@ -852,6 +852,8 @@ pub struct ShellOverlayHost {
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
+    /// Where the hardware-key readout was last painted, `None` while none is.
+    osd_painted: std::cell::Cell<Option<Rect>>,
     /// Last `chrome.revision` seen by [`Self::resync_strips_from_tree`];
     /// a disagreement means the tree changed shape and live
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
@@ -2527,6 +2529,7 @@ impl ShellOverlayHost {
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
+            osd_painted: std::cell::Cell::new(None),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
             peer_picture_wake: None,
@@ -3249,10 +3252,14 @@ impl ShellOverlayHost {
             window.content_mut().set_image(image);
             return;
         }
-        let initial_size = capture_mirror_initial_size(self.rect, pixel_aspect, preferred_size);
+        // On the display holding what was captured (the focused one for a
+        // capture of nothing in particular), and kept on it: across the
+        // whole desktop a corner can be on the other display, or on none.
+        let display = self.surface_area(spawn_from.map(|source| source.center()));
+        let initial_size = capture_mirror_initial_size(display, pixel_aspect, preferred_size);
         let body_w = initial_size.width;
         let body_h = initial_size.height;
-        let visible_spawn = visible_capture_spawn(self.rect, spawn_from);
+        let visible_spawn = visible_capture_spawn(display, spawn_from);
         let content = match crossfade_preview {
             Some(preview) => CaptureMirrorImage::new_crossfade(image, preview, document_aspect),
             None => CaptureMirrorImage::new(image, handoff_layers),
@@ -3272,8 +3279,8 @@ impl ShellOverlayHost {
             body_w.max(ui::widget::MIN_WIDTH),
             body_h.max(ui::widget::MIN_HEIGHT),
         );
-        let origin = capture_mirror_origin(self.rect, visible_spawn, window_size);
-        window.place_at_within(self.rect, origin);
+        let origin = capture_mirror_origin(display, visible_spawn, window_size);
+        window.place_at_within(display, origin);
         self.capture_mirrors.push((id.to_string(), window));
         self.capture_mirrors_structure_dirty = true;
     }
@@ -3290,7 +3297,10 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.capture_studio.set_overlay_rect(self.rect);
+        // The display the studio covers (`place_on_focused_display`), so
+        // "Screen" captures that display and the recording indicator stays
+        // on it.
+        self.capture_studio.set_overlay_rect(self.overlay_area());
         // The screenshot picker is the one live thing over the desktop the
         // compositor holds still while it chooses (`CaptureExecutor`). Drawn
         // into the desktop scene, it was held still with it: frozen on its
@@ -3575,8 +3585,14 @@ impl ShellOverlayHost {
         };
         let chrome = chrome.borrow();
         if let Some(map) = chrome.pad_map.as_ref() {
-            map.draw(scene, transform, text_renderer, theme, self.rect);
+            map.draw(scene, transform, text_renderer, theme, self.overlay_area());
         }
+    }
+
+    /// Where the hardware-key readout (volume, brightness) was last
+    /// painted; `None` while none is up.
+    pub fn osd_rect(&self) -> Option<Rect> {
+        self.osd_painted.get()
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -3587,6 +3603,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.osd_painted.set(None);
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -3611,7 +3628,17 @@ impl ShellOverlayHost {
             return;
         }
 
-        osd.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        // On the display the person is working on: across a 2x panel and a
+        // 1x monitor, the desktop's bottom centre is on the monitor, below
+        // the panel's last row.
+        self.osd_painted.set(osd.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.overlay_area(),
+            alpha,
+        ));
     }
 
     /// Paint the passing acknowledgement ("Enrollment token copied"), if one
@@ -3634,7 +3661,14 @@ impl ShellOverlayHost {
             return;
         };
         let alpha = ack.alpha_at(now, theme.reduce_motion);
-        ack.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        ack.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.overlay_area(),
+            alpha,
+        );
     }
 
     /// The acknowledgement showing now, if any.
@@ -4485,7 +4519,7 @@ impl ShellOverlayHost {
     }
 
     /// Every display's rect; the host's bounds alone before it knows of any.
-    fn layer_outputs(&self) -> Vec<Rect> {
+    pub(super) fn layer_outputs(&self) -> Vec<Rect> {
         if self.outputs.is_empty() {
             vec![self.rect]
         } else {
@@ -4495,21 +4529,11 @@ impl ShellOverlayHost {
 
     /// Where stacked layers may place themselves, over `outputs` from
     /// [`Self::layer_outputs`].
-    fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
-        let focused_output = self
-            .is_partitioned()
-            .then(|| {
-                self.chrome
-                    .as_ref()
-                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
-            })
-            .flatten()
-            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map(OutputGeometry::rect);
+    pub(super) fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
         LayerGeometry {
             viewport: self.rect,
             outputs,
-            focused_output,
+            focused_output: self.focused_output().map(|output| output.rect()),
         }
     }
 
@@ -4881,7 +4905,7 @@ impl ShellOverlayHost {
             rects.push(rect);
         }
         if self.portal_dialogs.holds_secret()
-            && let Some(layout) = self.portal_dialogs.layout(self.rect)
+            && let Some(layout) = self.portal_dialogs.layout(self.overlay_area())
         {
             rects.push(layout.sheet);
         }
@@ -5601,13 +5625,14 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Capture Studio covers the focused display: its picker bars sit along
-    /// that display's top and bottom edges and "Screen" is that display.
+    /// A full-display surface — Capture Studio, the screenshot markup
+    /// editor — covers the focused display: its bars sit along that
+    /// display's top and bottom edges and "Screen" is that display.
     /// Across the whole desktop of a docked laptop the bars were centred on
     /// the combined width and hung from its tallest edge, which put them on
     /// the other display, partly below the panel's bottom, while the panel
     /// only greyed: Print looked broken until Escape.
-    fn place_capture_studio(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
+    fn place_on_focused_display(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
         let Some(display) = self.focused_output() else {
             return;
         };
@@ -7074,7 +7099,7 @@ impl ShellOverlayHost {
                 ),
             ));
         }
-        if let Some(layout) = self.portal_dialogs.layout(self.rect) {
+        if let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) {
             let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
             targets.push((
                 crate::shell::trusted_ui::PORTAL_DIALOG_TARGET,
@@ -7516,7 +7541,9 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        self.layers.window_switcher.set_host_rect(self.rect);
+        self.layers
+            .window_switcher
+            .set_host_rect(self.overlay_area());
         let began = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -10645,19 +10672,22 @@ impl ShellOverlayHost {
     }
 
     /// Mirror of the geometry in `draw_quick_settings`: the utility Panel
-    /// width (HIG 9.6), narrowed to the display that holds the tray so it
-    /// never runs off a narrow one.
+    /// width (HIG 9.6), narrowed to the display it opens on so it never runs
+    /// off a narrow one.
     fn quick_settings_width(&self) -> f64 {
-        let area = self.tray_area();
+        let area = self.overlay_area();
         let room = (area.width() - 2.0 * self.qs_panel.margin).max(1.0);
         self.qs_panel.width.min(room)
     }
 
-    /// Under the tray: the Panel margin in from the display's trailing edge,
-    /// the same margin under the top bar, and never past the display's
-    /// bottom margin.
+    /// Under the top bar of the display the person is working on (the
+    /// tray's, when the tray opened it: the press there focused that
+    /// display): the Panel margin in from the display's trailing edge, the
+    /// same margin under the bar, and never past the display's bottom
+    /// margin. Pinned to the primary's tray, a volume key or shortcut
+    /// pressed while working on the other display opened it out of sight.
     fn quick_settings_rect(&self) -> Rect {
-        let area = self.tray_area();
+        let area = self.overlay_area();
         let margin = self.qs_panel.margin;
         let popover_w = self.quick_settings_width();
         let x1 = area.x1 - margin;
@@ -11343,6 +11373,21 @@ impl ShellOverlayHost {
         self.strip_indicators.alpha_at(now, reduce_motion)
     }
 
+    /// The content area the strip ribbon and rail stand at the trailing
+    /// edge of: the focused display's, below its bar. Every display's lane
+    /// leaves [`STRIP_TRAILING_GUTTER_PX`] clear for them; the desktop's
+    /// own edge is only ever the rightmost display's, wherever the person
+    /// works, and its middle is on no display when they are offset.
+    fn strip_indicator_content(&self) -> Rect {
+        let area = self.overlay_area();
+        Rect::new(
+            area.x0,
+            area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
+            area.x1,
+            area.y1,
+        )
+    }
+
     /// The strip ribbon for the active workspace, anchored to the content
     /// area's right edge. Costs no layout — it sits in
     /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.
@@ -11352,12 +11397,7 @@ impl ShellOverlayHost {
             .as_ref()
             .map_or((0, 0), |c| c.borrow().strip_focus());
         ui::chrome::shell::StripRibbon {
-            content: Rect::new(
-                self.rect.x0,
-                self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
-                self.rect.x1,
-                self.rect.y1,
-            ),
+            content: self.strip_indicator_content(),
             count,
             focused,
         }
@@ -11381,12 +11421,7 @@ impl ShellOverlayHost {
                   ends right after both are computed"
     )]
     fn strip_rail(&self) -> ui::chrome::shell::StripRail {
-        let content = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
-            self.rect.x1,
-            self.rect.y1,
-        );
+        let content = self.strip_indicator_content();
         let empty = ui::chrome::shell::StripRail {
             content,
             count: 0,
@@ -11551,7 +11586,7 @@ impl ShellOverlayHost {
     }
 
     pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
-        self.layers.power_menu.action_rects(self.rect)
+        self.layers.power_menu.action_rects(self.overlay_area())
     }
 
     /// May the local user invite into the room they're looking at? Asked
@@ -11637,11 +11672,12 @@ impl ShellOverlayHost {
         if self.shortcut_help_drawn_rect.area() > 0.0 {
             return self.shortcut_help_drawn_rect;
         }
+        let area = self.overlay_area();
         Rect::new(
-            self.rect.x1 - 156.0,
-            self.rect.y1 - 52.0,
-            self.rect.x1 - 16.0,
-            self.rect.y1 - 16.0,
+            area.x1 - 156.0,
+            area.y1 - 52.0,
+            area.x1 - 16.0,
+            area.y1 - 16.0,
         )
     }
 
@@ -11921,7 +11957,8 @@ impl ShellOverlayHost {
     /// A contextual lens docked beside the live workspace. Narrow displays
     /// promote the same surface to a nearly full-width sheet.
     fn ws_settings_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::rect_for(self.rect)
+        // The rect `layout` placed it at: the focused display.
+        WorkspaceSettingsOverlay::rect_for(self.overlay_area())
     }
 
     /// Full ordered list of scopes shown in the banner. Includes
@@ -12508,7 +12545,7 @@ impl ShellOverlayHost {
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
-            || (f.projection && ProjectionOverlay::contains(self.rect, p))
+            || (f.projection && ProjectionOverlay::contains(self.overlay_area(), p))
             || (self.layers.emoji_picker.is_open()
                 && self.layers.emoji_picker.card_rect().contains(p))
     }
@@ -12521,9 +12558,13 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let open = self.overlay_flags().projection;
-        let outcome =
-            self.projection_overlay
-                .handle_event(event, ctx, self.last_cursor, self.rect, open);
+        let outcome = self.projection_overlay.handle_event(
+            event,
+            ctx,
+            self.last_cursor,
+            self.overlay_area(),
+            open,
+        );
         if outcome.close_requested
             && let Some(chrome) = self.chrome.as_ref()
         {
@@ -12677,6 +12718,18 @@ impl ShellOverlayHost {
         ) {
             self.qs_navigation_release_pending = false;
         }
+        // A finger put down on another display works there, as the pointer
+        // arriving there does: an edge swipe or a tap the shell keeps for
+        // itself never becomes pointer motion, and what it opens belongs
+        // on the display it was made on.
+        if let WindowEvent::Touch(touch) = event
+            && touch.phase == winit::event::TouchPhase::Started
+        {
+            self.focus_display_at(Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            ));
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
@@ -12719,7 +12772,10 @@ impl ShellOverlayHost {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
         // answer), and a typed filename shares characters with chords.
-        if self.file_picker_overlay.handle_event(self.rect, event, ctx) {
+        if self
+            .file_picker_overlay
+            .handle_event(self.overlay_area(), event, ctx)
+        {
             return true;
         }
 
@@ -13121,7 +13177,7 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+        let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
             return;
         };
         let used = self
@@ -14280,7 +14336,7 @@ impl ShellOverlayHost {
     pub(crate) fn dictation_input_available(&self) -> bool {
         self.onboarding.is_none()
             && self.permission_prompt.is_none()
-            && self.portal_dialogs.layout(self.rect).is_none()
+            && self.portal_dialogs.layout(self.overlay_area()).is_none()
             && !self.display_confirmation_visible()
             && !self.window_switcher_active()
     }
@@ -18158,9 +18214,13 @@ impl ShellOverlayHost {
         let Some((target, tab_count, point, title)) = nearest else {
             return;
         };
-        self.layers
-            .tab_menu
-            .open(target, tab_count, point, title, self.rect);
+        self.layers.tab_menu.open(
+            target,
+            tab_count,
+            point,
+            title,
+            self.surface_area(Some(point)),
+        );
     }
 
     /// Open the shell menu at the focused tab, independent of the pointer.
@@ -18224,15 +18284,11 @@ impl ShellOverlayHost {
         }
         let title = tab.title.clone();
         let tab_count = group.tab_count();
-        let outputs = self.layer_outputs();
-        let viewport = self.layer_geometry(&outputs).display_for(None);
-        self.layers.tab_menu.open(
-            target,
-            tab_count,
-            Point::new(rect.x0, rect.y1),
-            title,
-            viewport,
-        );
+        let at = Point::new(rect.x0, rect.y1);
+        let display = self.surface_area(Some(at));
+        self.layers
+            .tab_menu
+            .open(target, tab_count, at, title, display);
         self.layers.tab_menu.focus_first_action();
         true
     }
@@ -18372,9 +18428,11 @@ impl ShellOverlayHost {
         match intent {
             LayerIntent::TabMenu { target, action } => {
                 let performed = self.perform_tab_menu_action(target, action);
+                let at = self.layers.tab_menu.anchor_point();
+                let display = self.surface_area(Some(at));
                 self.layers
                     .tab_menu
-                    .settle(target, action, performed, self.rect);
+                    .settle(target, action, performed, display);
                 performed
             }
             LayerIntent::Session(action) => {
@@ -19120,7 +19178,7 @@ impl Widget for ShellOverlayHost {
             // dedicated tree so the chooser has both geometry and an input
             // target while OOBE is active.
             let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
-            self.place_capture_studio(taffy, capture_node);
+            self.place_on_focused_display(taffy, capture_node);
             self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
@@ -19189,12 +19247,15 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
-        self.place_capture_studio(taffy, capture_node);
+        self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
             .screenshot_markup
             .as_mut()
             .map(|markup| markup.build_layout(taffy, theme, node_map));
+        if let Some(node) = self.screenshot_markup_node {
+            self.place_on_focused_display(taffy, node);
+        }
         self.capture_mirror_nodes = self
             .capture_mirrors
             .iter_mut()
@@ -21866,21 +21927,21 @@ impl ShellOverlayHost {
                 .borrow()
                 .visual_alert_active(std::time::Instant::now())
         });
+        // Along every display's own edges: the desktop's bounding box puts
+        // a shorter display's bottom edge, or a stacked one's sides, on no
+        // display at all.
+        let displays = self.layer_outputs();
         overlay_part(scene, "shell.visual-alert", desktop, |scene| {
             if visual_alert {
-                let edge = Rect::new(
-                    self.rect.x0 + 4.0,
-                    self.rect.y0 + 4.0,
-                    self.rect.x1 - 4.0,
-                    self.rect.y1 - 4.0,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(7.0),
-                    transform,
-                    theme.tokens.colors.intent.inverted,
-                    None,
-                    &edge,
-                );
+                for display in &displays {
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(7.0),
+                        transform,
+                        theme.tokens.colors.intent.inverted,
+                        None,
+                        &display.inset(-4.0),
+                    );
+                }
             }
             None
         });
@@ -22492,7 +22553,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &CollaboratorsModel {
-                    host: self.rect,
+                    host: self.overlay_area(),
                     rows: &rows,
                     own_label: &own_label,
                     // Native names come from the account, renamed in Settings.
@@ -22856,11 +22917,14 @@ impl ShellOverlayHost {
             f64::from(spacing.s4),
         );
         let min_h = f64::from(theme.tokens.metrics.min_pointer_target + spacing.s1);
+        // The focused display's corner: the desktop's bottom-right corner
+        // is on no display at all when the displays are stacked offset.
+        let area = self.overlay_area();
         self.shortcut_help_drawn_rect = Rect::new(
-            self.rect.x1 - (f64::from(w) + pad_x) - inset,
-            self.rect.y1 - (f64::from(h) + pad_y).max(min_h) - inset,
-            self.rect.x1 - inset,
-            self.rect.y1 - inset,
+            area.x1 - (f64::from(w) + pad_x) - inset,
+            area.y1 - (f64::from(h) + pad_y).max(min_h) - inset,
+            area.x1 - inset,
+            area.y1 - inset,
         );
         let rect = self.shortcut_help_button_rect();
         let colors = &theme.tokens.colors;
@@ -23745,7 +23809,7 @@ impl ShellOverlayHost {
         // drawn over, read, or dismissed by that app.
         overlay_part(scene, "shell.file-picker", desktop, |scene| {
             self.file_picker_overlay.draw(
-                self.rect,
+                self.overlay_area(),
                 scene,
                 transform,
                 text_renderer,
@@ -23876,7 +23940,7 @@ impl ShellOverlayHost {
             let Some(view) = self.portal_dialogs.view() else {
                 return;
             };
-            let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+            let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
                 return;
             };
             draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
@@ -25216,9 +25280,11 @@ impl ShellOverlayHost {
         // attachment glyph is orbiting their avatar.
         let detail = t("follow-detail");
         let detail = detail.as_str();
-        let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
-        let center_x = self.rect.center().x;
-        let y0 = self.rect.y0 + 54.0;
+        // Over the display in use, not over the seam between two.
+        let area = self.overlay_area();
+        let width = 344.0_f64.min((area.width() - 24.0).max(220.0));
+        let center_x = area.center().x;
+        let y0 = area.y0 + 54.0;
         self.follow_chip_rect = Rect::new(
             center_x - width / 2.0,
             y0,
@@ -27951,6 +28017,10 @@ mod resync_strips_tests;
 #[cfg(test)]
 #[path = "peer_cursor_tests.rs"]
 mod peer_cursor_tests;
+
+#[cfg(test)]
+#[path = "multi_display_tests.rs"]
+mod multi_display_tests;
 
 /// The collaborators dropdown lists live people and agents together, and
 /// says which is which. Dormant membership stays in workspace settings:

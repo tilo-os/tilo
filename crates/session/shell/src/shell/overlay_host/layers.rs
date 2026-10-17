@@ -124,9 +124,14 @@ pub(crate) enum Band {
 }
 
 /// Where layers may place themselves, in desktop coordinates.
+///
+/// A surface is placed with [`Self::display_for`], never against
+/// [`Self::viewport`]: across a docked laptop the viewport is every display
+/// at once, whose centre is the seam and whose bottom edge hangs below the
+/// shorter one.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayerGeometry<'a> {
-    /// The host's bounds.
+    /// The host's bounds: the whole desktop, every display.
     pub viewport: Rect,
     /// Every display; the viewport alone before the host knows of any.
     pub outputs: &'a [Rect],
@@ -135,8 +140,11 @@ pub(crate) struct LayerGeometry<'a> {
 }
 
 impl LayerGeometry<'_> {
-    /// The display a popup anchored at `anchor` belongs on: the one holding
-    /// it, else the focused one, else the whole viewport.
+    /// The display a surface opens on, the one rule every shell surface is
+    /// placed by: the display holding `anchor` (the control, caret or
+    /// pointer it was opened from), else the focused one — the display
+    /// the person is working on, which follows the pointer across
+    /// displays — else the whole viewport, which is the one display.
     pub(crate) fn display_for(&self, anchor: Option<Rect>) -> Rect {
         anchor
             .and_then(|anchor| {

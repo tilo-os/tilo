@@ -423,7 +423,8 @@ impl Osd {
         }
     }
 
-    /// Paint this readout inside `viewport` at the supplied lifecycle alpha.
+    /// Paint this readout inside `viewport` at the supplied lifecycle alpha,
+    /// returning the pill's resting rect (`None` when nothing was painted).
     /// The OSD is intentionally non-interactive, so it owns no hit targets.
     pub fn draw(
         self,
@@ -433,9 +434,9 @@ impl Osd {
         theme: &Theme,
         viewport: Rect,
         alpha: f32,
-    ) {
+    ) -> Option<Rect> {
         if alpha <= 0.0 {
-            return;
+            return None;
         }
         // Theme type tokens already carry the user's text scale, and the
         // pill paints with those resolved sizes; the renderer must not scale
@@ -509,6 +510,7 @@ impl Osd {
             scene.pop_layer();
         }
         text_renderer.set_text_scale(renderer_scale);
+        Some(pill.rect)
     }
 }
 
@@ -1011,7 +1013,14 @@ mod tests {
             tr.set_text_scale(2.0);
             let viewport = Rect::new(0.0, 0.0, 640.0, 360.0);
             let mut scene = Scene::new();
-            Osd::brightness(0.5).draw(&mut scene, Affine::IDENTITY, &mut tr, &large, viewport, 1.0);
+            let _ = Osd::brightness(0.5).draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &large,
+                viewport,
+                1.0,
+            );
             assert_eq!(
                 tr.text_scale(),
                 2.0,
