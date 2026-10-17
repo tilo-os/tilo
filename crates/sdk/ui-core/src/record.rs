@@ -210,6 +210,7 @@ impl RecordId {
     /// highest part it holds; every earlier part is sent to a device when
     /// it opens it. Two writers that start part `n + 1` start the same
     /// record. The wire form is `neighbour_wire::record_part`'s.
+    #[must_use]
     pub fn part(&self, index: u64) -> Self {
         Self::derived(&format!("part.{index}"), self)
     }
@@ -231,6 +232,7 @@ impl RecordId {
     /// `self` declared on-demand: a room's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
     /// form is `neighbour_wire::on_demand_record`'s.
+    #[must_use]
     pub fn on_demand(&self) -> Self {
         Self::derived("on-demand", self)
     }

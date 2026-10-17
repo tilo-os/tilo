@@ -124,16 +124,21 @@ impl WorkspaceStore {
     /// lineages it leaves out: a room keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
     /// ones included), and stepping over one is not a step of work.
-    fn next_listed(&self, build: &mut ReplayBuild) -> Result<Option<fs::DirEntry>, StoreError> {
+    fn next_listed(
+        &self,
+        outer: &mut Option<fs::ReadDir>,
+        phase: u8,
+        every_record: bool,
+    ) -> Result<Option<fs::DirEntry>, StoreError> {
         loop {
-            let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() else {
+            let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
                 return Ok(None);
             };
             let entry = entry?;
-            if build.phase == 2 && entry.file_type()?.is_dir() {
+            if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
                 if self.leaves_out(&name, &entry.path())?
-                    || (!build.every_record && self.leaves_out_on_demand(&name)?)
+                    || (!every_record && self.leaves_out_on_demand(&name)?)
                 {
                     continue;
                 }
@@ -1215,7 +1220,9 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some(entry) = self.next_listed(build)? {
+            } else if let Some(entry) =
+                self.next_listed(&mut build.outer, build.phase, build.every_record)?
+            {
                 let name = entry.file_name();
                 let kind = entry.file_type()?;
                 match build.phase {

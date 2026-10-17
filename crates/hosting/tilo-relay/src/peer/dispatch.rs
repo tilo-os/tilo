@@ -52,6 +52,10 @@ where
     .await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per envelope kind: the dispatcher is a table, read top to bottom"
+)]
 pub(super) async fn handle_envelope(
     peer: &AuthenticatedPeer,
     env: Envelope,
@@ -140,10 +144,9 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceJoin { .. }
         | Envelope::VoiceLeave { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
-        Envelope::OpenRecord {
-            workspace_id,
-            channel,
-        } => handle_open_record(peer, session, subscribed, workspace_id, channel).await,
+        env @ Envelope::OpenRecord { .. } => {
+            handle_open_record(peer, session, subscribed, env).await
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
