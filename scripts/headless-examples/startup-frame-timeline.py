@@ -241,8 +241,12 @@ def main() -> None:
         shutil.rmtree(runtime)
         raise
     manifest = payload / "manifest.toml"
-    manifest.write_text(f'package_id = "{APP}"\nversion = "0.0.0"\nkind = "app"\n'
-                        '[entrypoint]\nbin = "bin/probe"\n[sandbox.net]\nmode = "off"\n')
+    manifest.write_text(f'[package]\nid = "{APP}"\nversion = "0.0.0"\nkind = "app"\n'
+                        f'[publisher]\nidentity = "ed25519:{"00" * 32}"\n'
+                        '[sandbox]\nnamespaces = ["user", "pid", "uts", "ipc", "mount"]\n'
+                        'seccomp = "tilo-default"\nlandlock = "strict"\n'
+                        '[sandbox.net]\nmode = "off"\n'
+                        '[entrypoint]\nbin = "bin/probe"\n')
     result = {"scope": "registered host wrapper launching a confined native SDK payload in a watched headless compositor",
               "physical_presentation": False, "cache": "fresh processes; private app data initially empty and retained between samples; host/driver caches not flushed",
               "poll_interval_ms": POLL_SECONDS * 1000, "samples": [],
