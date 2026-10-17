@@ -198,7 +198,7 @@ granted to an app through the GlobalShortcuts portal.
 | Save recent replay | Super+Shift+R |
 | Workspace history | Super+H |
 | Explore workspace history | Super+Shift+H |
-| Keyboard guide | F1 |
+| Keyboard shortcuts | F1 |
 | Stop all remote input | Super+Esc |
 | Toggle mouse keys | Alt+Shift+Num Lock |
 <!-- fixed-shell-chords:end -->
