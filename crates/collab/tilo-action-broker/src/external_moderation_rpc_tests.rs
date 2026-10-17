@@ -372,11 +372,11 @@ mod external_moderation_rpc_tests {
                         .publish_actions(&room.route.app_id, &[descriptor])
                         .await
                         .unwrap();
-                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let operation = operation(action == "appeal");
-                    // The fixture grants all action kinds. That broad Outside grant
-                    // admits the action, but is not consent to this network request.
-                    target
+                    // Even with a broad Outside grant, the unconfirmed call must
+                    // now fail at admission, before it can reach the host worker.
+                    let error = target
                         .handle
                         .invoke_published_action(
                             979,
@@ -386,20 +386,8 @@ mod external_moderation_rpc_tests {
                             "{}",
                         )
                         .await
-                        .unwrap();
-                    let id = stream.read().await.unwrap().invocation_uuid;
-                    let request = Request {
-                        protocol: PROTOCOL.into(),
-                        invocation: uuid::Uuid::from_bytes(id).to_string(),
-                        operation,
-                    };
-                    refused(
-                        &target.handle,
-                        &request,
-                        id,
-                        "external moderation requires exact system confirmation",
-                    )
-                    .await;
+                        .expect_err("a broad grant cannot replace the trusted host answer");
+                    assert!(error.to_string().contains("confirmation"), "{error}");
                 }
             })
             .await;
@@ -533,6 +521,7 @@ mod external_moderation_rpc_tests {
                         .publish_actions(&room.route.app_id, &[descriptor])
                         .await
                         .unwrap();
+                    let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
                     let (actor, origin) = room.caller();
                     assert!(actor.direct());
