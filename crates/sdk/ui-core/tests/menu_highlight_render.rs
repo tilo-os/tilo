@@ -234,6 +234,12 @@ fn text_free_probe(row: Rect) -> Point {
     Point::new(row.x1 - 14.0, row.center().y)
 }
 
+/// A slash-menu row's trailing edge holds its Markdown hint; the gap
+/// between the label and the hint is free of glyphs.
+fn slash_probe(row: Rect) -> Point {
+    Point::new(row.center().x + 24.0, row.center().y)
+}
+
 /// Row 0 carries the longest label on purpose: measured menus hug their
 /// widest row, so the probed rows (1 and 2) must be well short of it for the
 /// right-edge probe to stay clear of glyphs.
@@ -447,8 +453,8 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
             rendered.dump(&format!("menu_highlight_slash_menu_hover_{name}"));
             assert_armed_row(
                 &rendered,
-                text_free_probe(row1),
-                text_free_probe(row2),
+                slash_probe(row1),
+                slash_probe(row2),
                 &theme,
                 name,
                 "slash-menu",

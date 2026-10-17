@@ -25,6 +25,7 @@ pub const SCENARIOS: &[&str] = &[
     "rename",
     "rename_commit",
     "slash",
+    "slash_query",
     "slash_applied",
     "heading",
     "fenced_code",
@@ -52,7 +53,6 @@ pub const SCENARIOS: &[&str] = &[
     "image",
     "image_edit",
     "status",
-    "saving",
     "save_retrying",
     "save_not_saved",
     "save_error",
@@ -97,6 +97,7 @@ fn types_into_new_note(scenario: Option<&str>) -> bool {
                 | "typed_lists"
                 | "slash"
                 | "mention"
+                | "slash_query"
                 | "slash_applied"
                 | "heading"
                 | "fenced_code"
@@ -419,7 +420,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             reveal_sidebar(driver);
             let rect = semantic_name_rect(driver, LAUNCH).ok_or("sidebar focus target missing")?;
             driver.click_at(rect.center().x, rect.center().y);
-            driver.key("?");
+            chord(driver, &["ctrl"], "/");
             if scenario == Some("shortcuts_bottom") {
                 driver.key("End");
             }
@@ -483,6 +484,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             show_room(driver);
             driver.type_text("Ask @");
         }
+        Some("slash_query") => driver.type_text("Groceries for Monday /c"),
         Some("slash_applied") => {
             driver.type_text("/h1");
             driver.key("Enter");
@@ -600,7 +602,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("presence") => show_collaborators(driver)?,
-        Some("saving" | "save_error") => {
+        Some("save_error") => {
             let first = visible_block_rects(driver)
                 .into_iter()
                 .next()

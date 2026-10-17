@@ -19,8 +19,8 @@ static SPEC: MenuSpec = MenuSpec {
     // Keeps the popover small for big workspaces; the user can keep typing
     // to narrow the result.
     max_rows: 8,
-    placeholder: "Find a note…",
-    access_name: "Link notes",
+    placeholder: "link-popover-filter",
+    access_name: "link-popover-name",
     widget_name: "LinkPopover",
     test_id: "link_popover",
 };
@@ -40,11 +40,7 @@ impl FilterMenu<PageEntry> {
         self.set_entries(
             items
                 .into_iter()
-                .map(|page| MenuEntry {
-                    label: page.title.clone(),
-                    keywords: &[],
-                    value: page,
-                })
+                .map(|page| MenuEntry::plain(page.title.clone(), &[], page))
                 .collect(),
         );
     }

@@ -5,7 +5,7 @@
 //! See `crates/sdk/ui-core/src/widget/slash_menu.rs` and `block_editor.rs` for the
 //! unit-level pins on each part of the flow.
 
-use tilo_ui::widget::{BlockEditor, BlockKind};
+use tilo_ui::widget::{BlockEditor, BlockKind, SlashCommand};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey, SmolStr};
 
@@ -37,7 +37,7 @@ fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
         );
         assert_eq!(
             editor.slash_menu().highlighted(),
-            Some(&BlockKind::Heading(2)),
+            Some(&SlashCommand::Block(BlockKind::Heading(2))),
         );
 
         editor.slash_menu_handle_key_for_test(&key_press(Key::Named(NamedKey::Enter), None));

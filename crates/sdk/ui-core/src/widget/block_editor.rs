@@ -32,7 +32,7 @@ use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
-use crate::widget::slash_menu::SlashMenu;
+use crate::widget::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
 use crate::widget::{Button, SearchField, TextInput};
 use crate::widget::{EventCtx, Widget};
 
@@ -535,6 +535,17 @@ impl ImageAttachment {
     }
 }
 
+/// A slash command the editor's host carries out
+/// ([`BlockEditor::take_slash_request`]): which, on which block, and the
+/// block's text once its `/query` is gone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlashRequest {
+    pub command: SlashHostCommand,
+    /// The block's id.
+    pub block: String,
+    pub text: String,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent editor interaction and lifecycle flags"
@@ -661,9 +672,11 @@ pub struct BlockEditor {
     /// cannot distinguish an included empty last block from a column-zero end.
     retained_block_selection: Option<RetainedBlockSelection>,
     slash_menu: SlashMenu,
-    /// Byte offset where `/` was typed, so `/<filter>` can be spliced
-    /// back out on commit.
+    /// Byte offset where `/` was typed. The query after it stays in the
+    /// block as typed; `/<query>` is spliced back out on commit.
     slash_open_at: Option<usize>,
+    /// A slash command for the host to carry out, not yet taken.
+    slash_request: Option<SlashRequest>,
     link_popover: LinkPopover,
     /// Byte offset of the leading `[[`, spliced back out once a page
     /// is selected.
@@ -822,7 +835,6 @@ pub struct FindReplaceBatch {
     pub replacement: String,
 }
 
-const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const CODE_HEADER_HEIGHT: f64 = 28.0;
 /// How far a code run's ground reaches above its first line's header and
 /// below its last line: 4 px stays inside the inter-block gap, never
@@ -902,6 +914,7 @@ impl BlockEditor {
             retained_block_selection: None,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
+            slash_request: None,
             link_popover: LinkPopover::new(),
             link_open_at: None,
             slash_anchor_caret: None,
@@ -928,7 +941,7 @@ impl BlockEditor {
             blocks_list: None,
             local_author: None,
             kbd_sel_anchor: None,
-            empty_hint: DEFAULT_EMPTY_HINT.to_string(),
+            empty_hint: crate::i18n!("block-editor-empty"),
             formula_preview_rects: Vec::new(),
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
@@ -1704,7 +1717,8 @@ impl BlockEditor {
     }
 
     /// Keep the editor's popovers inside `bounds` (normally its window): the
-    /// `@` list opens above the caret where there is no room below.
+    /// `@` list, the slash menu and the link picker open above the caret
+    /// where there is no room below.
     pub fn set_popover_bounds(&mut self, bounds: Option<Rect>) {
         self.popover_bounds = bounds;
     }
@@ -2668,6 +2682,22 @@ impl BlockEditor {
         line.set_cursor_pos(cursor);
     }
 
+    /// Insert `text` at byte `at`, marks after it moving along, the caret
+    /// after the insertion.
+    fn insert_line_text(line: &mut RichTextLine, at: usize, text: &str) {
+        let current = line.value();
+        let at = current.floor_char_boundary(at.min(current.len()));
+        let (Some(head), Some(tail)) = (current.get(..at), current.get(at..)) else {
+            return;
+        };
+        let updated = format!("{head}{text}{tail}");
+        let mut spans = line.marks().to_vec();
+        crate::widget::marks::shift_after_edit(&mut spans, at, text.len(), 0);
+        line.set_text(&updated);
+        line.set_marks(spans);
+        line.set_cursor_pos(at.saturating_add(text.len()));
+    }
+
     /// Toggle `mark` as a toolbar button does: over the focused block's
     /// selection, or, with nothing selected, for the text typed next.
     /// `false` when no block is focused.
@@ -2761,8 +2791,17 @@ impl BlockEditor {
     }
 
     /// Preserve authored formatting, caret, binding and outline context.
-    /// Converting to a divider intentionally removes the contents.
+    /// A divider holds no text, so turning a block that has some into one
+    /// puts a divider above it instead: converting never deletes writing.
     pub fn try_convert_to(&mut self, idx: usize, new_kind: BlockKind) -> bool {
+        if matches!(new_kind, BlockKind::Divider)
+            && self
+                .blocks
+                .get(idx)
+                .is_some_and(|block| !block.line.value().is_empty())
+        {
+            return self.insert_divider(idx);
+        }
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
         };
@@ -2778,7 +2817,6 @@ impl BlockEditor {
         b.line.set_mono(is_code);
         b.line.set_inline_formatting(!is_code);
         if is_divider {
-            b.line.set_text("");
             b.line.set_focus(false);
         }
         b.code_group = if matches!(new_kind, BlockKind::CodeBlock { .. }) {
@@ -2997,38 +3035,217 @@ impl BlockEditor {
         None
     }
 
-    /// Idempotent — if the focused block changed since the menu opened,
-    /// still applies the conversion and leaves the text alone.
-    fn commit_slash_selection(&mut self, mut new_kind: BlockKind) {
+    /// Put a divider at `idx`, the block there moving down under it, at the
+    /// same depth.
+    fn insert_divider(&mut self, idx: usize) -> bool {
+        if idx > self.blocks.len() {
+            return false;
+        }
+        let mut divider = Block::divider();
+        if let Some(depth) = self.blocks.get(idx).map(Block::indent) {
+            divider.set_indent(depth);
+        }
+        self.blocks.insert(idx, divider);
+        if let Some(focused) = self.focused.filter(|&focused| focused >= idx) {
+            self.focused = Some(focused.saturating_add(1));
+        }
+        self.restack();
+        self.slash_structure_changed();
+        true
+    }
+
+    fn slash_structure_changed(&mut self) {
+        self.edit_pending = true;
+        self.commit_pending = true;
+        self.structure_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Carry out the slash menu's chosen row. Typed after `/`, the query is
+    /// spliced out with the slash; then a `/` that opened at the start of
+    /// its block turns that block into the chosen kind, its text kept,
+    /// while one typed after text splits the block there and starts a new
+    /// block of that kind, so "Groceries /todo" never loses the groceries.
+    /// From the block handle's menu (no `/`), the block turns. Idempotent:
+    /// if the focused block changed since the menu opened, the command
+    /// applies to it and leaves its text alone.
+    fn commit_slash_selection(&mut self, command: SlashCommand) {
         let Some(focused_idx) = self.focused else {
             return;
         };
-        if let Some(open_byte) = self.slash_open_at
-            && let Some(b) = self.blocks.get_mut(focused_idx)
-        {
-            let text = b.line.value().to_string();
-            let cursor = b.line.cursor_pos().min(text.len());
+        let trigger = self.slash_open_at.take().and_then(|open_byte| {
+            let block = self.blocks.get_mut(focused_idx)?;
+            let text = block.line.value().to_string();
+            let cursor = block.line.cursor_pos().min(text.len());
             let start = open_byte.min(text.len());
             if cursor > start {
-                Self::remove_line_range(&mut b.line, start..cursor);
+                Self::remove_line_range(&mut block.line, start..cursor);
+            }
+            block.line.set_cursor_pos(start);
+            Some(start)
+        });
+        match command {
+            SlashCommand::Block(kind) => self.slash_make_block(focused_idx, trigger, kind),
+            SlashCommand::LinkPage => self.slash_link_page(focused_idx, trigger),
+            SlashCommand::Host(command) => {
+                if let Some(block) = self.blocks.get(focused_idx) {
+                    self.slash_request = Some(SlashRequest {
+                        command,
+                        block: block.id.clone(),
+                        text: block.line.value().to_string(),
+                    });
+                }
+                self.dirty = true;
             }
         }
-        self.slash_open_at = None;
-        if let Some(mut descriptor) = formula_descriptor(&new_kind) {
+    }
+
+    fn slash_make_block(&mut self, mut idx: usize, trigger: Option<usize>, mut kind: BlockKind) {
+        if let Some(mut descriptor) = formula_descriptor(&kind) {
             descriptor.mode = self.preferred_formula_mode;
-            new_kind = BlockKind::CodeBlock {
+            kind = BlockKind::CodeBlock {
                 lang: Some(descriptor.fence_language()),
             };
         }
-        if matches!(new_kind, BlockKind::Table { .. })
-            && let Some(block) = self.blocks.get_mut(focused_idx)
+        // Typed after text: what came before the slash stays where it is,
+        // and the new block starts with what came after it.
+        if let Some(at) = trigger.filter(|&at| at > 0) {
+            let Some(block) = self.blocks.get_mut(idx) else {
+                return;
+            };
+            let text = block.line.value().to_string();
+            let kept = text.get(..at).map_or(at, |head| head.trim_end().len());
+            if kept < at {
+                Self::remove_line_range(&mut block.line, kept..at);
+            }
+            self.split_at_cursor(idx, kept);
+            idx = idx.saturating_add(1);
+            if matches!(kind, BlockKind::Divider) {
+                // Between the two halves, the caret staying in the second.
+                self.insert_divider(idx);
+                return;
+            }
+            self.slash_structure_changed();
+        }
+        if matches!(kind, BlockKind::Table { .. })
+            && let Some(block) = self.blocks.get_mut(idx)
             && block.text().trim().is_empty()
         {
             const TABLE_TEMPLATE: &str = "| Column | Value |\n| --- | --- |\n|  |  |";
             block.line.set_text(TABLE_TEMPLATE);
             block.line.set_cursor_pos(TABLE_TEMPLATE.len());
         }
-        let _ = self.try_convert_to(focused_idx, new_kind);
+        if self.try_convert_to(idx, kind) {
+            self.slash_structure_changed();
+        }
+    }
+
+    /// The link picker, opened where the slash was, as if `[[` were typed
+    /// there.
+    fn slash_link_page(&mut self, idx: usize, trigger: Option<usize>) {
+        let Some(block) = self.blocks.get_mut(idx) else {
+            return;
+        };
+        let at = trigger.unwrap_or_else(|| block.line.cursor_pos());
+        Self::insert_line_text(&mut block.line, at, "[[");
+        let caret = block.line.cursor_pos();
+        self.link_popover
+            .set_anchor(self.fallback_popover_anchor(idx));
+        self.link_popover.set_filter("");
+        self.link_popover.set_visible(true);
+        self.link_open_at = Some(at);
+        self.link_anchor_caret = Some((idx, caret));
+        self.dirty = true;
+    }
+
+    /// Offer the slash commands this host answers besides the block kinds:
+    /// with `link_pages`, a link to another page (the host also gives the
+    /// pages, [`Self::set_link_pages`]); and each of `host`, which the host
+    /// carries out when [`Self::take_slash_request`] hands it over.
+    pub fn set_slash_commands(&mut self, link_pages: bool, host: &[SlashHostCommand]) {
+        self.slash_menu.set_commands(link_pages, host);
+    }
+
+    /// [`Self::set_slash_commands`], as a builder.
+    #[must_use]
+    pub fn with_slash_commands(mut self, link_pages: bool, host: &[SlashHostCommand]) -> Self {
+        self.set_slash_commands(link_pages, host);
+        self
+    }
+
+    /// The slash command the person chose that only the host can carry
+    /// out, once. The `/query` is already gone from the block.
+    pub fn take_slash_request(&mut self) -> Option<SlashRequest> {
+        self.slash_request.take()
+    }
+
+    /// Make block `id` read as a link to `page`: its text becomes the
+    /// page's title, linked. What a host does when it made a page from
+    /// the block ([`SlashHostCommand::Page`]).
+    pub fn link_block_to_page(&mut self, id: &str, page: &PageEntry) -> bool {
+        let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+            return false;
+        };
+        self.begin_edit();
+        let Some(block) = self.blocks.get_mut(index) else {
+            return false;
+        };
+        block.line.set_text(&page.title);
+        block.line.set_marks(vec![MarkSpan::new(
+            0..page.title.len(),
+            Mark::Link(page.id),
+        )]);
+        block.line.set_cursor_pos(page.title.len());
+        self.edit_pending = true;
+        self.commit_pending = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Follow the query typed after `/`: the menu narrows to it, and closes
+    /// once the slash is gone, the caret left the query, or the query has
+    /// turned into prose (it starts with a space, or a space ends a query
+    /// nothing matches), so "A / B" and "and /or so" stay plain text.
+    fn sync_slash_query(&mut self) {
+        if !self.slash_menu.is_visible() || !self.slash_menu.is_inline() {
+            return;
+        }
+        let query = self.slash_open_at.and_then(|open| {
+            let (index, _) = self.slash_anchor_caret?;
+            if self.focused != Some(index) || self.document_selection.is_some() {
+                return None;
+            }
+            let line = &self.blocks.get(index)?.line;
+            let text = line.value();
+            let cursor = line.cursor_pos();
+            if text.get(open..open.saturating_add(1)) != Some("/") || cursor <= open {
+                return None;
+            }
+            text.get(open.saturating_add(1)..cursor).map(str::to_owned)
+        });
+        let Some(query) = query else {
+            self.close_slash_menu();
+            return;
+        };
+        if query.starts_with(char::is_whitespace) || query.contains('\n') {
+            self.close_slash_menu();
+            return;
+        }
+        if self.slash_menu.filter() == query {
+            return;
+        }
+        self.slash_menu.set_filter(&query);
+        if self.slash_menu.visible_len() == 0 && query.ends_with(char::is_whitespace) {
+            self.close_slash_menu();
+        }
+        self.dirty = true;
+    }
+
+    fn close_slash_menu(&mut self) {
+        self.slash_menu.set_visible(false);
+        self.slash_open_at = None;
+        self.slash_anchor_caret = None;
+        self.dirty = true;
     }
 
     fn set_formula_mode(&mut self, start: usize, mode: crate::math::FormulaMode) {
@@ -3233,13 +3450,15 @@ impl BlockEditor {
     /// origins, and custom fonts can change every advance.  This runs in the
     /// overlay paint pass, after the line has shaped with the active theme.
     fn refresh_popover_anchors(&mut self, theme: &Theme) {
+        self.slash_menu.set_scale(self.text_scale);
+        self.link_popover.set_scale(self.text_scale);
         if self.slash_menu.is_visible()
             && let Some((index, byte)) = self.slash_anchor_caret
             && let Some(line) = self.blocks.get(index).map(|block| &block.line)
         {
             let caret = line.caret_rect(theme, byte);
             self.slash_menu
-                .set_anchor(Point::new(caret.x0, caret.y1 + 2.0));
+                .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }
         if self.link_popover.is_visible()
             && let Some((index, byte)) = self.link_anchor_caret
@@ -3247,7 +3466,7 @@ impl BlockEditor {
         {
             let caret = line.caret_rect(theme, byte);
             self.link_popover
-                .set_anchor(Point::new(caret.x0, caret.y1 + 2.0));
+                .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }
     }
 
@@ -4344,10 +4563,16 @@ impl BlockEditor {
             return false;
         };
         self.focus_block(index, CursorPlacement::Start);
-        self.slash_menu.set_anchor(Point::new(
-            anchor_rect.x1 + 6.0 * self.text_scale,
-            anchor_rect.y0,
-        ));
+        self.slash_menu.set_caret(
+            Rect::new(
+                anchor_rect.x1 + 6.0 * self.text_scale,
+                anchor_rect.y0,
+                anchor_rect.x1 + 6.0 * self.text_scale,
+                anchor_rect.y0,
+            ),
+            self.popover_bounds,
+        );
+        self.slash_menu.set_inline(false);
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
         self.slash_open_at = None;
@@ -5098,6 +5323,13 @@ impl BlockEditor {
         self.slash_menu.is_visible()
     }
 
+    /// The slash menu is open with its own filter field (from a block's
+    /// handle), which then takes typing; opened by `/`, the query is typed
+    /// into the block.
+    fn slash_menu_has_field(&self) -> bool {
+        self.slash_menu.is_visible() && !self.slash_menu.is_inline()
+    }
+
     #[doc(hidden)]
     pub fn slash_menu(&self) -> &SlashMenu {
         &self.slash_menu
@@ -5109,23 +5341,22 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return;
         };
-        let caret = self
-            .blocks
-            .get(focused_idx)
-            .map_or(0, |b| b.line.cursor_pos());
+        // As the block handle opens it: its own filter field, turning the
+        // focused block.
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
+        self.slash_menu.set_inline(false);
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
-        self.slash_open_at = Some(caret);
-        self.slash_anchor_caret = Some((focused_idx, caret));
+        self.slash_open_at = None;
+        self.slash_anchor_caret = None;
     }
 
     #[doc(hidden)]
     pub fn slash_menu_handle_key_for_test(&mut self, event: &WindowEvent) -> bool {
         let consumed = self.slash_menu.handle_key(event);
-        if let Some(new_kind) = self.slash_menu.take_selection() {
-            self.commit_slash_selection(new_kind);
+        if let Some(command) = self.slash_menu.take_selection() {
+            self.commit_slash_selection(command);
         }
         if !self.slash_menu.is_visible() {
             self.slash_open_at = None;
@@ -7700,25 +7931,36 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.theme.tokens.colors.text_dim,
         1.5 * scale,
     );
-    let label = if alt.is_empty() { "Image" } else { alt };
+    // What the picture is (its description), and, once loading gave up,
+    // why it is not shown; never its storage address.
+    let label = if alt.is_empty() {
+        crate::i18n!("block-image-untitled")
+    } else {
+        alt.to_owned()
+    };
     ctx.text_renderer.draw_style(
         ctx.scene,
-        label,
+        &label,
         ctx.theme.tokens.colors.text_primary,
         ctx.transform
             .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 18.0 * scale).into()),
         Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
-        &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
+        &ctx.theme.text(TextRole::Body),
     );
-    ctx.text_renderer.draw_text(
-        ctx.scene,
-        destination,
-        13.0,
-        ctx.theme.tokens.colors.text_dim,
-        ctx.transform
-            .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
-        Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
-    );
+    if ctx
+        .image_store
+        .is_some_and(|store| store.failed(destination))
+    {
+        ctx.text_renderer.draw_style(
+            ctx.scene,
+            &crate::i18n!("block-image-missing"),
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform
+                .pre_translate((rect.x0 + 58.0 * scale, rect.y0 + 42.0 * scale).into()),
+            Some(f32_of_f64((rect.width() - 76.0 * scale).max(1.0))),
+            &ctx.theme.text(TextRole::Caption),
+        );
+    }
 }
 
 /// One block's prefix glyph (bullet/ordinal/checkbox/code bar/divider
@@ -9659,7 +9901,7 @@ impl Widget for BlockEditor {
             self.copied_code_feedback = None;
             self.copied_code_start = None;
         }
-        for (rect, start, end) in &self.code_copy_hits {
+        for (rect, start, _) in &self.code_copy_hits {
             let Some((line, inset, run)) = self.blocks.get(*start).map(|block| {
                 (
                     block.line.get_rect(),
@@ -9712,55 +9954,20 @@ impl Widget for BlockEditor {
             // The language label starts where the code does.
             let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
-            let active = !dragging_this_group
-                && !self.caret_paint_suppressed
-                && self.is_focused
-                && self
-                    .focused
-                    .is_some_and(|index| (*start..=*end).contains(&index));
-            let hint = crate::i18n!("block-editor-code-exit-hint");
-            let compact_hint = crate::i18n!("block-editor-code-exit-compact");
-            let (hint_width, _) = ctx.text_renderer.measure(&hint, 11.0, None);
-            let hint = if f64::from(hint_width) <= available {
-                &hint
-            } else {
-                &compact_hint
-            };
-            let (hint_width, _) = ctx.text_renderer.measure(hint, 11.0, None);
-            let (language_width, _) = ctx.text_renderer.measure(language, 11.0, None);
-            let show_language = !active
-                || f64::from(language_width + hint_width) + 20.0 * self.text_scale <= available;
-            if show_language {
-                let language = ctx
-                    .text_renderer
-                    .elide_to_width(language, 11.0, available as f32);
-                ctx.text_renderer.draw_text(
-                    ctx.scene,
-                    &language,
-                    11.0,
-                    ctx.theme.tokens.colors.text_dim,
-                    chrome_transform * Affine::translate((left, rect.y0 + 4.0 * self.text_scale)),
-                    None,
-                );
-            }
-            if active {
-                ctx.text_renderer.draw_text(
-                    ctx.scene,
-                    hint,
-                    11.0,
-                    ctx.theme.tokens.colors.text_dim,
-                    chrome_transform
-                        * Affine::translate((
-                            if show_language {
-                                rect.x0 - f64::from(hint_width) - 8.0 * self.text_scale
-                            } else {
-                                left
-                            },
-                            rect.y0 + 4.0 * self.text_scale,
-                        )),
-                    Some(available as f32),
-                );
-            }
+            // Only the language: how to leave a code block is in the
+            // shortcuts sheet and the header's tooltip, never permanent text.
+            let size = 11.0 * f32_of_f64(self.text_scale);
+            let language = ctx
+                .text_renderer
+                .elide_to_width(language, size, available as f32);
+            ctx.text_renderer.draw_text(
+                ctx.scene,
+                &language,
+                size,
+                ctx.theme.tokens.colors.text_dim,
+                chrome_transform * Affine::translate((left, rect.y0 + 4.0 * self.text_scale)),
+                None,
+            );
             if let Some(held) = held {
                 let chrome = std::mem::replace(ctx.scene, held);
                 paragraph_scene.append(&chrome, None);
@@ -9874,6 +10081,7 @@ impl Widget for BlockEditor {
         self.reveal_handles_for(event, ctx);
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
+        self.sync_slash_query();
         let scope = match typing {
             Some((index, count, id))
                 if self.blocks.len() == count
@@ -10053,7 +10261,7 @@ impl Widget for BlockEditor {
             .map(visible)
             .find(|rect| rect.contains(point))
         {
-            return Some((rect, crate::i18n!("block-editor-drag-hint")));
+            return Some((rect, crate::i18n!("block-editor-change-type")));
         }
         for (rect, start, _) in &self.code_copy_hits {
             let copy_rect = visible(*rect);
@@ -10070,12 +10278,6 @@ impl Widget for BlockEditor {
                         crate::i18n!("block-editor-copy-code-hint")
                     },
                 ));
-            }
-            if let Some(line) = self.blocks.get(*start).map(|block| block.line.get_rect()) {
-                let header = visible(Rect::new(line.x0, rect.y0, rect.x0, rect.y1));
-                if header.contains(point) {
-                    return Some((header, crate::i18n!("block-editor-code-keyboard-hint")));
-                }
             }
         }
         None
@@ -10194,7 +10396,7 @@ impl Widget for BlockEditor {
         if self.link_popover.is_visible() {
             return Widget::ime_cursor_rect(&self.link_popover);
         }
-        if self.slash_menu.is_visible() {
+        if self.slash_menu_has_field() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
         self.document_caret_rect()
@@ -10222,7 +10424,7 @@ impl Widget for BlockEditor {
                 b"link".as_slice(),
                 self.link_popover.ime_edit_fingerprint(key)?,
             )
-        } else if self.slash_menu.is_visible() {
+        } else if self.slash_menu_has_field() {
             (
                 b"slash".as_slice(),
                 self.slash_menu.ime_edit_fingerprint(key)?,
@@ -10273,7 +10475,7 @@ impl Widget for BlockEditor {
             && !self.read_only
             && !self.find_visible
             && !self.link_popover.is_visible()
-            && !self.slash_menu.is_visible()
+            && !self.slash_menu_has_field()
             && self.visual_formula_focus.is_none()
             && self.ime_cursor_rect().is_some()
             && self
@@ -11538,6 +11740,7 @@ impl BlockEditor {
         }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
+        self.slash_menu.set_inline(true);
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
         self.slash_open_at = Some(trigger_byte);

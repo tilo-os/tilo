@@ -17,18 +17,16 @@ fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
 }
 
 #[test]
-fn committed_slash_opens_filter_and_conversion_is_one_undo_step() {
+fn committed_slash_query_is_typed_into_the_note_and_conversion_is_one_undo_step() {
     let (mut app, page) = fixture();
     app.harness()
         .send(&WindowEvent::Ime(Ime::Commit("/".into())));
-    let before = app.read_document(|doc| read::page_blocks(doc, page));
-    assert_eq!(before[1].text, "/");
     app.harness()
         .send(&WindowEvent::Ime(Ime::Commit("quote".into())));
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)),
-        before,
-        "the filter owns committed query text"
+        before[1].text, "/quote",
+        "the query is in the note, where it was typed"
     );
     app.harness().key("Enter");
     let converted = app.read_document(|doc| read::page_blocks(doc, page));
@@ -93,7 +91,7 @@ fn code_keeps_committed_slash_literal_and_escape_keeps_prose_source() {
 }
 
 #[test]
-fn slash_replacing_local_selection_strips_only_the_trigger() {
+fn slash_replacing_local_selection_splits_at_the_trigger() {
     for committed in [false, true] {
         for reverse in [false, true] {
             let (mut app, page) = fixture();
@@ -118,19 +116,27 @@ fn slash_replacing_local_selection_strips_only_the_trigger() {
             assert_eq!(before[1].text, "Ä😀 /tail");
             app.harness()
                 .send(&WindowEvent::Ime(Ime::Commit("quote".into())));
+            let typed = app.read_document(|doc| read::page_blocks(doc, page));
             app.harness().key("Enter");
             let after = app.read_document(|doc| read::page_blocks(doc, page));
+            // Typed after text, the command keeps the text before it and
+            // starts a quote with what followed.
+            let shown: Vec<_> = after
+                .iter()
+                .map(|block| (block.kind.clone(), block.text.as_str()))
+                .collect();
             assert_eq!(
-                after[1].text, "Ä😀 tail",
+                shown,
+                [
+                    (ui::widget::BlockKind::Paragraph, "Before"),
+                    (ui::widget::BlockKind::Paragraph, "Ä😀"),
+                    (ui::widget::BlockKind::Quote, "tail"),
+                ],
                 "committed={committed}, reverse={reverse}"
             );
-            assert_eq!(after[1].kind, ui::widget::BlockKind::Quote);
             assert_eq!(after[1].id, before[1].id);
             assert!(app.undo());
-            assert_eq!(
-                app.read_document(|doc| read::page_blocks(doc, page)),
-                before
-            );
+            assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), typed);
             assert!(app.redo());
             assert_eq!(app.read_document(|doc| read::page_blocks(doc, page)), after);
         }

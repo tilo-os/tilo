@@ -259,6 +259,8 @@ close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 
+block-image-untitled = Picture
+block-image-missing = Not on this device yet
 notes-image-edit = Edit image
 notes-image-done = Done
 notes-image-source = Image description and destination
@@ -267,7 +269,7 @@ table-edit-visual = Edit table
 table-add-row = Add row
 table-add-column = Add column
 
-block-editor-drag-hint = Click for block type · Drag to move · Alt+↑/↓
+block-editor-empty = Write something…
 block-editor-find-placeholder = Find in note
 block-editor-find-no-results = No results
 block-editor-find-previous = Previous match
@@ -276,10 +278,7 @@ block-editor-find-close = Close find
 block-editor-change-type = Change block type
 block-editor-copy-code-hint = Copy code
 
-block-editor-code-exit-hint = Ctrl+Enter to leave code
-block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
-block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
 widget-breadcrumb = Path
 
 widget-filepicker-cancel = Cancel
@@ -436,7 +435,6 @@ day-tomorrow = Tomorrow
 history-day-this-week = This week
 history-day-earlier = Earlier
 
-save-status-saving = Saving…
 save-status-stalled = Couldn't save yet. Retrying…
 save-status-not-saved = Not saved
 save-status-not-saved-detail = Your changes are still here.
@@ -486,6 +484,28 @@ block-callout-tip = Tip
 block-callout-important = Important
 block-callout-warning = Warning
 block-callout-caution = Caution
+
+slash-menu-name = Block types
+slash-menu-filter = Filter blocks…
+slash-paragraph = Paragraph
+slash-heading-1 = Heading 1
+slash-heading-2 = Heading 2
+slash-heading-3 = Heading 3
+slash-bullet = Bullet list
+slash-numbered = Numbered list
+slash-checklist = Checklist
+slash-page = Sub-note
+slash-link-page = Link to note
+slash-image = Image
+slash-quote = Quote
+slash-code = Code block
+slash-table = Table
+slash-tex = TeX formula
+slash-typst = Typst formula
+slash-divider = Divider
+link-popover-name = Link notes
+link-popover-filter = Find a note…
+filter-menu-no-matches = No matches
 
 dictation-record-once = Record once
 dictation-finish = Finish

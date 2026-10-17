@@ -652,6 +652,17 @@ impl ImageStore {
         slots.slots.len() != before
     }
 
+    /// Whether the last load of `url` failed: its bytes are not here, or
+    /// do not decode.
+    pub fn failed(&self, url: &str) -> bool {
+        self.shared.slots.lock().is_ok_and(|slots| {
+            slots
+                .slots
+                .get(url)
+                .is_some_and(|entry| matches!(entry.slot, Slot::Failed))
+        })
+    }
+
     /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
     pub fn is_known(&self, url: &str) -> bool {
         // Same poisoned-lock degrade as `get`: unknown is the safe answer.
