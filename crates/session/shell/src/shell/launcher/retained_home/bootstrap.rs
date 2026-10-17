@@ -16,7 +16,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{MetadataExt, OpenOptionsExt},
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
             net::UnixStream,
         },
     },
@@ -56,9 +56,7 @@ pub(super) fn start(
     shell.check_current_image()?;
     let helper = ProtectedProgram::open(Path::new(HELPER))?;
     let pkexec = ProtectedProgram::open(Path::new(PKEXEC))?;
-    let scratch = tempfile::Builder::new()
-        .prefix("tilo-retained-launch-")
-        .tempdir_in(super::super::runtime_dir())?;
+    let scratch = private_scratch_in(&super::super::runtime_dir())?;
     let pin = PrivateDirectory::open(scratch.path())?;
     let (channel, listener) = request_rendezvous::Rendezvous::create(scratch.path(), pin.clone())?;
     let request = serde_json::to_vec(&serde_json::json!({
@@ -578,6 +576,16 @@ struct DirectoryEdge {
     name: Option<std::ffi::OsString>,
     identity: std::fs::Metadata,
 }
+/// A fresh directory only its owner may enter, for the launch request and
+/// its socket. A temporary directory otherwise takes the process umask
+/// (commonly 0755), which the request rendezvous rightly refuses as public.
+fn private_scratch_in(parent: &Path) -> io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("tilo-retained-launch-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)
+}
+
 struct PrivateDirectory {
     root: DirectoryEdge,
     edges: Vec<DirectoryEdge>,
@@ -818,11 +826,10 @@ impl AdmittedRootHelper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn held_request_uses_original_atomic_publication_and_refuses_replacement() {
-        let scratch = tempfile::tempdir().expect("private request parent");
+        let scratch = private_scratch_in(&std::env::temp_dir()).expect("private request parent");
         let pin = PrivateDirectory::open(scratch.path()).expect("held real ancestry");
         let (channel, listener) =
             request_rendezvous::Rendezvous::create(scratch.path(), pin.clone())
@@ -890,6 +897,9 @@ mod tests {
             .expect("real protected installed ELF");
         assert!(program.check_current_image().is_err());
         let scratch = tempfile::tempdir().expect("untrusted executable directory");
+        // Writable by anyone, so untrusted whoever runs the test, root too.
+        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o777))
+            .expect("untrusted mode");
         let forged = scratch.path().join("shell");
         std::fs::write(&forged, b"\x7fELFfake").expect("wrong executable");
         std::fs::set_permissions(&forged, std::fs::Permissions::from_mode(0o755))
