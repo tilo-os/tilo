@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use ui::shared_selection::SharedSelection;
+use vello::kurbo::Rect;
 
 use super::i18n::t_args;
 
@@ -35,6 +36,18 @@ const AGENT_START_POLL: Duration = Duration::from_millis(250);
 /// Characters of the selection the composer shows above its editor.
 const CONTEXT_CHARS: usize = 160;
 
+/// Where a selection an app reported in its window's coordinates (`bounds`,
+/// as the shell protocol carries them) is on the desktop, given where that
+/// `window` is: clipped to the window, so an app cannot steer the composer
+/// anywhere else. `None` when either is unknown, malformed or nothing of
+/// the selection is in view.
+pub(crate) fn desktop_area(bounds: Option<[f64; 4]>, window: Option<Rect>) -> Option<Rect> {
+    let local = ui::floating_surface::protocol_rect(bounds?).ok()?;
+    let window = window?;
+    let area = (local + window.origin().to_vec2()).intersect(window);
+    (area.width() > 0.0 && area.height() > 0.0).then_some(area)
+}
+
 /// What the composer is asked about: the focused app, and what was
 /// selected in it (nothing, when nothing was).
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +55,9 @@ pub(crate) struct SelectionSeed {
     pub app_id: String,
     pub app_label: String,
     pub selection: Option<SharedSelection>,
+    /// Where the selection is drawn on the desktop, when the app said: the
+    /// composer keeps clear of all of it.
+    pub area: Option<Rect>,
 }
 
 impl SelectionSeed {
@@ -69,7 +85,15 @@ impl SelectionSeed {
             app_id: app_id.into(),
             app_label: app_label.into(),
             selection,
+            area: None,
         }
+    }
+
+    /// This seed's selection drawn at `area` on the desktop.
+    #[must_use]
+    pub(crate) fn drawn_at(mut self, area: Option<Rect>) -> Self {
+        self.area = area;
+        self
     }
 
     /// The `subject_json` argument of `desktop:tasks/queue`: what the
@@ -328,6 +352,33 @@ impl SelectionRequests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selection_s_window_bounds_land_on_the_desktop_inside_its_window() {
+        let window = Rect::new(250.0, 80.0, 920.0, 790.0);
+        assert_eq!(
+            desktop_area(Some([110.0, 160.0, 560.0, 300.0]), Some(window)),
+            Some(Rect::new(360.0, 240.0, 810.0, 380.0))
+        );
+        // Clipped to the window: an app cannot steer the composer elsewhere.
+        assert_eq!(
+            desktop_area(Some([-500.0, 600.0, 2000.0, 9000.0]), Some(window)),
+            Some(Rect::new(250.0, 680.0, 920.0, 790.0))
+        );
+        for (bounds, window) in [
+            (None, Some(window)),
+            (Some([0.0, 0.0, 10.0, 10.0]), None),
+            (Some([10.0, 10.0, 0.0, 0.0]), Some(window)),
+            (Some([f64::NAN, 0.0, 10.0, 10.0]), Some(window)),
+            (Some([2000.0, 2000.0, 2100.0, 2100.0]), Some(window)),
+        ] {
+            assert_eq!(
+                desktop_area(bounds, window),
+                None,
+                "{bounds:?} in {window:?}"
+            );
+        }
+    }
     use tilo_actions::{ActionResource, SelectionPlace};
 
     fn writer_selection() -> SharedSelection {

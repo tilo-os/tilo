@@ -7,7 +7,6 @@ import android.graphics.Rect;
 import android.icu.text.BreakIterator;
 import android.os.Build;
 import android.text.Editable;
-import android.text.InputType;
 import android.text.Selection;
 import android.view.KeyEvent;
 import android.view.View;
@@ -36,8 +35,6 @@ import android.view.inputmethod.InputMethodManager;
  * reaches the input method with the next connection.
  */
 public final class TiloTextInput extends View {
-    private static final int PURPOSE_PASSWORD = 1;
-    private static final int PURPOSE_TERMINAL = 2;
 
     private static volatile TiloTextInput sInstance;
 
@@ -45,7 +42,10 @@ public final class TiloTextInput extends View {
     /** The caret in window pixels, as the toolkit last reported it. */
     private final Rect mCaret = new Rect();
     private boolean mEnabled;
-    private int mPurpose;
+    // The field's EditorInfo.inputType and extra imeOptions, which the
+    // toolkit derives from the field's purpose and hints.
+    private int mInputType;
+    private int mImeOptions;
     /** The field's text around its selection, in UTF-16 offsets. */
     private String mSurrounding = "";
     private int mSurroundingAnchor;
@@ -83,7 +83,8 @@ public final class TiloTextInput extends View {
 
     static void update(
             final boolean enabled,
-            final int purpose,
+            final int inputType,
+            final int imeOptions,
             final int x,
             final int y,
             final int width,
@@ -103,7 +104,7 @@ public final class TiloTextInput extends View {
                 view.mSurrounding = surrounding;
                 view.mSurroundingAnchor = Math.max(0, Math.min(anchor, length));
                 view.mSurroundingFocus = Math.max(0, Math.min(focus, length));
-                view.apply(enabled, purpose, x, y, width, height, restart);
+                view.apply(enabled, inputType, imeOptions, x, y, width, height, restart);
             }
         });
     }
@@ -125,10 +126,19 @@ public final class TiloTextInput extends View {
     }
 
     private void apply(
-            boolean enabled, int purpose, int x, int y, int width, int height, boolean restart) {
-        boolean changed = enabled != mEnabled || purpose != mPurpose;
+            boolean enabled,
+            int inputType,
+            int imeOptions,
+            int x,
+            int y,
+            int width,
+            int height,
+            boolean restart) {
+        boolean changed =
+                enabled != mEnabled || inputType != mInputType || imeOptions != mImeOptions;
         mEnabled = enabled;
-        mPurpose = purpose;
+        mInputType = inputType;
+        mImeOptions = imeOptions;
         mCaret.set(x, y, x + width, y + height);
         if (enabled) {
             if (!isFocused()) {
@@ -184,24 +194,9 @@ public final class TiloTextInput extends View {
         }
         info.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN
                 | EditorInfo.IME_FLAG_NO_EXTRACT_UI
-                | EditorInfo.IME_ACTION_NONE;
-        switch (mPurpose) {
-            case PURPOSE_PASSWORD:
-                info.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
-                info.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
-                break;
-            case PURPOSE_TERMINAL:
-                info.inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                        | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
-                break;
-            default:
-                info.inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
-                break;
-        }
+                | EditorInfo.IME_ACTION_NONE
+                | mImeOptions;
+        info.inputType = mInputType;
         mConnection = new Connection(mSurrounding, mSurroundingAnchor, mSurroundingFocus);
         info.initialSelStart = Selection.getSelectionStart(mConnection.getEditable());
         info.initialSelEnd = Selection.getSelectionEnd(mConnection.getEditable());

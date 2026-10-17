@@ -296,6 +296,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "anyhow",
+ "blake3",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -12972,6 +12973,7 @@ dependencies = [
  "anyhow",
  "des",
  "iroh-base",
+ "neighbour-wire",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -14726,6 +14728,7 @@ dependencies = [
  "notes",
  "notify",
  "os-actions",
+ "osk",
  "p256 0.14.0",
  "package-store",
  "parking_lot",
@@ -19229,6 +19232,16 @@ dependencies = [
  "rten",
  "rten-tensor",
  "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-session-record"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "tempfile",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

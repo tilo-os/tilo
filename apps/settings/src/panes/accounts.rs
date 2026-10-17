@@ -59,7 +59,9 @@ pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use runtime_fs::cloud::CloudRequest;
 use vault_lane::Step;
+// Drives the FUSE-backed cloud service, which exists only on Linux.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod cloud_import_acceptance;
 #[cfg(test)]
 mod signin_tests;

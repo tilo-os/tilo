@@ -153,13 +153,11 @@ impl FindBar {
     }
 
     /// Re-run the current query after the document changed.
-    #[cfg(test)]
     pub(crate) fn refresh(&mut self, host: &mut dyn FindHost) -> FindEffect {
         if !self.open {
             return FindEffect::None;
         }
-        let query = self.bar.query().to_owned();
-        self.bar.set_query(&query);
+        self.bar.refresh();
         self.drive(host)
     }
 
@@ -177,9 +175,7 @@ impl FindBar {
             self.close();
             return FindEffect::None;
         }
-        if self.index >= self.matches.len() {
-            self.index = 0;
-        }
+        self.index = self.index.min(self.matches.len().saturating_sub(1));
         match revealed {
             Some(index) if index < self.matches.len() => {
                 self.index = index;
@@ -205,8 +201,8 @@ impl FindBar {
         Widget::ime_cursor_rect(&self.bar)
     }
 
-    pub(crate) fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.bar)
+    pub(crate) fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        Widget::ime_content(&self.bar)
     }
 
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -251,39 +247,9 @@ fn find_in(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindM
     if options.mode == ui::widget::FindMode::Regex {
         return find_pattern(blocks, query, options);
     }
-    let mut found = Vec::new();
-    let needle: Vec<char> = if options.match_case {
-        query.chars().collect()
-    } else {
-        query.to_lowercase().chars().collect()
-    };
-    if needle.is_empty() {
-        return found;
-    }
-    for block in blocks {
-        let raw: Vec<char> = block.text.chars().collect();
-        let haystack: Vec<char> = if options.match_case {
-            raw.clone()
-        } else {
-            block.text.to_lowercase().chars().collect()
-        };
-        if needle.len() > haystack.len() {
-            continue;
-        }
-        let mut start = 0;
-        while start + needle.len() <= haystack.len() {
-            let end = start + needle.len();
-            if haystack.get(start..end) == Some(&needle[..])
-                && (!options.whole_word || is_word_match(&raw, start, end))
-            {
-                found.push((block.id.clone(), start, end));
-                start = end;
-            } else {
-                start += 1;
-            }
-        }
-    }
-    found
+    // Match against the original text: lowercasing can expand a character
+    // (for example İ), so offsets in a folded copy are not document offsets.
+    find_pattern(blocks, &regex::escape(query), options)
 }
 
 /// Every match of the regular expression `query` in the paragraphs, in
@@ -305,13 +271,24 @@ fn find_pattern(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<
                 .get(..byte)
                 .map_or(0, |head| head.chars().count())
         };
-        for hit in pattern.find_iter(&block.text) {
-            if hit.is_empty() {
-                continue;
-            }
+        let mut cursor = 0;
+        while let Some(hit) = pattern.find_at(&block.text, cursor) {
             let (start, end) = (char_at(hit.start()), char_at(hit.end()));
-            if !options.whole_word || is_word_match(&chars, start, end) {
+            let accepted =
+                !hit.is_empty() && (!options.whole_word || is_word_match(&chars, start, end));
+            if accepted {
                 found.push((block.id.clone(), start, end));
+            }
+            if hit.is_empty() || (!accepted && options.mode != ui::widget::FindMode::Regex) {
+                // A rejected literal must not consume a later overlapping
+                // candidate. Advance one original Unicode scalar, not one byte.
+                let Some(next) = block.text.get(hit.start()..).and_then(|s| s.chars().next())
+                else {
+                    break;
+                };
+                cursor = hit.start() + next.len_utf8();
+            } else {
+                cursor = hit.end();
             }
         }
     }
@@ -374,6 +351,38 @@ mod tests {
             find_in(&blocks, "(", pattern).is_empty(),
             "a pattern that does not compile finds nothing"
         );
+    }
+
+    #[test]
+    fn literal_whole_word_reconsiders_overlapping_candidates_after_boundary_rejection() {
+        let options = FindOptions {
+            whole_word: true,
+            ..FindOptions::default()
+        };
+        for (text, query, expected) in [
+            ("xfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+            ("İfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+            ("xéé-éé-éé", "éé-éé", vec![(4, 9)]),
+            ("🙂 xfoo-foo-foo", "foo-foo", vec![(7, 14)]),
+            ("foo-foo-foo", "foo-foo", vec![(0, 7)]),
+            ("xfoo-foo", "foo-foo", vec![]),
+        ] {
+            let blocks = [block("p1", text)];
+            let mut host = Blocks(&blocks);
+            let mut matches = Vec::new();
+            let mut finder = Finder {
+                host: &mut host,
+                matches: &mut matches,
+                revealed: None,
+            };
+            let hits = finder.find(query, options);
+            assert_eq!(hits.len(), expected.len(), "{text}");
+            assert_eq!(
+                matches.iter().map(|(_, s, e)| (*s, *e)).collect::<Vec<_>>(),
+                expected,
+                "{text}"
+            );
+        }
     }
 
     /// Opening with a seed finds and selects the first match; closing drops

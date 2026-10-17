@@ -311,7 +311,11 @@ impl Outgoing {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        valid_outbox_id(&self.id) && self.account.contains('@') && !self.draft.to.trim().is_empty()
+        valid_outbox_id(&self.id)
+            && self.account.contains('@')
+            && [&self.draft.to, &self.draft.cc, &self.draft.bcc]
+                .into_iter()
+                .any(|field| !crate::transport::parse_addr_list(field).is_empty())
     }
 }
 

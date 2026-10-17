@@ -658,6 +658,8 @@ pub struct PdfApp {
     /// A transient one-line status (e.g. "Saved to …"), shown as a toast until
     /// the next document action.
     status_note: Option<String>,
+    /// The last copied region, whose outcome can arrive after its note.
+    region_copy: ui::CopyWatch,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
     portal_save_rx: Option<PortalChannel>,
     /// The open or save effect waiting on a picker, the PDF owner or the
@@ -1130,6 +1132,7 @@ impl PdfApp {
             shift_down: false,
             source_path: None,
             status_note: None,
+            region_copy: ui::CopyWatch::default(),
             portal_save_rx: None,
             portal_action: None,
             last_mouse: Point::ZERO,
@@ -2537,7 +2540,9 @@ impl PdfApp {
         let Some((width, height, rgba)) = render::crop_page_region(&image, pgw, pgh, rect) else {
             return false;
         };
-        let copied = ui::clipboard_copy_image(width, height, &rgba);
+        let copied = self
+            .region_copy
+            .watch(ui::clipboard_copy_image(width, height, &rgba));
         self.status_note = Some(if copied {
             format!("Copied a {width}×{height} image region")
         } else {
@@ -4478,6 +4483,10 @@ include!("app_events.rs");
 
 impl Widget for PdfApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.region_copy.failed() {
+            self.status_note = Some("Selected a region (clipboard unavailable)".to_string());
+            self.dirty = true;
+        }
         let (state, _) = ui::doc::document_ref(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
@@ -5332,9 +5341,9 @@ impl Widget for PdfApp {
             .flatten()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.search_active
-            .then(|| ui::widget::Widget::ime_purpose(&self.find_bar))
+            .then(|| ui::widget::Widget::ime_content(&self.find_bar))
             .flatten()
     }
 

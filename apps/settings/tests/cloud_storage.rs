@@ -18,22 +18,32 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::Read as _;
-use std::path::Path;
 use std::sync::Arc;
 
-use account_custody::icloud::WebICloud;
-use account_custody::{Custodian, OAuthCloud, Registration};
-use cloud_source::StaticCredential;
-use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig};
+use account_custody::{OAuthCloud, Registration};
 use settings::accounts::{AccountKind, AccountRoot};
 use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
 use tilo_oauth::fake::FakeAuthorizationServer;
 
+// Mounting drives the FUSE-backed cloud service, which exists only on Linux:
+// the four mount journeys and their fixtures are Linux-only, while the
+// Settings-only paste-code journey stays portable.
+#[cfg(target_os = "linux")]
+use {
+    account_custody::Custodian,
+    account_custody::icloud::WebICloud,
+    cloud_source::StaticCredential,
+    fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig},
+    std::io::Read as _,
+    std::path::Path,
+};
+
+#[cfg(target_os = "linux")]
 /// Plays the system browser, following redirects back to the loopback
 /// listener.
 struct Browser;
 
+#[cfg(target_os = "linux")]
 impl BrowserOpener for Browser {
     fn open(&self, url: &str) -> ui::portal::LaunchChannel {
         let url = url.to_string();
@@ -58,6 +68,7 @@ impl BrowserOpener for Recorder {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// One provider's fakes and how the person signs in to it.
 struct Case {
     kind: AccountKind,
@@ -70,6 +81,7 @@ struct Case {
     _servers: Box<dyn std::any::Any>,
 }
 
+#[cfg(target_os = "linux")]
 /// The fake authorization server, this app's registration with it, and the
 /// storage configuration pointing at the provider's fake.
 struct OAuthFake {
@@ -78,6 +90,7 @@ struct OAuthFake {
     storage: serde_json::Value,
 }
 
+#[cfg(target_os = "linux")]
 fn oauth_case(
     kind: AccountKind,
     cloud: OAuthCloud,
@@ -104,6 +117,7 @@ fn oauth_case(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn google_drive(root: &AccountRoot) -> Case {
     let drive = cloud_source_gdrive::fake::FakeDrive::start();
     drive.put_file(&drive.root_id(), "hello.txt", b"from Google Drive");
@@ -130,6 +144,7 @@ fn google_drive(root: &AccountRoot) -> Case {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn onedrive(root: &AccountRoot) -> Case {
     let graph = cloud_source_onedrive::fake::FakeGraph::personal();
     graph.put("hello.txt", b"from OneDrive");
@@ -151,6 +166,7 @@ fn onedrive(root: &AccountRoot) -> Case {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn dropbox(root: &AccountRoot) -> Case {
     let dropbox = cloud_source_dropbox::fake::FakeDropbox::team();
     dropbox.put("/hello.txt", b"from Dropbox");
@@ -185,6 +201,7 @@ fn dropbox(root: &AccountRoot) -> Case {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn icloud(root: &AccountRoot) -> Case {
     use cloud_source_icloud::fake::{APPLE_ID, DEVICE_CODE, FakeICloud, PASSWORD};
     let fake = FakeICloud::start();
@@ -205,6 +222,7 @@ fn command(pane: &mut AccountsPane, command: AccountViewCommand) {
     let _ = pane.poll();
 }
 
+#[cfg(target_os = "linux")]
 /// Connect the account through the Settings pane, as the controls do.
 fn sign_in(case: &Case, pane: &mut AccountsPane) {
     command(pane, AccountViewCommand::Add(case.kind));
@@ -237,6 +255,7 @@ fn sign_in(case: &Case, pane: &mut AccountsPane) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn read_all(volume: &CloudVolume, path: &str) -> Vec<u8> {
     let ino = volume.resolve(path).unwrap();
     let size = volume.getattr(ino).unwrap().size;
@@ -245,6 +264,7 @@ fn read_all(volume: &CloudVolume, path: &str) -> Vec<u8> {
         .unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn write_file(volume: &CloudVolume, name: &str, bytes: &[u8]) {
     let root = volume.resolve("").unwrap();
     let (_, fh) = volume.create(root, name).unwrap();
@@ -252,6 +272,7 @@ fn write_file(volume: &CloudVolume, name: &str, bytes: &[u8]) {
     volume.release(fh).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 /// What another device sees on the server: the file read through a fresh
 /// connection with the account's stored configuration.
 fn on_server(
@@ -277,6 +298,7 @@ fn on_server(
     bytes
 }
 
+#[cfg(target_os = "linux")]
 fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     let home = tempfile::tempdir().unwrap();
     let mut pane = AccountsPane::in_root(root.clone())
@@ -377,24 +399,28 @@ fn scratch() -> (tempfile::TempDir, std::path::PathBuf, AccountRoot) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn google_drive_signs_in_mounts_writes_and_unmounts() {
     let (_dir, root_dir, root) = scratch();
     run(&google_drive(&root), &root_dir, &root);
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn onedrive_signs_in_mounts_writes_and_unmounts() {
     let (_dir, root_dir, root) = scratch();
     run(&onedrive(&root), &root_dir, &root);
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn dropbox_signs_in_mounts_writes_and_unmounts() {
     let (_dir, root_dir, root) = scratch();
     run(&dropbox(&root), &root_dir, &root);
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn icloud_drive_signs_in_mounts_writes_and_unmounts() {
     let (_dir, root_dir, root) = scratch();
     run(&icloud(&root), &root_dir, &root);

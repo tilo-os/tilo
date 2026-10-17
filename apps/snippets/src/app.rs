@@ -567,6 +567,11 @@ impl Core {
         let Some(title) = self.library.get(id).map(|s| s.title.clone()) else {
             return;
         };
+        // The copy has no uses yet: leave Most used so it can open instead
+        // of silently keeping the original in the editor.
+        if self.selection == Selection::Smart(SmartFolder::MostUsed) {
+            self.select(Selection::default());
+        }
         // The copy is no favorite, so Favorites does not list it: there
         // the open snippet stays.
         if self.selection != Selection::Smart(SmartFolder::Favorites) {
@@ -1238,15 +1243,15 @@ impl ui::widget::Decorator for SnippetsApp {
         }
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         let core = self.core.borrow();
         if let Some(modal) = &core.expand {
-            modal.ime_purpose()
+            modal.ime_content()
         } else if core.body.control().is_focused() {
-            core.body.control().ime_purpose()
+            core.body.control().ime_content()
         } else {
             drop(core);
-            Widget::ime_purpose(&self.shell)
+            Widget::ime_content(&self.shell)
         }
     }
 

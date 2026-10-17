@@ -7,7 +7,7 @@
 //! paints or takes input.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, SMALL_GLYPH_PX, Scene,
-    TextRenderer, TextRole, Theme, TopBarChrome, at, bar_selector_body, t, t_args,
+    TextRenderer, TextRole, Theme, TopBarChrome, at, paint_bar_selector, t, t_args,
 };
 use crate::chrome::StripPlaces;
 use crate::text_entry::{self, Edit, Mods};
@@ -15,7 +15,6 @@ use tilo_desktop_model::{DesktopTree, StripId};
 use ui::text_render::TextStyle;
 use ui::text_selection::Selection;
 use ui::widget::{ControlSize, FieldFace, TextInput, Widget};
-use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
 /// Longest strip name the bar accepts, in characters.
@@ -279,8 +278,6 @@ impl TopBarChrome {
             center_y + BAR_CONTROL_PX / 2.0,
         );
         let radius = ui::chrome::ChromeRole::Selector.radius(theme, group.height());
-        let rest = bar_selector_body(theme, ui::chrome::SelectionState::active(false));
-        ui::chrome::shell::paint_glass_body(scene, transform, group, radius, theme, &rest, 1.0);
         let mut x = x0;
         let strips = self.strips.strips.clone();
         for (((id, name), width), shown) in strips.iter().zip(&widths).zip(&shown) {
@@ -348,18 +345,13 @@ impl TopBarChrome {
     ) {
         let colors = &theme.tokens.colors;
         if active {
-            let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            let shape = RoundedRect::from_rect(chip, radius);
-            scene.fill(Fill::NonZero, transform, body.fill, None, &shape);
-            if let Some(edge) = body.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    edge,
-                    None,
-                    &shape,
-                );
-            }
+            paint_bar_selector(
+                scene,
+                transform,
+                &RoundedRect::from_rect(chip, radius),
+                ui::chrome::SelectionState::active(true),
+                theme,
+            );
         }
         let style = Self::strip_text_style(theme);
         let pad = f64::from(theme.tokens.spacing.s3);

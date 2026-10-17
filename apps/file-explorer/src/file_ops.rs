@@ -242,6 +242,7 @@ fn move_into(
 /// Pack `paths` into a new zip archive called `name`, or a free name like
 /// it, in `folder`.
 fn compress(paths: &[String], folder: &Path, name: &str) -> Result<Change, String> {
+    let name = fileops::leaf_name(name)?;
     let archive = fileops::unique_destination(folder, name)?;
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     crate::archive::create_zip(&paths, &archive)
@@ -281,6 +282,7 @@ fn write_file(
     if !folder.is_dir() {
         return Err(format!("{} is not a folder", folder.display()));
     }
+    let name = fileops::leaf_name(name)?;
     let bytes = crate::documents::bytes_for(name, content)?;
     let path = folder.join(name);
     match std::fs::symlink_metadata(&path) {
@@ -365,7 +367,12 @@ fn compensate(change: &Change) -> Result<Change, String> {
                         .ok_or_else(|| format!("{} has no name", from.display()))?;
                     fileops::rename(Path::new(to), &name.to_string_lossy())?
                 }
-                (Some(origin), _) => fileops::move_into(Path::new(to), origin)?,
+                (Some(origin), _) => {
+                    let name = from
+                        .file_name()
+                        .ok_or_else(|| format!("{} has no name", from.display()))?;
+                    fileops::move_into_named(Path::new(to), origin, name)?
+                }
                 (None, _) => return Err(format!("{} has no folder", from.display())),
             };
             Ok(Change::Moved {
@@ -560,6 +567,41 @@ mod tests {
         assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
     }
 
+    #[test]
+    fn undo_move_restores_original_name_after_destination_collision() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("report.txt");
+        let destination = root.path().join("archive");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(&source, b"moved report").unwrap();
+        std::fs::write(destination.join("report.txt"), b"existing report").unwrap();
+        let moved = execute(
+            &FileOp::Move {
+                paths: vec![text(&source)],
+                folder: text(&destination),
+                create: false,
+            },
+            None,
+        );
+        done(&moved);
+        let suffixed = destination.join("report 2.txt");
+        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+        let revert = FileOp::Revert { op: "move".into() };
+        let undone = execute(&revert, Some(done(&moved)));
+        done(&undone);
+        assert_eq!(std::fs::read(&source).unwrap(), b"moved report");
+        assert!(!root.path().join("report 2.txt").exists());
+        assert!(!suffixed.exists());
+        let redone = execute(&revert, Some(done(&undone)));
+        done(&redone);
+        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination.join("report.txt")).unwrap(),
+            b"existing report"
+        );
+    }
+
     /// A move stops at the first failure and records what it moved before.
     #[test]
     fn a_failed_operation_records_what_it_did() {
@@ -585,6 +627,52 @@ mod tests {
             Some(outcome.result().as_slice()),
         ));
         assert!(root.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn write_and_compress_reject_names_that_address_other_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("chosen");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(folder.join("nested")).unwrap();
+        let source = folder.join("source.txt");
+        std::fs::write(&source, b"source").unwrap();
+        for name in [
+            "../escaped.txt".to_owned(),
+            "nested/escaped.txt".to_owned(),
+            text(&root.path().join("absolute.txt")),
+            ".".to_owned(),
+            "..".to_owned(),
+        ] {
+            let write = execute(
+                &FileOp::Write {
+                    folder: text(&folder),
+                    name: name.clone(),
+                    text: "new contents".into(),
+                    replace: false,
+                },
+                None,
+            );
+            assert!(!write.is_done(), "write accepted {name}: {write:?}");
+            assert!(write.result().is_empty());
+            let compressed = execute(
+                &FileOp::Compress {
+                    paths: vec![text(&source)],
+                    folder: text(&folder),
+                    name: name.clone(),
+                },
+                None,
+            );
+            assert!(
+                !compressed.is_done(),
+                "compress accepted {name}: {compressed:?}"
+            );
+            assert!(compressed.result().is_empty());
+        }
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(folder.join("nested")).unwrap().count(), 0);
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
     }
 
     /// Writing and compressing each record the new file, and

@@ -10034,6 +10034,120 @@ fn clip_rect_of(app: &VideoEditorApp, id: ClipId) -> Rect {
 }
 
 #[test]
+fn linked_track_locks_refuse_keyboard_and_pointer_group_edits() {
+    for gesture in [
+        "i", "o", "s", "delete", "nudge", "trim-in", "trim-out", "move",
+    ] {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        let track = app.project.clip(aid).expect("sound").track;
+        app.toggle_track_lock(track);
+        settle(&mut app, &mut doc);
+        assert!(load(&doc).track_locked(track));
+        let before = load(&doc);
+        app.playhead = app.project.clip(vid).expect("picture").start + 1.5;
+        app.scroll = (app.project.clip(vid).expect("picture").start - 2.0).max(0.0);
+        match gesture {
+            "delete" => dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete)),
+            "nudge" => dispatch(&mut app, &mut doc, named_ev(NamedKey::ArrowRight)),
+            "trim-in" | "trim-out" | "move" => {
+                let cr = clip_rect_of(&app, vid);
+                let x = match gesture {
+                    "trim-in" => cr.x0 + 3.0,
+                    "trim-out" => cr.x1 - 3.0,
+                    _ => cr.center().x,
+                };
+                let point = Point::new(x, cr.center().y);
+                assert!(app.regions().lanes.contains(point));
+                assert_eq!(
+                    app.clip_at(&app.regions(), point).map(|(id, _)| id),
+                    Some(vid)
+                );
+                click(&mut app, &mut doc, x, cr.center().y);
+                assert!(
+                    app.drag.is_none(),
+                    "{gesture} must not start a partial drag"
+                );
+                move_to(&mut app, &mut doc, x + 45.0, cr.center().y);
+                assert_eq!(
+                    app.project, before,
+                    "{gesture} must not preview a partial edit"
+                );
+                release(&mut app, &mut doc);
+            }
+            key => assert!(key_press(&mut app, &mut doc, key, false)),
+        }
+        assert_eq!(app.project, before, "{gesture} changed the local project");
+        assert_eq!(load(&doc), before, "{gesture} changed the shared project");
+    }
+}
+
+#[test]
+fn linked_trim_events_work_after_unlocking_or_unlinking() {
+    for unlink in [false, true] {
+        for gesture in ["i", "o", "trim-in", "trim-out"] {
+            let (mut app, mut doc) = app_with_linked_shot();
+            let vid = app.selected().expect("picture");
+            let aid = app.project.link_partners(vid)[0];
+            let track = app.project.clip(aid).expect("sound").track;
+            app.toggle_track_lock(track);
+            settle(&mut app, &mut doc);
+            app.toggle_track_lock(track);
+            if unlink {
+                app.unlink_selected();
+                app.toggle_track_lock(track);
+            }
+            settle(&mut app, &mut doc);
+            let before = load(&doc);
+            app.playhead = app.project.clip(vid).expect("picture").start + 1.5;
+            app.scroll = (app.project.clip(vid).expect("picture").start - 2.0).max(0.0);
+            if gesture.starts_with("trim-") {
+                let cr = clip_rect_of(&app, vid);
+                let x = if gesture == "trim-in" {
+                    cr.x0 + 3.0
+                } else {
+                    cr.x1 - 3.0
+                };
+                click(&mut app, &mut doc, x, cr.center().y);
+                assert!(matches!(
+                    app.drag,
+                    Some(Drag::TrimIn { .. } | Drag::TrimOut { .. })
+                ));
+                move_to(
+                    &mut app,
+                    &mut doc,
+                    x + if gesture == "trim-in" { 45.0 } else { -45.0 },
+                    cr.center().y,
+                );
+                release(&mut app, &mut doc);
+            } else {
+                assert!(key_press(&mut app, &mut doc, gesture, false));
+            }
+            let after = load(&doc);
+            assert_ne!(
+                after.clip(vid),
+                before.clip(vid),
+                "{gesture} must trim picture"
+            );
+            if unlink {
+                assert_eq!(
+                    after.clip(aid),
+                    before.clip(aid),
+                    "locked unlinked sound stays put"
+                );
+            } else {
+                assert_ne!(
+                    after.clip(aid),
+                    before.clip(aid),
+                    "{gesture} must trim sound too"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"

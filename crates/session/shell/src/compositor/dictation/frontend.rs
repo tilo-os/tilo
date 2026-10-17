@@ -145,8 +145,7 @@ mod tests {
                 proxy,
                 surface: DictationSurface::default(),
                 field: FieldRequest {
-                    purpose: winit::window::ImePurpose::Normal,
-                    multiline: false,
+                    content: ui::ime::InputContent::TEXT,
                     x: 420,
                     y: 100,
                     width: 1,

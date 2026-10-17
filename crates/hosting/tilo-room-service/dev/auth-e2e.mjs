@@ -31,6 +31,15 @@
 //   bound-invite   the same with an invitation the door issued for someone
 //                  else who has not used it yet: refused when redeemed,
 //                  nothing kept
+//   revoked-device a guest's own root revokes the device of their open page
+//                  (the relay's revocations, as `tilo-relay admin revoke`
+//                  writes them): the page says this browser was removed from
+//                  the person's devices, with one button, which opens their
+//                  own desktop; it joins nothing and never asks to certify
+//   forgotten-guest a guest's page stays open while the host is set up again
+//                  (below): it joins the new host through its door by itself,
+//                  once, as the same person under the same name, and the
+//                  desktop presents, with no card asked of the person
 //   host-reset     the host is set up again (run.py --fresh: a new root,
 //                  relay and room) while the first person's browser keeps
 //                  what it had for the old one; the bare entry joins the new
@@ -56,9 +65,11 @@
 //                  joins, and the moderator removes them through the
 //                  desktop's own door (the room's remove-member action,
 //                  confirmed). The removed person's
-//                  page makes no join while open; reloaded, it is refused,
-//                  saying they may have been removed, with no desktop and at
-//                  most one join, which the door turns away
+//                  page, refused by the host, joins again through the door by
+//                  itself (or, should the host not end its session, is
+//                  reloaded): it is refused, saying they were removed, with
+//                  no desktop, one button to their own desktop, and at most
+//                  one join, which the door turns away
 //   removed-entry  the removed person opens the bare entry: refused, saying
 //                  they were removed and that an invitation brings them back,
 //                  with no desktop, one join the door turns away, and the
@@ -243,7 +254,10 @@ const FETCHES = `(() => {
     try {
       const response = await original.call(this, input, init);
       const entry = {url, method, status: response.status};
-      if (method === 'POST' && new URL(url).pathname.endsWith('/join')) entry.body = await response.clone().text().catch(() => null);
+      if (method === 'POST' && new URL(url).pathname.endsWith('/join')) {
+        entry.body = await response.clone().text().catch(() => null);
+        entry.request = typeof init?.body === 'string' ? init.body : null;
+      }
       tell(entry);
       return response;
     } catch (error) {
@@ -353,6 +367,9 @@ async function keptFor(browser, context, web, profile) {
  * it first sees on a pass is pruned two passes on), and a margin. */
 export const PRUNE_AFTER_MINS = 1;
 export const PRUNE_WAIT_MS = (2 * PRUNE_AFTER_MINS * 60 + 30) * 1000;
+/** How long a removed person's open page is given to be refused by the host
+ * and join again by itself before the check reloads it. */
+export const REMOVED_REFUSED_MS = 4 * 60 * 1000;
 
 /** The expression a moderator's page evaluates to remove `person` from `room`
  * through the desktop's door: the room's own `remove-member` action,
@@ -381,6 +398,89 @@ async function removeMember(tab, room, person) {
   }
   return answer;
 }
+
+const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+const PERMUTATION = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+
+/** BLAKE3 of one chunk (at most 1024 bytes), what the identity crate hashes
+ * a revocation's preimage with: Node has no BLAKE3 of its own. */
+export function blake3(input) {
+  if (input.length > 1024) throw new RangeError('one chunk at most');
+  const rotr = (x, n) => ((x >>> n) | (x << (32 - n))) >>> 0;
+  const g = (s, a, b, c, d, x, y) => {
+    s[a] = (s[a] + s[b] + x) >>> 0; s[d] = rotr(s[d] ^ s[a], 16);
+    s[c] = (s[c] + s[d]) >>> 0; s[b] = rotr(s[b] ^ s[c], 12);
+    s[a] = (s[a] + s[b] + y) >>> 0; s[d] = rotr(s[d] ^ s[a], 8);
+    s[c] = (s[c] + s[d]) >>> 0; s[b] = rotr(s[b] ^ s[c], 7);
+  };
+  let cv = IV.slice();
+  const blocks = Math.max(1, Math.ceil(input.length / 64));
+  for (let index = 0; index < blocks; index++) {
+    const block = new Uint8Array(64);
+    const bytes = input.subarray(index * 64, index * 64 + 64);
+    block.set(bytes);
+    let m = Array.from({length: 16}, (_, i) => new DataView(block.buffer).getUint32(i * 4, true));
+    const flags = (index === 0 ? 1 : 0) | (index === blocks - 1 ? 2 | 8 : 0);
+    const s = [...cv, IV[0], IV[1], IV[2], IV[3], 0, 0, bytes.length, flags];
+    for (let round = 0; round < 7; round++) {
+      g(s, 0, 4, 8, 12, m[0], m[1]); g(s, 1, 5, 9, 13, m[2], m[3]);
+      g(s, 2, 6, 10, 14, m[4], m[5]); g(s, 3, 7, 11, 15, m[6], m[7]);
+      g(s, 0, 5, 10, 15, m[8], m[9]); g(s, 1, 6, 11, 12, m[10], m[11]);
+      g(s, 2, 7, 8, 13, m[12], m[13]); g(s, 3, 4, 9, 14, m[14], m[15]);
+      m = PERMUTATION.map(i => m[i]);
+    }
+    cv = cv.map((_, i) => (s[i] ^ s[i + 8]) >>> 0);
+  }
+  const out = new Uint8Array(32);
+  cv.forEach((word, i) => new DataView(out.buffer).setUint32(i * 4, word, true));
+  return out;
+}
+
+const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
+/** `RevocationReason::Stolen`, by its variant index. */
+const STOLEN = 1;
+
+/** What a root signs to revoke `device` (hex), its own device, since the
+ * epoch's first nanosecond: `tilo_user_identity::revocation_signing_digest`,
+ * BLAKE3 of the domain tag and the entry's postcard encoding. */
+export function revocationDigest(user, device) {
+  const tag = new TextEncoder().encode('tilo-revocation-v1\0');
+  return blake3(Uint8Array.from([...tag, ...unhex(user), ...unhex(device), 1, STOLEN]));
+}
+
+/** The relay's `revocations.json` entry for that revocation, with the root's
+ * `signature` (hex). */
+export function revocationEntry(user, device, signature) {
+  return {user_public_key: [...unhex(user)], revoked_device_public_key: [...unhex(device)], revoked_at_ns: 1,
+    reason: 'Stolen', signature: [...unhex(signature)]};
+}
+
+/** The device key (hex) of the page's own certificate for `profile`, from
+ * the namespace its peer is in now (`KEPT_ROWS`). */
+export function currentDevice({rows, devices}, profile) {
+  const current = devices[profile] ?? PROFILE_DEVICE;
+  for (const row of rows) {
+    if (row.device !== current || !row.certificate) continue;
+    try { return hexKey(JSON.parse(row.certificate).cert.device_public_key); } catch { /* Not a certificate. */ }
+  }
+  return null;
+}
+
+/** The expression a page evaluates to sign `digest` (hex) with this
+ * browser's person: their root, as `browserIdentity` keeps it. */
+const SIGN_AS_PERSON = digest => `(async () => {
+  const module = performance.getEntriesByType('resource').map(entry => entry.name).find(name => name.endsWith('/root-identity.mjs'));
+  const {browserIdentity} = await import(module);
+  const person = await browserIdentity({create: false});
+  const bytes = Uint8Array.from(${JSON.stringify(digest)}.match(/../g), byte => parseInt(byte, 16));
+  return Array.from(new Uint8Array(await person.sign(bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+})()`;
+
+/** What the page's refusal card shows: `{text, buttons}`, or `null`. */
+const shownCard = tab => tab.evaluate(`(() => {
+  const card = document.querySelector('.tilo-entry-card');
+  return card ? {text: card.querySelector('p')?.textContent ?? '', buttons: [...card.querySelectorAll('button')].map(b => b.textContent)} : null;
+})()`).catch(() => null);
 
 /** Whether the page shows an entry card (an offer waiting for the person). */
 const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
@@ -543,13 +643,82 @@ async function main() {
       .then(response => (response.ok ? response.json() : null)).catch(() => null);
     await redeemElsewhere('bound-invite', issued);
 
+    // revoked-device: a guest's own root revokes the device of their open page.
+    const revoker = await browser.context();
+    const revokedTab = await page(browser, revoker);
+    const revokedOpened = await open(revokedTab, `${web}/`, settleOptions);
+    const revokedPerson = revokedOpened.membership?.userPublicKey ?? null;
+    let revocation = {written: false};
+    if (revokedOpened.entry === 'open' && revokedPerson) {
+      try {
+        const revokedProfile = `tilo-identity:${revokedPerson}@${host}`;
+        const device = currentDevice(await revokedTab.evaluate(KEPT_ROWS(revokedProfile)), revokedProfile);
+        const digest = Buffer.from(revocationDigest(revokedPerson, device)).toString('hex');
+        const signature = await revokedTab.evaluate(SIGN_AS_PERSON(digest));
+        // The room's relay (its state root under the room's relay directory)
+        // reads its revocations again when the file changes.
+        writeFileSync(join(options.scratch, 'state/rooms/auth/relay/relay/revocations.json'),
+          `${JSON.stringify([revocationEntry(revokedPerson, device, signature)], null, 2)}\n`);
+        revocation = {written: true, device};
+      } catch (error) {
+        revocation = {written: false, error: error.message};
+      }
+    }
+    const sinceRevocation = revokedTab.requests.length;
+    const refusal = revocation.written
+      ? await revokedTab.waitFor('document.documentElement.dataset.refusal ?? null', {timeout}).catch(() => null) : null;
+    const revokedCard = await shownCard(revokedTab);
+    await shoot('revoked-device', revokedTab);
+    keepLog('revoked-device', revokedTab);
+    await leaving(revokedTab);
+    const ownPressed = revokedCard ? await press(revokedTab, 'Open your own desktop', timeout).catch(() => false) : false;
+    const ownDesktop = ownPressed ? await settle(revokedTab, settleOptions) : null;
+    check('revoked-device', revocation.written && refusal === 'device-revoked'
+      && /removed from your devices/.test(revokedCard?.text ?? '') && !/certif/i.test(revokedCard?.text ?? '')
+      && revokedCard?.buttons?.length === 1 && joinsTo(revokedTab.requests.slice(sinceRevocation), api).length === 0
+      && ownDesktop?.entry === 'open' && ownDesktop.hash.startsWith('#/me'),
+    {opened: revokedOpened.entry, revocation, refusal, card: revokedCard,
+      joins: joinsTo(revokedTab.requests.slice(sinceRevocation), api).length, own: ownDesktop && {entry: ownDesktop.entry, hash: ownDesktop.hash}});
+    await revokedTab.close();
+
+    // A guest whose page stays open while the host is set up again below.
+    const forgetting = await browser.context();
+    const forgotten = await page(browser, forgetting);
+    const forgottenOpened = await open(forgotten, `${web}/`, settleOptions);
+    const nameOf = join => { try { return JSON.parse(join?.request ?? 'null')?.displayName ?? null; } catch { return null; } };
+    const forgottenName = nameOf(joinsTo(forgotten.requests, api)[0]);
+
     // What the person's browser kept for the host before it is set up again.
     const profile = `tilo-identity:${me}@${host}`;
     const keptBefore = await keptFor(browser, person, web, profile);
 
     // A new root, relay and room behind the same origin.
+    await leaving(forgotten);
+    const sinceReset = forgotten.requests.length;
     await stack.stop();
     stack = await startStack(options, ports, {fresh: true});
+    // forgotten-guest: the open page joins the new host by itself.
+    const connecting = await forgotten.waitFor(`(() => {
+      const arrival = document.documentElement.dataset.arrival;
+      return !globalThis.__authE2eLeft && arrival && arrival !== 'done' ? arrival : null;
+    })()`, {timeout, interval: 50}).catch(() => null);
+    if (connecting) await shoot('forgotten-guest-connecting', forgotten);
+    const forgottenBack = await settle(forgotten, settleOptions);
+    const forgottenAsked = await offering(forgotten);
+    await shoot('forgotten-guest-rejoined', forgotten);
+    keepLog('forgotten-guest', forgotten);
+    const rejoins = joinsTo(forgotten.requests.slice(sinceReset), api);
+    check('forgotten-guest', forgottenOpened.entry === 'open' && forgottenBack.entry === 'open'
+      && forgottenBack.arrival === 'done' && rejoins.length === 1 && rejoins[0].status === 200 && !forgottenAsked
+      && /^[0-9a-f]{64}$/.test(forgottenOpened.membership?.userPublicKey ?? '')
+      && forgottenBack.membership?.userPublicKey === forgottenOpened.membership.userPublicKey
+      && forgottenBack.membership?.room === stack.room && Boolean(forgottenName) && nameOf(rejoins[0]) === forgottenName,
+    {opened: forgottenOpened.entry, connecting, entry: forgottenBack.entry, arrival: forgottenBack.arrival,
+      joins: rejoins.map(j => j.status), asked: forgottenAsked, before: forgottenOpened.membership, after: forgottenBack.membership,
+      room: stack.room, names: [forgottenName, nameOf(rejoins[0])], status: forgottenBack.status});
+    await forgotten.close();
+
+
     // host-reset: the bare entry joins the new host, asking nothing.
     const reset = await page(browser, person);
     await reset.navigate(`${web}/`);
@@ -628,24 +797,30 @@ async function main() {
     if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
     const removal = moderating.entry === 'open' && /^[0-9a-f]{64}$/.test(guestKey ?? '') && guestKey !== me
       ? await removeMember(moderator, stack.room, guestKey) : {ok: false, error: 'no moderator and guest to remove'};
-    // Their page, left open, makes no join of its own; reloaded, it is refused.
+    // Their page, left open, is refused by the host once it narrows whom it
+    // admits, and joins again through the door by itself, which turns it
+    // away; one the host has not refused by then is reloaded instead (and
+    // may have joined meanwhile).
     const sinceRemoval = guest.requests.length;
-    await sleep(10_000);
-    const leftOpen = joinsTo(guest.requests.slice(sinceRemoval), api).length;
-    const removedOpened = await reload(guest, settleOptions);
+    await leaving(guest);
+    let removedOpened = await settle(guest, {...settleOptions, timeout: REMOVED_REFUSED_MS});
+    const byItself = removedOpened.entry !== 'not loaded';
+    if (!byItself) removedOpened = await reload(guest, settleOptions);
+    const removedOwn = await guest.evaluate("getComputedStyle(document.getElementById('arrival-own')).display !== 'none'").catch(() => false);
+    await shoot('removed-member', guest);
     keepLog('removed-member', guest);
     const removedJoins = joinsTo(guest.requests.slice(sinceRemoval), api);
     check('removed-member', moderating.entry === 'open' && moderating.membership?.userPublicKey === me
       && guestOpened.entry === 'open' && guestJoins.length === 1 && guestJoins[0].status === 200 && removal.ok
-      && leftOpen === 0 && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done'
-      && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= 1 && removedJoins.every(j => j.status === 403),
+      && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done' && removedOwn
+      && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= (byItself ? 1 : 2)
+      && removedJoins.every(j => j.status === 403),
     {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
       guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
-        userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, leftOpen,
+        userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, byItself, ownDesktop: removedOwn,
       entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
       joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,
       hash: removedOpened.hash});
-    if (removedOpened.entry !== 'refused') await shoot('removed-member', guest);
     await guest.close();
 
     // removed-entry: the bare entry, where the host's door is asked.

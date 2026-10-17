@@ -61,6 +61,157 @@ fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
 }
 
 #[test]
+fn recurring_fold_import_materializes_next_wall_interval_on_the_timeline() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:timeline-fold@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new();
+    app.model = replica.state().unwrap();
+    let next = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let spans = app.timeline_spans(&[next]);
+    assert_eq!(spans.len(), 1);
+    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+    let days = [next];
+    let rendered = app.timeline_render_events(&days);
+    assert_eq!(rendered.len(), 1);
+    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
+}
+
+#[test]
+fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:drag-fold@example.com\r\nSUMMARY:Fold drag\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new_detached();
+    app.model = replica.state().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+    let id = app.model.events[0].id;
+    app.show_calendar();
+    app.view = View::Day;
+    app.anchor = day;
+    let mut h = Harness::mount(app, 1200, 1900);
+    h.relayout();
+    let spans = h.app.timeline_spans(&[day]);
+    assert_eq!((spans[0].start_min, spans[0].end_min), (165, 230));
+    let days = [day];
+    let rendered = h.app.timeline_render_events(&days);
+    assert_eq!((rendered[0].start_min, rendered[0].end_min), (165, 230));
+    assert_eq!(
+        rendered[0].clock_end_min, 170,
+        "label retains 02:50, not 03:50"
+    );
+    let area = h.app.view_rect();
+    let g = h.app.timeline.test_layout_geometry(area);
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 230);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    // Move within the repeated hour: the end must still choose the later fold.
+    h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let event = saved.event(id).unwrap();
+    assert_eq!(
+        event.start,
+        day.and_hms_opt(2, 30, 0).unwrap(),
+        "status={:?}, selection={:?}, dispatched={:?}",
+        h.app.status,
+        h.app.selection,
+        h.app.last_dispatched()
+    );
+    assert_eq!(event.end, day.and_hms_opt(2, 35, 0).unwrap());
+    assert!(event.end_later_fold);
+    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(event.timezone, "Europe/Berlin");
+    assert_eq!(event.recurrence, Recurrence::Weekly);
+    // Then leave the fold, retaining the elapsed interval through persistence.
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let event = saved.event(id).unwrap();
+    assert_eq!(event.start, day.and_hms_opt(4, 30, 0).unwrap());
+    assert_eq!(event.end, day.and_hms_opt(5, 35, 0).unwrap());
+    assert!(!event.end_later_fold);
+    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(event.timezone, "Europe/Berlin");
+    assert!(h.app.last_dispatched().is_some());
+}
+
+#[test]
+fn fold_conflicts_are_presented_after_opening_the_event() {
+    let source = concat!(
+        "BEGIN:VCALENDAR\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-a@example.com\r\nSUMMARY:First fold meeting\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261018T025000\r\nDURATION:PT30M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-b@example.com\r\nSUMMARY:Overlapping fold meeting\r\n",
+        "RECURRENCE-ID;TZID=Europe/Berlin:20261025T025000\r\n",
+        "DTSTART;TZID=Europe/Berlin:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-c@example.com\r\nSUMMARY:Touching endpoint\r\n",
+        "DTSTART:20261025T011500Z\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-d@example.com\r\nSUMMARY:Other timezone overlap\r\n",
+        "DTSTART:20261025T005500Z\r\nDURATION:PT10M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-e@example.com\r\nSUMMARY:Floating overlap\r\n",
+        "DTSTART:20261025T025000\r\nDURATION:PT30M\r\nEND:VEVENT\r\n",
+        "BEGIN:VEVENT\r\nUID:fold-f@example.com\r\nSUMMARY:All day overlap\r\n",
+        "DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026\r\nEND:VEVENT\r\n",
+        "END:VCALENDAR\r\n",
+    );
+    let mut replica = ui::tilo_resource::Replica::<Calendar>::new();
+    replica
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let mut app = CalendarApp::new();
+    app.model = replica.state().unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+    let id = app
+        .model
+        .events
+        .iter()
+        .find(|e| e.title == "First fold meeting")
+        .unwrap()
+        .id;
+    app.show_calendar();
+    app.view = View::Day;
+    app.anchor = day;
+    let mut h = Harness::mount(app, 1200, 1900);
+    h.relayout();
+    let area = h.app.view_rect();
+    let g = TimelineInteraction::test_geometry(area);
+    let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
+    // Above the 02:50 event, so this gesture opens the first meeting.
+    h.click(Point::new(block.center().x, block.y0 + 1.0));
+    h.mouse_button(ElementState::Released);
+    h.relayout();
+    assert_eq!(h.app.selection, Some(Sel::Event(id)));
+    assert!(h.app.detail_open);
+    assert!(h.app.form.conflict.area() > 0.0);
+    let semantics = h.app.accessibility().unwrap();
+    let warning = semantics
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .find(|name| name.starts_with("Schedule conflict:"))
+        .unwrap();
+    for title in [
+        "Overlapping fold meeting",
+        "Other timezone overlap",
+        "All day overlap",
+    ] {
+        assert!(warning.contains(title), "missing {title}: {warning}");
+    }
+    // Floating comparisons deliberately remain in the authored wall domain:
+    // the first meeting ends at 02:15, so it does not overlap floating 02:50.
+    assert!(!warning.contains("Floating overlap"));
+    assert!(!warning.contains("Touching endpoint"));
+}
+
+#[test]
 fn readonly_sync_observes_pending_actions_without_committing_document() {
     let mut app = CalendarApp::new_demo();
     let mut doc = demo_document(&app);

@@ -244,6 +244,24 @@ mod tests {
         (root_sk, entry)
     }
 
+    /// What a root signs to revoke a device is fixed: hosts and the browser
+    /// end-to-end check (`tilo-room-service/dev/auth-e2e.mjs`, which signs
+    /// one with a page's root) compute the same digest.
+    #[test]
+    fn the_revocation_digest_is_pinned() {
+        let entry = RevocationEntry {
+            user_public_key: [1; 32],
+            revoked_device_public_key: [2; 32],
+            revoked_at_ns: 1,
+            reason: RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        assert_eq!(
+            hex::encode(revocation_signing_digest(&entry).unwrap()),
+            "51d3fa67bb622325b1fd36a8930f6ed801df50f5814546dab3c6f522e5bcca5a"
+        );
+    }
+
     /// Revocations sign and verify; a tampered device key or reason fails; a wrong root fails the
     /// pre-sign guard.
     #[test]

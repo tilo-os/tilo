@@ -16,7 +16,9 @@ use ui::theme::{
     ThemeShape, ThemeType,
 };
 use ui::tilo_resource::{Path, Refusal};
-use ui::tokens::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
+use ui::tokens::{
+    Emphasis, InkLadder, Palette, SelectorFinish, StatusTones, StripMaterial, SurfaceLadder, Tone,
+};
 
 /// OKLCH lightness of every surface, `0` black to `1` white.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
@@ -175,6 +177,16 @@ pub struct Theme {
     pub blur: f64,
     /// Tint opacity
     pub tint_opacity: f64,
+    /// The window tab strip is made of the blurred material rather than
+    /// a solid ground.
+    pub frosted_strip: bool,
+    /// How far down an active tab its lit rim reaches, as a share of its
+    /// height.
+    pub rim_span: f64,
+    /// Lit rim opacity
+    pub rim_alpha: f64,
+    /// Hover opacity
+    pub hover_alpha: f64,
 }
 
 impl Theme {
@@ -218,6 +230,10 @@ impl Theme {
             motion: f64::from(document.motion.character),
             blur: f64::from(document.material.blur),
             tint_opacity: f64::from(document.material.tint_opacity),
+            frosted_strip: document.material.selector.strip == StripMaterial::Floating,
+            rim_span: f64::from(document.material.selector.rim_span),
+            rim_alpha: f64::from(document.material.selector.rim_alpha),
+            hover_alpha: f64::from(document.material.selector.hover_alpha),
         }
     }
 
@@ -283,6 +299,16 @@ impl Theme {
             material: ThemeMaterial {
                 blur: narrow(self.blur),
                 tint_opacity: narrow(self.tint_opacity),
+                selector: SelectorFinish {
+                    strip: if self.frosted_strip {
+                        StripMaterial::Floating
+                    } else {
+                        StripMaterial::Opaque
+                    },
+                    rim_span: narrow(self.rim_span),
+                    rim_alpha: narrow(self.rim_alpha),
+                    hover_alpha: narrow(self.hover_alpha),
+                },
             },
         }
     }
@@ -316,6 +342,9 @@ impl Theme {
             self.motion,
             self.blur,
             self.tint_opacity,
+            self.rim_span,
+            self.rim_alpha,
+            self.hover_alpha,
         ];
         if numbers
             .into_iter()

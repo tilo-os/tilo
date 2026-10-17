@@ -433,19 +433,39 @@ impl<C: Widget> Popover<C> {
         if let Some(avoid) = self.avoid
             && chosen.0.intersect(avoid).area() > 0.0
         {
-            for candidate_side in [Some(self.side.opposite()), self.fallback_side]
-                .into_iter()
-                .flatten()
+            // The opposite side, then the fallback axis both ways (below,
+            // then above): the first that fits and covers nothing protected.
+            // When none does, whichever covers least of it.
+            let mut least = (chosen.0.intersect(avoid).area(), chosen);
+            let mut clear = false;
+            for candidate_side in [
+                Some(self.side.opposite()),
+                self.fallback_side,
+                self.fallback_side.map(PopoverSide::opposite),
+            ]
+            .into_iter()
+            .flatten()
             {
                 let (candidate, resolved) = place(candidate_side);
                 let candidate = confine(candidate);
                 let contained = w <= viewport.width()
                     && h <= viewport.height()
                     && viewport.contains_rect(candidate);
-                if contained && candidate.intersect(avoid).area() == 0.0 {
+                if !contained {
+                    continue;
+                }
+                let covered = candidate.intersect(avoid).area();
+                if covered == 0.0 {
                     chosen = (candidate, resolved);
+                    clear = true;
                     break;
                 }
+                if covered < least.0 {
+                    least = (covered, (candidate, resolved));
+                }
+            }
+            if !clear {
+                chosen = least.1;
             }
         }
         self.rect = chosen.0;
@@ -766,8 +786,8 @@ impl Widget for PopoverPrompt {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.input)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Widget::ime_content(&self.input)
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1553,5 +1573,59 @@ mod protected_placement_tests {
             assert_eq!(panel.rect().intersect(protected).area(), 0.0);
             assert_eq!(panel.resolved_side(), PopoverSide::Left);
         }
+    }
+
+    /// A panel protected from a wide block of text low in the viewport:
+    /// neither side nor below has room, so it goes above the block.
+    #[test]
+    fn a_protected_panel_tries_the_fallback_axis_both_ways() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let block = Rect::new(40.0, 420.0, 760.0, 560.0);
+        let theme = Theme::dark();
+        let mut panel = Popover::new()
+            .with_items(["Message", "Queue task", "Steer current task"])
+            .anchored(block)
+            .side(PopoverSide::Right)
+            .fallback_side(PopoverSide::Below)
+            .with_viewport(viewport)
+            .confined_to_viewport()
+            .open(true);
+        panel.set_avoid(Some(block));
+        panel.place(&mut TextRenderer::new(), &theme);
+        assert_eq!(
+            panel.rect().intersect(block).area(),
+            0.0,
+            "{:?}",
+            panel.rect()
+        );
+        assert_eq!(panel.resolved_side(), PopoverSide::Above);
+    }
+
+    /// With no room clear of the protected text anywhere, the panel covers
+    /// as little of it as it can rather than sitting on its preferred side.
+    #[test]
+    fn a_protected_panel_without_clear_room_covers_the_least() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // Text over the whole height and all but a narrow column at the right.
+        let block = Rect::new(0.0, 0.0, 700.0, 600.0);
+        let theme = Theme::dark();
+        let mut panel = Popover::new()
+            .with_items(["Message", "Queue task", "Steer current task"])
+            .anchored(block)
+            .side(PopoverSide::Below)
+            .fallback_side(PopoverSide::Right)
+            .with_viewport(viewport)
+            .confined_to_viewport()
+            .open(true);
+        panel.set_avoid(Some(block));
+        panel.place(&mut TextRenderer::new(), &theme);
+        let rect = panel.rect();
+        let covered = rect.intersect(block).area();
+        assert!(covered > 0.0, "nowhere is clear: {rect:?}");
+        assert!(
+            covered < rect.area(),
+            "the panel uses the free column beside the text: {rect:?}"
+        );
+        assert_eq!(panel.resolved_side(), PopoverSide::Right);
     }
 }

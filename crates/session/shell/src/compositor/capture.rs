@@ -738,7 +738,10 @@ impl CaptureExecutor {
                         export.width as usize,
                         export.height as usize,
                         &export.rgba,
-                    ) {
+                    )
+                    .outcome()
+                        == Some(true)
+                    {
                         Some(CaptureOutcome::Copied {
                             width: export.width,
                             height: export.height,
@@ -1519,7 +1522,9 @@ impl CaptureExecutor {
             "there is no saved screenshot to copy",
             |_, frame_builder, decoded| {
                 let copied = decoded.and_then(|(_, (width, height, rgba))| {
-                    if !ui::clipboard_copy_image(width as usize, height as usize, &rgba) {
+                    if ui::clipboard_copy_image(width as usize, height as usize, &rgba).outcome()
+                        != Some(true)
+                    {
                         return Err("the clipboard refused image data".to_string());
                     }
                     frame_builder.set_capture_screenshot_finished(
@@ -1576,7 +1581,9 @@ impl CaptureExecutor {
         let preview = capture_preview(&rgba, width, height);
         match intent.destination {
             CaptureDestination::Clipboard => {
-                let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
+                let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                    .outcome()
+                    == Some(true);
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
                     play_shutter(frame_builder);
@@ -1651,7 +1658,9 @@ impl CaptureExecutor {
                     // refuses the pixels leaves it in place, so it is logged
                     // rather than failing the capture.
                     if also_copy
-                        && !ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                        && ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                            .outcome()
+                            != Some(true)
                     {
                         tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                     }

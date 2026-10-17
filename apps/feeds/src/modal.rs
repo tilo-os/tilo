@@ -212,8 +212,8 @@ impl Widget for ModalBody {
             .and_then(|input| input.ime_cursor_rect())
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.input.as_ref().and_then(|input| input.ime_purpose())
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        self.input.as_ref().and_then(|input| input.ime_content())
     }
 
     fn name(&self) -> &'static str {

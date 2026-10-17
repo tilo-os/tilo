@@ -1442,6 +1442,40 @@ mod tests {
         );
     }
 
+    /// The app said where the selected paragraph is drawn, in a window as
+    /// wide as the screen and reaching its bottom: no room beside it or
+    /// below, so the composer opens above the paragraph and covers none of
+    /// it.
+    #[test]
+    fn the_composer_opens_above_a_selected_paragraph_with_no_room_beside_or_below() {
+        let mut composer = AgentQuickComposer::default();
+        let paragraph = Rect::new(8.0, 470.0, 1272.0, 790.0);
+        composer.open(
+            owner("tide"),
+            "Tide",
+            AgentQuickComposerOrigin {
+                marker: paragraph,
+                protected: paragraph,
+                context: String::new(),
+            },
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        Widget::build_layout(&mut composer, &mut taffy, &theme, &mut nodes);
+        composer.popover.place(&mut text, &theme);
+        let rect = composer.popover.rect();
+        assert!(rect.area() > 0.0);
+        assert_eq!(
+            rect.intersect(paragraph).area(),
+            0.0,
+            "{rect:?} covers {paragraph:?}"
+        );
+        assert!(rect.y1 <= paragraph.y0, "above the paragraph: {rect:?}");
+    }
+
     #[test]
     fn a_composer_opened_on_a_selection_carries_it_with_the_request() {
         use super::super::selection_agent::SelectionSeed;

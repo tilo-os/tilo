@@ -38,7 +38,7 @@ mod native_editing_tests {
             .fill(0);
         producer.send(&frame)?;
         let deadline = Instant::now() + Duration::from_secs(2);
-        while widget.ime_purpose() != Some(winit::window::ImePurpose::Normal) {
+        while widget.ime_content() != Some(ui::ime::InputContent::TEXT) {
             if Instant::now() >= deadline {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
@@ -63,10 +63,7 @@ mod native_editing_tests {
         );
         assert!(widget.start_deferred_text().is_some());
         widget.try_write_input(b"typed").unwrap();
-        assert_eq!(
-            widget.ime_purpose(),
-            Some(winit::window::ImePurpose::Terminal)
-        );
+        assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
         let mut packet = [0; editor::FRAME_BYTES];
         let size = producer.receive(&mut packet).unwrap();
         assert_eq!(size, editor::HEADER_BYTES);
@@ -137,7 +134,7 @@ mod native_editing_tests {
             .context_menu
             .set_items(vec![MenuItem::action("Copy", || {})]);
         widget.context_menu.open_at([0.0, 0.0]);
-        assert_eq!(widget.ime_purpose(), None);
+        assert_eq!(widget.ime_content(), None);
         assert!(widget.start_deferred_text().is_none());
         assert!(matches!(
             widget.commit_deferred_text("must not move").unwrap().poll(),

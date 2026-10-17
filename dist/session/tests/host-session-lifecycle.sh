@@ -5,6 +5,8 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 . "$repo_root/tools/desktop-isolation.sh"
+. "$repo_root/dist/session/tests/build-flight-recorder.sh"
+tilo_flight_recorder_build "$repo_root"
 tilo_test_isolate "$@"
 work=$(mktemp -d)
 cleanup() {
@@ -78,7 +80,7 @@ cat >"$work/loginctl" <<'SH'
 printf 'loginctl %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
 exit 0
 SH
-cp "$repo_root/dist/session/tilo-flight-recorder.py" "$work/tilo-flight-recorder"
+cp "$TILO_FLIGHT_RECORDER" "$work/tilo-flight-recorder"
 chmod 0755 "$work/systemctl" "$work/systemd-cat" "$work/loginctl" \
     "$work/dbus-update-activation-environment" "$work/shell" "$work/tilo-flight-recorder"
 tilo_stage_script "$repo_root/dist/session/tilo-session-runner" "$work/tilo-session" \

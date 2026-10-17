@@ -27,7 +27,6 @@
 , harfbuzz
 , fuse3
 , gst_all_1
-, python3
 }:
 
 let
@@ -69,10 +68,13 @@ rustPlatform.buildRustPackage rec {
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
+    "-p" "tilo-session-record"
     "-p" "shell"
     "-p" "imager"
     "--bin" "tilo-launcher"
     "--bin" "tilo-unlock-helper"
+    "--bin" "tilo-flight-recorder"
+    "--bin" "tilo-session-report"
     "--bin" "shell"
     "--bin" "imager"
     "--no-default-features"
@@ -94,8 +96,6 @@ rustPlatform.buildRustPackage rec {
     libxkbcommon wayland seatd libinput systemd libdrm libgbm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
-    # tilo-flight-recorder: fixup rewrites its /usr/bin/python3 shebang.
-    python3
   ];
   # Bindgen executes on the build machine even when the package's host
   # platform is ARM, so it must load the build-platform libclang.

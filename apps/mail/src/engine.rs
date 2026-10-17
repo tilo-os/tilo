@@ -1069,6 +1069,39 @@ pub mod live {
         sent.map(drop)
     }
 
+    #[test]
+    fn blind_recipients_remain_in_the_delivery_envelope() {
+        let account = AccountConfig {
+            email: "sender@example.test".into(),
+            ..Default::default()
+        };
+        for to in ["", "visible@example.test"] {
+            let draft = Draft {
+                to: to.into(),
+                cc: if to.is_empty() {
+                    String::new()
+                } else {
+                    "\"Copy, Person\" <copy@example.test>; other@example.test".into()
+                },
+                bcc: "Hidden Person <hidden@example.test>".into(),
+                ..Default::default()
+            };
+            let envelope = build_envelope(&account, &draft).unwrap();
+            let recipients: Vec<_> = envelope.to().iter().map(ToString::to_string).collect();
+            let expected = if to.is_empty() {
+                vec!["hidden@example.test"]
+            } else {
+                vec![
+                    "visible@example.test",
+                    "copy@example.test",
+                    "other@example.test",
+                    "hidden@example.test",
+                ]
+            };
+            assert_eq!(recipients, expected);
+        }
+    }
+
     /// Construct the SMTP envelope (return-path + recipients) from the account
     /// and draft. Recipients that don't parse as addresses are skipped.
     fn build_envelope(

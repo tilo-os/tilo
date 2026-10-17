@@ -983,6 +983,7 @@ impl MouseKeyboardPane {
             catalog: SourceCatalog::ready(self.catalog.clone(), self.catalog_error.clone()),
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
+            following: RefCell::new(std::rc::Weak::new()),
             editor: self.editor.clone(),
             osk_always: false,
             document: self.cx.storage().settings_document().clone(),

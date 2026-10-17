@@ -3012,10 +3012,8 @@ impl VideoEditorApp {
         }
     }
 
-    /// Write the locally changed members of `id`'s link group together. The
-    /// baseline map is the authoritative changed-member set: a locked follower
-    /// is intentionally not edited, so it must not abandon editable members
-    /// merely because it has no local before snapshot.
+    /// Write the locally changed members of `id`'s link group together.
+    /// Only members with a captured baseline belong to this gesture.
     fn dispatch_clip_linked(&mut self, id: ClipId) {
         let group: Vec<_> = self
             .project
@@ -3061,9 +3059,17 @@ impl VideoEditorApp {
     /// delete, ripple-delete and duplicate all read the selection through here
     /// rather than growing a parallel "…and the linked one" branch each, which
     /// is how the picture and the sound would end up following different
-    /// rules. A clip whose track is locked is filtered out here too, so a link
-    /// cannot be used to route an edit around a lock.
+    /// rules. Refuse the whole gesture if a selected group contains a locked
+    /// clip: filtering that member would separate the picture and sound.
     fn edit_targets(&self) -> Vec<ClipId> {
+        if self
+            .selection
+            .ids()
+            .iter()
+            .any(|id| !self.link_group_editable(*id))
+        {
+            return Vec::new();
+        }
         let mut ids = self.editable_selection();
         for id in self.selection.ids() {
             for partner in self.project.link_partners(*id) {
@@ -3295,8 +3301,7 @@ impl VideoEditorApp {
     /// linked pair as a unit (a split, whose two tails become a group of their
     /// own) sees it as one.
     ///
-    /// Only editable clips are ever in a group here, because they come out of
-    /// [`Self::edit_targets`] — a locked lane does not follow the link.
+    /// [`Self::edit_targets`] refuses groups containing a locked lane.
     fn target_groups(&self) -> Vec<Vec<ClipId>> {
         let targets = self.edit_targets();
         let mut groups: Vec<Vec<ClipId>> = Vec::new();
@@ -3349,15 +3354,21 @@ impl VideoEditorApp {
 
     // ---- linked audio and video -----------------------------------------
 
-    /// The clips that follow an edit made on `id`: everything linked to it
-    /// that its own track lock allows editing. Empty for an unlinked clip, so
+    /// A linked geometry edit must not bypass a lock or edit only half a shot.
+    fn link_group_editable(&self, id: ClipId) -> bool {
+        self.project.clip_editable(id)
+            && self
+                .project
+                .link_partners(id)
+                .iter()
+                .all(|member| self.project.clip_editable(*member))
+    }
+
+    /// The clips that follow an edit made on `id`. Callers must first check
+    /// [`Self::link_group_editable`]. Empty for an unlinked clip, so
     /// every caller reads as "and whatever follows", with no special case.
     fn linked_followers(&self, id: ClipId) -> Vec<ClipId> {
-        self.project
-            .link_partners(id)
-            .into_iter()
-            .filter(|c| self.project.clip_editable(*c))
-            .collect()
+        self.project.link_partners(id)
     }
 
     /// `id` together with [`Self::linked_followers`] — the set a whole-group
@@ -3410,7 +3421,7 @@ impl VideoEditorApp {
     /// ordinary independent clips. Writes exactly the clips that changed.
     fn unlink_selected(&mut self) {
         let mut unlinks = Vec::new();
-        for id in self.edit_targets() {
+        for id in self.editable_selection() {
             if self.project.is_linked(id) {
                 let group = self.project.link_group(id);
                 self.project.unlink_clips(&group);
@@ -3455,7 +3466,7 @@ impl VideoEditorApp {
     /// leave half a shot at the old speed.
     fn set_speed_selected(&mut self, rate: f64, reverse: bool) {
         let Some(id) = self.selected() else { return };
-        if !self.project.clip_editable(id) {
+        if !self.link_group_editable(id) {
             return;
         }
         let ids = self.linked_editable(id);
@@ -3514,18 +3525,17 @@ impl VideoEditorApp {
     }
 
     /// Set the in-point of the primary selected clip to the playhead (`I`):
-    /// trims the head so the clip starts at the current frame. A single-clip
-    /// trim by nature — it acts on the anchor, and only when its track allows
-    /// edits.
+    /// trims the head so the clip starts at the current frame, following its
+    /// whole link group.
     fn set_in_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
-        if !self.project.clip_editable(id) {
+        if !self.link_group_editable(id) {
             return;
         }
         let delta = self
             .project
             .clip(id)
-            .map_or(0.0, |c| self.playhead - c.start);
+            .map_or(0.0, |c| (self.playhead - c.start) * c.speed.rate());
         if delta.abs() < 1e-6 {
             return;
         }
@@ -3542,13 +3552,13 @@ impl VideoEditorApp {
     /// trims the tail so the clip ends at the current frame.
     fn set_out_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
-        if !self.project.clip_editable(id) {
+        if !self.link_group_editable(id) {
             return;
         }
         let delta = self
             .project
             .clip(id)
-            .map_or(0.0, |c| self.playhead - c.end());
+            .map_or(0.0, |c| (self.playhead - c.end()) * c.speed.rate());
         if delta.abs() < 1e-6 {
             return;
         }
@@ -3868,7 +3878,7 @@ impl VideoEditorApp {
                 // per-clip on purpose: sliding the sound and levelling it
                 // separately is what the audio clip is for.
                 let Some(id) = self.selected() else { return };
-                if !self.project.clip_editable(id) {
+                if !self.link_group_editable(id) {
                     return;
                 }
                 let rev = self.project.clip(id).is_some_and(|c| c.speed.reverse);
@@ -7918,6 +7928,9 @@ impl VideoEditorApp {
                 }
             }
             Drag::ClipMove { id, grab_dt, track } => {
+                if self.edit_targets().is_empty() {
+                    return;
+                }
                 let raw = (self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0);
                 // Snap the grabbed clip's left edge to a neighbouring edge /
                 // playhead when within a few pixels, then to the frame grid.
@@ -7962,9 +7975,15 @@ impl VideoEditorApp {
                 }
             }
             Drag::TrimIn { id } => {
+                if !self.link_group_editable(id) {
+                    return;
+                }
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map_or(0.0, |c| target - c.start);
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map_or(0.0, |c| (target - c.start) * c.speed.rate());
                 // The linked half takes the amount this clip could actually
                 // take, so a trim that clamps on one of them clamps on both.
                 let also = self.linked_followers(id);
@@ -7975,9 +7994,15 @@ impl VideoEditorApp {
                 self.project.trim_in_with(id, delta, &also);
             }
             Drag::TrimOut { id } => {
+                if !self.link_group_editable(id) {
+                    return;
+                }
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
-                let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
+                let delta = self
+                    .project
+                    .clip(id)
+                    .map_or(0.0, |c| (target - c.end()) * c.speed.rate());
                 let also = self.linked_followers(id);
                 self.remember_clip_before(id);
                 for linked in &also {

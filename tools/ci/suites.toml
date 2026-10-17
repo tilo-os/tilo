@@ -67,11 +67,6 @@ inputs = ["apps/chat/"]
 suites = ["apps/chat/tests/test_agent_start_surface.py"]
 
 [[group]]
-name = "session-diagnostics"
-inputs = ["dist/session/tilo-flight-recorder.py"]
-suites = ["os/tests/flight_recorder_test.py"]
-
-[[group]]
 name = "runtime-dependency-closure"
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]
@@ -630,6 +625,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",

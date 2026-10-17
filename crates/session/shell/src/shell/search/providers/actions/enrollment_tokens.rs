@@ -100,7 +100,9 @@ pub(super) fn mint(
     // The row's subtitle states the copy and the code's life. The clipboard
     // holds the code no longer than the code lasts, and keeps it out of
     // history and device sync: it admits a device.
-    let copied = ui::try_clipboard_copy_secret(&token, std::time::Duration::from_nanos(ttl));
+    let copied = ui::try_clipboard_copy_secret(&token, std::time::Duration::from_nanos(ttl))
+        .outcome()
+        == Some(true);
     Ok(serde_json::json!({
         "token": token,
         "role": role.as_str(),

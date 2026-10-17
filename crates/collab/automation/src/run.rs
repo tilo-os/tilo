@@ -18,7 +18,7 @@
 //! person — a confirmation, an [`Ask`](StepKind::Ask) — go through the
 //! caller's [`RunHooks`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -327,6 +327,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         trigger: report.trigger.clone(),
         inputs,
         vars: BTreeMap::new(),
+        secret_vars: BTreeSet::new(),
         outputs: BTreeMap::new(),
         records: Vec::new(),
         caused_by,
@@ -359,6 +360,7 @@ struct Runner<'a, H, K> {
     trigger: String,
     inputs: Map<String, Value>,
     vars: BTreeMap<String, Value>,
+    secret_vars: BTreeSet<String>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
@@ -479,9 +481,21 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.record(step, &path, Done::local(count.map_err(Clone::clone)))?;
                 let elements = elements.unwrap_or_default();
                 let shadowed = self.vars.get(item).cloned();
+                let shadowed_secret = self.secret_vars.contains(item);
+                let secret = self.is_secret(items);
                 for (iteration, element) in elements.into_iter().enumerate() {
+                    if secret {
+                        self.secret_vars.insert(item.clone());
+                    } else {
+                        self.secret_vars.remove(item);
+                    }
                     self.vars.insert(item.clone(), element);
                     self.block(body, path.each(Some(iteration))).await?;
+                }
+                if shadowed_secret {
+                    self.secret_vars.insert(item.clone());
+                } else {
+                    self.secret_vars.remove(item);
                 }
                 match shadowed {
                     Some(value) => self.vars.insert(item.clone(), value),
@@ -491,8 +505,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             }
             StepKind::SetVar { name, value } => {
                 let result = match self.evaluate(value) {
-                    Ok(Some(value)) => {
-                        self.vars.insert(name.clone(), value);
+                    Ok(Some(evaluated)) => {
+                        if self.is_secret(value) {
+                            self.secret_vars.insert(name.clone());
+                        } else {
+                            self.secret_vars.remove(name);
+                        }
+                        self.vars.insert(name.clone(), evaluated);
                         Ok(None)
                     }
                     Ok(None) => Err(StepFailure::Binding {
@@ -1020,7 +1039,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                             if shown == REDACTED
                     )
             }),
-            Binding::Literal(_) | Binding::Var(_) | Binding::Template(_) => false,
+            Binding::Var(name) => self.secret_vars.contains(Binding::named_part(name).0),
+            Binding::Literal(_) | Binding::Template(_) => false,
         }
     }
 }

@@ -551,27 +551,65 @@ enum BarVariant {
     Compact,
 }
 
-/// The Tilo mark: three dots in a row, violet, blue and teal from the
-/// theme's presence hues, centred in `rect`.
+/// The Tilo mark's left bar as the brand's `mark.svg` draws it, in its
+/// 100 × 100 view box: `M10.98 31.85 Q10.979892448752274 27.96648782251284
+/// 14.4 26.12 L20.26 22.97 Q… Z`. The right bar is its mirror image about
+/// the box's centre line and the central block a plain rounded rectangle.
+fn tilo_mark_side() -> vello::kurbo::BezPath {
+    let mut path = vello::kurbo::BezPath::new();
+    path.move_to((10.98, 31.85));
+    path.quad_to(
+        (10.979_892_448_752_274, 27.966_487_822_512_84),
+        (14.4, 26.12),
+    );
+    path.line_to((20.26, 22.97));
+    path.quad_to(
+        (24.843_373_493_975_903, 20.506_024_096_385_54),
+        (24.84, 25.71),
+    );
+    path.line_to((24.84, 74.29));
+    path.quad_to(
+        (24.843_373_493_975_903, 79.493_975_903_614_46),
+        (20.26, 77.03),
+    );
+    path.line_to((14.4, 73.88));
+    path.quad_to(
+        (10.979_892_448_752_274, 72.033_512_177_487_15),
+        (10.98, 68.15),
+    );
+    path.close_path();
+    path
+}
+
+/// The Tilo mark, the brand's own shapes, centred in `rect` with its view
+/// box the largest square that fits. A dark palette takes the brand's dark
+/// variant (`mark-dark.svg`): the light one's pale bars glare there.
 pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    use ui::tokens::PresenceHue;
+    static SIDE: std::sync::LazyLock<vello::kurbo::BezPath> =
+        std::sync::LazyLock::new(tilo_mark_side);
+    let (sides, block) = if theme.tokens.colors.palette.dark {
+        (
+            Color::from_rgb8(0x3b, 0x43, 0x76),
+            Color::from_rgb8(0x6f, 0x82, 0xff),
+        )
+    } else {
+        (
+            Color::from_rgb8(0x9f, 0xa6, 0xe0),
+            Color::from_rgb8(0x2a, 0x3f, 0xd1),
+        )
+    };
     let side = rect.width().min(rect.height());
-    let step = side * 0.3;
-    let radius = side * 0.13;
     let center = rect.center();
-    for (offset, hue) in [
-        (-step, PresenceHue::Violet),
-        (0.0, PresenceHue::Blue),
-        (step, PresenceHue::Teal),
-    ] {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.presence.hue(hue),
-            None,
-            &vello::kurbo::Circle::new((center.x + offset, center.y), radius),
-        );
-    }
+    let view = transform
+        .pre_translate((center.x - side / 2.0, center.y - side / 2.0).into())
+        .pre_scale(side / 100.0);
+    scene.fill(Fill::NonZero, view, sides, None, &*SIDE);
+    let mirrored = view
+        .pre_translate((100.0, 0.0).into())
+        .pre_scale_non_uniform(-1.0, 1.0);
+    scene.fill(Fill::NonZero, mirrored, sides, None, &*SIDE);
+    let block_shape = RoundedRect::new(29.0, 16.0, 71.0, 84.0, 6.0);
+    scene.fill(Fill::NonZero, view, block, None, &block_shape);
 }
 
 /// How the bar's focus last arrived, which decides whether its ring shows.
@@ -755,14 +793,31 @@ fn until_next_time_bucket(since_epoch: Duration, bucket_secs: u64) -> Duration {
     bucket.saturating_sub(into)
 }
 
-/// `surfaces.raised` is `#ffffff` on light, same as the bar's own
-/// surface — invisible if used directly — so selection lift derives
-/// from luminance instead.
+/// A selector on the bar. The bar has no surface of its own: its selectors
+/// stand on the desktop ground, so they lift off that.
 fn bar_selector_body(
     theme: &Theme,
     state: ui::chrome::SelectionState,
 ) -> ui::chrome::SelectionTier {
-    ui::chrome::selection_tier(theme, state)
+    ui::chrome::selector_tier(theme, state, theme.tokens.colors.surfaces.base)
+}
+
+/// Paint a selector on the bar at `shape` in `state`, through the one
+/// selector painter.
+fn paint_bar_selector(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    state: ui::chrome::SelectionState,
+    theme: &Theme,
+) {
+    ui::chrome::paint_selector(
+        scene,
+        transform,
+        shape,
+        ui::chrome::SelectorRole::Item(&bar_selector_body(theme, state)),
+        theme,
+    );
 }
 
 /// Measured advances of the system monitor's six runs, at the weight and
@@ -2208,28 +2263,6 @@ impl TopBarChrome {
         let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
         // The switches are square targets of the shared control height.
         let switch_w = BAR_CONTROL_PX;
-        let nav_width = control
-            + f64::from(tokens.spacing.s2)
-            + 1.0
-            + f64::from(tokens.spacing.s2)
-            + switch_w * 2.0;
-        let nav_rect = Rect::new(
-            x,
-            center_y - control / 2.0,
-            x + nav_width,
-            center_y + control / 2.0,
-        );
-        let nav_body = bar_selector_body(theme, ui::chrome::SelectionState::active(false));
-        ui::chrome::shell::paint_glass_body(
-            scene,
-            transform,
-            nav_rect,
-            ui::chrome::ChromeRole::Selector.radius(theme, nav_rect.height()),
-            theme,
-            &nav_body,
-            1.0,
-        );
-
         self.overview_btn_rect = Rect::new(
             x,
             center_y - control / 2.0,
@@ -2241,15 +2274,15 @@ impl TopBarChrome {
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().overlays.overview);
         if overview_open {
-            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            ui::chrome::shell::paint_glass_body(
+            paint_bar_selector(
                 scene,
                 transform,
-                self.overview_btn_rect,
-                ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
+                &RoundedRect::from_rect(
+                    self.overview_btn_rect,
+                    ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
+                ),
+                ui::chrome::SelectionState::active(true),
                 theme,
-                &selected,
-                1.0,
             );
         }
         let overview_icon_rect = Rect::new(
@@ -2375,15 +2408,15 @@ impl TopBarChrome {
             center_y + control / 2.0,
         );
         if open {
-            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            ui::chrome::shell::paint_glass_body(
+            paint_bar_selector(
                 scene,
                 transform,
-                self.tilo_mark_rect,
-                ui::chrome::ChromeRole::Selector.radius(theme, control),
+                &RoundedRect::from_rect(
+                    self.tilo_mark_rect,
+                    ui::chrome::ChromeRole::Selector.radius(theme, control),
+                ),
+                ui::chrome::SelectionState::active(true),
                 theme,
-                &selected,
-                1.0,
             );
         }
         let side = f64::from(theme.tokens.metrics.icon_md);
@@ -2560,17 +2593,13 @@ impl TopBarChrome {
             ws_pill_outer,
             ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
         );
-        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(Fill::NonZero, transform, body.fill, None, &pill);
-        if let Some(edge) = body.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &pill,
-            );
-        }
+        paint_bar_selector(
+            scene,
+            transform,
+            &pill,
+            ui::chrome::SelectionState::active(true),
+            theme,
+        );
         let workspace_lens_open = self
             .chrome
             .as_ref()
@@ -2668,17 +2697,13 @@ impl TopBarChrome {
                 band,
                 ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
             );
-            let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
-            if let Some(edge) = body.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    edge,
-                    None,
-                    &band_rr,
-                );
-            }
+            paint_bar_selector(
+                scene,
+                transform,
+                &band_rr,
+                ui::chrome::SelectionState::active(true),
+                theme,
+            );
         }
         let (content_x0, content_x1) = Self::center_content_lane(band);
         let content_cx = f64::midpoint(content_x0, content_x1);
@@ -3624,8 +3649,13 @@ impl TopBarChrome {
             self.tray_pill_rect,
             ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
         );
-        let tray_body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(Fill::NonZero, transform, tray_body.fill, None, &tray);
+        paint_bar_selector(
+            scene,
+            transform,
+            &tray,
+            ui::chrome::SelectionState::active(true),
+            theme,
+        );
         // At 3% the user needs to notice the whole pill, not just read
         // the glyph.
         if self.status.battery_is_critical() {

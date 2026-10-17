@@ -371,9 +371,9 @@ impl Widget for Probe {
         Self::capture("accessibility");
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Child"))
     }
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         Self::capture("ime");
-        Some(winit::window::ImePurpose::Normal)
+        Some(crate::ime::InputContent::TEXT)
     }
     fn ime_cursor_rect(&self) -> Option<vello::kurbo::Rect> {
         Self::capture("ime-rect");

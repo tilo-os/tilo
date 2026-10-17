@@ -259,10 +259,30 @@ impl EmbeddedApp {
     }
 }
 
+impl crate::widget::WindowHistory for EmbeddedApp {
+    fn set_window_presents_history(&mut self, tab_presents: bool) {
+        self.app.set_window_presents_history(tab_presents);
+    }
+
+    fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
+        self.app.window_history_control()
+    }
+
+    fn invoke_window_history_control(
+        &mut self,
+        control: crate::widget::HistoryControl,
+    ) -> Result<(), String> {
+        self.app.invoke_window_history_control(control)?;
+        self.wants_frame.set(true);
+        Ok(())
+    }
+}
+
 impl Widget for EmbeddedApp {
     crate::provides!(
         dyn crate::component_lifecycle::ComponentLifecycle,
-        dyn crate::widget::CompleteContentProvider
+        dyn crate::widget::CompleteContentProvider,
+        dyn crate::widget::WindowHistory
     );
 
     fn build_layout(
@@ -588,14 +608,14 @@ impl Widget for EmbeddedApp {
             .map(|rect| rect + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.app.ime_window_state().map(|field| field.purpose)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.app.ime_window_state().map(|field| field.content)
     }
 
     fn ime_multiline(&self) -> bool {
         self.app
             .ime_window_state()
-            .is_some_and(|field| field.multiline)
+            .is_some_and(|field| field.content.hints.multiline)
     }
 
     fn ime_requires_deferred_ack(&self) -> bool {

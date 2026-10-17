@@ -433,10 +433,10 @@ impl ExpandModal {
             .and_then(|f| f.input.ime_cursor_rect())
     }
 
-    pub fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    pub fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.fields
             .get(self.focused)
-            .and_then(|f| f.input.ime_purpose())
+            .and_then(|f| f.input.ime_content())
     }
 
     pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

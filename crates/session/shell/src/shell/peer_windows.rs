@@ -759,13 +759,16 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
         admits(ws, &item.app_id)?;
     }
     // After `admits`, so nothing is granted for a launch the room refused.
-    if !item.local {
-        crate::shell::search::providers::applications::grant_file_manager_home(
-            tree,
-            ws_id,
-            &item.app_id,
-        );
-    }
+    // A saved window of this machine's own is reopened as the person opened
+    // it: the file manager gets the session's home grant exactly as a launch
+    // from the palette does. That grant ends with each session, so without
+    // it a restored Files window opens on its sandbox directory and says the
+    // folder it showed is empty.
+    crate::shell::search::providers::applications::grant_file_manager_home(
+        tree,
+        ws_id,
+        &item.app_id,
+    );
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string().into());
     };
@@ -1760,7 +1763,26 @@ mod tests {
             );
         }
 
+        fn a_restored_file_manager_window_sees_the_users_home_again() {
+            let home = tilo_paths::home().expect("the test machine has a home directory");
+            let (mut tree, _tab) = tree_with_local_app(FILES);
+            assert!(
+                !may_read(&tree.desktop.workspaces[0], FILES, &home),
+                "fixture sanity: the session's home grant ended with the last session"
+            );
+
+            let _ = examine(&mut tree);
+
+            assert!(
+                may_read(&tree.desktop.workspaces[0], FILES, &home),
+                "a Files window restored when the session starts again must read the \
+                 user's home, or it shows its sandbox directory as an empty folder"
+            );
+            launcher::clear_pending_placements();
+        }
+
         a_file_manager_opened_for_the_room_can_see_the_users_home();
+        a_restored_file_manager_window_sees_the_users_home_again();
         opening_another_app_for_the_room_grants_it_no_home();
         a_refused_file_manager_is_granted_nothing();
     }

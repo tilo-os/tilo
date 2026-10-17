@@ -380,12 +380,10 @@ impl Slider {
         self.is_dragging = dragging;
     }
 
-    /// Commit a new value to the CRDT iff it differs from the cached
-    /// `value` by more than a frame-of-noise epsilon. Returns `true` if
-    /// the commit happened so callers can flag the event as handled.
+    /// Commit each distinct value, including fine steps and exact endpoints.
+    /// Returns `true` if the commit happened so callers can flag the event.
     fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
-        let span = (self.range.1 - self.range.0).abs().max(f64::EPSILON);
-        if (new_value - self.value).abs() <= 0.001 * span {
+        if new_value == self.value {
             return false;
         }
         self.value = new_value;
@@ -781,7 +779,8 @@ impl Widget for Slider {
                     let new_value = if ctx.modifiers.state().shift_key() {
                         let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
                         let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
-                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
+                        let span = self.range.1 - self.range.0;
+                        self.constrain(value + (p.x - x) / track * Self::FINE_DRAG * span)
                     } else {
                         self.fine_from = None;
                         self.value_from_cursor_x(p.x)
@@ -819,10 +818,7 @@ impl Widget for Slider {
                     self.is_dragging = false;
                     self.fine_from = None;
                     *ctx.handled = true;
-                    let moved = self
-                        .drag_from
-                        .take()
-                        .is_some_and(|from| (from - self.value).abs() > 0.001);
+                    let moved = self.drag_from.take().is_some_and(|from| from != self.value);
                     if self.settles
                         && moved
                         && let Some(action) = &mut self.action
@@ -1218,6 +1214,60 @@ mod tests {
             assert!(!s.is_dragging, "disabled slider must not start a drag");
             assert_eq!(s.value, before, "disabled slider must not change its value");
         }
+    }
+
+    #[test]
+    fn fine_drag_uses_the_configured_range_and_step() {
+        let state = crate::LocalState::new(50.0);
+        let mut slider = Slider::from_state(&state).range(20.0, 120.0).step(0.5);
+        slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+        dispatch(&mut slider, &cursor_moved(60.0, 15.0));
+        dispatch(&mut slider, &mouse_press());
+        assert_eq!(state.get(), 50.0);
+        let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(60.0, 15.0));
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(80.0, 15.0));
+        assert_eq!(
+            state.get(),
+            51.0,
+            "Shift slows movement in the slider's units"
+        );
+        Dispatch::new()
+            .modifiers(shift)
+            .send(&mut slider, &cursor_moved(83.0, 15.0));
+        assert_eq!(
+            state.get(),
+            51.0,
+            "fine movement still honors the step grid"
+        );
+    }
+
+    #[test]
+    fn keyboard_steps_and_endpoints_preserve_small_changes() {
+        let state = crate::LocalState::new(0.5);
+        let mut slider = Slider::from_state(&state).step(0.0001);
+        slider.set_focus(true);
+        dispatch(
+            &mut slider,
+            &crate::synthetic_input::named_key(NamedKey::ArrowRight),
+        );
+        assert_eq!(state.get(), 0.5001);
+        slider.set_value(0.9999);
+        dispatch(
+            &mut slider,
+            &crate::synthetic_input::named_key(NamedKey::End),
+        );
+        assert_eq!(state.get(), 1.0);
+        slider.set_value(0.0001);
+        dispatch(
+            &mut slider,
+            &crate::synthetic_input::named_key(NamedKey::Home),
+        );
+        assert_eq!(state.get(), 0.0);
     }
 
     #[test]

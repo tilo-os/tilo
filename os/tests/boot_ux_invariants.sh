@@ -89,12 +89,23 @@ edge += [pixel(x, y) for y in range(height) for x in (0, width - 1)]
 assert all(value == (0, 0, 0) for value in edge), \
     "the UKI splash tile must be black at its edge, like the stub's fill around it"
 PY
-grep -Fq "Tilo's three-dot mark" "$root/os/dev/make-boot-splash.py"
-grep -Fq 'for index, center_x in enumerate((56.0, 110.0, 164.0))' \
-  "$root/os/dev/make-plymouth-assets.py"
+# Both boot screens draw the brand's mark from the same path data, so the
+# stub's tile and the Plymouth theme cannot drift apart.
+python3 - "$root/os/dev/make-boot-splash.py" "$root/os/dev/make-plymouth-assets.py" <<'PY'
+import sys
+def mark(path):
+    text = open(path).read()
+    start = text.index("MARK_SIDES = (")
+    return text[start:text.index("\n\n\n", start)]
+splash, theme = (mark(path) for path in sys.argv[1:])
+assert splash == theme, "the UKI splash and the Plymouth theme draw different marks"
+assert "M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12" in splash
+assert "MARK_BLOCK = (29.0, 16.0, 71.0, 84.0, 6.0)" in splash
+PY
 if grep -Fq 'recognisable q' "$root/os/dev/make-boot-splash.py" \
-   || grep -Fq 'tail_distance' "$root/os/dev/make-plymouth-assets.py"; then
-  printf 'boot artwork still carries the retired Tilo q mark\n' >&2
+   || grep -Fq 'tail_distance' "$root/os/dev/make-plymouth-assets.py" \
+   || grep -Fq 'enumerate((56.0, 110.0, 164.0))' "$root/os/dev/make-plymouth-assets.py"; then
+  printf 'boot artwork still carries a retired Tilo mark\n' >&2
   exit 1
 fi
 python3 - "$tmp/plymouth" <<'PY'

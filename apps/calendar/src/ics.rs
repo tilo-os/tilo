@@ -57,6 +57,13 @@ pub fn export(model: &Calendar) -> String {
                 "DTEND;VALUE=DATE",
                 &e.all_day_end_exclusive().format(D_ONLY).to_string(),
             );
+        } else if e.end_later_fold {
+            emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
+            raw(
+                &mut out,
+                "DURATION",
+                &format!("PT{}S", e.elapsed_duration().num_seconds()),
+            );
         } else if e.timezone == "UTC" {
             raw(
                 &mut out,
@@ -124,7 +131,11 @@ pub fn export(model: &Calendar) -> String {
             if edit.cancelled {
                 raw(&mut out, "STATUS", "CANCELLED");
             }
-            if let Some(start) = edit.start {
+            let edit_start = edit.start.or_else(|| {
+                edit.end_later_fold
+                    .then(|| edit.original_date.and_time(e.start.time()))
+            });
+            if let Some(start) = edit_start {
                 if e.all_day {
                     raw(
                         &mut out,
@@ -150,6 +161,18 @@ pub fn export(model: &Calendar) -> String {
                         "DTEND;VALUE=DATE",
                         &exclusive.format(D_ONLY).to_string(),
                     );
+                } else if edit.end_later_fold {
+                    if let Some(start) = edit_start
+                        && let Some(((start, _), end)) =
+                            crate::timezone::wall_to_utc(&e.timezone, start)
+                                .zip(crate::timezone::endpoint_utc(&e.timezone, end, true))
+                    {
+                        raw(
+                            &mut out,
+                            "DURATION",
+                            &format!("PT{}S", (end - start).num_seconds()),
+                        );
+                    }
                 } else {
                     emit_datetime(&mut out, "DTEND", end, &e.timezone);
                 }
@@ -272,7 +295,8 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
                                 cancelled,
                                 start: (ev.start.date() != original_date || !cancelled)
                                     .then_some(ev.start),
-                                end: (ev.end != ev.start).then_some(ev.end),
+                                end: (ev.end != ev.start || ev.end_later_fold).then_some(ev.end),
+                                end_later_fold: ev.end_later_fold,
                                 title: (!ev.title.is_empty()).then_some(ev.title),
                                 location: (!ev.location.is_empty()).then_some(ev.location),
                             },
@@ -310,6 +334,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     let mut title = String::new();
     let mut start: Option<NaiveDateTime> = None;
     let mut end: Option<NaiveDateTime> = None;
+    let mut duration = None;
     let mut all_day = false;
     let mut location = String::new();
     let mut rrule = String::new();
@@ -403,6 +428,12 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                     };
                     end = Some(dt);
                 }
+                "DURATION" => {
+                    let Some(parsed) = parse_event_duration(&val) else {
+                        return (None, i);
+                    };
+                    duration = Some(parsed);
+                }
                 _ => {}
             }
         }
@@ -414,7 +445,18 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     }) else {
         return (None, i);
     };
-    let mut end = end.unwrap_or(start);
+    let mut end_later_fold = false;
+    let mut end = match (end, duration) {
+        (Some(end), _) => end,
+        (None, Some((days, time))) => {
+            let Some((end, later_fold)) = duration_span(start, &timezone, days, time) else {
+                return (None, i);
+            };
+            end_later_fold = later_fold;
+            end
+        }
+        (None, None) => start,
+    };
     // DATE-valued DTSTART/DTEND follows RFC 5545's exclusive-end convention.
     // A surprising number of hand-authored feeds still send the same date for
     // both; keep that malformed-but-common input visible as one day rather
@@ -440,6 +482,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                 start,
                 end,
                 all_day,
+                end_later_fold,
                 location,
                 color,
                 recurrence: Recurrence::from_rrule(&rrule),
@@ -463,10 +506,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
 }
 
 fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
-    // Tilo resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
-    // task exported by Tilo can be imported repeatedly without becoming a new
-    // task. Non-UUID external UIDs still import safely with an author-minted
-    // id; they cannot be used as an Automerge object key in this model.
+    // Keep the same identity on repeated imports, including external UIDs.
     let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut due: Option<NaiveDate> = None;
@@ -577,7 +617,24 @@ fn parse_recurrence_id(line: &ContentLine) -> Option<(NaiveDate, Option<NaiveTim
 }
 
 fn parse_uid(value: &str) -> Option<Id> {
-    value.trim().split('@').next()?.parse().ok()
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(id) = value.split('@').next().and_then(|part| part.parse().ok()) {
+        return Some(id);
+    }
+    // A detached occurrence carries its master's UID, not necessarily a
+    // UUID. Both components must resolve to the same resource identity.
+    let hash = |key| {
+        let mut hasher = fnv::FnvHasher::with_key(key);
+        std::hash::Hasher::write(&mut hasher, b"calendar-uid:");
+        std::hash::Hasher::write(&mut hasher, value.as_bytes());
+        std::hash::Hasher::finish(&hasher)
+    };
+    Some(Uuid::from_u128(
+        (u128::from(hash(0xcbf2_9ce4_8422_2325)) << 64) | u128::from(hash(0x0102_0304_0506_0708)),
+    ))
 }
 
 fn timezone_from_property(line: &ContentLine) -> String {
@@ -639,6 +696,78 @@ fn rrule_u32(rule: &str, name: &str) -> Option<u32> {
 
 fn parse_cal_date(val: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
+}
+
+/// RFC 5545 event durations are positive weeks, days or time spans, not
+/// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
+fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
+    let value = value.trim().strip_prefix('+').unwrap_or(value.trim());
+    let mut rest = value.strip_prefix('P')?;
+    if let Some(weeks) = rest.strip_suffix('W') {
+        let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
+        return (days > 0).then_some((days, chrono::Duration::zero()));
+    }
+    let mut days = 0_i64;
+    let mut seconds = 0_i64;
+    let mut time = false;
+    let mut last_rank = 0;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('T') {
+            if time || after.is_empty() {
+                return None;
+            }
+            time = true;
+            rest = after;
+        }
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        let amount = rest.get(..digits)?.parse::<i64>().ok()?;
+        let unit = rest.as_bytes().get(digits)?;
+        let (rank, multiplier) = match (time, unit) {
+            (false, b'D') => (1, 24 * 60 * 60),
+            (true, b'H') => (2, 60 * 60),
+            (true, b'M') => (3, 60),
+            (true, b'S') => (4, 1),
+            _ => return None,
+        };
+        if rank <= last_rank {
+            return None;
+        }
+        last_rank = rank;
+        if time {
+            seconds = seconds.checked_add(amount.checked_mul(multiplier)?)?;
+        } else {
+            days = amount;
+        }
+        rest = rest.get(digits + 1..)?;
+    }
+    if days == 0 && seconds == 0 {
+        return None;
+    }
+    Some((days, chrono::Duration::try_seconds(seconds)?))
+}
+
+fn duration_span(
+    start: NaiveDateTime,
+    zone: &str,
+    days: i64,
+    time: chrono::Duration,
+) -> Option<(NaiveDateTime, bool)> {
+    // Days are nominal calendar days; hours/minutes/seconds are elapsed
+    // time. They differ when the event crosses a daylight-saving change.
+    let wall = start.checked_add_signed(chrono::Duration::try_days(days)?)?;
+    if zone == "floating" {
+        return Some((wall.checked_add_signed(time)?, false));
+    }
+    let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
+    let end = instant.checked_add_signed(time)?;
+    let end_wall = end
+        .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
+        .naive_local();
+    let later_fold = crate::timezone::wall_to_utc(zone, end_wall)?.0 != end;
+    Some((end_wall, later_fold))
 }
 
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
@@ -720,6 +849,78 @@ pub fn sample_ics(today: NaiveDate) -> String {
 mod tests {
     use super::*;
     use chrono::Timelike as _;
+
+    #[test]
+    fn duration_events_keep_their_full_span() {
+        for (start, duration, expected) in [
+            ("DTSTART:20260615T090000", "PT1H30M", "2026-06-15T10:30:00"),
+            (
+                "DTSTART:20260615T090000Z",
+                "+PT45M15S",
+                "2026-06-15T09:45:15",
+            ),
+            ("DTSTART;VALUE=DATE:20260615", "P3D", "2026-06-18T00:00:00"),
+            ("DTSTART;VALUE=DATE:20260615", "P2W", "2026-06-29T00:00:00"),
+            (
+                "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                "P1D",
+                "2026-03-29T12:00:00",
+            ),
+            (
+                "DTSTART;TZID=Europe/Berlin:20260328T120000",
+                "PT24H",
+                "2026-03-29T13:00:00",
+            ),
+        ] {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Visit\r\n{start}\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let (events, _) = parse(&payload);
+            assert_eq!(events.len(), 1, "{duration}");
+            assert_eq!(
+                events[0].end,
+                expected.parse::<NaiveDateTime>().unwrap(),
+                "{duration}"
+            );
+            let model = Calendar {
+                events: events.into(),
+                ..Calendar::default()
+            };
+            let (round_trip, _) = parse(&export(&model));
+            assert_eq!(round_trip[0].end, model.events.first().unwrap().end);
+        }
+        for duration in [
+            "P",
+            "PT",
+            "-PT1H",
+            "P1M",
+            "PT1H1H",
+            "PT1M1H",
+            "P1DT",
+            "PT999999999999999999H",
+            "P9999999999999999W",
+        ] {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20260615T090000\r\nDURATION:{duration}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            assert!(parse(&payload).0.is_empty(), "{duration}");
+        }
+    }
+
+    #[test]
+    fn external_uids_preserve_detached_occurrences_and_import_identity() {
+        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:follow-up@example.com\r\nSUMMARY:Follow up\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let (events, tasks) = parse(payload);
+        let (again, tasks_again) = parse(payload);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, again[0].id);
+        assert_eq!(tasks[0].id, tasks_again[0].id);
+        assert_ne!(events[0].id, tasks[0].id);
+        assert_eq!(events[0].occurrence_overrides.len(), 1);
+        let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
+        assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
+    }
 
     #[test]
     fn export_envelope_and_event_task_all_day_round_trips() {
@@ -833,6 +1034,7 @@ mod tests {
                     cancelled: true,
                     start: None,
                     end: None,
+                    end_later_fold: false,
                     title: None,
                     location: None,
                 });

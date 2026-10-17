@@ -3787,12 +3787,12 @@ impl FloatingSurfaceProvider for ChatApp {
         handled
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(ui::ime::InputContent, Rect)> {
         let surface = self
             .agent_surfaces
             .values()
             .find(|surface| surface.id == id && !surface.is_closed())?;
-        Some((surface.view.ime_purpose()?, surface.view.ime_cursor_rect()?))
+        Some((surface.view.ime_content()?, surface.view.ime_cursor_rect()?))
     }
 
     fn take_floating_surface_request(
@@ -4160,17 +4160,16 @@ impl Widget for ChatApp {
         self.canonical_dirty = true;
         self.set_composer_focus();
     }
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if let Some(id) = self.focused_agent_surface.as_deref()
             && let Some(surface) = self
                 .agent_surfaces
                 .values()
                 .find(|surface| surface.id == id)
         {
-            return surface.view.ime_purpose();
+            return surface.view.ime_content();
         }
-        self.host_focused
-            .then_some(winit::window::ImePurpose::Normal)
+        self.host_focused.then_some(ui::ime::InputContent::TEXT)
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if let Some(id) = self.focused_agent_surface.as_deref()

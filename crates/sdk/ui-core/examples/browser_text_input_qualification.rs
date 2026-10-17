@@ -78,7 +78,7 @@ fn wait_ready<W: Widget + 'static>(view: &mut Framed<W>) {
         .expect("bounded fixture deadline");
     loop {
         Framed::harness_mut(view).relayout();
-        if view.ime_purpose().is_some() {
+        if view.ime_content().is_some() {
             assert!(
                 view.ime_requires_deferred_ack(),
                 "decorated field must retain its private acknowledgement contract"
@@ -278,7 +278,7 @@ fn qualify_replacements<W: Widget + 'static>(
             .commit_deferred_text("日本語 café العربية")
             .expect("deferred native contract");
         assert!(
-            view.ime_purpose().is_none(),
+            view.ime_content().is_none(),
             "one-use lease must leave IME admission"
         );
         assert_eq!(finish(view, &receipt), Ok(()));
@@ -445,7 +445,7 @@ fn qualify_activation<W: Widget + 'static>(view: &mut Framed<W>, engine: &Shared
     let old = view.start_deferred_text().unwrap();
     assert_eq!(finish(view, &old), Ok(()));
     old.cancel();
-    assert!(view.ime_purpose().is_none());
+    assert!(view.ime_content().is_none());
     wait_ready(view);
     let fresh = view.start_deferred_text().unwrap();
     assert_eq!(finish(view, &fresh), Ok(()));
@@ -606,7 +606,7 @@ fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine
     );
     selected(view, engine, "notes");
     view.set_focus(false);
-    assert!(view.ime_purpose().is_none());
+    assert!(view.ime_content().is_none());
     let receipt = view.commit_deferred_text("canceled").unwrap();
     assert_eq!(finish(view, &receipt), Err(Failure::Rejected));
     assert_eq!(evaluate(engine, "notes.value"), "alpha beta gamma");

@@ -503,7 +503,7 @@ mod component_adapter {
         fn floating_surface_ime(
             &self,
             id: &str,
-        ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+        ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
             self.in_root(|root| root.floating_surface_ime(id)).flatten()
         }
 
@@ -1117,8 +1117,8 @@ mod component_adapter {
             self.in_root(|root| root.ime_edit_fingerprint(key))
                 .flatten()
         }
-        fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-            self.in_root(|root| root.ime_purpose()).flatten()
+        fn ime_content(&self) -> Option<crate::ime::InputContent> {
+            self.in_root(|root| root.ime_content()).flatten()
         }
         fn ime_multiline(&self) -> bool {
             self.in_root(Widget::ime_multiline).unwrap_or_default()

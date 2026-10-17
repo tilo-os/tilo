@@ -1089,6 +1089,8 @@ fn open_reference(
         .iter()
         .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
     let item = reference.clone().into_store_item(version);
+    // A prior detail lookup may describe another repository or branch.
+    state.details.pop(&item.id);
     state.base_items.retain(|known| known.id != item.id);
     state.base_items.insert(0, item.clone());
     state.opened_ref = Some(reference);
@@ -1284,10 +1286,11 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         .iter()
         .find(|item| {
             item.id == id
-                && matches!(
-                    item.source,
-                    StoreSource::Tilo { .. } | StoreSource::FlatpakRemote { .. }
-                )
+                && (item.install_ref_path.is_some()
+                    || matches!(
+                        item.source,
+                        StoreSource::Tilo { .. } | StoreSource::FlatpakRemote { .. }
+                    ))
         })
         .cloned()
     {
@@ -1598,6 +1601,93 @@ mod tests {
             details: LruCache::new(CACHE_CAP),
             directory,
             item_index: ui::search::ListIndex::default(),
+        }
+    }
+
+    /// Follow a worker detail response through the item used for installation.
+    pub(super) fn detail_installation_item(state: &mut State, id: &str) -> StoreItem {
+        let (sender, received) = mpsc::channel();
+        let snapshots = Snapshots {
+            sender,
+            wake: WakeHandle::new(),
+            pending: Arc::new(AtomicUsize::new(0)),
+        };
+        let staging = tempfile::tempdir().unwrap();
+        assert!(
+            handle(
+                Request::Detail(id.into()),
+                state,
+                &snapshots,
+                staging.path(),
+            )
+            .0
+        );
+        let snapshot = received.recv().unwrap();
+        assert!(snapshot.operation_error.is_none());
+        let Some(DetailUpdate::Requested {
+            id: requested,
+            item: Some(item),
+        }) = snapshot.detail
+        else {
+            panic!("the worker must answer the detail request");
+        };
+        assert_eq!(requested, id);
+        let mut app = crate::StoreApp::new();
+        app.set_items(snapshot.items);
+        app.set_detail(item);
+        app.set_flatpak_available(true);
+        app.package_operation(id, ActionKind::FlatpakInstall)
+            .unwrap()
+    }
+
+    #[test]
+    fn opening_a_reference_invalidates_conflicting_details_before_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("editor.flatpakref");
+        let id = "org.example.Editor";
+        let mut cached = item(id, "Editor");
+        cached.source = StoreSource::Flathub;
+        let mut state = state_with_items(vec![cached.clone()], StoreDirectory::default());
+        state.details.put(id.into(), cached);
+        state.details.put("other".into(), item("other", "Other"));
+        for (branch, url) in [
+            ("beta", "https://example.org/repo/"),
+            ("nightly", "https://example.org/nightly/"),
+        ] {
+            std::fs::write(
+                &path,
+                format!("[Flatpak Ref]\nName={id}\nTitle=Editor\nBranch={branch}\nUrl={url}\n"),
+            )
+            .unwrap();
+            let (sender, received) = mpsc::channel();
+            let snapshots = Snapshots {
+                sender,
+                wake: WakeHandle::new(),
+                pending: Arc::new(AtomicUsize::new(0)),
+            };
+            let (alive, outcome) = handle(
+                Request::OpenReference {
+                    path: Some(path.clone()),
+                    contents: None,
+                },
+                &mut state,
+                &snapshots,
+                directory.path(),
+            );
+            assert!(alive && outcome.unwrap().is_ok());
+            assert!(matches!(
+                received.recv().unwrap().detail,
+                Some(DetailUpdate::OpenedReference(_))
+            ));
+            assert!(state.details.peek(id).is_none());
+            assert!(state.details.peek("other").is_some());
+            // The second pass also replaces a cached, previously opened reference.
+            for _ in 0..2 {
+                let installed = detail_installation_item(&mut state, id);
+                assert_eq!(installed.install_ref_path.as_deref(), path.to_str());
+                assert_eq!(installed.latest_version(), branch);
+                assert_eq!(installed.source_url.as_deref(), Some(url));
+            }
         }
     }
 

@@ -15,6 +15,63 @@ use runtime_bundle::{
     verify_bundle, verify_bundle_with,
 };
 
+#[test]
+fn overlapping_includes_preserve_one_signed_payload_or_refuse_conflicting_bytes() {
+    let host = tempfile::tempdir().unwrap();
+    fake_x86_64_host(host.path());
+    let identity = Identity::generate();
+    let key = host.path().join("identity.json");
+    fs::write(&key, identity.to_json_bytes()).unwrap();
+    for relative in ["libruntime_dylib.so", "engine/resources/data.bin"] {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for source in [&first, &second] {
+            let file = source.path().join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, b"same payload").unwrap();
+        }
+        let include_name = relative.split('/').next().unwrap();
+        let includes = [
+            first.path().join(include_name),
+            second.path().join(include_name),
+        ];
+        let options = BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&key),
+            extra_libs: &includes,
+            extra_bins: &[],
+        };
+        let out = tempfile::tempdir().unwrap();
+        let built = build_bundle_with(out.path(), "2026.07", &options).unwrap();
+        let verified = verify_bundle_with(
+            out.path(),
+            &VerifyOptions {
+                require_publisher: Some(identity.public_key_hex()),
+                require_signature: true,
+                require_arch: Some("x86_64".into()),
+            },
+        )
+        .expect("overlapping includes must produce a launchable signed bundle");
+        assert_eq!(verified, built);
+        assert_eq!(
+            built
+                .files
+                .iter()
+                .filter(|file| file.path == format!("lib/{relative}"))
+                .count(),
+            1
+        );
+        fs::write(second.path().join(relative), b"conflicting payload").unwrap();
+        let rejected = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            build_bundle_with(rejected.path(), "2026.07", &options),
+            Err(BundleError::IncludeConflict { name, .. }) if name == format!("lib/{relative}")
+        ));
+        assert!(!rejected.path().join("bundle.toml").exists());
+    }
+}
+
 fn fake_x86_64_host(root: &Path) {
     for rel in [
         "lib64/ld-linux-x86-64.so.2",
@@ -351,6 +408,7 @@ fn a_bundle_of_many_files_is_hashed_whole_and_refuses_a_change_in_any_of_them() 
             arch: Some("x86_64"),
             identity: None,
             extra_libs: &libs,
+            extra_bins: &[],
         },
     )
     .unwrap();

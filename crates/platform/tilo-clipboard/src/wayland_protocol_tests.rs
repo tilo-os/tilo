@@ -21,7 +21,7 @@ use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
-use super::{ClipboardCommand, Publication, PublicationPayload, WaylandClipboard};
+use super::{ClipboardCommand, Publication, PublicationPayload, Settle, WaylandClipboard};
 use crate::ClipboardBackend as _;
 
 // Owns a real libwayland connection over the fixture's private socket; never
@@ -48,7 +48,13 @@ fn publish(
     reply: mpsc::Sender<bool>,
     deadline: tilo_clock::Instant,
 ) -> ClipboardCommand {
-    ClipboardCommand::Publish(Publication::new(payload, reply, deadline))
+    ClipboardCommand::Publish(Publication::new(
+        payload,
+        Settle::new(move |copied| {
+            let _ = reply.send(copied);
+        }),
+        deadline,
+    ))
 }
 type Held = Vec<(String, OwnedFd)>;
 type Operation = Box<dyn FnOnce(&mut Server, &DisplayHandle) + Send>;
@@ -1248,5 +1254,58 @@ fn a_copy_reported_as_failed_never_becomes_the_selection() {
     assert!(
         harness.query(|state| state.publications.is_empty()),
         "a copy reported as failed became the selection"
+    );
+}
+
+/// The app's UI thread never waits on the compositor: the copy returns at
+/// once, and its outcome settles when the compositor has confirmed it.
+#[test]
+fn a_copy_settles_once_the_compositor_answers_and_not_before() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    // Nothing the compositor says reaches the app until released. The copy's
+    // deadline outlasts the test, so only the compositor's answer settles it.
+    harness.query(|state| state.hold_flush = true);
+    let (copy, settler) = crate::ClipboardCopy::pending();
+    let deadline = tilo_clock::now()
+        .checked_add(harness.remaining())
+        .expect("bounded publication");
+    assert!(
+        harness
+            .backend()
+            .send_publication(ClipboardCommand::Publish(Publication::new(
+                PublicationPayload::SecretText(b"hunter2".to_vec()),
+                Settle::new(move |copied| settler.settle(copied)),
+                deadline,
+            )))
+    );
+    assert_eq!(
+        copy.outcome(),
+        None,
+        "the copy cannot be settled before the compositor answers"
+    );
+    harness.query(|state| state.hold_flush = false);
+    harness.wait(|| copy.outcome().is_some(), "the copy's outcome");
+    assert_eq!(copy.outcome(), Some(true));
+    assert_eq!(harness.query(|state| state.publications.len()), 1);
+}
+
+/// A copy the deadline refused settles as failed without anyone waiting on
+/// it, and never becomes the selection later.
+#[test]
+fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    harness.query(|state| state.hold_flush = true);
+    let copy = harness.backend().copy(crate::CopyContent::Text("too late"));
+    harness.wait(|| copy.outcome().is_some(), "the copy's deadline");
+    assert_eq!(copy.outcome(), Some(false));
+    harness.query(|state| state.hold_flush = false);
+    harness.fence();
+    assert!(
+        harness.query(|state| state.publications.is_empty()),
+        "a copy settled as failed became the selection"
     );
 }

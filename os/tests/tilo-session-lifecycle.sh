@@ -6,8 +6,9 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$repo/tools/desktop-isolation.sh"
+. "$repo/dist/session/tests/build-flight-recorder.sh"
+tilo_flight_recorder_build "$repo"
 tilo_test_isolate "$@"
-python3 "$repo/os/tests/flight_recorder_test.py"
 unset GNOME_KEYRING_CONTROL
 wrapper="$repo/os/usr/libexec/tilo-session"
 target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
@@ -235,7 +236,7 @@ tilo_stage_script "$wrapper" "$test_wrapper" \
   DBUS_UPDATE="$fake_dbus_update" \
   SHELL_BIN="$fake_shell" \
   IMAGE_FLAVOUR="$tmp/image-flavour" \
-  FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py"
+  FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
 printf 'dev\n' >"$tmp/image-flavour"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
@@ -277,7 +278,7 @@ slow_recorder="$tmp/slow-flight-recorder"
 cat >"$slow_recorder" <<SH
 #!/bin/bash
 sleep 3
-exec python3 "$repo/dist/session/tilo-flight-recorder.py" "\$@"
+exec "$TILO_FLIGHT_RECORDER" "\$@"
 SH
 chmod 0755 "$slow_recorder"
 slow_wrapper="$tmp/tilo-session-slow-recorder"
@@ -372,7 +373,7 @@ grep -Fq 'status=7' "$flight_dir/previous.log"
 grep -Fq 'status=7' "$flight_dir/previous-events.log"
 tail -n 1 "$flight_dir/events.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
 tail -n 1 "$flight_dir/latest.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
-python3 "$repo/dist/session/tilo-session-report.py" --root "$flight_dir" --previous >"$tmp/report"
+"$TILO_SESSION_REPORT" --root "$flight_dir" --previous >"$tmp/report"
 python3 - "$tmp/report" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1]))

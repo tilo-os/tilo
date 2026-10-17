@@ -990,6 +990,9 @@ pub struct InstallerApp {
     /// Whether the visible key has been copied during this installer session.
     /// This is presentation state only; a newly emitted key resets it.
     recovery_key_copied: bool,
+    /// The recovery key's copy, whose outcome can arrive after it was
+    /// shown as copied.
+    recovery_key_copy: ui::CopyWatch,
     /// Explicit confirmation made after the concrete recovery key was shown.
     /// Copying to the live clipboard alone is not evidence of an off-device copy.
     recovery_key_saved: bool,
@@ -1205,6 +1208,7 @@ impl InstallerApp {
             status_lines: Vec::new(),
             recovery_key: None,
             recovery_key_copied: false,
+            recovery_key_copy: ui::CopyWatch::default(),
             recovery_key_saved: false,
             username: ui::LocalState::new(String::new()),
             full_name: ui::LocalState::new(String::new()),
@@ -2267,6 +2271,7 @@ impl InstallerApp {
         )];
         self.recovery_key = None;
         self.recovery_key_copied = false;
+        self.recovery_key_copy = ui::CopyWatch::default();
         self.recovery_key_saved = false;
         self.dirty_structure = true;
         self.focus_reset = true;
@@ -4073,6 +4078,7 @@ impl InstallerApp {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
                 self.recovery_key_copied = false;
+                self.recovery_key_copy = ui::CopyWatch::default();
                 self.recovery_key_saved = false;
                 self.dirty_structure = true;
             }
@@ -4113,6 +4119,11 @@ impl Widget for InstallerApp {
     /// assistive activation queued since the last event run here, then the
     /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.recovery_key_copy.failed() {
+            self.recovery_key_copied = false;
+            self.dirty_structure = true;
+            self.set_status("Could not copy the recovery key to the clipboard");
+        }
         self.run_presses();
         self.sync_accounts();
         self.notice_confirmation_edit();

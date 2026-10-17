@@ -51,6 +51,9 @@ impl ShellNetwork {
             | NeighbourMsg::ScrollbackResponse { .. }
             | NeighbourMsg::RecordContentWant { .. }
             | NeighbourMsg::RecordContentPiece { .. }
+            // A viewer asking for a keyframe of a stream it receives; the
+            // owner checks it is one.
+            | NeighbourMsg::SurfaceKeyframeRequest { .. }
             // Ephemeral presence and liveness of a member who can see the
             // room; nothing is written to room state.
             | NeighbourMsg::PresenceMoved { .. }

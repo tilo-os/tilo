@@ -11,7 +11,8 @@ thread (`Window::announce_frame`), Wayland pen tablets
 (`WindowEvent::PenSample` before each pointer event a stylus makes), and a
 macOS quit request (`set_quit_request_window`), and a surface-bound private
 text-input acknowledgement (`WindowEvent::PrivateIme` and
-`WindowExtWayland::private_text_input`); `vendor/PATCHES.md` and the
+`WindowExtWayland::private_text_input`), and a field's whole Wayland text-input
+content type (`WindowExtWayland::set_ime_content_type`); `vendor/PATCHES.md` and the
 standalone history `vendor-upstream/winit-0.30.13` in the Tilo repository list
 them commit by commit. When a winit release carries them, the SDK moves back to
 `winit` and this fork ends.

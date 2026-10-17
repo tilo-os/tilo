@@ -316,3 +316,74 @@ async fn arguments_in_the_agents_wire_form_ask_first_and_run_as_confirmed() {
         })
         .await;
 }
+
+/// An agent that restarts while its run waits at a draft gets the run again
+/// with the paused step, so it resumes there rather than planning the task
+/// over: the draft it carries rebuilds exactly the arguments the person was
+/// asked about, and asking with them runs what the person confirmed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            assert!(
+                run.paused.is_none(),
+                "a first delivery is paused at nothing"
+            );
+            let (_target, stream) = append_target(&f).await;
+            ask_first_for_notes(&f);
+            append(&agent, &run, 9100, "Draft line").await.unwrap_err();
+            let asked = held(&f).expect("the run is paused at the draft");
+
+            f.state.remove_connection(100);
+            let restarted = f.channel(101, true);
+            let resumed = delivered(&restarted).await;
+            assert_eq!(resumed.run_id, run.run_id, "the same run, not a new one");
+            let paused = resumed
+                .paused
+                .clone()
+                .expect("delivered with its paused step");
+            assert_eq!(paused.app, "so.tilo.notes");
+            assert_eq!(paused.resource, "notes:release");
+            assert_eq!(paused.action, "append");
+            assert_eq!(paused.draft, asked.draft);
+            let arguments = paused
+                .draft
+                .arguments()
+                .expect("the draft shows every argument");
+            assert_eq!(
+                tilo_actions::draft::arguments_digest(&arguments),
+                paused.arguments_digest,
+                "the draft rebuilds exactly what the person was asked about"
+            );
+
+            answer(
+                &f,
+                &asked.id,
+                WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
+            );
+            let (_, update) = append_as(
+                &restarted,
+                &resumed,
+                9200,
+                serde_json::Value::Object(arguments).to_string(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            let delivered = stream.read_request().send().promise.await.unwrap();
+            let wire = delivered.get().unwrap();
+            let argument: serde_json::Value =
+                serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+            assert_eq!(argument["text"], "Draft line");
+            assert!(held(&f).is_none(), "the answer reached the run");
+            drop(f);
+        })
+        .await;
+}

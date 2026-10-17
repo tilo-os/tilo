@@ -3,6 +3,33 @@ use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::Effect;
 
 #[test]
+fn duplicating_a_rotated_page_keeps_its_orientation_and_source() {
+    use ui::tilo_resource::Replica;
+
+    for rotation in [90, 180, 270] {
+        let mut replica = Replica::<PdfMarkup>::load(&PdfMarkup::planned(2)).expect("record");
+        replica
+            .apply(crate::actions::rotate_page_action("source-1", rotation))
+            .expect("rotate original");
+        replica
+            .apply(
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw("source-1"), Some("copy".to_owned()))),
+            )
+            .expect("duplicate rotated page");
+        let state = replica.state().expect("state");
+        let original = state
+            .pages
+            .get(&Id::from_raw("source-1"))
+            .expect("original");
+        let copy = state.pages.get(&Id::from_raw("copy")).expect("copy");
+        assert_eq!(copy.rotation, rotation);
+        assert_eq!(copy, original);
+        let ids: Vec<_> = state.pages.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["source-1", "copy", "source-2"]);
+    }
+}
+
+#[test]
 fn published_pages_carry_duplicate_and_delete() {
     fn find<'a>(
         resource: &'a tilo_actions::Resource,

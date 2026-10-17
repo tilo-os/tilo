@@ -33,7 +33,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
-use ui::clipboard::{ClipboardBackend, ClipboardTarget};
+use ui::clipboard::{ClipboardBackend, ClipboardTarget, CopyContent};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -1910,8 +1910,18 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // This is the app-side backend, not HostClipboard: its publication worker
         // owns a second wl_data_device on the app connection and must observe the
         // focused seat before accepting the queued copy.
-        assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
-        assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+        // A copy returns at once; its outcome settles once the compositor
+        // has confirmed the selection.
+        assert!(clipboard.copy(CopyContent::Text("app caption")).wait());
+        assert!(
+            clipboard
+                .copy(CopyContent::Image {
+                    width: 2,
+                    height: 1,
+                    rgba: &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40],
+                })
+                .wait()
+        );
         // Publication is queued to the app clipboard worker. Keep its seat
         // focused until the actual protocol selection advertises the image;
         // opening the sink first can revoke its copy serial before publication.
@@ -1952,7 +1962,7 @@ fn an_app_secret_copy_pastes_as_plain_text_and_keeps_its_secret_markers() {
     assert!(clipboard.wait_ready_for_wayland_test(deadline()));
     app.map_window(&compositor);
 
-    assert!(clipboard.set_secret_text(SECRET));
+    assert!(clipboard.copy(CopyContent::SecretText(SECRET)).wait());
     app.wait_until(
         |s| {
             s.clipboard_offer_mimes

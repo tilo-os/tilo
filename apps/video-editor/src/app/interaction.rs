@@ -814,8 +814,8 @@ impl VideoEditorApp {
                 self.shuttle = 0.0;
                 return;
             }
-            if !self.project.clip_editable(cid) || shift {
-                // A locked clip is inspectable but not draggable; a shift-click
+            if !self.link_group_editable(cid) || shift {
+                // A locked group is inspectable but not draggable; a shift-click
                 // is a selection gesture, not the start of a move.
                 return;
             }
@@ -824,6 +824,9 @@ impl VideoEditorApp {
             } else if (p.x - cr.x1).abs() <= TRIM_HIT {
                 self.drag = Some(Drag::TrimOut { id: cid });
             } else {
+                if self.edit_targets().is_empty() {
+                    return;
+                }
                 self.drag = Some(Drag::ClipMove {
                     id: cid,
                     grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start,

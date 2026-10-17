@@ -3472,6 +3472,21 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "tab_strip_material",
+            description: "The window groups' docked tab strips: at rest, a hovered tab, then under reduced transparency.",
+            actions: vec![
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("01-strips"),
+                Action::MoveCursorNamed("tab:Files"),
+                Action::Wait(20),
+                Action::Snapshot("02-hovered-tab"),
+                Action::ReduceTransparency(true),
+                Action::Wait(2),
+                Action::Snapshot("03-solid"),
+            ],
+        },
+        Scenario {
             name: "word_processor_tile",
             description: "Activate the Document tab so the light-chrome word processor is on screen.",
             actions: vec![

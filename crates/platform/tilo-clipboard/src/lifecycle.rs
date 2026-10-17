@@ -191,6 +191,15 @@ impl ClipboardBackend for Session {
     fn image(&self) -> Option<ClipboardImage> {
         self.admit()?.image()
     }
+    fn copy(&self, content: crate::CopyContent<'_>) -> crate::ClipboardCopy {
+        // The copy's worker settles it after this call's admission ends; a
+        // session closed meanwhile drops that worker, which settles it as
+        // failed.
+        self.admit().map_or_else(
+            || crate::ClipboardCopy::settled(false),
+            |backend| backend.copy(content),
+        )
+    }
     fn rich_text(&self) -> Option<RichTextOffer> {
         self.admit()?.rich_text()
     }

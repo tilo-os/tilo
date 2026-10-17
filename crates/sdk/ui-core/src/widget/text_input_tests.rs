@@ -290,7 +290,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
 }
 
 #[test]
-fn widget_metadata_reports_id_ime_purpose_cursor_and_scrim() {
+fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
     // Case `permission_denied_overlay_alpha_matches_other_widgets`.
     {
         let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -309,17 +309,17 @@ fn widget_metadata_reports_id_ime_purpose_cursor_and_scrim() {
         assert_eq!(Widget::test_id(&ti), Some("search_box"));
     }
 
-    // Case `ime_purpose_does_not_leak_secret_field_contents`.
+    // Case `ime_content_does_not_leak_secret_field_contents`.
     {
         let plain = TextInput::local();
         let secret = TextInput::local().with_secret(true);
         assert_eq!(
-            Widget::ime_purpose(&plain),
-            Some(winit::window::ImePurpose::Normal)
+            Widget::ime_content(&plain),
+            Some(crate::ime::InputContent::TEXT)
         );
         assert_eq!(
-            Widget::ime_purpose(&secret),
-            Some(winit::window::ImePurpose::Password)
+            Widget::ime_content(&secret),
+            Some(crate::ime::InputContent::PASSWORD)
         );
     }
 
@@ -1087,6 +1087,66 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
 }
 
 #[test]
+fn read_only_context_menu_copies_without_offering_or_applying_edits() {
+    let services = crate::host::HostServices::null();
+    let _host = crate::host::enter(&services);
+    crate::text_selection::clipboard_copy("clipboard");
+    let mut input = TextInput::local().with_initial_value("source");
+    input.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+    input.select_all();
+    input.open_text_menu_at([20.0, 20.0]);
+    let cut = input
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::Cut)))
+        .unwrap();
+    input.set_read_only(true);
+    assert!(
+        !input.dispatch_context_action(cut),
+        "a menu opened before read-only cannot edit"
+    );
+    assert_eq!(input.value(), "source");
+    assert_eq!(
+        crate::text_selection::clipboard_paste().as_deref(),
+        Some("clipboard")
+    );
+    input.context_menu.close();
+
+    let mut doc = AutoCommit::new();
+    drive(
+        &mut input,
+        &mut doc,
+        &cursor_moved(20.0, 20.0),
+        mods(false, false),
+    );
+    drive(
+        &mut input,
+        &mut doc,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        mods(false, false),
+    );
+    assert!(input.context_menu.is_open());
+    let labels = input.context_menu_labels();
+    assert!(labels.iter().any(|label| label == "Copy"));
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label == "Cut" || label == "Paste")
+    );
+    let copy = input
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::Copy)))
+        .unwrap();
+    input.dispatch_context_action(copy);
+    assert_eq!(
+        crate::text_selection::clipboard_paste().as_deref(),
+        Some("source")
+    );
+    assert_eq!(input.value(), "source");
+}
+
+#[test]
 fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
     // Case `right_click_selects_word_and_opens_menu_with_expected_labels`.
     {
@@ -1802,8 +1862,8 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert!(node.state.protected, "{kind:?}: a key field is protected");
         assert_eq!(node.text_selection, None, "{kind:?}: no selection offsets");
         assert_eq!(
-            Widget::ime_purpose(&ti),
-            Some(winit::window::ImePurpose::Password),
+            Widget::ime_content(&ti),
+            Some(crate::ime::InputContent::PASSWORD),
             "{kind:?}: no input-method suggestions learn the key"
         );
     }
@@ -3286,8 +3346,8 @@ fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
     let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
     input.set_selection(7, 10);
     let intent = crate::ime::ImeWindowState::from_widget(&input).unwrap();
-    assert!(intent.multiline);
-    assert_eq!(intent.purpose, winit::window::ImePurpose::Normal);
+    assert!(intent.content.hints.multiline);
+    assert_eq!(intent.content.purpose, crate::ime::InputPurpose::Text);
     let mut doc = AutoCommit::new();
     assert!(drive(
         &mut input,
@@ -3310,6 +3370,8 @@ fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
     assert!(
         !crate::ime::ImeWindowState::from_widget(&input)
             .unwrap()
+            .content
+            .hints
             .multiline
     );
     input.set_focus(false);
@@ -3317,8 +3379,7 @@ fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
     let mut secret = TextInput::local().multiline(true).with_secret(true);
     secret.set_focus(true);
     let secret = crate::ime::ImeWindowState::from_widget(&secret).unwrap();
-    assert_eq!(secret.purpose, winit::window::ImePurpose::Password);
-    assert!(!secret.multiline);
+    assert_eq!(secret.content, crate::ime::InputContent::PASSWORD);
 }
 
 fn shaped_row(ti: &TextInput, byte: usize) -> usize {
@@ -4366,7 +4427,7 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
     Widget::sync(&mut input, &document, &automerge::ROOT);
     assert_eq!(&*changes.borrow(), &["abc"]);
 
-    for change in 0..3 {
+    for change in 0..4 {
         drive(&mut input, &mut document, &char_key("v"), mods(true, false));
         let reply = clipboard.0.lock().unwrap().take().unwrap();
         match change {
@@ -4378,9 +4439,27 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
                 input.set_cursor_pos(0);
                 input.set_cursor_pos(3);
             }
-            _ => {
+            2 => {
                 input.set_text("changed");
                 input.set_text("abc");
+            }
+            _ => {
+                input.set_read_only(true);
+                let _ = reply.send(Some("stale".into()));
+                Widget::sync(&mut input, &document, &automerge::ROOT);
+                assert_eq!(
+                    input.value(),
+                    "abc",
+                    "read-only fields reject pending paste"
+                );
+                input.set_read_only(false);
+                Widget::sync(&mut input, &document, &automerge::ROOT);
+                assert_eq!(
+                    input.value(),
+                    "abc",
+                    "re-enabling must not revive stale paste"
+                );
+                continue;
             }
         }
         let _ = reply.send(Some("stale".into()));
@@ -4819,4 +4898,191 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
             );
         }
     }
+}
+
+#[test]
+fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
+    let mut ti = TextInput::local().with_initial_value("hello world");
+    assert!(
+        !ti.replace_range(0..5, "hullo", "HELLO"),
+        "a range that no longer holds the expected text is refused"
+    );
+    assert!(!ti.replace_range(6..40, "world", "there"));
+    assert_eq!(ti.value(), "hello world");
+    assert!(ti.replace_range(6..11, "world", "there"));
+    assert_eq!(ti.value(), "hello there");
+    assert_eq!(ti.selection_range(), Some((6, 11)));
+
+    let mut read_only = TextInput::local()
+        .with_initial_value("hello")
+        .with_read_only(true);
+    assert!(!read_only.replace_range(0..5, "hello", "HELLO"));
+    assert_eq!(read_only.value(), "hello");
+
+    // A spelling fix chosen from the menu refuses a word that changed
+    // while the menu was open.
+    let mut ti = TextInput::local()
+        .with_spell_language("en_US")
+        .with_initial_value("teh");
+    ti.core.set_selection(0, 3);
+    ti.open_context_menu([10.0, 10.0]);
+    let fix = ti
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::ApplySpelling { .. })))
+        .expect("a correction is offered");
+    ti.set_text("ten");
+    assert!(!ti.dispatch_context_action(fix));
+    assert_eq!(ti.value(), "ten");
+}
+
+#[test]
+fn a_secret_field_never_hands_its_text_to_a_text_action() {
+    for field in [
+        TextInput::local().with_secret(true),
+        TextInput::local().with_kind(TextInputKind::Password),
+        TextInput::local().with_kind(TextInputKind::Secret),
+    ] {
+        let mut ti = field
+            .with_text_action("translate", "Translate")
+            .with_initial_value("hunter2");
+        ti.core.set_selection(0, 7);
+        ti.open_context_menu([10.0, 10.0]);
+        assert!(
+            !ti.context_actions
+                .iter()
+                .any(|action| matches!(action, Some(CtxAction::TextAction(_)))),
+            "{:?}",
+            ti.context_menu_labels()
+        );
+        assert_eq!(ti.take_text_action_request(), None);
+    }
+}
+
+#[test]
+fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
+    use crate::ime::InputPurpose;
+    // `zwp_text_input_v3` wire values.
+    const NORMAL: u32 = 0;
+    const DIGITS: u32 = 2;
+    const NUMBER: u32 = 3;
+    const PHONE: u32 = 4;
+    const URL: u32 = 5;
+    const EMAIL: u32 = 6;
+    const NAME: u32 = 7;
+    const PASSWORD: u32 = 8;
+    const PIN: u32 = 9;
+    const DATE: u32 = 10;
+    const TIME: u32 = 11;
+    const TERMINAL: u32 = 13;
+    const COMPLETION: u32 = 0x1;
+    const SPELLCHECK: u32 = 0x2;
+    const AUTO_CAPITALIZATION: u32 = 0x4;
+    const LOWERCASE: u32 = 0x8;
+    const TITLECASE: u32 = 0x20;
+    const SECRET: u32 = 0x40 | 0x80;
+    const MULTILINE: u32 = 0x200;
+
+    let kind = |kind| TextInput::local().with_kind(kind);
+    let cases: Vec<(&str, TextInput, (u32, u32))> = vec![
+        // Prose asks for nothing beyond the input method's defaults, as
+        // before, whatever the toolkit's own checking does.
+        ("prose", TextInput::local(), (0, NORMAL)),
+        (
+            "prose, multiline",
+            TextInput::local().multiline(true),
+            (MULTILINE, NORMAL),
+        ),
+        (
+            "prose, checking off",
+            TextInput::local()
+                .with_spellcheck(false)
+                .with_autocorrect(false),
+            (0, NORMAL),
+        ),
+        (
+            "prose, spellcheck on",
+            TextInput::local().with_spellcheck(true),
+            (SPELLCHECK, NORMAL),
+        ),
+        (
+            "prose, autocorrect on",
+            TextInput::local().with_autocorrect(true),
+            (COMPLETION, NORMAL),
+        ),
+        ("name", kind(TextInputKind::Name), (TITLECASE, NAME)),
+        ("search", kind(TextInputKind::Search), (0, NORMAL)),
+        (
+            "username",
+            kind(TextInputKind::Username),
+            (LOWERCASE, NORMAL),
+        ),
+        ("email", kind(TextInputKind::Email), (LOWERCASE, EMAIL)),
+        ("url", kind(TextInputKind::Url), (LOWERCASE, URL)),
+        ("path", kind(TextInputKind::Path), (0, NORMAL)),
+        ("code", kind(TextInputKind::Code), (0, NORMAL)),
+        (
+            "code, multiline",
+            kind(TextInputKind::Code).multiline(true),
+            (MULTILINE, NORMAL),
+        ),
+        ("number", kind(TextInputKind::Number), (0, NUMBER)),
+        ("phone", kind(TextInputKind::Phone), (0, PHONE)),
+        ("pin", kind(TextInputKind::Pin), (0, PIN)),
+        (
+            "masked pin keeps its digit pad",
+            TextInput::local()
+                .with_secret(true)
+                .with_kind(TextInputKind::Pin),
+            (SECRET, PIN),
+        ),
+        (
+            "password",
+            kind(TextInputKind::Password),
+            (SECRET, PASSWORD),
+        ),
+        ("secret", kind(TextInputKind::Secret), (SECRET, PASSWORD)),
+        (
+            "masked email",
+            TextInput::local()
+                .with_secret(true)
+                .with_kind(TextInputKind::Email),
+            (SECRET, PASSWORD),
+        ),
+        (
+            "password, multiline and spellcheck on",
+            kind(TextInputKind::Password)
+                .multiline(true)
+                .with_spellcheck(true)
+                .with_autocorrect(true),
+            (SECRET, PASSWORD),
+        ),
+    ];
+    for (case, field, want) in cases {
+        let mut field = field.with_initial_value("x");
+        field.set_focus(true);
+        field.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 120.0));
+        draw_to_populate(&mut field);
+        let intent = crate::ime::ImeWindowState::from_widget(&field).expect(case);
+        assert_eq!(intent.content.wayland(), want, "{case}");
+        assert_eq!(
+            intent.content.winit_purpose() == winit::window::ImePurpose::Password,
+            want.0 & SECRET == SECRET,
+            "{case}: platforms with three purposes still hide a secret"
+        );
+    }
+
+    // Purposes no text field kind asks for, which custom editors declare.
+    for (purpose, want) in [
+        (InputPurpose::Decimal, NUMBER),
+        (InputPurpose::OneTimeCode, DIGITS),
+        (InputPurpose::Date, DATE),
+        (InputPurpose::Time, TIME),
+        (InputPurpose::Terminal, TERMINAL),
+    ] {
+        assert_eq!(crate::ime::InputContent::of(purpose).wayland(), (0, want));
+    }
+    let mut sentences = crate::ime::InputContent::TEXT;
+    sentences.hints.capitalization = crate::ime::Capitalization::Sentences;
+    assert_eq!(sentences.wayland(), (AUTO_CAPITALIZATION, NORMAL));
 }

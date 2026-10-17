@@ -29,8 +29,9 @@ pub fn extend(points: &mut Vec<StrokePoint>, more: &[StrokePoint]) {
     else {
         return;
     };
-    let room = MAX_POINTS.saturating_sub(points.len());
-    let more = more.iter().take(room).cloned();
+    // Keep the whole edit so the action's shape validation can refuse an
+    // oversized stroke rather than silently accepting only part of it.
+    let more = more.iter().cloned();
     if at(next).distance(at(first)) < at(next).distance(at(last)) {
         let mut joined: Vec<StrokePoint> = more.collect();
         joined.reverse();
@@ -246,6 +247,41 @@ pub fn crossed(art: &Artwork, along: &[[f64; 2]], layer: Option<&str>) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_oversized_extension_is_refused_without_losing_points() {
+        use crate::actions::{EditMarks, NewStroke, Paint};
+        use ui::prelude::Replica;
+
+        for near_start in [false, true] {
+            let mut art = Replica::<Artwork>::new();
+            art.apply(Artwork::PAINT.with(Paint {
+                strokes: vec![NewStroke {
+                    id: Some("line".into()),
+                    points: (0..MAX_POINTS - 1)
+                        .map(|x| vec![ui::num::f64_of_usize(x), 20.0])
+                        .collect(),
+                    size: 4.0,
+                    colour: "#112233".into(),
+                    ..NewStroke::default()
+                }],
+                layer: None,
+                group: None,
+            }))
+            .unwrap();
+            let before = art.state().unwrap();
+            let x = if near_start { -10.0 } else { 4100.0 };
+            let error = art
+                .apply(Artwork::EDIT_MARKS.with(EditMarks {
+                    ids: vec!["line".into()],
+                    extend: Some(vec![vec![x, 20.0], vec![x * 2.0, 20.0]]),
+                    ..EditMarks::default()
+                }))
+                .unwrap_err();
+            assert!(error.to_string().contains("points"), "{error}");
+            assert_eq!(art.state().unwrap(), before);
+        }
+    }
 
     #[test]
     fn extending_carries_on_from_the_nearer_end() {

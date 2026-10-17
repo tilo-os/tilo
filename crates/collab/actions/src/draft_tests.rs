@@ -122,6 +122,39 @@ fn any_action_is_drafted_from_its_parameters() {
 }
 
 #[test]
+fn password_fields_in_object_parameters_are_withheld() {
+    let action = descriptor(
+        "Connect",
+        vec![
+            ActionParam::required("account", ParamType::Object, "Account").with_schema(json!({
+                "type": "object",
+                "properties": {"token": {"type": "string", "format": "password"}}
+            })),
+        ],
+    );
+    let arguments = args(json!({"account": {"token": "private-token"}}));
+    let draft = Draft::render(&action, &arguments);
+    assert_eq!(draft.fields[0].value, DraftValue::Withheld);
+    assert!(!draft.fields[0].editable);
+    assert!(
+        !serde_json::to_string(&draft)
+            .unwrap()
+            .contains("private-token")
+    );
+    assert!(
+        draft
+            .apply_edits(
+                &arguments,
+                &[DraftEdit {
+                    path: vec!["account".into(), "token".into()],
+                    text: "replacement".into(),
+                }]
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn edits_change_only_editable_fields_and_keep_their_types() {
     let arguments = mail_arguments();
     let draft = Draft::render(&send(), &arguments);
@@ -197,5 +230,40 @@ fn a_tag_opts_an_action_into_the_message_preview() {
             .role(MessageRole::Body)
             .map(|field| field.value.line()),
         Some("Hi all".into())
+    );
+}
+
+#[test]
+fn a_draft_gives_back_the_arguments_it_shows_and_no_others() {
+    let rename = descriptor(
+        "Rename an entry here",
+        vec![
+            ActionParam::required("entry", ParamType::Text, "Entry"),
+            ActionParam::required("name", ParamType::Text, "New name"),
+            ActionParam::optional("keep", ParamType::Boolean, "Keep a copy"),
+            ActionParam::optional("count", ParamType::Integer, "Count"),
+        ],
+    );
+    let arguments = args(json!({
+        "entry": "doc (3).txt", "name": "Meeting notes.txt", "keep": false, "count": 3
+    }));
+    let rebuilt = Draft::render(&rename, &arguments)
+        .arguments()
+        .expect("all shown");
+    assert_eq!(arguments_digest(&rebuilt), arguments_digest(&arguments));
+
+    // A null the draft leaves out rebuilds to other arguments: the digest
+    // tells them apart.
+    let with_null = args(json!({"entry": "a", "name": "b", "keep": null}));
+    let rebuilt = Draft::render(&rename, &with_null)
+        .arguments()
+        .expect("shown");
+    assert_ne!(arguments_digest(&rebuilt), arguments_digest(&with_null));
+
+    // What a draft shows only in part gives back nothing.
+    assert!(
+        Draft::render(&send(), &mail_arguments())
+            .arguments()
+            .is_none()
     );
 }

@@ -83,7 +83,7 @@ impl Bridge {
                 (widget.is_enabled()
                     && widget.ime_cursor_rect().is_some()
                     && widget.ime_requires_deferred_ack()
-                    && widget.ime_purpose().is_some())
+                    && widget.ime_content().is_some())
                 .then(|| widget.ime_edit_fingerprint(&self.key))
                 .flatten()
             })

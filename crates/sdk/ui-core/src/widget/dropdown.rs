@@ -1711,8 +1711,8 @@ impl Widget for Dropdown {
             .ime_edit_fingerprint(&self.filter, &self.filter_selection, key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
     fn is_enabled(&self) -> bool {
         self.effectively_enabled()

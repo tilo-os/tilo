@@ -465,6 +465,21 @@ impl SpeedTestApp {
 impl ResourceSurface<SpeedTest, SpeedEffect> for SpeedTestApp {
     fn present(&mut self, state: &Rc<SpeedTest>) {
         self.results = state.newest_first().cloned().collect();
+        if self.phase == Phase::Complete {
+            // The completed dial and its metadata represent the same newest
+            // record. A document change may replace it or clear all results.
+            if let Some(latest) = self.results.first() {
+                self.result = Some(ResultSet {
+                    ping: latest.ping,
+                    jitter: latest.jitter,
+                    download: latest.download,
+                    upload: latest.upload,
+                });
+                self.display_value = latest.download;
+            } else {
+                self.stop();
+            }
+        }
         self.root = None;
         self.structure_dirty = true;
         self.refresh_view();
@@ -803,6 +818,41 @@ mod tests {
         assert!((shown.download - 642.7).abs() < f64::EPSILON);
         let below: Vec<f64> = app.history().iter().map(|run| run.download).collect();
         assert_eq!(below, [618.2, 584.6]);
+    }
+
+    #[test]
+    fn completed_dial_follows_record_changes_and_clearing_results() {
+        let mut app = TestApp::<SpeedTestShell>::capture(Some("complete"))
+            .expect("the completed production surface opens");
+        app.invoke(SpeedTest::RECORD.with((
+            20.0,
+            2.0,
+            123.0,
+            45.0,
+            "Another server".into(),
+            "another-device".into(),
+        )))
+        .expect("record another measurement");
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(surface.result.unwrap().download.total_cmp(&123.0).is_eq());
+            assert_eq!(surface.server_label(), "Another server");
+            assert_eq!(
+                surface.history().len(),
+                3,
+                "only the dial's record is omitted"
+            );
+            assert!(surface.history()[0].download.total_cmp(&642.7).is_eq());
+        })
+        .unwrap();
+        app.invoke_confirmed(SpeedTest::CLEAR.invoke())
+            .expect("clear results");
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Idle));
+            assert!(surface.result.is_none());
+            assert!(surface.history().is_empty());
+            assert!(surface.shared.borrow().readings.download.is_none());
+        })
+        .unwrap();
     }
 
     /// Neither the wide metadata row nor the stacked dial touches the primary action.

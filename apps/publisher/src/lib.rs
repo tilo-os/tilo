@@ -222,17 +222,27 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
             ui::text_selection::clipboard_copy(&proof);
             Ok(Notice::info("publisher-proof-copied").detailed(proof))
         }
-        KeyEffect::CopySecret => {
-            let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
-            if !ui::try_clipboard_copy_secret(&hex::encode(key.to_bytes()), KEY_ON_CLIPBOARD_FOR) {
-                return Err("Could not copy the key to the clipboard".into());
-            }
-            Ok(Notice::success("publisher-secret-copied")
-                .explained("publisher-secret-copied-detail"))
-        }
-        KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus => {
+        KeyEffect::CopySecret | KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus => {
             Err(format!("`{}` runs as a job", effect.id()))
         }
+    }
+}
+
+/// Start copying the secret key, on the UI thread: the clipboard lives there.
+fn copy_secret(secrets: &SecretStore) -> Result<ui::clipboard::ClipboardCopy, String> {
+    let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
+    Ok(ui::try_clipboard_copy_secret(
+        &hex::encode(key.to_bytes()),
+        KEY_ON_CLIPBOARD_FOR,
+    ))
+}
+
+/// What a finished secret-key copy says.
+fn copied_secret(copied: bool) -> Result<Notice, String> {
+    if copied {
+        Ok(Notice::success("publisher-secret-copied").explained("publisher-secret-copied-detail"))
+    } else {
+        Err("Could not copy the key to the clipboard".into())
     }
 }
 
@@ -481,6 +491,30 @@ impl ResourceApp for App {
                 return Ok(cx.thread(
                     move |_| remote(&effect, &profile, &remote_secrets),
                     move |(), result: Result<Notice, String>, _| {
+                        pane.set(Pane {
+                            key: KeyState::load(&reload_secrets),
+                            busy: false,
+                            notice: Some(result.clone().unwrap_or_else(Notice::error)),
+                        });
+                        result.map(|_| Effected::done())
+                    },
+                ));
+            }
+            if matches!(effect, KeyEffect::CopySecret) {
+                // The copy settles without the UI thread waiting on it; the
+                // effect finishes once it has.
+                let copy = copy_secret(&secrets)?;
+                handler.set(Pane {
+                    busy: true,
+                    notice: None,
+                    ..handler.get()
+                });
+                let pane = handler.clone();
+                let reload_secrets = secrets.clone();
+                return Ok(cx.thread(
+                    move |_| copy.wait(),
+                    move |(), copied: bool, _| {
+                        let result = copied_secret(copied);
                         pane.set(Pane {
                             key: KeyState::load(&reload_secrets),
                             busy: false,

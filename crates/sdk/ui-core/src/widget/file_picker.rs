@@ -2011,8 +2011,8 @@ impl Widget for FilePicker {
         Widget::ime_cursor_rect(&self.filename)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.filename.ime_purpose()
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.filename.ime_content()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {

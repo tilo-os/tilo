@@ -587,6 +587,30 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     }
 }
 
+#[test]
+fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
+    let mut newer = LibraryPhoto::from_image(OpenImage::fixture("newer.png", 20, 10));
+    newer.captured_at = Some("2026-09-07".into());
+    let mut older = LibraryPhoto::from_image(OpenImage::fixture("older.png", 20, 10));
+    older.captured_at = Some("2026-08-01".into());
+    let previous = crate::model::PhotoLibrary::of(vec![older.clone()], Vec::new());
+    let current = crate::model::PhotoLibrary::of(vec![newer, older], Vec::new());
+    let anchor = crate::actions::TimelineAnchor::Day {
+        day: "2026-08-01".into(),
+    };
+    let mut app = test_app();
+    app.view_timeline(&previous, Some(&anchor)).unwrap();
+    assert_eq!(app.timeline_scroll_y, 0.0);
+
+    // The day still exists in the cache, but now has another day before it.
+    // A resource open must resolve against the library it was dispatched on.
+    app.view_timeline(&current, Some(&anchor)).unwrap();
+    let mut fresh = test_app();
+    fresh.view_timeline(&current, Some(&anchor)).unwrap();
+    assert!(fresh.timeline_scroll_y > 0.0);
+    assert_eq!(app.timeline_scroll_y, fresh.timeline_scroll_y);
+}
+
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
@@ -958,6 +982,53 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         ));
         assert_eq!(app.timeline_density, before + 1);
         assert_eq!(crate::test_doc::library(&doc), library);
+    }
+}
+
+#[test]
+fn collection_actions_leave_unrelated_library_destinations() {
+    let mut photo = LibraryPhoto::from_image(OpenImage::fixture("trip.png", 20, 10));
+    photo.favorite = true;
+    photo.tags = crate::model::labels(["Trip".to_owned()]);
+    let library = PhotoLibrary::of(
+        vec![photo.clone()],
+        vec![Album {
+            id: "photos.album:trip".into(),
+            name: "Trip".into(),
+            photo_ids: crate::model::labels([photo.id]),
+        }],
+    );
+    for destination in [
+        LibraryDestination::People,
+        LibraryDestination::Albums,
+        LibraryDestination::Places,
+        LibraryDestination::Analysis,
+    ] {
+        for effect in [
+            PhotosEffect::ViewAlbum {
+                album_id: "photos.album:trip".into(),
+            },
+            PhotosEffect::ViewFavorites,
+            PhotosEffect::ViewTag { tag: "Trip".into() },
+        ] {
+            let mut app = test_app();
+            app.library_destination = destination;
+            app.people_mode = destination == LibraryDestination::People;
+            app.selection_mode = true;
+            app.answer_effect(effect, tilo_actions::InvocationId::new(), &library)
+                .unwrap();
+            assert!(app.library_mode);
+            assert_eq!(app.library_destination, LibraryDestination::Timeline);
+            assert!(
+                !app.people_mode,
+                "the requested photo collection replaces People"
+            );
+            assert!(
+                !app.selection_mode,
+                "old collection selection is not carried over"
+            );
+            assert!(app.active_album.is_some() || app.active_favorites || app.active_tag.is_some());
+        }
     }
 }
 
@@ -2398,6 +2469,71 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert!(layout.card.x0 >= app.rect.x0 && layout.card.x1 <= app.rect.x1);
         assert!(layout.card.y0 >= app.rect.y0 && layout.card.y1 <= app.rect.y1);
         assert!(layout.close.is_some_and(|rect| rect.width() >= 32.0));
+    }
+}
+
+#[test]
+fn crop_to_view_uses_the_edited_image_aspect_ratio() {
+    for quarters in [0, 1] {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        let original = shots_pattern(400, 200);
+        let hash = app
+            .content
+            .put(&pixels::encode_png(&original).unwrap())
+            .unwrap();
+        let open = OpenImage::new("crop.png", 400, 200, hash);
+        let id = crate::test_doc::put_image(&mut doc, &open);
+        let edits = crate::model::Edits {
+            crop: Rect01 {
+                x: 0.0,
+                y: 0.0,
+                w: 0.25,
+                h: 1.0,
+            },
+            rotate_quarters: quarters,
+        };
+        crate::test_doc::set_photo_edits(&mut doc, &id, edits);
+        app.show_photo(&id);
+        sync(&mut app, &mut doc);
+        let viewer = app.viewer.as_mut().unwrap();
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = viewer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(200.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+            )
+            .unwrap();
+        viewer.apply_layout(&taffy, node, Point::ORIGIN);
+        app.set_zoom(2.0);
+        let expected = if quarters == 0 {
+            Rect01 {
+                x: 0.0,
+                y: 0.25,
+                w: 1.0,
+                h: 0.5,
+            }
+        } else {
+            Rect01 {
+                x: 0.25,
+                y: 0.0,
+                w: 0.5,
+                h: 1.0,
+            }
+        };
+        assert_eq!(app.visible_rect(), expected);
+        app.pending.set(Some(Hit::CropToView));
+        app.drain_pending();
+        settle(&mut app, &mut doc);
+        assert_eq!(
+            crate::test_doc::photo_edits(&doc, &id),
+            edits.cropped_from_view(expected)
+        );
     }
 }
 

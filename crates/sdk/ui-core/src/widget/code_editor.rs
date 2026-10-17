@@ -226,13 +226,14 @@ impl CodeEditor {
     /// nothing; assistive technology hears it as read-only.
     #[must_use]
     pub fn read_only(mut self) -> Self {
-        self.read_only = true;
+        self.set_read_only(true);
         self
     }
 
     /// [`Self::read_only`] after construction.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
+        self.inner.set_read_only(read_only);
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -657,14 +658,6 @@ impl Widget for CodeEditor {
         if let WindowEvent::CursorLeft { .. } = event {
             self.hover = None;
         }
-        if self.read_only && edits_text(event, *ctx.modifiers) {
-            // Read-only: the key is answered (nothing else acts on it) and
-            // the text stays as it is.
-            if self.inner.is_focused() {
-                *ctx.handled = true;
-            }
-            return;
-        }
         self.inner.handle_event(event, ctx);
     }
 
@@ -709,20 +702,20 @@ impl Widget for CodeEditor {
         Widget::ime_cursor_rect(&self.inner)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         if self.read_only || !self.inner.is_focused() {
             return None;
         }
         // Source text uses the shared input contract; no bytes go to a process.
-        self.inner.ime_purpose()
+        self.inner.ime_content()
     }
 
     fn ime_multiline(&self) -> bool {
-        self.ime_purpose().is_some() && self.inner.ime_multiline()
+        self.ime_content().is_some() && self.inner.ime_multiline()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         self.inner.ime_edit_fingerprint(key)
     }
 
@@ -888,49 +881,6 @@ pub fn paint_diagnostic_underline(
         None,
         &path,
     );
-}
-
-/// Whether `event` would change the text of a focused editor: typed text,
-/// an editing key, the input method, or a cut, paste, undo or redo
-/// shortcut. Moving the caret, selecting and copying do not.
-fn edits_text(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{Key, NamedKey};
-    match event {
-        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Preedit(..)) => true,
-        WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    text,
-                    ..
-                },
-            ..
-        } => {
-            let state = modifiers.state();
-            let command = state.control_key() || state.super_key();
-            match logical_key {
-                Key::Named(
-                    NamedKey::Enter
-                    | NamedKey::Backspace
-                    | NamedKey::Delete
-                    | NamedKey::Tab
-                    | NamedKey::Space
-                    | NamedKey::Cut
-                    | NamedKey::Paste
-                    | NamedKey::Undo
-                    | NamedKey::Redo,
-                ) => true,
-                Key::Character(c) if command => {
-                    matches!(c.to_ascii_lowercase().as_str(), "x" | "v" | "z" | "y" | "d")
-                }
-                Key::Character(_) => text.is_some(),
-                _ => false,
-            }
-        }
-        _ => false,
-    }
 }
 
 impl crate::undo::UndoPoints for CodeEditor {
@@ -1576,8 +1526,8 @@ mod document_tests {
         editor.set_focused(true);
         editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         assert_eq!(
-            Widget::ime_purpose(&editor),
-            Some(winit::window::ImePurpose::Normal)
+            Widget::ime_content(&editor),
+            Some(crate::ime::InputContent::TEXT)
         );
         let key = [19; 32];
         let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
@@ -1589,7 +1539,7 @@ mod document_tests {
         );
         assert_eq!(editor.value(), "日本語 café");
         editor.set_read_only(true);
-        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_content(&editor).is_none());
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
         dispatch(
             &mut editor,
@@ -1599,7 +1549,7 @@ mod document_tests {
         editor.set_read_only(false);
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_some());
         editor.set_focused(false);
-        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_content(&editor).is_none());
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
     }
 
@@ -1612,6 +1562,33 @@ mod document_tests {
             text.map(Into::into),
             ElementState::Pressed,
         ))
+    }
+
+    #[test]
+    fn read_only_editor_refuses_middle_click_paste_and_can_be_made_editable() {
+        let services = crate::host::HostServices::null();
+        let _host = crate::host::enter(&services);
+        crate::text_selection::clipboard_copy_primary("pasted");
+        let mut editor = CodeEditor::local().with_initial_value("source").read_only();
+        editor.set_focused(true);
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        dispatch(
+            &mut editor,
+            &crate::synthetic_input::cursor_moved(50.0, 15.0),
+        );
+        let paste = crate::synthetic_input::mouse_input(
+            ElementState::Pressed,
+            winit::event::MouseButton::Middle,
+        );
+        dispatch(&mut editor, &paste);
+        assert_eq!(editor.value(), "source");
+        editor.set_read_only(false);
+        dispatch(&mut editor, &paste);
+        assert!(editor.value().contains("pasted"));
+        let before = editor.value().to_owned();
+        editor.set_read_only(true);
+        dispatch(&mut editor, &paste);
+        assert_eq!(editor.value(), before);
     }
 
     #[test]

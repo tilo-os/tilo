@@ -2338,13 +2338,21 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .note_selection_capable(connection, &app_id);
                 }
-                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection } => {
+                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent {
+                    selection,
+                    bounds,
+                } => {
                     // The app id is the launcher's: a selection is only ever
                     // credited to the app that holds it, and only while it
-                    // is focused.
+                    // is focused — so the focused window is the one its
+                    // window-local bounds are in.
+                    let area = crate::shell::selection_agent::desktop_area(
+                        bounds,
+                        state.keyboard_focus_desktop_rect(),
+                    );
                     changed |= frame_builder
                         .host_mut()
-                        .receive_ask_agent(&app_id, selection);
+                        .receive_ask_agent(&app_id, selection, area);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
@@ -12761,6 +12769,7 @@ pub fn run() {
                             let reply_net = Arc::clone(net);
                             let local_peer = net.local_peer_id_hash();
                             let workspace_topic = inbound.workspace_topic;
+                            let keyframe_net = Arc::clone(net);
                             let input_sink = Arc::new(move |input| {
                                 if let Ok(event) = postcard::to_allocvec(&input) {
                                     let _ = reply_net.publish_legacy_message(
@@ -12773,6 +12782,16 @@ pub fn run() {
                                     );
                                 }
                             });
+                            let keyframe_sink = Arc::new(move |seq| {
+                                let _ = keyframe_net.publish_legacy_message(
+                                    workspace_topic,
+                                    crate::network::NeighbourMsg::SurfaceKeyframeRequest {
+                                        peer: local_peer,
+                                        surface,
+                                        seq,
+                                    },
+                                );
+                            });
                             let stream = crate::shell::peer_view::PeerStreamStart {
                                 source_peer,
                                 surface,
@@ -12782,6 +12801,7 @@ pub fn run() {
                                 display_size: Some((width, height)),
                                 hdr_static_metadata,
                                 input_sink,
+                                keyframe_sink,
                                 tab,
                             };
                             let mounted = !stream.app_id.is_empty()
@@ -12855,6 +12875,13 @@ pub fn run() {
                                     "dropping malformed remote input"
                                 ),
                             }
+                        }
+                        crate::network::NeighbourMsg::SurfaceKeyframeRequest {
+                            peer,
+                            surface,
+                            seq,
+                        } => {
+                            state.request_share_keyframe(peer, surface, seq);
                         }
                         _ => {
                             tracing::debug!("ignoring non-stream message in the legacy inbox");

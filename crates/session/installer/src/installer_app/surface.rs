@@ -1485,7 +1485,8 @@ impl InstallerApp {
                 let Some(key) = &self.recovery_key else {
                     return Err("No recovery key has been generated".into());
                 };
-                if !ui::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR) {
+                let copy = ui::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
+                if !self.recovery_key_copy.watch(copy) {
                     return Err("Could not copy the recovery key to the clipboard".into());
                 }
                 self.recovery_key_copied = true;

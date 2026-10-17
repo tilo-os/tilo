@@ -230,6 +230,28 @@ fn post_to(channel: &str, text: &str) -> Invoke<Chat> {
 }
 
 #[test]
+fn a_reply_to_a_missing_or_deleted_message_is_refused() {
+    let mut ada = room();
+    assert!(
+        ada.apply(reply(&id("missing"), "Where did it go?"))
+            .is_err()
+    );
+    assert!(ada.state().unwrap().messages.is_empty());
+
+    ada.apply(post("The plan")).unwrap();
+    let parent = said(&ada, "The plan");
+    ada.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+        message: parent.clone(),
+    }))
+    .unwrap();
+    assert!(ada.apply(reply(&parent, "My answer")).is_err());
+    assert!(
+        ada.state().unwrap().messages.is_empty(),
+        "a reply must not be accepted into a thread nobody can open"
+    );
+}
+
+#[test]
 fn an_attachment_is_posted_by_its_content_address() {
     let mut ada = room();
     let blob = "ab".repeat(32);
@@ -444,6 +466,48 @@ fn channels_and_categories_are_made_moved_and_deleted() {
             .all(|channel| channel.category.is_empty()),
         "its channels stay, uncategorised"
     );
+}
+
+#[test]
+fn a_channel_category_must_belong_to_its_workspace() {
+    let mut ada = room();
+    ada.apply(Chat::CREATE_WORKSPACE.with(chat::CreateWorkspace {
+        name: "Other workspace".into(),
+    }))
+    .unwrap();
+    let other_category = ada
+        .state()
+        .unwrap()
+        .categories
+        .iter()
+        .find(|(_, category)| category.workspace != id("ws_home"))
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    let create = |category| {
+        Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+            workspace: id("ws_home"),
+            name: "project".into(),
+            category: Some(category),
+            kind: None,
+        })
+    };
+    let before = ada.state().unwrap();
+    assert!(ada.apply(create(other_category)).is_err());
+    assert!(ada.apply(create(id("missing"))).is_err());
+    let after = ada.state().unwrap();
+    assert_eq!(
+        after.channels, before.channels,
+        "no hidden channel is created"
+    );
+    assert_eq!(after.drafts, before.drafts, "no orphan draft is created");
+
+    ada.apply(create(id("cat_home_text"))).unwrap();
+    let chat = ada.state().unwrap();
+    assert!(chat.channels.values().any(|channel| {
+        channel.name == "project"
+            && channel.workspace == id("ws_home")
+            && channel.category == Some(id("cat_home_text"))
+    }));
 }
 
 #[test]

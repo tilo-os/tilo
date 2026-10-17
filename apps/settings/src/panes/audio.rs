@@ -766,6 +766,144 @@ pub struct AudioModel {
     changes: DeviceChanges,
     /// The hotplug re-read of the graph, on the background executor.
     rescan: crate::device_read::DeviceRead<AudioGraph>,
+    /// While a pane shows the area: `PipeWire`'s own change stream, which
+    /// says when to re-read the graph.
+    following: std::rc::Weak<GraphMonitor>,
+}
+
+/// `pw-dump --monitor`, held open while a pane shows the Sound area. It
+/// prints each change to the graph as it happens, so the pane re-reads the
+/// graph on a change instead of every [`HOTPLUG_INTERVAL`]. (The native
+/// registry watch in `media::audio_watch` would link libpipewire into
+/// Settings; `pw-dump` is the tool the graph is already read with.)
+struct GraphMonitor {
+    child: Option<std::process::Child>,
+    changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Cleared when the monitor ends; the pane then reads on its timer.
+    alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl GraphMonitor {
+    /// Start the monitor; `None` when `pw-dump` cannot run here. It starts
+    /// flagged, so the first look reads the graph. Must be called on the UI
+    /// thread, in the window's wake scope.
+    fn start() -> Option<Self> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let mut child = std::process::Command::new("pw-dump")
+            .arg("--monitor")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdout = child.stdout.take()?;
+        let changed = Arc::new(AtomicBool::new(true));
+        let alive = Arc::new(AtomicBool::new(true));
+        let (flag, running) = (Arc::clone(&changed), Arc::clone(&alive));
+        let wake = ui::WakeHandle::new();
+        let started = crate::device_read::thread(
+            "settings-audio-monitor",
+            Box::new(move || {
+                use std::io::BufRead as _;
+                let mut stdout = std::io::BufReader::new(stdout);
+                let mut graph = std::collections::HashSet::new();
+                let mut update = Vec::new();
+                // Each update is one pretty-printed array, closed by a `]`
+                // line of its own.
+                while stdout
+                    .read_until(b'\n', &mut update)
+                    .is_ok_and(|read| read > 0)
+                {
+                    // An update that never closes is read as a change, not
+                    // kept growing.
+                    let overlong = update.len() > 16 * 1024 * 1024;
+                    if overlong || update.ends_with(b"\n]\n") || update == b"]\n" {
+                        let moved = serde_json::from_slice::<serde_json::Value>(&update)
+                            .map_or(true, |update| moves_graph(&update, &mut graph));
+                        update.clear();
+                        if moved {
+                            flag.store(true, Ordering::Release);
+                            wake.wake();
+                        }
+                    }
+                }
+                running.store(false, Ordering::Release);
+                wake.wake();
+            }),
+        );
+        if started.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        Some(Self {
+            child: Some(child),
+            changed,
+            alive,
+        })
+    }
+
+    /// Flagged by hand: no process, never ends.
+    #[cfg(test)]
+    fn by_hand() -> Self {
+        use std::sync::atomic::AtomicBool;
+        Self {
+            child: None,
+            changed: Arc::new(AtomicBool::new(true)),
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether a change waits to be read.
+    fn pending(&self) -> bool {
+        self.changed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether the graph changed since the last call.
+    fn take(&self) -> bool {
+        self.changed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl Drop for GraphMonitor {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Whether `update`, one array `pw-dump --monitor` printed, adds, changes
+/// or removes a node, a device or the default-device metadata. Clients,
+/// ports and links do not count: every `pw-dump` run that re-reads the
+/// graph comes and goes as a client, and counting it would re-read forever.
+/// `graph` keeps the ids that counted, since a removal names only its id.
+fn moves_graph(update: &serde_json::Value, graph: &mut std::collections::HashSet<u64>) -> bool {
+    let mut moved = false;
+    for object in update.as_array().into_iter().flatten() {
+        let Some(id) = object.get("id").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        match object.get("type").and_then(serde_json::Value::as_str) {
+            Some(
+                "PipeWire:Interface:Node"
+                | "PipeWire:Interface:Device"
+                | "PipeWire:Interface:Metadata",
+            ) => {
+                graph.insert(id);
+                moved = true;
+            }
+            Some(_) => {}
+            None => moved |= graph.remove(&id),
+        }
+    }
+    moved
 }
 
 /// What the Sound area reads of the device: the levels, the device list and
@@ -894,6 +1032,7 @@ impl AudioModel {
             changed: false,
             changes: DeviceChanges::default(),
             rescan: crate::device_read::DeviceRead::default(),
+            following: std::rc::Weak::new(),
             cx,
         }
     }
@@ -930,6 +1069,7 @@ impl AudioModel {
             changed: false,
             changes: DeviceChanges::default(),
             rescan: crate::device_read::DeviceRead::default(),
+            following: std::rc::Weak::new(),
             cx,
         }
     }
@@ -1847,11 +1987,17 @@ impl AudioModel {
         {
             graph
         } else {
-            let due = match (self.hotplug_interval, self.last_enum) {
-                (i, _) if i == Duration::ZERO => true,
-                (i, _) if i == Duration::MAX => false,
-                (i, Some(t)) => t.elapsed() >= i,
-                (_, None) => true,
+            let monitor = self
+                .following
+                .upgrade()
+                .filter(|monitor| monitor.is_alive());
+            let due = match (monitor, self.hotplug_interval, self.last_enum) {
+                // A change during a re-read stays flagged for the next one.
+                (Some(monitor), ..) => self.rescan.is_finished() && monitor.take(),
+                (None, i, _) if i == Duration::ZERO => true,
+                (None, i, _) if i == Duration::MAX => false,
+                (None, i, Some(t)) => t.elapsed() >= i,
+                (None, _, None) => true,
             };
             if !due || !self.rescan.is_finished() {
                 return false;
@@ -1932,8 +2078,29 @@ impl PaneModel for AudioModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
+        if let Some(monitor) = self
+            .following
+            .upgrade()
+            .filter(|monitor| monitor.is_alive())
+        {
+            // A change that came during a re-read is read once it ends (its
+            // end wakes the window).
+            return (monitor.pending() && self.rescan.is_finished()).then(ui::time::now);
+        }
         (self.hotplug_interval != Duration::MAX)
             .then(|| self.last_enum.unwrap_or_else(ui::time::now) + self.hotplug_interval)
+    }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        if !self.cx.reaches_devices() {
+            return None;
+        }
+        if let Some(monitor) = self.following.upgrade() {
+            return Some(monitor);
+        }
+        let monitor = Rc::new(GraphMonitor::start()?);
+        self.following = Rc::downgrade(&monitor);
+        Some(monitor)
     }
 }
 
@@ -2460,6 +2627,99 @@ Video
             }
             assert_eq!(model.graph().sinks.len(), 2);
             assert!(model.devices().sinks.iter().any(|d| d.name == "Headphones"));
+        }
+    }
+
+    /// A shown pane re-reads the graph when `PipeWire` reports a change,
+    /// never on a timer; once the monitor ends it reads on the timer again.
+    #[test]
+    fn a_followed_graph_is_read_on_a_change_not_on_a_timer() {
+        let mut before = graph_two_sinks_one_stream();
+        before.sinks.retain(|d| d.description == "Speakers");
+        let after = graph_two_sinks_one_stream();
+        let mut model = model().with_graph(before, Arc::new(RecordingGraph::default()));
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        model.enumerator = Arc::new(Counting {
+            graph: after,
+            reads: Arc::clone(&reads),
+        });
+        model.hotplug_interval = HOTPLUG_INTERVAL;
+        model.last_enum = None;
+        let monitor = Rc::new(GraphMonitor::by_hand());
+        model.following = Rc::downgrade(&monitor);
+        assert!(monitor.take(), "the monitor starts flagged");
+        let adopt = |model: &mut AudioModel| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !model.poll() {
+                assert!(std::time::Instant::now() < deadline, "the read lands");
+                std::thread::yield_now();
+            }
+        };
+
+        for _ in 0..3 {
+            assert!(!model.poll());
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "no change, no re-read");
+        assert_eq!(model.next_wake(), None, "an idle pane sets no deadline");
+
+        monitor.changed.store(true, Ordering::Release);
+        adopt(&mut model);
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one change, one re-read");
+        assert_eq!(model.graph().sinks.len(), 2, "the new headset is shown");
+        assert_eq!(model.next_wake(), None);
+
+        monitor.alive.store(false, Ordering::Release);
+        assert!(
+            model.next_wake().is_some(),
+            "a monitor that ended leaves the pane on its timer"
+        );
+    }
+
+    /// Only nodes, devices and the default-device metadata move the graph;
+    /// the clients and links every `pw-dump` run brings do not, and a
+    /// removal counts only for an id that counted.
+    #[test]
+    fn only_nodes_devices_and_defaults_move_the_graph() {
+        let mut graph = std::collections::HashSet::new();
+        let update = |json: &str| serde_json::from_str::<serde_json::Value>(json).unwrap();
+        assert!(!moves_graph(
+            &update(
+                r#"[{"id":90,"type":"PipeWire:Interface:Client","info":{}},
+                       {"id":91,"type":"PipeWire:Interface:Link","info":{}}]"#
+            ),
+            &mut graph
+        ));
+        assert!(!moves_graph(
+            &update(r#"[{"id":90,"info":null}]"#),
+            &mut graph
+        ));
+        assert!(moves_graph(
+            &update(r#"[{"id":60,"type":"PipeWire:Interface:Node","info":{}}]"#),
+            &mut graph
+        ));
+        assert!(moves_graph(
+            &update(r#"[{"id":31,"type":"PipeWire:Interface:Metadata","metadata":[]}]"#),
+            &mut graph
+        ));
+        assert!(moves_graph(
+            &update(r#"[{"id":60,"info":null}]"#),
+            &mut graph
+        ));
+        assert!(!moves_graph(
+            &update(r#"[{"id":60,"info":null}]"#),
+            &mut graph
+        ));
+    }
+
+    struct Counting {
+        graph: AudioGraph,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AudioEnumerator for Counting {
+        fn enumerate(&self) -> AudioGraph {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.graph.clone()
         }
     }
 

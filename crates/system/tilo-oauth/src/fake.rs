@@ -119,7 +119,7 @@ impl FakeAuthorizationServer {
 
     pub fn hold_token_exchange(&self) -> TokenExchangeGate {
         let gate = Arc::new(ExchangeGate::default());
-        lock(&self.state).token_gate = Some(gate.clone());
+        self.state.lock_recover().token_gate = Some(gate.clone());
         TokenExchangeGate(gate)
     }
 
@@ -212,7 +212,7 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
         .map_or(request.target.as_str(), |(path, _)| path);
     if request.method == "POST"
         && path == "/token"
-        && let Some(gate) = lock(shared).token_gate.clone()
+        && let Some(gate) = shared.lock_recover().token_gate.clone()
     {
         let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.0 = true;

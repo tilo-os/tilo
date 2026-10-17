@@ -312,6 +312,8 @@ pub struct OccurrenceOverride {
     pub start: Option<NaiveDateTime>,
     /// End
     pub end: Option<NaiveDateTime>,
+    /// Whether the end selects the later instant of a repeated wall time.
+    pub end_later_fold: bool,
     /// Title
     pub title: Option<String>,
     /// Place
@@ -327,6 +329,7 @@ impl OccurrenceOverride {
     fn valid(&self) -> Result<(), Refusal> {
         if let (Some(start), Some(end)) = (self.start, self.end)
             && end < start
+            && !self.end_later_fold
         {
             return Err(Refusal::new("an occurrence ends after it starts"));
         }
@@ -460,6 +463,9 @@ pub struct Event {
     pub start: NaiveDateTime,
     /// End
     pub end: NaiveDateTime,
+    /// Select the later instant when the end falls in a DST fold. Missing in
+    /// older documents means false, preserving the earlier-instant policy.
+    pub end_later_fold: bool,
     /// All day
     pub all_day: bool,
     /// Place
@@ -507,6 +513,7 @@ impl Default for Event {
             title: String::new(),
             start: NaiveDateTime::default(),
             end: NaiveDateTime::default(),
+            end_later_fold: false,
             all_day: false,
             location: String::new(),
             color: Palette::default(),
@@ -541,7 +548,7 @@ pub const REMINDERS: [i64; 3] = [10, 30, 60];
 
 impl Event {
     fn valid(&self) -> Result<(), Refusal> {
-        if self.end < self.start {
+        if !crate::timezone::valid_span(&self.timezone, self.start, self.end, self.end_later_fold) {
             return Err(Refusal::new("an event ends after it starts"));
         }
         if self
@@ -559,6 +566,16 @@ impl Event {
             return Err(Refusal::new(
                 "an event's time zone is an IANA name or `floating`",
             ));
+        }
+        for edit in &self.occurrence_overrides {
+            let start = edit
+                .start
+                .unwrap_or_else(|| edit.original_date.and_time(self.start.time()));
+            if let Some(end) = edit.end
+                && !crate::timezone::valid_span(&self.timezone, start, end, edit.end_later_fold)
+            {
+                return Err(Refusal::new("an occurrence ends after it starts"));
+            }
         }
         if let Some(organizer) = self.organizer
             && !self
@@ -738,9 +755,34 @@ impl Event {
         !self.occurrences_in(date, date).is_empty()
     }
 
+    /// Absolute end, including a duration-derived later-fold endpoint.
+    pub fn end_instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        crate::timezone::endpoint_utc(&self.timezone, self.end, self.end_later_fold)
+    }
+
+    /// The elapsed interval; floating events have only a wall interval.
+    pub fn elapsed_duration(&self) -> Duration {
+        crate::timezone::wall_to_utc(&self.timezone, self.start)
+            .zip(self.end_instant())
+            .map_or(self.end - self.start, |((start, _), end)| end - start)
+    }
+
+    /// End of a generated occurrence. A later-fold seed carries its exact
+    /// elapsed interval forward without changing the series' wall-time anchor.
+    pub fn occurrence_end(&self, start: NaiveDateTime) -> NaiveDateTime {
+        if self.end_later_fold
+            && let Some((instant, _)) = crate::timezone::wall_to_utc(&self.timezone, start)
+            && let Ok(zone) = self.timezone.parse::<chrono_tz::Tz>()
+            && let Some(end) = instant.checked_add_signed(self.elapsed_duration())
+        {
+            return end.with_timezone(&zone).naive_local();
+        }
+        start + (self.end - self.start)
+    }
+
     /// Duration in fractional hours (timed events only).
     pub fn hours(&self) -> f64 {
-        (self.end - self.start).num_minutes().max(0) as f64 / 60.0
+        self.elapsed_duration().num_minutes().max(0) as f64 / 60.0
     }
 }
 
@@ -1076,6 +1118,7 @@ fn seed_demo_events_early(
                 cancelled: false,
                 start: Some(seed_demo_at(d(43), 14, 0)),
                 end: Some(seed_demo_at(d(43), 15, 0)),
+                end_later_fold: false,
                 title: Some("Design review (moved)".into()),
                 location: None,
             }]
@@ -1354,6 +1397,7 @@ mod tests {
                 cancelled: false,
                 start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
                 end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
+                end_later_fold: false,
                 title: Some("Moved instance".into()),
                 location: None,
             });

@@ -72,6 +72,7 @@ pub(crate) fn layouts_full(active: &[String]) -> bool {
 /// Why the device's keyboard layout list could not be read, when it could
 /// not; the layouts offered are then a short built-in list.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) fn layout_catalog_error() -> Option<String> {
     read_installed_layouts().err()
 }

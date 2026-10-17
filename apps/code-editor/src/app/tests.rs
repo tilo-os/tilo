@@ -830,6 +830,85 @@ fn the_panel_learns_the_server_is_still_working() {
 }
 
 #[test]
+fn failed_save_as_preserves_the_original_destination_and_conflict_stamp() {
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        app.editor.insert_for_test(doc, "// unsaved\n");
+        app.dispatch_editor_text_edits(doc);
+    });
+    sample.app.settle();
+    let directory = tempfile::tempdir().unwrap();
+    // A directory cannot be replaced with a regular file, even when the
+    // tests run with privileges that bypass file permission bits.
+    let destination = directory.path().to_path_buf();
+    sample.with_doc(move |app, doc| {
+        let before = app.session.active_buffer().unwrap().clone();
+        let original = before.path.clone().unwrap();
+        let key = app.buffer_key(before.node);
+        let text = EditorDoc::read_buffer_key(doc, &key).unwrap();
+        assert!(before.dirty);
+        app.apply_portal_outcome(
+            doc,
+            Some(PortalIntent::SaveAs(before.node)),
+            ui::portal::PortalOutcome::Opened(destination),
+        );
+        let after = app.session.active_buffer().unwrap();
+        assert_eq!(after.path, before.path);
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.language, before.language);
+        assert_eq!(after.stamp, before.stamp);
+        assert_eq!(after.saved_text, before.saved_text);
+        assert!(after.dirty);
+        assert_eq!(app.session.project.disk_path_of(before.node), before.path);
+        assert_eq!(EditorDoc::read_buffer_key(doc, &key).unwrap(), text);
+        // The old freshness guard must still protect external edits after
+        // the failed Save As, rather than saving to the rejected destination.
+        std::fs::write(&original, "externally changed source\n").unwrap();
+        assert!(!app.save_buffer(doc, before.node, false));
+        assert!(app.conflict.is_some());
+        assert_eq!(
+            std::fs::read_to_string(original).unwrap(),
+            "externally changed source\n"
+        );
+    });
+}
+
+#[test]
+fn successful_save_as_writes_current_text_before_adopting_the_destination() {
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        app.editor.insert_for_test(doc, "// unsaved\n");
+        app.dispatch_editor_text_edits(doc);
+    });
+    sample.app.settle();
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("saved.py");
+    sample.with_doc(move |app, doc| {
+        let before = app.session.active_buffer().unwrap().clone();
+        let original = before.path.unwrap();
+        let original_text = std::fs::read_to_string(&original).unwrap();
+        let text = EditorDoc::read_buffer_key(doc, &app.buffer_key(before.node)).unwrap();
+        app.apply_portal_outcome(
+            doc,
+            Some(PortalIntent::SaveAs(before.node)),
+            ui::portal::PortalOutcome::Opened(destination.clone()),
+        );
+        let after = app.session.active_buffer().unwrap();
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), text);
+        assert_eq!(std::fs::read_to_string(original).unwrap(), original_text);
+        assert_eq!(after.path.as_ref(), Some(&destination));
+        assert_eq!(after.language, Language::Python);
+        assert_eq!(after.saved_text, text);
+        assert!(!after.dirty);
+        assert_eq!(after.stamp, Some(disk::Stamp::of(&destination).unwrap()));
+        assert_eq!(
+            app.session.project.disk_path_of(before.node),
+            Some(destination)
+        );
+    });
+}
+
+#[test]
 fn disk_files_load_stat_and_save_back_through_the_crdt() {
     // Each phase uses its own tempdir, app and document.
     a_document_from_a_previous_session_still_stats_the_file();
