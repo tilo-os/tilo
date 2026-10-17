@@ -62,6 +62,11 @@ Covered by central admission when they reach the published application dispatche
   sessions, and native-person origins retaining the original certificate.
 - Eager application actions through those authenticated hosts; their admission
   runs on the broker bridge.
+- The shell Jobs projection opens the maintained certified session and retains
+  its owner-aware lifecycle handle for listing, status and cancellation. Every
+  operation revalidates the original certificate and execution. A row must
+  belong to the session's room as well as its exact root/device/agent owner;
+  another device with the same displayed Person cannot observe or cancel it.
 
 The following are **not** claimed to have this coverage:
 
@@ -80,13 +85,6 @@ The following are **not** claimed to have this coverage:
 - The legacy shell `BrokerActionHost::invoke` facade and compatibility native
   hosts without a local-person service, when they supply only a `Caller` label.
   Maintained certified action sessions are distinct from this compatibility path.
-- The shell's legacy Jobs projection in
-  `crates/session/shell/src/shell/search/providers/live_app_actions.rs` still uses
-  actor-filtered `jobs`/`can_cancel`/`cancel` facade helpers. Those helpers do not
-  infer certified ownership from an actor string; this projection must migrate
-  to the maintained certified session's owner-aware lifecycle surface to include
-  newly certified invocations. Certified local `ActionHost::cancel` and channel
-  status/cancellation already preserve original certificate ownership.
 - Remote action-host `InvocationState` and public progress streams do not carry
   private openings. The retained local observation RPC exposes evidence; peer
   transports and higher-level SDK adapters need equivalent authorized evidence

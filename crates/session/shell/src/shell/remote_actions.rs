@@ -56,6 +56,11 @@ impl BrokerActionHost {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn broker_for_fixture(&self) -> AppActionBroker {
+        self.broker.clone()
+    }
+
     /// Legacy source fixtures delegate into the production broker's native
     /// authority checks. Live palette/control use maintained action sessions.
     #[cfg(test)]

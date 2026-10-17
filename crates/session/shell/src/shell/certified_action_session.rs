@@ -151,7 +151,68 @@ impl ActionSessionSource {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum ActionLifecycle {
+    Certified(tilo_action_broker::collab_broker_capnp::CertifiedActionLifecycle),
+    #[cfg(test)]
+    Fixture {
+        broker: AppActionBroker,
+        actor: String,
+    },
+}
+
+impl ActionLifecycle {
+    pub(crate) fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.statuses(),
+            #[cfg(test)]
+            Self::Fixture { broker, actor } => broker.statuses(actor),
+        }
+    }
+    pub(crate) fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.status(id),
+            #[cfg(test)]
+            Self::Fixture { broker, actor } => broker.status_for_actor(id, actor),
+        }
+    }
+    pub(crate) fn can_cancel(&self, id: u64) -> bool {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.can_cancel(id),
+            #[cfg(test)]
+            Self::Fixture { broker, actor } => broker.can_cancel(id, actor),
+        }
+    }
+    pub(crate) fn cancel(&self, id: u64) -> Result<(), String> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.cancel(id),
+            #[cfg(test)]
+            Self::Fixture { broker, actor } => broker.cancel(id, actor),
+        }
+    }
+}
+
 impl DesktopActionSession {
+    pub(crate) fn lifecycle(&self) -> Result<ActionLifecycle, String> {
+        match self {
+            Self::Certified(session) => session
+                .broker
+                .state()
+                .certified_action_lifecycle(&session.caller, &session.presentation)
+                .map(ActionLifecycle::Certified),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => Ok(ActionLifecycle::Fixture {
+                broker: host.broker_for_fixture(),
+                actor: match caller.principal() {
+                    tilo_actions::remote::CallerPrincipal::Person(actor) => actor.clone(),
+                    _ => return Err("fixture requires a person".into()),
+                },
+            }),
+            #[cfg(test)]
+            Self::Mock { .. } => Err("mock has no job ledger".into()),
+        }
+    }
+
     pub(crate) fn stage_private_draft(
         &self,
         draft: runtime_collab::private_draft::Draft,
