@@ -31,6 +31,16 @@
 use std::sync::{Mutex, OnceLock};
 
 mod caps;
+#[cfg(target_os = "linux")]
+mod lifecycle;
+#[cfg(target_os = "linux")]
+pub use lifecycle::ClipboardAttachment;
+
+/// Runner-owned native clipboard attachment (Wayland only).
+#[cfg(not(target_os = "linux"))]
+pub struct ClipboardAttachment {
+    _private: (),
+}
 pub mod conformance;
 pub mod events;
 
@@ -258,20 +268,27 @@ fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
 /// through the connection that owns the focused surface — the compositor only
 /// accepts `set_selection` from that one.
 ///
-/// The runner calls this once it has a display. Returns `true` when it
-/// attached: never on a display that is not Wayland, nor a second time.
-pub fn attach_wayland_display(handle: &impl raw_window_handle::HasDisplayHandle) -> bool {
+/// Pass the runner's owned display handle, not a borrow of the event loop.
+/// Keep the returned guard until runner close. Dropping it refuses new calls
+/// and schedules teardown without waiting on protocol workers.
+pub fn attach_wayland_display(
+    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
     attach(handle)
 }
 
 #[cfg(target_os = "linux")]
-fn attach(handle: &impl raw_window_handle::HasDisplayHandle) -> bool {
+fn attach(
+    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
     native::attach_wayland(handle)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn attach(_handle: &impl raw_window_handle::HasDisplayHandle) -> bool {
-    false
+fn attach(
+    _handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<ClipboardAttachment> {
+    None
 }
 
 /// A clipboard private to this process, for hosts that offer no shared one.

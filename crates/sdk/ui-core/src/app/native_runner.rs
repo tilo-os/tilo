@@ -52,6 +52,7 @@ fn create_accessibility_adapter(
 /// keeps only the channel ends to ship frames and recycle scene buffers.
 struct AppHandler {
     app: App,
+    clipboard_attachment: Option<crate::clipboard::ClipboardAttachment>,
     animation_schedule: animation_schedule::AnimationSchedule,
     native_scenario: Option<crate::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
@@ -3673,7 +3674,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        crate::host::native::attach_display(event_loop);
+        if self.clipboard_attachment.is_none() {
+            self.clipboard_attachment =
+                crate::host::native::attach_display(event_loop.owned_display_handle());
+        }
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -3800,6 +3804,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// `RenderSurface<'static>` references it, and wgpu may panic if the
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Close clipboard admission before the runner dismantles its native
+        // surfaces. Worker teardown retains its own display, off this thread.
+        self.clipboard_attachment = None;
         self.app.close_wake_scope();
         let _entry = self.app.enter_wake_scope();
         // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
@@ -4897,6 +4904,7 @@ impl App {
 
         let mut handler = AppHandler {
             app: self,
+            clipboard_attachment: None,
             window: None,
             render: None,
             surface_suspended: false,

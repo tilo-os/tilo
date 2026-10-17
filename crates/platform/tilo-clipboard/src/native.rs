@@ -13,34 +13,59 @@ pub(crate) struct NativeClipboard {
     local: InProcessClipboard,
 }
 
-/// The app's Wayland connection, once [`attach_wayland`] ran.
+/// Keep a closed session as a tombstone: late calls must not fall through to
+/// another clipboard after the runner closes its focused connection.
 #[cfg(target_os = "linux")]
-static WAYLAND: OnceLock<crate::wayland::WaylandClipboard> = OnceLock::new();
+static WAYLAND: Mutex<Option<std::sync::Arc<crate::lifecycle::Session>>> = Mutex::new(None);
 
 #[cfg(target_os = "linux")]
-pub(crate) fn attach_wayland(handle: &impl raw_window_handle::HasDisplayHandle) -> bool {
+pub(crate) fn attach_wayland(
+    handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+) -> Option<crate::ClipboardAttachment> {
     use raw_window_handle::RawDisplayHandle;
 
     let Ok(display) = handle.display_handle() else {
-        return false;
+        return None;
     };
-    let RawDisplayHandle::Wayland(wayland) = display.as_raw() else {
-        return false;
+    let RawDisplayHandle::Wayland(_) = display.as_raw() else {
+        return None;
     };
-    let mut attached = false;
-    WAYLAND.get_or_init(|| {
-        attached = true;
-        // SAFETY: the pointer comes from the runner's active event loop, which
-        // owns the `wl_display` for the whole run of the app; the backend is a
-        // process global that is never used after the loop exits.
-        unsafe { crate::wayland::WaylandClipboard::new(wayland.display.as_ptr()) }
-    });
-    attached
+    let mut slot = WAYLAND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if slot.is_some() {
+        return None;
+    }
+    let session = crate::lifecycle::Session::new(|| {
+        Some(std::sync::Arc::new(
+            crate::wayland::WaylandClipboard::from_owned_display(handle)?,
+        ))
+    })?;
+    *slot = Some(std::sync::Arc::clone(&session));
+    drop(slot);
+    Some(crate::ClipboardAttachment { session })
 }
 
 #[cfg(target_os = "linux")]
-fn wayland() -> Option<&'static crate::wayland::WaylandClipboard> {
-    WAYLAND.get()
+fn wayland() -> Option<std::sync::Arc<crate::lifecycle::Session>> {
+    WAYLAND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(crate) fn reaped_wayland_for_test() -> bool {
+    wayland().is_some_and(|session| session.reaped_for_test())
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(crate) fn clear_wayland_for_test() {
+    *WAYLAND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -87,10 +112,8 @@ fn local_only(target: ClipboardTarget) -> bool {
 impl NativeClipboard {
     /// Write to a clipboard other processes can read, if there is one.
     fn set_shared(target: ClipboardTarget, text: &str) -> bool {
-        if let Some(wayland) = wayland()
-            && wayland.set_text(target, text)
-        {
-            return true;
+        if let Some(wayland) = wayland() {
+            return wayland.set_text(target, text);
         }
         if local_only(target) {
             return false;
@@ -186,6 +209,9 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+        if let Some(wayland) = wayland() {
+            return wayland.set_text(target, text);
+        }
         if Self::set_shared(target, text) {
             return true;
         }
@@ -266,7 +292,7 @@ impl ClipboardBackend for NativeClipboard {
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
         #[cfg(target_os = "linux")]
-        if let Some(wayland) = WAYLAND.get() {
+        if let Some(wayland) = wayland() {
             return wayland.rich_text();
         }
         None
