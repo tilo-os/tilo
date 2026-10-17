@@ -16506,6 +16506,7 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "registry-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -19518,6 +19519,7 @@ dependencies = [
  "qrcode",
  "rand_core 0.10.0",
  "regex",
+ "registry-types",
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",

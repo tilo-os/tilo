@@ -61,6 +61,42 @@ impl OperationTarget {
         &self.address
     }
 
+    /// Submit an operation on the exact dispatched record route. The broker
+    /// recovers original admission and compares the complete action parameters.
+    ///
+    /// # Errors
+    /// Refuses another action, missing record routing or unavailable transport.
+    pub fn external_moderation(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        operation: registry_types::ExternalModerationOperation,
+    ) -> Result<crate::invocation_scope::ExternalModerationFuture, String> {
+        if self.address.action != operation.action()
+            || self.address.resource.is_empty()
+            || self.route.record.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("external moderation requires the exact dispatched resource".into());
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            let receive = crate::collaboration::external_moderation::enqueue(
+                &self.route.channel_id(),
+                invocation,
+                operation,
+            )?;
+            Ok(Box::pin(async move {
+                receive
+                    .await
+                    .map_err(|_| "external moderation transport retired")?
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = invocation;
+            Err("external moderation requires the admitted native broker transport".into())
+        }
+    }
+
     /// Request one approved ID on this dispatch target's acknowledged record route.
     /// The broker recovers actual caller/target authority from the invocation.
     ///
