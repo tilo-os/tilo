@@ -879,25 +879,22 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
             assert_eq!(control(preview, "installer.next").unwrap().get_rect(), next);
         })
         .unwrap();
-        // Submit a real short password through the normal Continue button,
-        // then enlarge text to overflow the actual error/form composition.
+        // Submit a real short password through the semantic action (the
+        // visible Continue is disabled), then overflow the error/form.
         app.effect(&InstallerPreviewEffect::SetPreviewPassword {
             value: "short".into(),
         })
         .unwrap();
-        let continue_rect = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                control(preview, "installer.next").unwrap().get_rect()
-            })
-            .unwrap();
-        app.harness()
-            .click_at(continue_rect.center().x, continue_rect.center().y);
+        assert!(
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .is_err()
+        );
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Password);
             assert!(
                 preview.error.is_some(),
-                "normal Continue must show validation"
+                "semantic Continue must show validation"
             );
             inspect_password_validation(
                 preview,
@@ -2049,7 +2046,12 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
                     matches!(refused, tilo_actions::DoorError::Failed(ref message) if message == &t(error))
                 );
             } else {
-                app.harness().click_at(next.center().x, next.center().y);
+                // Continue remains visible but disabled. Enter in the actual
+                // confirmation input still exercises submission and reveal.
+                app.harness()
+                    .perform_named("installer.confirmation", &ui::a11y::Action::Focus)
+                    .unwrap();
+                app.harness().key("Enter");
             }
             app.settle();
             app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2068,7 +2070,7 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
                 &mut app,
                 &format!(
                     "installer-password-refusal-{}-{}",
-                    if semantic { "semantic" } else { "pointer" },
+                    if semantic { "semantic" } else { "keyboard" },
                     if mismatch { "mismatch" } else { "short" }
                 ),
                 &["installer.back", "installer.next"],
@@ -2467,6 +2469,144 @@ fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
 }
 
 #[test]
+#[cfg(unix)]
+fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
+    fn has_guidance(root: &dyn Widget) -> bool {
+        root.accessibility().is_some_and(|node| {
+            node.name.as_deref() == Some(t("installer-preview-password-hint").as_str())
+        }) || root.children().into_iter().any(has_guidance)
+    }
+    let custody = tempfile::tempdir().unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", custody.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    for (viewport, theme, tag) in [
+        ((480, 800), Theme::light(), "compact-light"),
+        ((1180, 820), Theme::dark(), "dark"),
+    ] {
+        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            // Suppress native work, not navigation: reach Password through
+            // the production effects so Back has the real route history.
+            preview.live = false;
+            preview.capture = false;
+            preview.linux = true;
+            preview.restart = restart_controller::Restart::default();
+            preview.journey = Journey::new("Ada Lovelace".into());
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.harness().resize(viewport).unwrap();
+        app.harness().set_theme(theme.with_reduce_motion(true));
+        for choice in ["computer", "fresh", "new"] {
+            app.effect(&InstallerPreviewEffect::ChoosePreview {
+                choice: choice.into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+        }
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.settle();
+        let footer = app
+            .with_widget::<InstallerPreview, _>(|preview| {
+                assert_eq!(preview.journey.page, Page::Password);
+                assert_eq!(preview.journey.history.last(), Some(&Page::Profile));
+                assert!(
+                    has_guidance(preview),
+                    "inline password guidance must be visible"
+                );
+                (
+                    control(preview, "installer.back").unwrap().get_rect(),
+                    control(preview, "installer.next").unwrap().get_rect(),
+                )
+            })
+            .unwrap();
+        for (state, password, confirmation, disabled) in [
+            ("empty", "", "", true),
+            (
+                "valid",
+                "several unrelated installation words",
+                "several unrelated installation words",
+                false,
+            ),
+            (
+                "mismatch",
+                "several unrelated installation words",
+                "different unrelated installation words",
+                true,
+            ),
+            ("short", "short", "short", true),
+        ] {
+            app.effect(&InstallerPreviewEffect::SetPreviewPassword {
+                value: password.into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::SetPreviewConfirmation {
+                value: confirmation.into(),
+            })
+            .unwrap();
+            app.settle();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                inspect_controls(preview, &["installer.back", "installer.next"], viewport);
+                let next = control(preview, "installer.next").unwrap();
+                let back = control(preview, "installer.back").unwrap();
+                assert_eq!(next.accessibility().unwrap().state.disabled, disabled);
+                assert!(!back.accessibility().unwrap().state.disabled);
+                assert_eq!((back.get_rect(), next.get_rect()), footer);
+                let next_rect = next.get_rect();
+                let (body, _) = body_scroll_geometry(preview).unwrap();
+                assert!(body.y1 <= next_rect.y0);
+            })
+            .unwrap();
+            if disabled {
+                app.harness()
+                    .click_at(footer.1.center().x, footer.1.center().y);
+                app.settle();
+                assert!(
+                    app.effect(&InstallerPreviewEffect::ContinuePreview)
+                        .is_err()
+                );
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(preview.journey.page, Page::Password);
+                })
+                .unwrap();
+            }
+            let status = app
+                .effect(&InstallerPreviewEffect::ReadPreview)
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(status["page"], "password");
+            if !password.is_empty() {
+                assert!(
+                    !status.to_string().contains(password),
+                    "private input cannot enter public status"
+                );
+            }
+            paint_app(
+                &mut app,
+                &format!("installer-password-route-{state}"),
+                &[
+                    "installer.password",
+                    "installer.confirmation",
+                    "installer.back",
+                    "installer.next",
+                ],
+                viewport,
+                tag,
+            );
+        }
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.page, Page::Profile);
+        })
+        .unwrap();
+    }
+}
+
+#[test]
 fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
     use ui::framework::ResourceApp as _;
     assert_eq!(GuidedInstallerShell::scenarios(), SCENARIOS);
@@ -2478,6 +2618,21 @@ fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.name(), "InstallerPreview");
+            if preview.journey.page != Page::Destination && preview.journey.page != Page::Ready {
+                inspect_controls(preview, &["installer.back"], (1180, 820));
+            }
+            if let Some(next) = control(preview, "installer.next") {
+                let rect = next.get_rect();
+                if preview.journey.page == Page::Password {
+                    assert!(next.accessibility().unwrap().state.disabled);
+                }
+                inspect_controls(preview, &["installer.next"], (1180, 820));
+                let (body, _) = body_scroll_geometry(preview).unwrap();
+                assert!(
+                    body.y1 <= rect.y0,
+                    "{scenario}: body cannot cover the footer"
+                );
+            }
         })
         .expect("the guided gallery must use the actual guided product");
         assert_eq!(app.harness().render_rgba().len(), 1180 * 820 * 4);

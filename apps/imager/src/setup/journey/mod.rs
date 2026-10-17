@@ -8,6 +8,7 @@ mod accounts;
 mod belongings;
 pub(crate) mod browser;
 mod capabilities;
+mod demo;
 mod desktop;
 mod diagram;
 mod direct;
@@ -610,6 +611,7 @@ pub struct InstallerPreview {
     personal_continue: Option<Page>,
     account_answer: serde_json::Value,
     live: bool,
+    demo: bool,
     media: Option<ui::LocalState<bool>>,
     media_bundle: Option<ui::LocalState<Option<std::sync::Arc<prepared_media::PreparedMedia>>>>,
     media_preparation: prepared_media::Controller,
@@ -677,6 +679,7 @@ impl Default for InstallerPreview {
             personal_continue: None,
             account_answer: serde_json::Value::Null,
             live: false,
+            demo: false,
             media: None,
             media_bundle: None,
             media_return: None,
@@ -1070,6 +1073,9 @@ impl InstallerPreview {
     }
 
     fn apply(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
+        if self.demo && !demo::admits(&effect) {
+            return Err("installer-demo-unavailable");
+        }
         if self.windows.enabled && self.live && !recovery::is_recovery_effect(&effect) {
             return self.apply_windows(effect);
         }
@@ -2418,6 +2424,7 @@ impl InstallerPreview {
                 let capture = self.capture;
                 let linux = self.linux;
                 let live = self.live;
+                let demo = self.demo;
                 let media = self.media.clone();
                 let media_bundle = self.media_bundle.clone();
                 if let Some(bundle) = &media_bundle {
@@ -2437,6 +2444,7 @@ impl InstallerPreview {
                 self.capture = capture;
                 self.linux = linux;
                 self.live = live;
+                self.demo = demo;
                 self.media = media;
                 self.media_bundle = media_bundle;
                 self.dispatcher = dispatcher;
@@ -2471,20 +2479,24 @@ impl InstallerPreview {
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewPassword { value } if page == Page::Password => {
+                let enabled = self.password_continue_enabled();
                 if self.journey.password != value {
                     self.checkpoint_signature = None;
                 }
                 self.field_values[2].set(value.clone());
                 self.journey.password = value;
                 self.clear_password_validation();
+                self.dirty |= enabled != self.password_continue_enabled();
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewConfirmation { value }
                 if page == Page::Password && !self.unlocking_preparation() =>
             {
+                let enabled = self.password_continue_enabled();
                 self.field_values[3].set(value.clone());
                 self.journey.confirmation = value;
                 self.clear_password_validation();
+                self.dirty |= enabled != self.password_continue_enabled();
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewCategory { category, included }
@@ -3332,6 +3344,11 @@ impl InstallerPreview {
         let mut enabled = !self.personal_busy()
             && !self.migration_busy()
             && !(self.windows.enabled && self.windows.busy());
+        if self.journey.page == Page::Password
+            && matches!(effect, InstallerPreviewEffect::ContinuePreview)
+        {
+            enabled &= self.password_continue_enabled();
+        }
         if self.journey.page == Page::Profile
             && matches!(effect, InstallerPreviewEffect::ContinuePreview)
             && self.avatar_picker.is_some()
@@ -3628,6 +3645,14 @@ impl InstallerPreview {
         // ordinary edits leave the person's typing and scroll position alone.
         if submitted && let Some((field, _)) = self.password_validation() {
             self.validation_focus = Some(format!("installer.{field}"));
+        }
+    }
+
+    fn password_continue_enabled(&self) -> bool {
+        if self.unlocking_preparation() {
+            !self.journey.password.is_empty()
+        } else {
+            self.journey.validation().is_none()
         }
     }
 
@@ -5077,7 +5102,14 @@ impl InstallerPreview {
                     .with_child(Box::new(content)),
             ));
         }
-        let frame = page::Frame::new(content).center_short_body();
+        let frame = page::Frame::new(content)
+            .center_short_body()
+            .notice(self.demo.then(|| {
+                Box::new(
+                    ui::widget::Banner::info(t("installer-demo-notice"))
+                        .with_id("installer.demo-notice"),
+                ) as Box<dyn Widget>
+            }));
         if self.journey.page != Page::Destination || self.journey.cancels_edit() {
             frame.actions(actions).build()
         } else {
@@ -5210,6 +5242,13 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         }
     }
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        if cx.launch_flag("--demo") {
+            // Reuse the capture fixture and production renderer without attaching
+            // any native controllers. The effect door also enforces demo admission.
+            self.stage(Some("installer-destination"));
+            self.demo = true;
+            return;
+        }
         if !cx.mode().is_live() {
             return;
         }
@@ -5313,6 +5352,14 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
     fn effects(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         for declaration in InstallerPreviewEffect::declarations() {
+            if self.demo && !demo::admits_id(declaration.id) {
+                statuses.push(EffectStatus::unavailable(
+                    ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),
+                    "demo",
+                    t("installer-demo-unavailable"),
+                ));
+                continue;
+            }
             if !self.effect_page_admitted(declaration.id) {
                 statuses.push(EffectStatus::unavailable(
                     ActionRef::<InstallerPreviewEffect, ()>::new(declaration.id, &[]),

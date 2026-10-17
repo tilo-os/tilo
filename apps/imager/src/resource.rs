@@ -310,6 +310,7 @@ impl ResourceApp for ImagerShell {
         "--import-folders",
         "--installer",
         "--installer-preview",
+        "--demo",
     ];
     // Only hosts with a local workspace runtime can attach the imager.
     const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
@@ -363,7 +364,10 @@ impl ResourceApp for ImagerShell {
     fn view(cx: &mut ViewCx<Imager>) -> Element {
         let flow = cx.fixture::<Flow>().map_or_else(
             || {
-                if cx.launch_flag("--installer") || cx.launch_flag("--installer-preview") {
+                if cx.launch_flag("--installer")
+                    || cx.launch_flag("--installer-preview")
+                    || cx.launch_flag("--demo")
+                {
                     Flow::InstallerPreview
                 } else if cx.launch_flag("--import-folders") {
                     Flow::Imports
