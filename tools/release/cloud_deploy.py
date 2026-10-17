@@ -545,7 +545,8 @@ class Plan:
 
     def message(self) -> str:
         lines = [self.title, "",
-                 f"{FORGE}/{SOURCE_REPO}/commit/{self.revision}, as released from stable.", ""]
+                 f"{FORGE}/{SOURCE_REPO}/commit/{self.revision}, its images tagged "
+                 f"{self.target.tag.format(commit='<commit>')}.", ""]
         for name in self.moves:
             pin, image = self.current[name], self.images[name]
             lines.append(f"{name}: {pin.digest[:19]}… ({_short(pin.built)}) -> {image.digest} "
