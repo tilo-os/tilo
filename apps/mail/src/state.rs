@@ -166,8 +166,6 @@ pub enum Command {
     Compose,
     /// Open the platform search, narrowed to the open folder.
     OpenSearch,
-    /// Fetch the open folder from the server again.
-    Refresh,
     /// Enter or leave selecting several messages.
     ToggleBulk,
     /// Select every message the list shows.
@@ -206,6 +204,16 @@ pub struct MailState {
     /// read-on-open action from being queued.
     pub inspection: Option<MessageId>,
     pub status: Option<String>,
+    /// Why the active account cannot check mail, as last said; `None`
+    /// while it works. A refresh that fails the same way says nothing new.
+    pub sync_error: Option<String>,
+    /// The list has scrolled to its last rows: the page before them is
+    /// wanted from the server.
+    pub wants_older: std::cell::Cell<bool>,
+    /// The open account's mail has not arrived yet: nothing is kept on this
+    /// device and its first fetch is running. The list shows the rows that
+    /// are coming, not an empty mailbox.
+    pub fetching_first: bool,
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
@@ -290,6 +298,9 @@ impl MailState {
             remote_senders: std::collections::BTreeSet::new(),
             inspection: None,
             status: None,
+            sync_error: None,
+            wants_older: std::cell::Cell::new(false),
+            fetching_first: false,
             images,
             narrow: false,
             detail_pushed: false,
@@ -349,6 +360,15 @@ impl MailState {
                 .map(|message| IngestBaseline::fetched(message, account))
                 .collect(),
         );
+    }
+
+    /// Record `baselines` as they are.
+    pub(crate) fn ingest_baselines(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        baselines: Vec<IngestBaseline>,
+    ) {
+        self.ingest(doc, baselines);
     }
 
     fn ingest(&self, doc: &mut ui::widget::Edits<'_>, messages: Vec<IngestBaseline>) {
@@ -420,8 +440,9 @@ impl MailState {
     /// Rows to show in the list: `(message_id, thread_len)`, one row per
     /// thread (its newest message).
     pub fn list_rows(&self) -> Vec<(MessageId, usize)> {
-        self.current_threads()
-            .into_iter()
+        self.mailbox
+            .threads(self.folder)
+            .iter()
             .filter_map(|t| {
                 t.message_ids
                     .last()
@@ -435,15 +456,34 @@ impl MailState {
         let Some(sel) = self.selected.and_then(|id| self.mailbox.get(id)) else {
             return Vec::new();
         };
-        let subj = sel.thread_subject();
-        let mut v: Vec<&crate::model::Message> = self
+        // The conversation the list shows the message in: the open folder's
+        // when it lists the message (Starred lists messages of every
+        // folder), otherwise the message's own folder's.
+        let thread = self
             .mailbox
-            .messages
-            .values()
-            .filter(|m| m.thread_subject() == subj && m.folder == sel.folder)
+            .thread_of(self.folder, sel.id)
+            .or_else(|| self.mailbox.thread_of(sel.folder, sel.id));
+        let Some(thread) = thread else {
+            return vec![sel];
+        };
+        let mut messages: Vec<&crate::model::Message> = thread
+            .message_ids
+            .iter()
+            .filter_map(|id| self.mailbox.get(*id))
             .collect();
-        v.sort_by_key(|m| m.timestamp_min);
-        v
+        // What the person answered is part of the conversation, though it
+        // is kept in Sent.
+        if sel.folder != Folder::Sent
+            && let Some(sent) = self.mailbox.thread_rooted(Folder::Sent, &thread.id)
+        {
+            messages.extend(
+                sent.message_ids
+                    .iter()
+                    .filter_map(|id| self.mailbox.get(*id)),
+            );
+            messages.sort_by_key(|message| message.timestamp_min);
+        }
+        messages
     }
 
     /// Open a message through the user-visible read boundary.
@@ -477,6 +517,8 @@ impl MailState {
     /// document, so this deliberately has no Automerge write.
     pub fn set_active_account(&mut self, idx: usize) {
         self.accounts.set_active(idx);
+        // The folders show the chosen account's mail.
+        self.mailbox.set_account(self.accounts.active_config());
         self.dirty = true;
     }
 

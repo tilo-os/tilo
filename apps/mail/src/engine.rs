@@ -55,11 +55,13 @@ pub enum EngineRequest {
         request_id: EngineRequestId,
         account: AccountConfig,
     },
-    /// Fetch the messages of a folder (`UID FETCH` in the live backend).
+    /// Bring a folder up to date: what is new and the flags of what is
+    /// held, or the page before the oldest message held (`want`).
     Fetch {
         request_id: EngineRequestId,
         account: AccountConfig,
         folder: Folder,
+        want: crate::sync::Want,
     },
     /// Persist a flag change to the server (`UID STORE \Seen`/`\Flagged`).
     StoreFlag {
@@ -106,11 +108,18 @@ impl EngineRequest {
             account,
         }
     }
+    /// What is new in `folder`; the app fills in what it holds of it when
+    /// it posts the request.
     pub fn fetch(account: AccountConfig, folder: Folder) -> Self {
+        Self::fetch_wanting(account, folder, crate::sync::Want::Latest { known: None })
+    }
+
+    pub fn fetch_wanting(account: AccountConfig, folder: Folder, want: crate::sync::Want) -> Self {
         Self::Fetch {
             request_id: next_request_id(),
             account,
             folder,
+            want,
         }
     }
     pub fn store_flag(account: AccountConfig, message: Box<Message>) -> Self {
@@ -212,12 +221,12 @@ pub enum EngineEvent {
         account_id: String,
         folders: Vec<String>,
     },
-    /// A batch of fetched messages for a folder.
+    /// A folder brought up to date.
     Fetched {
         request_id: EngineRequestId,
         account_id: String,
         folder: Folder,
-        messages: Vec<Message>,
+        synced: crate::sync::Synced,
     },
     /// A send completed; carries the wire byte count.
     Sent {
@@ -385,25 +394,39 @@ impl MailEngine for StubEngine {
 /// it stays offline. Under `--features live` the real IMAP/SMTP backend is
 /// used; otherwise the offline [`StubEngine`]. Either reads draft attachment
 /// bytes from `content` when it builds outgoing MIME.
-pub fn spawn(content: ContentStore) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
+///
+/// `wake` runs on the worker after each request has answered, so the window
+/// draws the answer at once instead of polling for it.
+pub fn spawn(content: ContentStore, wake: Wake) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     #[cfg(feature = "live")]
     {
         match live::LiveEngine::new(content.clone()) {
-            Ok(engine) => spawn_with(Box::new(engine)),
+            Ok(engine) => spawn_waking(Box::new(engine), wake),
             Err(e) => {
                 tracing::warn!(error = %e, "mail: live engine unavailable, using offline backend");
-                spawn_with(Box::new(StubEngine::new(content)))
+                spawn_waking(Box::new(StubEngine::new(content)), wake)
             }
         }
     }
     #[cfg(not(feature = "live"))]
     {
-        spawn_with(Box::new(StubEngine::new(content)))
+        spawn_waking(Box::new(StubEngine::new(content)), wake)
     }
 }
 
+/// What the worker calls once a request has answered.
+pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// Spawn the worker with a specific backend (used by tests and the `live`
 /// feature).
+///
+/// # Panics
+/// As [`spawn_waking`].
+pub fn spawn_with(backend: Box<dyn MailEngine>) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
+    spawn_waking(backend, std::sync::Arc::new(|| {}))
+}
+
+/// [`spawn_with`], calling `wake` after each request has answered.
 ///
 /// # Panics
 /// Panics if the OS refuses to spawn the engine worker thread (e.g. resource
@@ -415,8 +438,9 @@ pub fn spawn(content: ContentStore) -> (Sender<EngineRequest>, Receiver<EngineEv
     clippy::expect_used,
     reason = "without the worker thread every request queues unanswered forever, and there is no degraded mode to fall back to; failing loudly at startup beats a mail app that silently never syncs"
 )]
-pub fn spawn_with(
+pub fn spawn_waking(
     mut backend: Box<dyn MailEngine>,
+    wake: Wake,
 ) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     let (req_tx, req_rx) = std::sync::mpsc::channel::<EngineRequest>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<EngineEvent>();
@@ -431,6 +455,7 @@ pub fn spawn_with(
                 // of view (the live backend blocks on each request), so
                 // this terminal acknowledgement cannot overtake its result.
                 let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
+                wake();
             }
         })
         .expect("spawn mail engine worker");
@@ -470,7 +495,20 @@ pub mod live {
         /// Holds OAuth grants: seals sign-ins, hands out current access
         /// tokens.
         custodian: Custodian,
+        /// One signed-in IMAP connection per account (by address), kept
+        /// between requests, with when it last answered: a refresh or a
+        /// flag change costs one round trip, not a TLS handshake and a login.
+        sessions: std::collections::HashMap<String, (ImapSession, std::time::Instant)>,
     }
+
+    /// A kept connection idle longer than this answers a NOOP before it is
+    /// used: the server or the network (a suspended laptop) may have
+    /// dropped it meanwhile.
+    const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+    /// How long that NOOP may take before the connection counts as gone.
+    const NOOP_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+
+    type SessionFuture<'s, T> = futures_util::future::LocalBoxFuture<'s, Result<T, String>>;
 
     /// The credentials to present to a server, resolved from the account +
     /// vault (a password, or a fresh OAuth access token).
@@ -491,7 +529,53 @@ pub mod live {
                 tls: build_tls_config(),
                 content,
                 custodian: Custodian::live(),
+                sessions: std::collections::HashMap::new(),
             })
+        }
+
+        /// Run `op` on `account`'s kept connection, opening one when there
+        /// is none (or the kept one no longer answers). A connection an
+        /// operation failed on is closed; the next request opens a new one.
+        fn run<T>(
+            &mut self,
+            account: &AccountConfig,
+            op: impl for<'s> Fn(&'s mut ImapSession) -> SessionFuture<'s, T>,
+        ) -> Result<T, String> {
+            let rt = self.rt;
+            let key = account.email.clone();
+            if let Some((session, answered)) = self.sessions.get_mut(&key)
+                && answered.elapsed() > IDLE_CHECK
+            {
+                let alive = rt
+                    .block_on(tokio::time::timeout(NOOP_ANSWER, session.noop()))
+                    .is_ok_and(|answer| answer.is_ok_and(|noop| noop.is_ok()));
+                if !alive {
+                    self.sessions.remove(&key);
+                }
+            }
+            if !self.sessions.contains_key(&key) {
+                let creds = resolve_auth(&self.custodian, account)?;
+                let session = self.block_on(connect_session(account, &creds, self.tls.clone()))?;
+                self.sessions
+                    .insert(key.clone(), (session, std::time::Instant::now()));
+            }
+            let Some((session, answered)) = self.sessions.get_mut(&key) else {
+                return Err("the mail server connection closed".into());
+            };
+            let result = rt
+                .block_on(op(session))
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            match result {
+                Ok(value) => {
+                    *answered = std::time::Instant::now();
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.sessions.remove(&key);
+                    Err(error)
+                }
+            }
         }
 
         /// Wait on one protocol future from the engine worker thread.
@@ -503,36 +587,53 @@ pub mod live {
         }
 
         fn handle_fetch(
-            &self,
+            &mut self,
             account: &AccountConfig,
             folder: Folder,
-        ) -> Result<Vec<Message>, String> {
-            let creds = resolve_auth(&self.custodian, account)?;
-            let tls = self.tls.clone();
-            self.block_on(fetch_folder(account, folder, &creds, tls))
+            want: crate::sync::Want,
+        ) -> Result<crate::sync::Synced, String> {
+            let owner = account.clone();
+            self.run(account, move |session| {
+                let account = owner.clone();
+                Box::pin(async move { sync_folder(session, &account, folder, want).await })
+            })
         }
 
-        fn handle_store(&self, account: &AccountConfig, message: &Message) -> Result<(), String> {
-            let creds = resolve_auth(&self.custodian, account)?;
-            let tls = self.tls.clone();
-            self.block_on(store_flags(account, message, &creds, tls))
+        fn handle_store(
+            &mut self,
+            account: &AccountConfig,
+            message: &Message,
+        ) -> Result<(), String> {
+            let message = message.clone();
+            self.run(account, move |session| {
+                let message = message.clone();
+                Box::pin(async move { store_flags(session, &message).await })
+            })
         }
 
         fn handle_move(
-            &self,
+            &mut self,
             account: &AccountConfig,
             message: &Message,
             to: Folder,
         ) -> Result<(), String> {
-            let creds = resolve_auth(&self.custodian, account)?;
-            let tls = self.tls.clone();
-            self.block_on(move_message(account, message, to, &creds, tls))
+            let message = message.clone();
+            self.run(account, move |session| {
+                let message = message.clone();
+                Box::pin(async move { move_message(session, &message, to).await })
+            })
         }
 
-        fn handle_purge(&self, account: &AccountConfig, message: &Message) -> Result<(), String> {
-            let creds = resolve_auth(&self.custodian, account)?;
-            let tls = self.tls.clone();
-            self.block_on(purge_message(account, message, &creds, tls))
+        fn handle_purge(
+            &mut self,
+            account: &AccountConfig,
+            message: &Message,
+        ) -> Result<(), String> {
+            let message = message.clone();
+            self.run(account, move |session| {
+                let message = message.clone();
+                Box::pin(async move { purge_message(session, &message).await })
+            })
         }
 
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
@@ -544,25 +645,14 @@ pub mod live {
         }
 
         fn process_connect(
-            &self,
+            &mut self,
             request_id: EngineRequestId,
             kind: EngineRequestKind,
             account: AccountConfig,
             out: &Sender<EngineEvent>,
         ) {
-            let creds = match resolve_auth(&self.custodian, &account) {
-                Ok(credentials) => credentials,
-                Err(message) => {
-                    let _ = out.send(EngineEvent::Error {
-                        request_id,
-                        kind,
-                        context: "connect".into(),
-                        message,
-                    });
-                    return;
-                }
-            };
-            match self.block_on(list_folders(&account, &creds, self.tls.clone())) {
+            let listed = self.run(&account, |session| Box::pin(list_folders(session)));
+            match listed {
                 Ok(folders) => {
                     let _ = out.send(EngineEvent::Connected {
                         request_id,
@@ -652,14 +742,17 @@ pub mod live {
                     self.process_connect(request_id, kind, account, out);
                 }
                 EngineRequest::Fetch {
-                    account, folder, ..
-                } => match self.handle_fetch(&account, folder) {
-                    Ok(messages) => {
+                    account,
+                    folder,
+                    want,
+                    ..
+                } => match self.handle_fetch(&account, folder, want) {
+                    Ok(synced) => {
                         let _ = out.send(EngineEvent::Fetched {
                             request_id,
                             account_id: account.email,
                             folder,
-                            messages,
+                            synced,
                         });
                     }
                     Err(e) => {
@@ -827,81 +920,232 @@ pub mod live {
         }
     }
 
-    /// LIST every mailbox the server advertises (verifies auth as a side effect).
-    async fn list_folders(
-        account: &AccountConfig,
-        creds: &AuthCreds,
-        tls: Arc<rustls::ClientConfig>,
-    ) -> Result<Vec<String>, String> {
-        let mut session = connect_session(account, creds, tls).await?;
-        let names: Vec<String> = {
-            let stream = session
-                .list(Some(""), Some("*"))
-                .await
-                .map_err(|e| e.to_string())?;
-            stream
-                .map_ok(|n| n.name().to_string())
-                .try_collect()
-                .await
-                .map_err(|e| e.to_string())?
-        };
-        let _ = session.logout().await;
-        Ok(names)
-    }
-
-    /// SELECT a folder, fetch the most recent messages, and parse them.
-    async fn fetch_folder(
-        account: &AccountConfig,
-        folder: Folder,
-        creds: &AuthCreds,
-        tls: Arc<rustls::ClientConfig>,
-    ) -> Result<Vec<Message>, String> {
-        let (mailbox, search) = mailbox_and_search(folder);
-        let now_min = crate::state::now_minutes();
-        let mut session = connect_session(account, creds, tls).await?;
-        session.select(mailbox).await.map_err(|e| e.to_string())?;
-        let uids: std::collections::HashSet<u32> = session
-            .uid_search(search)
+    /// LIST every mailbox the server advertises.
+    async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, String> {
+        let stream = session
+            .list(Some(""), Some("*"))
             .await
             .map_err(|e| e.to_string())?;
-        // Newest ~50 UIDs (highest numbers), so a large mailbox stays responsive.
-        let mut uids: Vec<u32> = uids.into_iter().collect();
-        uids.sort_unstable();
-        let recent: Vec<u32> = uids.iter().rev().take(50).copied().collect();
-        if recent.is_empty() {
-            let _ = session.logout().await;
+        stream
+            .map_ok(|n| n.name().to_string())
+            .try_collect()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Bring `folder` up to date as `want` asks, on an open session.
+    async fn sync_folder(
+        session: &mut ImapSession,
+        account: &AccountConfig,
+        folder: Folder,
+        want: crate::sync::Want,
+    ) -> Result<crate::sync::Synced, String> {
+        use crate::sync::{CATCH_UP_LIMIT, PAGE, Synced, Want};
+        let (mailbox, _) = mailbox_and_search(folder);
+        let selected = session.select(mailbox).await.map_err(|e| e.to_string())?;
+        let validity = selected.uid_validity.unwrap_or(0);
+        let exists = selected.exists;
+        let uid_next = selected.uid_next.unwrap_or(0);
+        let now_min = crate::state::now_minutes();
+        let mut synced = Synced {
+            uid_validity: validity,
+            ..Synced::default()
+        };
+        if folder == Folder::Starred {
+            // Starred is INBOX seen through its flag: the flagged messages,
+            // newest page.
+            let uids: Vec<u32> = {
+                let mut uids: Vec<u32> = session
+                    .uid_search("FLAGGED")
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .collect();
+                uids.sort_unstable();
+                uids.into_iter().rev().take(PAGE as usize).collect()
+            };
+            synced.reset = true;
+            synced.messages =
+                fetch_uids(session, account, folder, validity, &uids, now_min).await?;
+            return Ok(synced);
+        }
+        if exists == 0 {
+            synced.reset = true;
+            return Ok(synced);
+        }
+        match want {
+            Want::Latest { known: Some(known) }
+                if known.uid_validity == validity
+                    && uid_next.saturating_sub(known.newest + 1) <= CATCH_UP_LIMIT =>
+            {
+                // What arrived since the newest message held. `n:*` always
+                // answers with the last message, even an older one: keep
+                // only the new.
+                let range = format!("{}:*", known.newest + 1);
+                synced.messages = fetch_set(session, account, folder, validity, &range, now_min)
+                    .await?
+                    .into_iter()
+                    .filter(|message| message.server.is_some_and(|at| at.uid > known.newest))
+                    .collect();
+                synced.flags = fetch_flags(session, known.oldest, known.newest).await?;
+                synced.window = Some((known.oldest, known.newest));
+            }
+            Want::Latest { .. } => {
+                // Nothing held, the folder renumbered, or too much missed:
+                // start from the newest page.
+                synced.reset = true;
+                let first = exists.saturating_sub(PAGE - 1).max(1);
+                synced.messages =
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.has_older = Some(first > 1);
+            }
+            Want::Older { known } if known.uid_validity == validity => {
+                // The position of the oldest message held, then the page
+                // before it.
+                let position = {
+                    let stream = session
+                        .uid_fetch(known.oldest.to_string(), "(UID)")
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let fetched: Vec<async_imap::types::Fetch> =
+                        stream.try_collect().await.map_err(|e| e.to_string())?;
+                    fetched.first().map(|fetch| fetch.message)
+                };
+                let Some(position) = position.filter(|position| *position > 1) else {
+                    return Ok(synced);
+                };
+                let last = position - 1;
+                let first = last.saturating_sub(PAGE - 1).max(1);
+                synced.messages =
+                    fetch_seq(session, account, folder, validity, first, last, now_min).await?;
+                synced.has_older = Some(first > 1);
+            }
+            Want::Older { .. } => {
+                synced.reset = true;
+                let first = exists.saturating_sub(PAGE - 1).max(1);
+                synced.messages =
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.has_older = Some(first > 1);
+            }
+        }
+        Ok(synced)
+    }
+
+    async fn fetch_seq(
+        session: &mut ImapSession,
+        account: &AccountConfig,
+        folder: Folder,
+        validity: u32,
+        first: u32,
+        last: u32,
+        now_min: i64,
+    ) -> Result<Vec<Message>, String> {
+        let stream = session
+            .fetch(format!("{first}:{last}"), FETCH_ITEMS)
+            .await
+            .map_err(|e| e.to_string())?;
+        let fetches: Vec<async_imap::types::Fetch> =
+            stream.try_collect().await.map_err(|e| e.to_string())?;
+        Ok(parse_all(&fetches, account, folder, validity, now_min))
+    }
+
+    async fn fetch_set(
+        session: &mut ImapSession,
+        account: &AccountConfig,
+        folder: Folder,
+        validity: u32,
+        uid_set: &str,
+        now_min: i64,
+    ) -> Result<Vec<Message>, String> {
+        let stream = session
+            .uid_fetch(uid_set, FETCH_ITEMS)
+            .await
+            .map_err(|e| e.to_string())?;
+        let fetches: Vec<async_imap::types::Fetch> =
+            stream.try_collect().await.map_err(|e| e.to_string())?;
+        Ok(parse_all(&fetches, account, folder, validity, now_min))
+    }
+
+    async fn fetch_uids(
+        session: &mut ImapSession,
+        account: &AccountConfig,
+        folder: Folder,
+        validity: u32,
+        uids: &[u32],
+        now_min: i64,
+    ) -> Result<Vec<Message>, String> {
+        if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let set = recent
+        let set = uids
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let messages = {
-            let stream = session
-                .uid_fetch(set, "(UID FLAGS INTERNALDATE BODY.PEEK[])")
-                .await
-                .map_err(|e| e.to_string())?;
-            let fetches: Vec<async_imap::types::Fetch> =
-                stream.try_collect().await.map_err(|e| e.to_string())?;
-            let mut out = Vec::new();
-            for f in &fetches {
-                let Some(body) = f.body() else { continue };
-                let seen = f
-                    .flags()
-                    .any(|fl| matches!(fl, async_imap::types::Flag::Seen));
-                let flagged = f
-                    .flags()
-                    .any(|fl| matches!(fl, async_imap::types::Flag::Flagged));
-                let internal = f.internal_date().map(|d| d.timestamp() / 60);
-                if let Some(m) = parse_fetched(body, folder, seen, flagged, internal, now_min) {
-                    out.push(m);
+        fetch_set(session, account, folder, validity, &set, now_min).await
+    }
+
+    /// `(uid, seen, flagged)` of the messages from `oldest` to `newest`.
+    async fn fetch_flags(
+        session: &mut ImapSession,
+        oldest: u32,
+        newest: u32,
+    ) -> Result<Vec<(u32, bool, bool)>, String> {
+        let stream = session
+            .uid_fetch(format!("{oldest}:{newest}"), "(UID FLAGS)")
+            .await
+            .map_err(|e| e.to_string())?;
+        let fetches: Vec<async_imap::types::Fetch> =
+            stream.try_collect().await.map_err(|e| e.to_string())?;
+        Ok(fetches
+            .iter()
+            .filter_map(|fetch| {
+                let uid = fetch.uid?;
+                if uid < oldest || uid > newest {
+                    return None;
                 }
-            }
-            out
-        };
-        let _ = session.logout().await;
-        Ok(messages)
+                let seen = fetch
+                    .flags()
+                    .any(|flag| matches!(flag, async_imap::types::Flag::Seen));
+                let flagged = fetch
+                    .flags()
+                    .any(|flag| matches!(flag, async_imap::types::Flag::Flagged));
+                Some((uid, seen, flagged))
+            })
+            .collect())
+    }
+
+    /// What a fetch asks for: the whole message, without marking it read.
+    const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
+
+    fn parse_all(
+        fetches: &[async_imap::types::Fetch],
+        account: &AccountConfig,
+        folder: Folder,
+        validity: u32,
+        now_min: i64,
+    ) -> Vec<Message> {
+        fetches
+            .iter()
+            .filter_map(|fetch| {
+                let body = fetch.body()?;
+                let seen = fetch
+                    .flags()
+                    .any(|flag| matches!(flag, async_imap::types::Flag::Seen));
+                let flagged = fetch
+                    .flags()
+                    .any(|flag| matches!(flag, async_imap::types::Flag::Flagged));
+                let internal = fetch.internal_date().map(|date| date.timestamp() / 60);
+                let mut message = parse_fetched(body, folder, seen, flagged, internal, now_min)?;
+                message.account.clone_from(&account.email);
+                message.server = fetch.uid.map(|uid| crate::model::ServerPlace {
+                    folder,
+                    uid,
+                    uid_validity: validity,
+                });
+                Some(message)
+            })
+            .collect()
     }
 
     /// Find a message's server UID in the currently-selected mailbox by its
@@ -920,26 +1164,33 @@ pub mod live {
             .ok_or_else(|| "message not found on the server".into())
     }
 
+    /// Select the folder its server holds `message` in and find its UID
+    /// there: the one the server reported, while the folder keeps that
+    /// numbering, otherwise by its `Message-ID`.
+    async fn locate(session: &mut ImapSession, message: &Message) -> Result<u32, String> {
+        let folder = message.server.map_or(message.folder, |at| at.folder);
+        let (mailbox, _) = mailbox_and_search(folder);
+        let selected = session.select(mailbox).await.map_err(|e| e.to_string())?;
+        if let Some(at) = message.server
+            && selected.uid_validity == Some(at.uid_validity)
+        {
+            return Ok(at.uid);
+        }
+        find_uid(session, message).await
+    }
+
     /// STORE `\Seen`/`\Flagged` to match the local message's flag state.
-    async fn store_flags(
-        account: &AccountConfig,
-        message: &Message,
-        creds: &AuthCreds,
-        tls: Arc<rustls::ClientConfig>,
-    ) -> Result<(), String> {
-        let (mailbox, _) = mailbox_and_search(message.folder);
-        let mut session = connect_session(account, creds, tls).await?;
-        session.select(mailbox).await.map_err(|e| e.to_string())?;
-        let uid = find_uid(&mut session, message).await?;
+    async fn store_flags(session: &mut ImapSession, message: &Message) -> Result<(), String> {
+        let uid = locate(session, message).await?;
         let seen_op = if message.read {
-            "+FLAGS (\\Seen)"
+            "+FLAGS.SILENT (\\Seen)"
         } else {
-            "-FLAGS (\\Seen)"
+            "-FLAGS.SILENT (\\Seen)"
         };
         let flag_op = if message.starred {
-            "+FLAGS (\\Flagged)"
+            "+FLAGS.SILENT (\\Flagged)"
         } else {
-            "-FLAGS (\\Flagged)"
+            "-FLAGS.SILENT (\\Flagged)"
         };
         for op in [seen_op, flag_op] {
             let stream = session
@@ -948,43 +1199,27 @@ pub mod live {
                 .map_err(|e| e.to_string())?;
             let _: Vec<_> = stream.try_collect().await.map_err(|e| e.to_string())?;
         }
-        let _ = session.logout().await;
         Ok(())
     }
 
     /// UID MOVE a message to another folder.
     async fn move_message(
-        account: &AccountConfig,
+        session: &mut ImapSession,
         message: &Message,
         to: Folder,
-        creds: &AuthCreds,
-        tls: Arc<rustls::ClientConfig>,
     ) -> Result<(), String> {
-        let (mailbox, _) = mailbox_and_search(message.folder);
-        let mut session = connect_session(account, creds, tls).await?;
-        session.select(mailbox).await.map_err(|e| e.to_string())?;
-        let uid = find_uid(&mut session, message).await?;
+        let uid = locate(session, message).await?;
         session
             .uid_mv(uid.to_string(), to.imap_name())
             .await
-            .map_err(|e| e.to_string())?;
-        let _ = session.logout().await;
-        Ok(())
+            .map_err(|e| e.to_string())
     }
 
     /// Permanently delete exactly one UID. UID EXPUNGE deliberately avoids the
     /// dangerous plain EXPUNGE fallback, which could remove messages another
     /// client marked `\\Deleted` concurrently.
-    async fn purge_message(
-        account: &AccountConfig,
-        message: &Message,
-        creds: &AuthCreds,
-        tls: Arc<rustls::ClientConfig>,
-    ) -> Result<(), String> {
-        let (mailbox, _) = mailbox_and_search(message.folder);
-        let mut session = connect_session(account, creds, tls).await?;
-        session.select(mailbox).await.map_err(|e| e.to_string())?;
-        let uid = find_uid(&mut session, message).await?;
+    async fn purge_message(session: &mut ImapSession, message: &Message) -> Result<(), String> {
+        let uid = locate(session, message).await?;
         let deleted = session
             .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
             .await
@@ -995,7 +1230,6 @@ pub mod live {
             .await
             .map_err(|e| format!("server cannot safely expunge this message: {e}"))?;
         let _: Vec<_> = expunged.try_collect().await.map_err(|e| e.to_string())?;
-        let _ = session.logout().await;
         Ok(())
     }
 
@@ -1129,7 +1363,7 @@ pub mod live {
     //
     // These stand up a local IMAP and SMTP server over a genuine TLS socket
     // (a throwaway self-signed certificate) and drive the *production* engine
-    // functions against them: `list_folders` / `fetch_folder` for receive,
+    // functions against them: `list_folders` / `sync_folder` for receive,
     // `smtp_send_with_tls` for send. They prove the two loops end to end over a
     // real socket — TLS handshake, authentication, the exact IMAP command
     // sequence, the `mail-parser` decode, and the `lettre` STARTTLS submission —
@@ -1143,7 +1377,7 @@ pub mod live {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::{TcpListener, TcpStream};
 
-        use super::{fetch_folder, list_folders, resolve_auth, smtp_send_with_tls};
+        use super::{connect_session, list_folders, resolve_auth, smtp_send_with_tls, sync_folder};
         use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
         use crate::transport::build_mime;
 
@@ -1227,6 +1461,7 @@ pub mod live {
                 } else if up.contains("SELECT") || up.contains("EXAMINE") {
                     resp.extend_from_slice(b"* 1 EXISTS\r\n");
                     resp.extend_from_slice(b"* 0 RECENT\r\n");
+                    resp.extend_from_slice(b"* OK [UIDVALIDITY 7] UIDs valid\r\n");
                     resp.extend_from_slice(b"* FLAGS (\\Seen \\Flagged)\r\n");
                     resp.extend_from_slice(
                         format!("{tag} OK [READ-WRITE] SELECT completed\r\n").as_bytes(),
@@ -1421,8 +1656,12 @@ pub mod live {
                         resolve_auth(&account_custody::Custodian::live(), &account).unwrap();
                     let client_tls = accepting_client_config();
 
-                    // Receive: LIST advertises the server's mailboxes …
-                    let folders = list_folders(&account, &creds, client_tls.clone())
+                    // One signed-in session serves every request: LIST
+                    // advertises the server's mailboxes …
+                    let mut session = connect_session(&account, &creds, client_tls)
+                        .await
+                        .expect("sign in over TLS");
+                    let folders = list_folders(&mut session)
                         .await
                         .expect("list folders over TLS");
                     assert!(
@@ -1430,12 +1669,31 @@ pub mod live {
                         "server folders: {folders:?}"
                     );
 
-                    // … and a real UID FETCH parses the RFC 5322 message into our model.
-                    let msgs = fetch_folder(&account, Folder::Inbox, &creds, client_tls)
-                        .await
-                        .expect("fetch INBOX over TLS");
+                    // … and the first sync of a folder fetches its newest page
+                    // and parses the RFC 5322 message into our model.
+                    let synced = sync_folder(
+                        &mut session,
+                        &account,
+                        Folder::Inbox,
+                        crate::sync::Want::Latest { known: None },
+                    )
+                    .await
+                    .expect("fetch INBOX over TLS");
+                    assert!(synced.reset, "a first sync replaces what was held");
+                    assert_eq!(synced.uid_validity, 7);
+                    assert_eq!(synced.has_older, Some(false));
+                    let msgs = synced.messages;
                     assert_eq!(msgs.len(), 1, "the one served message is fetched");
                     let m = &msgs[0];
+                    assert_eq!(m.account, "me@example.com");
+                    assert_eq!(
+                        m.server,
+                        Some(crate::model::ServerPlace {
+                            folder: Folder::Inbox,
+                            uid: 1,
+                            uid_validity: 7
+                        })
+                    );
                     assert_eq!(m.subject, "Live inbox works");
                     assert_eq!(m.from.email, "ada@analytical.example");
                     assert!(

@@ -7,8 +7,10 @@
 //! attachments) is hydrated from the server in the live app, or from the
 //! bundled `sample.rs` corpus when running headless (`--shots`).
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -293,6 +295,24 @@ pub struct Message {
     /// message that has never been tagged.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// The account whose server holds the message (its address); empty for
+    /// mail that is only here (the sample, a draft).
+    #[serde(default)]
+    pub account: String,
+    /// Where its server holds the message, as last reported: `None` for
+    /// mail that is only here. A message moved here keeps where it was
+    /// until the server reports where it put it.
+    #[serde(default)]
+    pub server: Option<ServerPlace>,
+}
+
+/// Where a server holds a message: its folder, its UID there, and the
+/// numbering (UIDVALIDITY) that UID belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ServerPlace {
+    pub folder: Folder,
+    pub uid: u32,
+    pub uid_validity: u32,
 }
 
 impl Message {
@@ -437,6 +457,23 @@ pub struct Draft {
     pub attachments: Vec<DraftAttachment>,
     /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
+    /// How the message names itself and the conversation on the wire, set
+    /// when it is handed to a server: its own `Message-ID`, and the
+    /// `In-Reply-To` and `References` of a reply. Not part of the draft
+    /// anyone edits.
+    #[serde(skip)]
+    pub wire: WireIds,
+}
+
+/// The identities a sent message carries in its headers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WireIds {
+    /// Its own `Message-ID`, without angle brackets.
+    pub message_id: Option<String>,
+    /// The message it answers.
+    pub in_reply_to: Option<String>,
+    /// The conversation it belongs to, oldest first.
+    pub references: Vec<String>,
 }
 
 impl Draft {
@@ -485,6 +522,18 @@ pub struct Mailbox {
     /// search catalogue changes. The palette can therefore retain its index
     /// across keystrokes instead of repeatedly walking the loaded mailbox.
     search_revision: u64,
+    /// The conversations of the folder last asked for, kept until the
+    /// mailbox changes: the list and the reader ask for them every frame.
+    threads: RefCell<HashMap<Folder, ThreadMemo>>,
+}
+
+/// One folder's conversations at one revision of the mailbox.
+#[derive(Clone, Debug)]
+struct ThreadMemo {
+    revision: u64,
+    threads: Rc<[Thread]>,
+    /// The conversation each message belongs to, by its index in `threads`.
+    of_message: Rc<HashMap<MessageId, usize>>,
 }
 
 /// A bounded, newest-first page from the locally-loaded mailbox search.
@@ -524,6 +573,7 @@ impl Mailbox {
             messages: HashMap::new(),
             order: Vec::new(),
             search_revision: next_search_revision(),
+            threads: RefCell::new(HashMap::new()),
         }
     }
 
@@ -554,13 +604,55 @@ impl Mailbox {
         self.messages.get(&id)
     }
 
+    /// The message to change in place. Whatever the caller changes may
+    /// change a folder's conversations, so the mailbox counts as changed.
     pub fn get_mut(&mut self, id: MessageId) -> Option<&mut Message> {
+        self.touch_search_revision();
         self.messages.get_mut(&id)
+    }
+
+    /// Whether the mailbox shows `message`: it belongs to the account the
+    /// mailbox is open on, or to no account (mail that is only here).
+    fn shows(&self, message: &Message) -> bool {
+        message.account.is_empty()
+            || self.account.email.is_empty()
+            || message.account == self.account.email
+    }
+
+    /// Open the mailbox on `account`: its folders show that account's mail.
+    pub fn set_account(&mut self, account: AccountConfig) {
+        if self.account.email != account.email {
+            self.touch_search_revision();
+        }
+        self.account = account;
     }
 
     /// Number of unread messages routed to `folder` (Starred is virtual).
     pub fn unread_count(&self, folder: Folder) -> usize {
         self.messages_in(folder).iter().filter(|m| !m.read).count()
+    }
+
+    /// Number of unread messages of `account` in `folder`, whichever
+    /// account the mailbox is open on.
+    pub fn unread_count_of(&self, account: &str, folder: Folder) -> usize {
+        self.messages
+            .values()
+            .filter(|m| m.account == account && m.folder == folder && !m.read)
+            .count()
+    }
+
+    /// The messages of `account`, every folder.
+    pub fn of_account<'a>(&'a self, account: &'a str) -> impl Iterator<Item = &'a Message> + 'a {
+        self.messages.values().filter(move |m| m.account == account)
+    }
+
+    /// The message `account`'s server holds in `folder` under `uid`.
+    pub fn by_uid(&self, account: &str, folder: Folder, uid: u32) -> Option<&Message> {
+        self.messages.values().find(|m| {
+            m.account == account
+                && m.server
+                    .is_some_and(|at| at.folder == folder && at.uid == uid)
+        })
     }
 
     /// Total messages visible in `folder`.
@@ -575,6 +667,7 @@ impl Mailbox {
             .order
             .iter()
             .filter_map(|id| self.messages.get(id))
+            .filter(|m| self.shows(m))
             .filter(|m| match folder {
                 Folder::Starred => m.starred && m.folder != Folder::Trash,
                 f => m.folder == f,
@@ -596,6 +689,56 @@ impl Mailbox {
     /// can only anchor at its unloaded immediate parent until more history is
     /// available; this is the RFC's unavoidable information limit.
     pub fn threads_in(&self, folder: Folder) -> Vec<Thread> {
+        self.threads(folder).to_vec()
+    }
+
+    /// The conversations of `folder`, as [`Self::threads_in`] orders them,
+    /// computed once per change of the mailbox.
+    pub fn threads(&self, folder: Folder) -> Rc<[Thread]> {
+        self.memo(folder).threads
+    }
+
+    /// The conversation of `folder` that holds message `id`, oldest message
+    /// first.
+    pub fn thread_of(&self, folder: Folder, id: MessageId) -> Option<Thread> {
+        let memo = self.memo(folder);
+        let index = *memo.of_message.get(&id)?;
+        memo.threads.get(index).cloned()
+    }
+
+    /// The conversation of `folder` whose root is `root`.
+    pub fn thread_rooted(&self, folder: Folder, root: &str) -> Option<Thread> {
+        self.memo(folder)
+            .threads
+            .iter()
+            .find(|thread| thread.id == root)
+            .cloned()
+    }
+
+    fn memo(&self, folder: Folder) -> ThreadMemo {
+        if let Some(memo) = self.threads.borrow().get(&folder)
+            && memo.revision == self.search_revision
+        {
+            return memo.clone();
+        }
+        let threads: Rc<[Thread]> = self.compute_threads(folder).into();
+        let of_message = threads
+            .iter()
+            .enumerate()
+            .flat_map(|(index, thread)| thread.message_ids.iter().map(move |id| (*id, index)))
+            .collect();
+        let memo = ThreadMemo {
+            revision: self.search_revision,
+            threads,
+            of_message: Rc::new(of_message),
+        };
+        let mut memos = self.threads.borrow_mut();
+        memos.retain(|_, kept| kept.revision == self.search_revision);
+        memos.insert(folder, memo.clone());
+        memo
+    }
+
+    fn compute_threads(&self, folder: Folder) -> Vec<Thread> {
         let visible = self.messages_in(folder);
         let rfc_ids: HashMap<_, _> = visible
             .iter()
@@ -806,6 +949,8 @@ mod tests {
             starred: false,
             folder,
             labels: Vec::new(),
+            account: String::new(),
+            server: None,
         }
     }
 
