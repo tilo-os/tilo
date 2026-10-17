@@ -4327,6 +4327,30 @@ memory = "24G"
 timeout_secs = 7200
 default = false
 
+# The image os-image-x86_64 built, checked as a device gets it, every night main's image inputs
+# changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
+# every script its interpreter and every package its dependencies, the enabled units exist and
+# verify, every GStreamer plugin loads and Miracast's software encoders work, and the programs
+# the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a disk as a
+# release validation installs one and booted under KVM until the greeter accepts input, with no
+# unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
+# published, so a package-set change is checked on main before it reaches stable.
+[[check]]
+name = "nightly-os-image-x86_64"
+run = "bash tools/ci/publish/os-image-smoke.sh x86_64 /target/publish/os/x86_64 /target/publish/os-smoke/x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
+needs = ["os-image-x86_64"]
+outputs = ["/target/publish/os-smoke/x86_64/**"]
+git = true
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 8
+memory = "16G"
+timeout_secs = 5400
+on = ["schedule:30 1 * * *"]
+default = false
+
 [[check]]
 name = "os-image-aarch64"
 run = "bash tools/ci/publish/os-image.sh build aarch64 /target/publish/os/aarch64"
@@ -4358,6 +4382,30 @@ cost = "heavy"
 cpus = 12
 memory = "24G"
 timeout_secs = 7200
+default = false
+
+# The image os-image-aarch64 built, checked as a device gets it, every night main's image inputs
+# changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
+# every script its interpreter and every package its dependencies, the enabled units exist and
+# verify, every GStreamer plugin loads and Miracast's software encoders work, and the programs
+# the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a disk as a
+# release validation installs one and booted under KVM until the greeter accepts input, with no
+# unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
+# published, so a package-set change is checked on main before it reaches stable.
+[[check]]
+name = "nightly-os-image-aarch64"
+run = "bash tools/ci/publish/os-image-smoke.sh aarch64 /target/publish/os/aarch64 /target/publish/os-smoke/aarch64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
+needs = ["os-image-aarch64"]
+outputs = ["/target/publish/os-smoke/aarch64/**"]
+git = true
+requires = ["arch=arm64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 8
+memory = "16G"
+timeout_secs = 5400
+on = ["schedule:30 1 * * *"]
 default = false
 
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
