@@ -64,7 +64,8 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
             .map_or((base.as_str(), None), |(target, fragment)| {
                 (target, Some(fragment))
             });
-        let separator = if target.ends_with('?') || target.ends_with('&') {
+        let separator = if target.ends_with('?') || (target.contains('?') && target.ends_with('&'))
+        {
             ""
         } else if target.contains('?') {
             "&"
@@ -291,6 +292,19 @@ mod tests {
 
             req.params.clear();
             assert_eq!(build_outgoing(&req, &env(&[("base", base)])).url, base);
+        }
+    }
+
+    #[test]
+    fn trailing_path_ampersand_does_not_start_a_query() {
+        for suffix in ["", "#section?ignored"] {
+            let mut req = Request::new("r");
+            req.url = format!("https://example.com/items&{suffix}");
+            req.params = vec![KeyValue::new("q", "test")];
+            assert_eq!(
+                build_outgoing(&req, &HashMap::new()).url,
+                format!("https://example.com/items&?q=test{suffix}")
+            );
         }
     }
 
