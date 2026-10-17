@@ -2905,13 +2905,26 @@ mod tests {
             app.harness()
                 .click_named("input.source.add_picker")
                 .unwrap();
+            // The list opens on the next frame, as it does for a person.
+            app.settle();
             app.harness().render_png(&out.join("open.png"));
             app.harness().type_text("zzzz");
             app.harness().render_png(&out.join("no-matches.png"));
             app.harness().key("Escape");
+            app.settle();
             app.harness()
                 .click_named("input.source.add_picker")
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{name}: the chooser is still on the page after Escape closed its list \
+                         ({error}); showing {:?}",
+                        app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| (
+                            settings.selected(),
+                            settings.sidebar_open()
+                        ))
+                    )
+                });
+            app.settle();
             app.harness().type_text("French");
             app.harness().render_png(&out.join("filtered.png"));
             app.harness().key("Return");

@@ -252,6 +252,42 @@ pub(crate) fn answer(
     answer_model(app, effect, cx)
 }
 
+/// Answer an effect of the Thunderbird import review on `model`, or hand
+/// `effect` back when it is not one.
+fn answer_import(
+    model: &mut AccountsPane,
+    effect: AccountsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> Result<EffectAnswer, AccountsEffect> {
+    Ok(match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { .. }
+        | AccountsEffect::ChooseThunderbirdMetadata => Err(t("accounts-import-read-failed")),
+        AccountsEffect::InspectThunderbirdImport => {
+            model.import_review.inspect().map(Effected::value)
+        }
+        AccountsEffect::SelectThunderbirdAccount {
+            source,
+            authentication,
+            selected,
+            revision,
+        } => model
+            .import_review
+            .select(&source, &authentication, selected, revision)
+            .map(|()| {
+                model.changed = true;
+                Effected::done()
+            }),
+        AccountsEffect::CommitThunderbirdImport { revision } => {
+            commit_thunderbird_import(model, revision, cx)
+        }
+        AccountsEffect::CancelThunderbirdImport => model.import_review.cancel().map(|()| {
+            model.changed = true;
+            Effected::done()
+        }),
+        other => return Err(other),
+    })
+}
+
 fn answer_model(
     app: &SettingsApp,
     effect: AccountsEffect,
@@ -259,31 +295,18 @@ fn answer_model(
 ) -> EffectAnswer {
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
+    let effect = match answer_import(&mut model, effect, cx) {
+        Ok(answer) => return answer,
+        Err(effect) => effect,
+    };
     match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
-        | AccountsEffect::ChooseThunderbirdMetadata => {
+        | AccountsEffect::ChooseThunderbirdMetadata
+        | AccountsEffect::InspectThunderbirdImport
+        | AccountsEffect::SelectThunderbirdAccount { .. }
+        | AccountsEffect::CommitThunderbirdImport { .. }
+        | AccountsEffect::CancelThunderbirdImport => {
             return Err(t("accounts-import-read-failed"));
-        }
-        AccountsEffect::InspectThunderbirdImport => {
-            return model.import_review.inspect().map(Effected::value);
-        }
-        AccountsEffect::SelectThunderbirdAccount {
-            source,
-            authentication,
-            selected,
-            revision,
-        } => {
-            model
-                .import_review
-                .select(&source, &authentication, selected, revision)?;
-            model.changed = true;
-        }
-        AccountsEffect::CommitThunderbirdImport { revision } => {
-            return commit_thunderbird_import(&mut model, revision, cx);
-        }
-        AccountsEffect::CancelThunderbirdImport => {
-            model.import_review.cancel()?;
-            model.changed = true;
         }
         AccountsEffect::RemoveBrowserServiceSession { .. }
         | AccountsEffect::PublishBrowserIdentity { .. }
@@ -2087,34 +2110,53 @@ impl AccountsPane {
                     status.health == accounts::AccountSyncHealth::NeedsAuthentication
                 }),
             ));
-            if view.kind == AccountKind::Nextcloud {
-                actions.push(self.bound(
-                    Button::new(
-                        &format!("settings.accounts.calendars.{}", view.id),
-                        &t("accounts-nextcloud-calendars"),
-                    ),
-                    AccountsEffect::ConnectNextcloudCalendars {
-                        account: view.id.clone(),
-                    },
-                ));
-            }
-            if let Some(mount) = mount {
-                actions.extend(self.sync_actions(&view.id, mount.paused));
-            } else if self.can_recover_cloud_mode(view) {
-                details.push(t("accounts-recover-mode-description"));
-                actions.push(self.bound(
-                    Button::new(
-                        &format!("settings.accounts.recover-mode.{}", view.id),
-                        &t("accounts-recover-mode"),
-                    ),
-                    AccountsEffect::RecoverCloudMode {
-                        account: view.id.clone(),
-                    },
-                ));
-            }
+            actions.extend(self.cloud_row_actions(
+                view,
+                mount.map(|mount| mount.paused),
+                &mut details,
+            ));
         }
         let label = self.account_row_label(view, &mut details);
         item_row(&label, marks, &details, actions)
+    }
+
+    /// What a row offers for the account's calendars and synced files:
+    /// Nextcloud's calendars, then pausing or resuming a mounted account's
+    /// sync (`paused` is `None` without a mount), or recovering an account
+    /// whose files mode was lost, which says so in `details`.
+    fn cloud_row_actions(
+        &self,
+        view: &AccountView,
+        paused: Option<bool>,
+        details: &mut Vec<String>,
+    ) -> Vec<Button> {
+        let mut actions = Vec::new();
+        if view.kind == AccountKind::Nextcloud {
+            actions.push(self.bound(
+                Button::new(
+                    &format!("settings.accounts.calendars.{}", view.id),
+                    &t("accounts-nextcloud-calendars"),
+                ),
+                AccountsEffect::ConnectNextcloudCalendars {
+                    account: view.id.clone(),
+                },
+            ));
+        }
+        if let Some(paused) = paused {
+            actions.extend(self.sync_actions(&view.id, paused));
+        } else if self.can_recover_cloud_mode(view) {
+            details.push(t("accounts-recover-mode-description"));
+            actions.push(self.bound(
+                Button::new(
+                    &format!("settings.accounts.recover-mode.{}", view.id),
+                    &t("accounts-recover-mode"),
+                ),
+                AccountsEffect::RecoverCloudMode {
+                    account: view.id.clone(),
+                },
+            ));
+        }
+        actions
     }
 
     fn account_row_label(&self, view: &AccountView, details: &mut Vec<String>) -> String {
@@ -3834,11 +3876,12 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
-            // One Add per kind, metadata import, and four maintenance actions
-            // on each of four accounts.
+            // One Add per kind, metadata import, four maintenance actions
+            // on each of four accounts, and the Nextcloud account's
+            // calendars.
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 1 + 16
+                AccountKind::ALL.len() + 1 + 16 + 1
             );
         }
 
