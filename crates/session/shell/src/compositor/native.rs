@@ -16384,7 +16384,7 @@ mod tests {
             // A tab this session does not host is somebody else's to stream.
             (777, vec![viewer(1, 501, 300, 300)]),
         ]);
-        let none = std::collections::HashSet::new();
+        let none = RoomHosts::new();
 
         let desired = desired_legacy_shares(&tree, true, &none, &personal);
         assert_eq!(
