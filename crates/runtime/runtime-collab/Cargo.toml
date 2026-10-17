@@ -32,6 +32,7 @@ settings-host = ["client", "dep:settings-store"]
 native-retained-qualification = ["client"]
 
 [dependencies]
+registry-types = { path = "../../packaging/registry-types" }
 browser-continuity.workspace = true
 zeroize.workspace = true
 # Signed retained proofs use the current canonical personal/device identity.

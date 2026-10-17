@@ -12,10 +12,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use getrandom::{SysRng, rand_core::TryRng as _};
 use ui::WakeHandle;
 
-use crate::app::ReportEnvelope;
 use crate::config::{RegistriesFile, RegistryConfig};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
@@ -77,18 +75,10 @@ pub enum Request {
     Act(Box<StoreItem>, ActionKind),
     /// Update each app in turn, reporting progress, then refresh once.
     UpdateAll(Vec<StoreItem>),
-    SubmitReport {
-        registry_name: String,
-        envelope: ReportEnvelope,
-    },
+    ExternalModeration(registry_types::ExternalModerationOperation),
     RefreshModeration {
         registry_name: String,
         case_id: String,
-    },
-    AppealModeration {
-        registry_name: String,
-        case_id: String,
-        reason: String,
     },
 }
 
@@ -952,30 +942,12 @@ fn handle(
             };
             (alive, Some(finished))
         }
-        Request::SubmitReport {
-            registry_name,
-            envelope,
-        } => {
-            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
-            let outcome = match submit_report(&registries, &registry_name, &envelope) {
-                Ok(case) => Ok(Finished {
-                    status: format!(
-                        "Report submitted as {}. Status will appear after the registry owner publishes a signed transparency snapshot.",
-                        case.case_id
-                    ),
-                    runtime_review: None,
-                    case: Some(case),
-                    launch: None,
-                }),
-                Err(error) => Err(format!(
-                    "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
-                )),
-            };
-            (
-                moderation_snapshot(snapshots, state, &outcome),
-                Some(outcome),
-            )
-        }
+        Request::ExternalModeration(_) => (
+            true,
+            Some(Err(
+                "External moderation requires the admitted action transport.".into(),
+            )),
+        ),
         Request::RefreshModeration {
             registry_name,
             case_id,
@@ -998,49 +970,6 @@ fn handle(
                 .map_err(|error| {
                     format!(
                         "Registry request failed: {error} The collaborative draft and last confirmed status are unchanged; retry when ready."
-                    )
-                });
-            (
-                moderation_snapshot(snapshots, state, &outcome),
-                Some(outcome),
-            )
-        }
-        Request::AppealModeration {
-            registry_name,
-            case_id,
-            reason,
-        } => {
-            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
-            let outcome = moderation_registry(&registries, &registry_name)
-                .and_then(|registry| {
-                    let now = ui::time::unix_now();
-                    let mut nonce = [0_u8; 16];
-                    SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
-                        crate::moderation_client::ModerationClientError::Identity(
-                            error.to_string(),
-                        )
-                    })?;
-                    let request = crate::moderation_client::sign_with_runtime_identity(
-                        crate::moderation_client::report_request_id(&case_id, &reason, now, &nonce),
-                        now,
-                        registry_types::ModerationActorRole::Publisher,
-                        registry_types::ModerationMutation::PublisherAppeal {
-                            case_id,
-                            reason,
-                            evidence_digest_hex: None,
-                        },
-                    )?;
-                    crate::moderation_client::submit(&registry.base_url, &request)
-                })
-                .map(|case| {
-                    Finished::status(format!(
-                        "Appeal submitted for {}. The last verified status stays visible until an owner-signed transparency snapshot includes it.",
-                        case.case_id
-                    ))
-                })
-                .map_err(|error| {
-                    format!(
-                        "Registry request failed: {error} The collaborative draft and last verified status are unchanged; retry when ready."
                     )
                 });
             (
@@ -1446,38 +1375,6 @@ fn send_tracked(
     })
 }
 
-fn submit_report(
-    registries: &RegistriesFile,
-    registry_name: &str,
-    envelope: &ReportEnvelope,
-) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
-    let registry = moderation_registry(registries, registry_name)?;
-    let now = ui::time::unix_now();
-    let envelope_bytes = serde_json::to_vec(envelope)
-        .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
-    let mut nonce = [0_u8; 16];
-    SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
-        crate::moderation_client::ModerationClientError::Identity(error.to_string())
-    })?;
-    let request = crate::moderation_client::sign_with_runtime_identity(
-        crate::moderation_client::report_request_id(
-            &envelope.app_id,
-            &envelope.evidence_note,
-            now,
-            &nonce,
-        ),
-        now,
-        registry_types::ModerationActorRole::Reporter,
-        registry_types::ModerationMutation::FileReport {
-            package_id: envelope.app_id.clone(),
-            category: "policy".into(),
-            summary: envelope.evidence_note.chars().take(4_096).collect(),
-            evidence_digest_hex: blake3::hash(&envelope_bytes).to_hex().to_string(),
-        },
-    )?;
-    crate::moderation_client::submit(&registry.base_url, &request)
-}
-
 fn moderation_registry(
     registries: &RegistriesFile,
     registry_name: &str,
@@ -1529,6 +1426,11 @@ fn refresh(state: &mut State) {
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
+    state.directory.set_registries(
+        crate::config::repositories(state.host.as_ref())
+            .unwrap_or_default()
+            .registries,
+    );
 }
 
 #[cfg(test)]
