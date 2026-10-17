@@ -266,6 +266,14 @@ struct TouchPan {
     engaged: bool,
 }
 
+/// A left press on empty canvas, until its release. `engaged` latches
+/// once the pointer has moved past [`GROUP_DRAG_THRESHOLD`] sideways.
+#[derive(Clone, Copy)]
+struct PointerPan {
+    start: Point,
+    engaged: bool,
+}
+
 /// In-flight whole-group reorder drag, set on a tab-bar-background press
 /// or touch (see [`WindowGroup::bar_grab_hit`]) and cleared on release.
 /// `moved` latches once the pointer passes [`GROUP_DRAG_THRESHOLD`].
@@ -429,6 +437,9 @@ pub struct GroupRow {
     group_resist_back: Option<(u64, vello::kurbo::Vec2, Instant)>,
     /// One-finger swipe on the tab bar that is panning the strip.
     touch_pan: Option<TouchPan>,
+    /// A mouse press on the canvas between and around windows: dragging it
+    /// sideways pans the strip, as a finger on a tab bar does.
+    pointer_pan: Option<PointerPan>,
     /// Insertion gap index targeted by an in-progress reorder drag;
     /// `draw` paints the indicator here. Cleared on release.
     group_reorder_target: Option<usize>,
@@ -1361,6 +1372,7 @@ impl GroupRow {
             group_drag: None,
             group_resist_back: None,
             touch_pan: None,
+            pointer_pan: None,
             group_reorder_target: None,
             group_reorder_lane: None,
             pending_group_reorder: None,
@@ -3429,6 +3441,75 @@ impl GroupRow {
         true
     }
 
+    /// Whether the pointer is over canvas no window covers.
+    pub fn pointer_over_background(&self) -> bool {
+        self.over_background(self.last_cursor)
+    }
+
+    /// Whether `p` is canvas no window, tab bar or resize seam covers.
+    fn over_background(&self, p: Point) -> bool {
+        self.rect.contains(p)
+            && !self.handles.iter().any(|h| h.cursor_shape(p).is_some())
+            && !self
+                .groups
+                .iter()
+                .enumerate()
+                .any(|(i, g)| !self.layout_hides_group(i) && g.get_rect().contains(p))
+    }
+
+    /// Pan the strip with a mouse dragged across empty canvas. The press
+    /// is never claimed, so a click on the background still does what it
+    /// did; motion is claimed once it passes the drag threshold.
+    fn update_pointer_pan(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.pointer_pan = (self.group_drag.is_none()
+                    && !self.groups.iter().any(|g| g.maximized)
+                    && self.over_background(self.last_cursor))
+                .then_some(PointerPan {
+                    start: self.last_cursor,
+                    engaged: false,
+                });
+                false
+            }
+            WindowEvent::CursorMoved { .. } => {
+                let Some(mut pan) = self.pointer_pan else {
+                    return false;
+                };
+                let travel = pan.start.x - self.last_cursor.x;
+                if !pan.engaged {
+                    if travel.abs() <= GROUP_DRAG_THRESHOLD {
+                        return false;
+                    }
+                    self.begin_strip_pan();
+                    pan.engaged = true;
+                }
+                let _ = self.update_strip_pan(travel, crate::time::now());
+                self.pointer_pan = Some(pan);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(pan) = self.pointer_pan.take() else {
+                    return false;
+                };
+                if pan.engaged {
+                    let _ = self.end_strip_pan(crate::time::now());
+                    self.hold_strip_pan();
+                }
+                pan.engaged
+            }
+            _ => false,
+        }
+    }
+
     fn end_touch_pan(&mut self, id: u64) -> bool {
         let Some(pan) = self.touch_pan.take() else {
             return false;
@@ -4515,7 +4596,7 @@ impl Widget for GroupRow {
         // threshold, it claims the motion/release they'd otherwise
         // contend for. A press records a candidate without claiming, so
         // a plain click still reaches the child for focus.
-        if self.update_group_drag(event, ctx.scale_factor) {
+        if self.update_pointer_pan(event) || self.update_group_drag(event, ctx.scale_factor) {
             *ctx.handled = true;
             return;
         }
@@ -4599,7 +4680,8 @@ impl Widget for GroupRow {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.groups.iter().any(super::Widget::wants_pointer_capture)
+        self.pointer_pan.is_some_and(|pan| pan.engaged)
+            || self.groups.iter().any(super::Widget::wants_pointer_capture)
             || self
                 .handles
                 .iter()
@@ -4617,7 +4699,7 @@ impl Widget for GroupRow {
         {
             return Some(cursor);
         }
-        if self.group_drag.is_some() {
+        if self.group_drag.is_some() || self.pointer_pan.is_some_and(|pan| pan.engaged) {
             return Some(winit::window::CursorIcon::Grabbing);
         }
         if self

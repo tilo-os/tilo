@@ -486,6 +486,15 @@ fn sideways(delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
     (dx.abs() > dy.abs()).then_some(-dx)
 }
 
+/// A wheel event's vertical travel in logical pixels, positive for a wheel
+/// turned (or fingers scrolling) downward, which winit reports negative.
+fn vertical(delta: MouseScrollDelta, scale_factor: f64) -> f64 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * WHEEL_LINE_PX,
+        MouseScrollDelta::PixelDelta(p) => -p.y / scale_factor.max(f64::EPSILON),
+    }
+}
+
 /// The window a pan left the person looking at: the focused one while it is
 /// still wholly in view, else the one showing the most of itself, the one
 /// nearer the middle of the view between two showing as much.
@@ -1388,7 +1397,7 @@ impl DesktopSurface {
     /// flick; else the content under the pointer has it.
     fn route_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) -> bool {
         self.end_idle_swipe(now);
-        let Some(travel) = sideways(delta, scale_factor) else {
+        let Some(travel) = self.strip_travel(delta, scale_factor) else {
             return false;
         };
         let forward = if travel > 0.0 { 1 } else { -1 };
@@ -1442,6 +1451,18 @@ impl DesktopSurface {
         swipe.taken
     }
 
+    /// The strip travel of a wheel event: its sideways travel, or over
+    /// empty canvas, where nothing scrolls, its vertical travel too, so a
+    /// plain mouse wheel moves the strip there (down toward later windows).
+    fn strip_travel(&self, delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
+        sideways(delta, scale_factor).or_else(|| {
+            self.shown_row_ref()
+                .is_some_and(GroupRow::pointer_over_background)
+                .then(|| vertical(delta, scale_factor))
+                .filter(|travel| *travel != 0.0)
+        })
+    }
+
     /// Whether [`Self::route_swipe`] would take `delta` at `now` only to pan
     /// the shown strip, answered without routing it. A pan moves where the windows
     /// are and nothing else. Stepping focus on a strip that fits, a swipe at
@@ -1449,7 +1470,7 @@ impl DesktopSurface {
     /// the window panned to, all do more.
     fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
         // Only the direction matters here, which no scale factor changes.
-        let Some(travel) = sideways(delta, 1.0) else {
+        let Some(travel) = self.strip_travel(delta, 1.0) else {
             return false;
         };
         let pans = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
@@ -3029,6 +3050,96 @@ mod tests {
             "a mouse's sideways wheel click steps like the shell's"
         );
         assert_eq!(focused(&mut surface, &handle), 1);
+    }
+
+    #[test]
+    fn a_mouse_pans_the_strip_from_empty_canvas() {
+        /// Point the mouse at canvas no window covers.
+        fn find_canvas(frame: &mut ui::headless::FrameHarness) -> (f64, f64) {
+            for y in (4..800).step_by(16).rev() {
+                for x in (4..1280).step_by(8).rev() {
+                    let (x, y) = (f64::from(x), f64::from(y));
+                    frame.send(&ui::synthetic_input::cursor_moved(x, y));
+                    if frame
+                        .root::<DesktopSurface>()
+                        .shown_row_ref()
+                        .unwrap()
+                        .pointer_over_background()
+                    {
+                        return (x, y);
+                    }
+                }
+            }
+            panic!("some canvas shows around the windows");
+        }
+        fn scroll(frame: &ui::headless::FrameHarness) -> f64 {
+            frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .unwrap()
+                .scroll_x()
+        }
+        let (surface, _handle) = desktop(5);
+        let mut frame = ui::headless::FrameHarness::for_root_with(
+            ui::state::State::new(),
+            surface,
+            (1280, 800),
+            ui::headless::FrameOptions::default(),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+
+        // Windows and the seams between them cover the strip; canvas shows
+        // past the last window once the strip is panned to its end.
+        let t = ui::time::now();
+        for i in 0..40 {
+            frame
+                .root_mut::<DesktopSurface>()
+                .route_swipe(pixels(-240.0, 0.0), 1.0, ms(t, 17 * i));
+        }
+        frame
+            .root_mut::<DesktopSurface>()
+            .end_idle_swipe(ms(t, 17 * 40 + 250));
+        for _ in 0..4 {
+            frame.relayout();
+        }
+
+        find_canvas(&mut frame);
+        let start = scroll(&frame);
+        let t = ms(t, 2000);
+        assert!(
+            frame.root_mut::<DesktopSurface>().route_swipe(
+                MouseScrollDelta::LineDelta(0.0, 3.0),
+                1.0,
+                t
+            ),
+            "a plain wheel over the canvas is the strip's"
+        );
+        let wheeled = scroll(&frame);
+        assert!(
+            (start - wheeled - 120.0).abs() < 0.5,
+            "three lines up pan 120 px toward earlier windows: {start} -> {wheeled}"
+        );
+        frame
+            .root_mut::<DesktopSurface>()
+            .end_idle_swipe(ms(t, 1000));
+        for _ in 0..4 {
+            frame.relayout();
+        }
+
+        let (x, y) = find_canvas(&mut frame);
+        let start = scroll(&frame);
+        // The wheel left 120 px of strip to pan forward to.
+        frame.drag_at((x, y), (x - 300.0, y));
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let dragged = scroll(&frame);
+        assert!(
+            dragged > start + 60.0,
+            "dragging the canvas left pans toward later windows: {start} -> {dragged}"
+        );
     }
 
     #[test]
