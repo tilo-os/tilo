@@ -77,15 +77,41 @@ fn a_later_word_start_beats_an_earlier_infix() {
 }
 
 #[test]
-fn short_queries_match_anywhere() {
-    let index = titles(&["abc", "xyz", "zab"]);
-    assert_eq!(keys(&index, "b"), [0, 2]);
-    assert_eq!(keys(&index, "ab"), [0, 2]);
-    assert_eq!(keys(&index, "c"), [0]);
-    assert_eq!(keys(&index, "z"), [2, 1]);
+fn short_queries_match_only_at_word_starts() {
+    let index = titles(&["abc", "xyz", "zab", "Enroll another device", "Notes"]);
+    assert_eq!(keys(&index, "ab"), [0]);
+    assert_eq!(keys(&index, "z"), [2]);
+    assert!(keys(&index, "b").is_empty());
+    // "not" is not looking for "an·not·her".
+    assert_eq!(keys(&index, "not"), [4]);
+    // From four letters a remembered fragment matches inside a word.
+    assert_eq!(keys(&index, "othe"), [3]);
     assert_eq!(keys(&index, "abcd"), Vec::<u64>::new());
     // Only an empty query browses; spaces are text like any other.
     assert!(keys(&index, "   ").is_empty());
+    // A script without word spaces still matches inside a run.
+    assert_eq!(keys(&titles(&["東京都の地図"]), "地図"), [0]);
+}
+
+#[test]
+fn descriptions_and_keywords_never_match_inside_a_word() {
+    let index = committed(
+        Matching::default(),
+        [
+            Document::new(0)
+                .field("Display brightness", FieldWeight::TITLE)
+                .field("darker brighter", FieldWeight::KEYWORD)
+                .field("Make the screen darker", FieldWeight::SUBTITLE),
+            Document::new(1).field("Dark theme", FieldWeight::TITLE),
+        ],
+    );
+    assert_eq!(
+        keys(&index, "dark"),
+        [1, 0],
+        "a word start in a keyword still counts"
+    );
+    assert!(keys(&index, "arker").is_empty());
+    assert!(keys(&index, "ightn").len() == 1, "inside a name it does");
 }
 
 #[test]
@@ -285,8 +311,27 @@ fn loose_matching_finds_spread_words_and_typos_below_substrings() {
     assert_eq!(keys(&loose, "calcuk"), [1]);
     // A substring match always outranks a looser one.
     assert!(rank(&loose, "spreadsheet").unwrap() > SPANNING_RANK);
-    // Short words never match by typo.
-    assert!(keys(&loose, "cslc").is_empty());
+    // Short words never match by typo; four letters take one.
+    assert!(keys(&loose, "clc").is_empty());
+    assert_eq!(keys(&loose, "fier"), [2]);
+}
+
+#[test]
+fn a_four_letter_typo_and_typos_among_spread_words_still_find_it() {
+    let documents = [
+        Document::new(0)
+            .field("Notes", FieldWeight::TITLE)
+            .field("notizen", FieldWeight::KEYWORD),
+        Document::new(1)
+            .field("New note", FieldWeight::TITLE)
+            .field("Start an empty note", FieldWeight::SUBTITLE),
+    ];
+    let loose = committed(Matching::LOOSE, documents);
+    assert_eq!(keys(&loose, "nots"), [0, 1]);
+    assert!(rank(&loose, "nots").unwrap() <= FUZZY_RANK);
+    // "empty" spans into the subtitle, "nots" is a typo of the title word.
+    assert_eq!(keys(&loose, "empty nots"), [1]);
+    assert!(rank(&loose, "empty nots").unwrap() < SPANNING_RANK);
 }
 
 #[test]
@@ -482,6 +527,12 @@ fn direct_and_tantivy_answer_alike() {
         "o",
         "of",
         "radio device",
+        "keybord layout",
+        "layout keybord",
+        "scrennshot part",
+        "turn of",
+        "nots",
+        "dar",
         "zzz",
     ];
     for matching in [Matching::LOOSE, Matching::default()] {
