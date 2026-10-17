@@ -220,6 +220,10 @@ pub struct Link {
     pub discord_user: String,
     pub person: String,
     pub linked_at: i64,
+    /// The account's unique Discord username, as the bridge last saw it.
+    pub user_name: String,
+    /// The name it shows when that is another (a nickname, a global name).
+    pub display_name: Option<String>,
 }
 
 impl Identified for Link {
@@ -261,6 +265,11 @@ impl Identified for LinkFailure {
 #[must_use]
 pub fn map_key(kind: MappedKind, tilo: &str) -> String {
     format!("{}:{tilo}", kind.as_str())
+}
+
+/// A display name as the bridge passes it, empty for none.
+fn shown(display_name: String) -> Option<String> {
+    (!display_name.is_empty()).then_some(display_name)
 }
 
 /// Insert `item`, or replace the item with its id.
@@ -875,6 +884,8 @@ impl Guild {
         #[param("The Discord user who ran /link")] discord_user: String,
         #[param("The person the pending code belongs to")] person: String,
         #[param("SHA-256 of the code they typed")] code_sha256: String,
+        #[param("Their Discord username")] user_name: Option<String>,
+        #[param("The name they show when another; empty when none")] display_name: Option<String>,
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
         let now = cx.now_ms();
@@ -917,8 +928,30 @@ impl Guild {
                 discord_user,
                 person,
                 linked_at: now,
+                user_name: user_name.unwrap_or_default(),
+                display_name: display_name.and_then(shown),
             },
         );
+        Ok(())
+    }
+
+    /// Take a linked account's newer names.
+    ///
+    /// The bridge saw the account under another username or display name
+    /// than the link holds.
+    #[action(housekeeping)]
+    pub fn rename_link(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The Discord account")] discord_user: String,
+        #[param("Its Discord username")] user_name: String,
+        #[param("The name it shows when another; empty when none")] display_name: Option<String>,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if let Some(link) = self.links.find_mut(&Id::from_raw(discord_user.as_str())) {
+            link.user_name = user_name;
+            link.display_name = display_name.and_then(shown);
+        }
         Ok(())
     }
 

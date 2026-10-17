@@ -71,6 +71,9 @@ pub(crate) enum HostRequest {
     /// page's naming action, already answered (`onHostAction('set-name',
     /// name)`).
     Named(String),
+    /// Have the room's host run an action of a room record for the person
+    /// (`peer.actions`), and answer it with `desktop_room_action_answer`.
+    RoomAction(crate::desktop::RoomActionRequest),
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -377,6 +380,8 @@ pub(crate) struct BrowserShell {
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
+    /// The linked accounts' revision the card last showed.
+    linked_seen: Cell<u64>,
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
@@ -453,6 +458,7 @@ impl BrowserShell {
             profile: ProfileCard::new(),
             people: CollaboratorsOverlay::default(),
             people_open: false,
+            linked_seen: Cell::new(0),
             expanded: None,
             cursor: None,
         }
@@ -657,6 +663,12 @@ impl BrowserShell {
             }
             ChromeIntent::ToggleProfile => {
                 self.close_bar_popovers_except(BarPopover::Profile);
+                if !self.profile.is_open() {
+                    // Where the person stands with each connected service
+                    // is asked of the room's host; the card shows it once
+                    // answered.
+                    self.chrome.shared.linked.refresh();
+                }
                 let model = self.profile_model();
                 self.profile
                     .toggle(&model, self.bar.own_avatar_rect(), self.rect);
@@ -825,15 +837,48 @@ impl BrowserShell {
             colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
             can_rename: self.handle.offers_host_action(RENAME_ACTION),
             actions,
+            linked: self.chrome.shared.linked.accounts(),
         }
     }
 
-    fn apply_profile_choice(&self, choice: ProfileChoice) {
+    fn apply_profile_choice(&mut self, choice: ProfileChoice) {
         let request = match choice {
             ProfileChoice::Rename(name) => HostRequest::Named(name),
             ProfileChoice::Action(id) => HostRequest::Action(id),
+            ProfileChoice::Link(app) => return self.link_account(&app, true),
+            ProfileChoice::Unlink(app) => return self.link_account(&app, false),
         };
         self.requests.borrow_mut().push(request);
+    }
+
+    /// Ask the room's host to link (or unlink) the person's account with
+    /// `app`'s service; the open card shows what came of it once the host
+    /// answered ([`Self::follow_room_actions`]).
+    fn link_account(&mut self, app: &str, link: bool) {
+        let linked = &self.chrome.shared.linked;
+        if link {
+            linked.link(app);
+        } else {
+            linked.unlink(app);
+        }
+    }
+
+    /// Hand the room actions the chrome asked for to the page, which has the
+    /// room's host run them, and show the linked accounts again when an
+    /// answer changed them. Whether anything changed.
+    fn follow_room_actions(&mut self) -> bool {
+        let asked = self.chrome.shared.room_actions.take_requests();
+        let changed = !asked.is_empty();
+        self.requests
+            .borrow_mut()
+            .extend(asked.into_iter().map(HostRequest::RoomAction));
+        let linked = &self.chrome.shared.linked;
+        let revision = linked.revision();
+        if self.linked_seen.replace(revision) != revision {
+            self.profile.set_linked(linked.accounts());
+            return true;
+        }
+        changed
     }
 
     /// Add a strip named `name` to the active workspace, kept as this
@@ -1145,6 +1190,7 @@ impl Widget for BrowserShell {
             self.apply_profile_choice(choice);
             changed = true;
         }
+        changed |= self.follow_room_actions();
         if self.tilo_menu.take_feedback() {
             self.open_feedback();
             changed = true;

@@ -198,6 +198,17 @@ pub struct Replica {
     offers_reads: bool,
 }
 
+/// Whether any member of the room may ask the host to run `descriptor` for
+/// themselves ([`tilo_actions::MEMBER_OWN_TAG`]).
+#[must_use]
+pub fn member_own(descriptor: &ActionDescriptor) -> bool {
+    descriptor
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == tilo_actions::MEMBER_OWN_TAG)
+}
+
 impl Replica {
     /// Hold a record of `app_id` in `room` as `participant` (its author id),
     /// acting as `actor` ([`ReplicaActor`]).
@@ -364,19 +375,21 @@ impl Replica {
     }
 
     /// Every document operation the participant may perform through the
-    /// view now, as inert descriptors; for a bot, the record's read effects
-    /// too.
+    /// view now, as inert descriptors, and the effects any member may ask
+    /// the host to run for themselves ([`tilo_actions::MEMBER_OWN_TAG`]);
+    /// for a bot, the record's read effects too.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        if !self.offers_reads {
-            return self.view.operations();
-        }
         tilo_actions::door::survey(&self.view.resources())
             .into_iter()
-            .filter(|descriptor| {
-                descriptor.kind == tilo_actions::OperationKind::Document
-                    || (descriptor.kind == tilo_actions::OperationKind::Effect
-                        && descriptor.contract.kind == policy::ActionKind::Read)
+            .filter(|descriptor| match descriptor.kind {
+                tilo_actions::OperationKind::Document => true,
+                tilo_actions::OperationKind::Effect => {
+                    member_own(descriptor)
+                        || (self.offers_reads
+                            && descriptor.contract.kind == policy::ActionKind::Read)
+                }
+                _ => false,
             })
             .collect()
     }

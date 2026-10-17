@@ -43,6 +43,8 @@ const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
 const ACCOUNT_FORM: &str = "account-form";
 const ACCOUNTS_NARROW: &str = "accounts-narrow";
+const ACCOUNTS_LINKING: &str = "accounts-linking";
+const ACCOUNTS_LINKED: &str = "accounts-linked";
 
 /// Every scenario: one per pane, then the layouts and flows.
 pub fn names() -> &'static [&'static str] {
@@ -56,6 +58,8 @@ pub fn names() -> &'static [&'static str] {
                 SEARCH,
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
+                ACCOUNTS_LINKING,
+                ACCOUNTS_LINKED,
                 DEVICE_DISPLAYS,
                 STORAGE_DRIVES,
                 "keyboard-single",
@@ -100,6 +104,38 @@ pub struct CaptureScene {
     pub storage_devices: Vec<crate::panes::storage::DeviceResidency>,
     /// Stand-in remembered NTFS drives, for the drives capture.
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
+    /// A room bridged to Discord, and where the person's account there
+    /// stands, for the linked-accounts captures.
+    pub linked_account: Option<ui::linked_accounts::LinkState>,
+}
+
+/// A capture's room bridged to Discord, its person's account standing as
+/// the scenario says.
+pub(crate) struct CaptureBridge(pub ui::linked_accounts::LinkState);
+
+impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
+    fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
+        vec![ui::linked_accounts::LinkedAccount {
+            app: "so.tilo.discord".into(),
+            service: "Discord".into(),
+            state: self.0.clone(),
+        }]
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+    // A capture asks no host: what it shows stands.
+    fn refresh(&self) {}
+    fn link(&self, _app: &str) {}
+    fn unlink(&self, _app: &str) {}
+}
+
+/// The capture code the linking scenario shows.
+fn capture_link_code() -> ui::linked_accounts::LinkCode {
+    ui::linked_accounts::LinkCode {
+        code: "K7QMW2XRB4TD".into(),
+        instruction: "In Discord, type /link with this code. It works for 10 minutes.".into(),
+    }
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -133,6 +169,18 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             crate::panes::drives::capture_fixture()
         } else {
             Vec::new()
+        },
+        linked_account: match fixture.scenario() {
+            Some(ACCOUNTS_LINKING) => {
+                Some(ui::linked_accounts::LinkState::Linking(capture_link_code()))
+            }
+            Some(ACCOUNTS_LINKED) => Some(ui::linked_accounts::LinkState::Linked(
+                ui::linked_accounts::AccountName {
+                    user_name: "quinn.davis".into(),
+                    display_name: Some("Quinn".into()),
+                },
+            )),
+            _ => None,
         },
     });
 }
@@ -330,7 +378,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
-        Some(ACCOUNT_FORM | ACCOUNTS_NARROW) => Staged::Pane(Category::ExternalAccounts),
+        Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
+            Staged::Pane(Category::ExternalAccounts)
+        }
         Some(slug) if CODEC_SCENARIOS.contains(&slug) => Staged::Pane(Category::Updates),
         Some(slug) => Staged::Pane(Category::from_slug(slug).unwrap_or(Category::Appearance)),
     }

@@ -2,7 +2,7 @@ discord-not-connected = Not connected to a Discord server yet.
 discord-status-importing = Importing the server's layout · { $channels } channels seen · { $links } linked accounts
 discord-status-bridged = Bridged · { $channels } channels · { $links } linked accounts
 discord-link-account = Link my Discord account
-discord-link-code = Send /link { $code } to the bridge in Discord within ten minutes.
+discord-link-code = In Discord, type /link with this code. It works for 10 minutes.
 
 ## History: the bridge's verbs.
 discord-connect = Connected the Discord server { $name }
@@ -29,6 +29,7 @@ discord-fetch-asset = Fetched an attachment from Discord
 discord-begin-link = Asked to link a Discord account
 discord-complete-link = Linked a Discord account
 discord-unlink = Unlinked a Discord account
+discord-rename-link = Updated a linked Discord account's names
 discord-block-persona = Blocked a Discord user from the room
 discord-unblock-persona = Unblocked a Discord user
 discord-remember-avatar = Saved a Discord avatar
@@ -64,6 +65,8 @@ discord-mapping-persona = Changed who a paired item speaks as
 discord-mapping-root = Changed the thread a paired item belongs to
 discord-link-person = Linked a Discord account to someone else
 discord-link-linked-at = Updated when a Discord account was linked
+discord-link-user-name = Updated a linked Discord account's username
+discord-link-display-name = Updated the name a linked Discord account shows
 discord-pending-link-code-sha256 = Issued a new link code
 discord-pending-link-expires-ms = Changed when a link code expires
 discord-link-failure-window-start-ms = Started counting failed link attempts again

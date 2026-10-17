@@ -34,6 +34,7 @@ pub use ui_core::*;
 pub mod host_operation {}
 
 pub mod framework;
+pub mod linked_accounts;
 mod runner;
 
 /// The toolkit's launch vocabulary, with `run` resolved to the runner this

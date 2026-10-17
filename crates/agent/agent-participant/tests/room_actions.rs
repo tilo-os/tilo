@@ -41,6 +41,9 @@ mod governed_agent;
 #[cfg(test)]
 #[path = "room_actions/governed_sealed.rs"]
 mod governed_sealed;
+#[cfg(test)]
+#[path = "room_actions/member_own.rs"]
+mod member_own;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]

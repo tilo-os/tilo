@@ -1719,6 +1719,19 @@ typed value. A job reports progress through its `Progress`, finishes on the UI
 thread, and changes the document only through actions. A projection queued in
 the document (an outbox) is drained with `ViewCx::drain`.
 
+`#[effect(member)]` marks an effect any member of a room may ask the room's
+host to run for themselves on the app's room record (the contract tag
+`host:member-own`), as a connector's "link my account" is. It is opt-in per
+effect; the host refuses every effect without it, as it refuses anything but
+comments from a member who is not its own person. The host runs a marked
+effect strictly as that member: in a confined worker under their own grants
+and standing, with what it writes attributed to them and admitted like their
+own change, and it spends their change budget. So the effect's own checks
+decide what is theirs (a verb's `guard::person`, the invoker's `me`), and it
+must never hand them another person's data. Its answer goes back only in the
+receipt to the asking device; a secret it makes (a link code) is answered,
+never written to the record, which keeps at most its hash.
+
 A widget outside the framework describes an effect with an `ActionSpec`:
 
 ```rust

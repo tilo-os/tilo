@@ -74,7 +74,10 @@
 //! how an app launched with a file opens it; `opens_path = "csv,tsv"` only
 //! those types),
 //! `participant` (a view that moves only the invoking participant's own
-//! view, such as an agent's caret, so a remote participant may invoke it) and
+//! view, such as an agent's caret, so a remote participant may invoke it),
+//! `member` (any member of a room may ask the room's host to run it for
+//! themselves on the room's record, as linking their own account elsewhere)
+//! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke; an effect reaches outside the record by default, a view reads),
 //! and `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
@@ -385,6 +388,7 @@ pub struct EffectRow {
     pub opens: Option<&'static [&'static str]>,
     pub participant: bool,
     pub edits: bool,
+    pub member: bool,
     pub item: Option<&'static str>,
     pub offload: Option<EffectOffload>,
 }
@@ -483,6 +487,10 @@ pub struct EffectDecl {
     /// at the invoker's caret): its kind is Undoable, offered to whoever may
     /// edit, and the edits it submits are checked like any other.
     pub edits: bool,
+    /// Any member of a room may ask the room's host to run it for
+    /// themselves on the room's record (`#[effect(member)]`,
+    /// [`tilo_actions::MEMBER_OWN_TAG`]): it runs there as that member.
+    pub member: bool,
     /// The collection field whose items the effect is offered on
     /// (`#[effect(item = connections)]`), its first parameter bound to the
     /// item's id: published on each item resource, as an item verb is.
@@ -554,6 +562,7 @@ impl EffectDecl {
             opens: row.opens,
             participant: row.participant,
             edits: row.edits,
+            member: row.member,
             item: row.item,
             offload: row.offload,
         }
@@ -655,6 +664,9 @@ impl EffectDecl {
                 }
                 if self.edits {
                     tags.push(EDITS_TAG.to_owned());
+                }
+                if self.member {
+                    tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
                 }
                 tags
             },

@@ -93,6 +93,10 @@ profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
 profile-section-identity = Your identity
 profile-section-devices = Devices
+profile-section-linked = Linked accounts
+profile-link = Link { $service } account
+profile-unlink = Unlink
+profile-copy = Copy
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
