@@ -4164,6 +4164,23 @@ memory = "24G"
 timeout_secs = 10800
 default = false
 
+# The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
+# components with their dev features, compiled again) on os-image-x86_64.
+[[check]]
+name = "os-dev-image-x86_64"
+run = "bash tools/ci/publish/os-image.sh dev x86_64 /target/publish/os/x86_64 /target/publish/os-dev/x86_64"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["os-image-x86_64"]
+outputs = ["/target/publish/os-dev/x86_64/image.oci.tar", "/target/publish/os-dev/x86_64/digest", "/target/publish/os-dev/x86_64/revision"]
+git = true
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "os-image-aarch64"
 run = "bash tools/ci/publish/os-image.sh build aarch64 /target/publish/os/aarch64"
@@ -4178,6 +4195,84 @@ cpus = 12
 memory = "24G"
 timeout_secs = 10800
 default = false
+
+# The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
+# components with their dev features, compiled again) on os-image-aarch64.
+[[check]]
+name = "os-dev-image-aarch64"
+run = "bash tools/ci/publish/os-image.sh dev aarch64 /target/publish/os/aarch64 /target/publish/os-dev/aarch64"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["os-image-aarch64"]
+outputs = ["/target/publish/os-dev/aarch64/image.oci.tar", "/target/publish/os-dev/aarch64/digest", "/target/publish/os-dev/aarch64/revision"]
+git = true
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 7200
+default = false
+
+# Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
+# firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
+# since bootc takes a device tree only from one. `t dispatch publish-os-board-lenovo-83ed --ref
+# main` builds main's head and pushes registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which
+# `tilo-vm vm upgrade --from sha:<commit>` takes on that board, and moves tilo-vm:<board>-ci, which
+# installed boards follow with `bootc upgrade` (DEVELOPMENT.md, "Board dev images on real
+# hardware").
+[[check]]
+name = "os-board-lenovo-83ed"
+run = "bash tools/ci/publish/os-image.sh board lenovo-83ed /target/publish/os-dev/aarch64 /target/publish/os-board/lenovo-83ed"
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["os-dev-image-aarch64"]
+outputs = ["/target/publish/os-board/lenovo-83ed/image.oci.tar", "/target/publish/os-board/lenovo-83ed/digest", "/target/publish/os-board/lenovo-83ed/revision", "/target/publish/os-board/lenovo-83ed/board"]
+git = true
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "publish-os-board-lenovo-83ed"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-board-publish.sh lenovo-83ed /target/publish/os-board/lenovo-83ed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh"]
+needs = ["os-board-lenovo-83ed"]
+outputs = ["/target/publish/os-board/lenovo-83ed/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[check]]
+name = "os-board-orangepi-3b-v2-1"
+run = "bash tools/ci/publish/os-image.sh board orangepi-3b-v2-1 /target/publish/os-dev/aarch64 /target/publish/os-board/orangepi-3b-v2-1"
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["os-dev-image-aarch64"]
+outputs = ["/target/publish/os-board/orangepi-3b-v2-1/image.oci.tar", "/target/publish/os-board/orangepi-3b-v2-1/digest", "/target/publish/os-board/orangepi-3b-v2-1/revision", "/target/publish/os-board/orangepi-3b-v2-1/board"]
+git = true
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "publish-os-board-orangepi-3b-v2-1"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-board-publish.sh orangepi-3b-v2-1 /target/publish/os-board/orangepi-3b-v2-1"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh"]
+needs = ["os-board-orangepi-3b-v2-1"]
+outputs = ["/target/publish/os-board/orangepi-3b-v2-1/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-extension-manifests

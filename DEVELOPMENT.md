@@ -77,18 +77,23 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
-UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
-aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
-installs the flashable disk:
+UKI, which keeps the device tree across updates. t builds and publishes one for main's
+head when asked (`publish-os-board-<board>` in `t.toml`; it builds `os-image-aarch64`,
+`os-dev-image-aarch64` and `os-board-<board>` first, a few hours from cold):
+
+```sh
+t dispatch publish-os-board-lenovo-83ed --ref main
+```
 
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
-| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
-| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The moving tag moves once the aarch64 lane has sealed and pushed the image; the
-board job then installs the disk from it.
-On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+The moving tag moves only forward along main: a build of an older commit leaves it.
+`t test os-board-lenovo-83ed` builds the image from your tree without publishing it
+(`t outputs` gives the OCI archive). The flashable disk is not on t yet: the newest is
+the one Build / OS dev installed last, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
 Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):

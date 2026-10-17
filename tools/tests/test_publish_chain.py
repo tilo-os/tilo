@@ -307,10 +307,19 @@ if args[0] == "copy":
     state[dst] = src[len("oci-archive:"):] if src.startswith("oci-archive:") else state[src]
     json.dump(state, open(state_path, "w"))
 elif args[0] == "inspect":
+    if args[-1] not in state:
+        sys.exit("skopeo: no such image " + args[-1])
     archive = state[args[-1]]
     with tarfile.open(archive) as tar:
         digest = json.load(tar.extractfile("index.json"))["manifests"][0]["digest"]
-        sys.stdout.buffer.write(tar.extractfile("blobs/sha256/" + digest[7:]).read())
+        manifest = tar.extractfile("blobs/sha256/" + digest[7:]).read()
+        if "--format" in sys.argv:
+            # Only the label lookup the scripts make: {{index .Labels "NAME"}}.
+            name = sys.argv[sys.argv.index("--format") + 1].split('"')[1]
+            config = json.load(tar.extractfile("blobs/sha256/" + json.loads(manifest)["config"]["digest"][7:]))
+            print(config.get("config", {}).get("Labels", {}).get(name, "<no value>"))
+        else:
+            sys.stdout.buffer.write(manifest)
 '''
 FAKE_COSIGN = '''#!/bin/sh
 echo "cosign $*" >> "$FAKE_LOG"
@@ -332,6 +341,12 @@ PY
 esac
 '''
 
+# The forge's compare API: what FAKE_COMPARE holds, as `curl -fsS` prints it.
+FAKE_CURL = """#!/bin/sh
+echo "curl $*" >> "$FAKE_LOG"
+printf '%s' "$FAKE_COMPARE"
+"""
+
 
 class ScriptTests(unittest.TestCase):
     def setUp(self):
@@ -339,7 +354,7 @@ class ScriptTests(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)]))
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        for name, body in (("skopeo", FAKE_SKOPEO), ("cosign", FAKE_COSIGN)):
+        for name, body in (("skopeo", FAKE_SKOPEO), ("cosign", FAKE_COSIGN), ("curl", FAKE_CURL)):
             (bin_dir / name).write_text(body)
             (bin_dir / name).chmod(0o755)
         self.out = self.tmp / "out"
@@ -567,6 +582,62 @@ class ScriptTests(unittest.TestCase):
         self.assertNotIn("awskms", log)
         self.assertEqual(json.loads((self.out / "payload.json").read_text())["critical"]["image"],
                          {"docker-manifest-digest": self.digest})
+
+    def board(self, revision: str = COMMIT, board: str = "lenovo-83ed") -> subprocess.CompletedProcess:
+        """os-board-publish.sh on what `os-image.sh board` leaves in OUT."""
+        (self.out / "board").write_text(board + "\n")
+        (self.out / "revision").write_text(revision + "\n")
+        return self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
+
+    def moving_tag_names(self, revision: str) -> None:
+        """tilo-vm:lenovo-83ed-ci holds an image of REVISION."""
+        held = self.tmp / "held.oci.tar"
+        self.archive(held, json.dumps({"architecture": "arm64", "os": "linux", "config": {
+            "Labels": {"org.opencontainers.image.revision": revision}}}).encode())
+        state = json.loads((self.tmp / "state.json").read_text()) if (self.tmp / "state.json").exists() else {}
+        state[f"oci:{self.tmp}/registry/registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci"] = str(held)
+        (self.tmp / "state.json").write_text(json.dumps(state))
+
+    def test_a_board_image_takes_its_commit_tag_and_the_moving_tag(self):
+        result = self.board()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = self.receipt()
+        self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm")
+        self.assertEqual(receipt["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed", "lenovo-83ed-ci"])
+        self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, False))
+
+    def test_the_board_moving_tag_moves_only_forward_along_main(self):
+        older = "f" * 40
+        self.moving_tag_names(older)
+        # The tag names an ancestor: the forge finds no commit of it this one lacks.
+        self.env["FAKE_COMPARE"] = '{"total_commits":0,"commits":[]}'
+        result = self.board()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("lenovo-83ed-ci", self.receipt()["tags"])
+        self.assertIn(f"/compare/{COMMIT}...{older}", self.log.read_text())
+        # A newer build took it meanwhile: this one keeps only its own tag.
+        self.moving_tag_names(older)
+        self.env["FAKE_COMPARE"] = '{"total_commits":3,"commits":[]}'
+        result = self.board()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed"])
+        self.assertIn("not an ancestor", result.stderr)
+        # Nor when the forge can't tell.
+        self.env["FAKE_COMPARE"] = ""
+        result = self.board()
+        self.assertEqual(self.receipt()["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed"])
+        self.assertIn("could not be compared", result.stderr)
+
+    def test_a_board_publication_refuses_another_build_and_branch(self):
+        result = self.board(board="orangepi-3b-v2-1")
+        self.assertIn("not lenovo-83ed", result.stderr)
+        result = self.board(revision="f" * 40)
+        self.assertIn("the run is for", result.stderr)
+        (self.out / "board").write_text("lenovo-83ed\n")
+        (self.out / "revision").write_text(COMMIT + "\n")
+        result = self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="stable")
+        self.assertIn("from main only", result.stderr)
+        self.assertFalse((self.out / "receipt.json").exists())
 
 
 if __name__ == "__main__":
