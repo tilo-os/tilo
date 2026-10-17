@@ -457,8 +457,16 @@ fn child_mints_from_custody() {
     );
     assert!(profile.signs_in_with_google());
     assert!(holds("vertex-provider"));
-    let api_key = SecretVault::open().get(&vault_id("vertex-provider").unwrap());
-    assert!(api_key.is_none(), "a sign-in never writes the API-key slot");
+    let store = ServiceCredentials::open();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    assert!(
+        !store.status(&reference, &authorization).unwrap(),
+        "a sign-in never writes the bound API-key slot"
+    );
+    assert!(
+        !store.legacy_agent_provider_status(&profile.id).unwrap(),
+        "a sign-in never writes the legacy API-key slot"
+    );
 
     // Phase: a revoked grant (custody keeps it empty) means sign in again.
     seal_grant("vertex-provider", "");
@@ -487,6 +495,8 @@ fn a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again() {
         .env_clear()
         .env("PATH", root.path())
         .env("XDG_CONFIG_HOME", root.path())
+        // Use an isolated credential backend rather than the login keyring.
+        .env("TILO_SECRETS_DIR", root.path().join("secrets"))
         .env("PROFILE_TEST_CHILD", "1")
         .output()
         .unwrap();

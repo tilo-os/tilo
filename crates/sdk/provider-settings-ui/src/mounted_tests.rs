@@ -1,4 +1,179 @@
 // Shared mounted contract, included by each production host's test adapter.
+
+fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
+    if widget.test_id() == Some(id) {
+        return Some(widget.is_enabled());
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| rendered_enabled(child, id))
+}
+
+#[test]
+fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    app.harness()
+        .click_named("agent-models-add-anthropic")
+        .unwrap();
+    app.settle();
+    assert_eq!(config(&mut app).profiles.len(), 1);
+    let id = config(&mut app).profiles[0].id.clone();
+    let save = format!("agent-models-save-provider-{id}");
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &save),
+        Some(true)
+    );
+    for (field, value) in [
+        ("label", "Rendered provider"),
+        ("url", "https://models.example.test/v1"),
+        ("model", "rendered-model"),
+    ] {
+        app.harness()
+            .click_named(&format!("agent-models-{field}-{id}"))
+            .unwrap();
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("a");
+        app.harness().set_modifiers(&[]);
+        app.harness().type_text(value);
+    }
+    assert_ne!(
+        backend.state.lock_recover().config.profiles[0].label,
+        "Rendered provider"
+    );
+    app.harness().click_named(&save).unwrap();
+    app.settle();
+    let profile = config(&mut app).profiles[0].clone();
+    assert_eq!(profile.label, "Rendered provider");
+    assert_eq!(profile.endpoint, "https://models.example.test/v1");
+    assert_eq!(profile.default_model.as_deref(), Some("rendered-model"));
+    assert_eq!(backend.state.lock_recover().config.profiles[0], profile);
+
+    let key = format!("agent-models-set-api-key-{id}");
+    app.harness()
+        .click_named(&format!("agent-models-api-key-{id}"))
+        .unwrap();
+    app.harness().type_text("private-key-draft");
+    app.harness().click_named(&key).unwrap();
+    app.settle();
+    assert!(key_buffer(&mut app, &id).lock_recover().is_empty());
+    assert_eq!(
+        backend.state.lock_recover().keys.get(&id),
+        Some(&CredentialStatus::Configured)
+    );
+    assert_private(&mut app);
+
+    let toggle = format!("agent-models-enabled-{id}");
+    let remove = format!("agent-models-remove-provider-{id}");
+    let original = config(&mut app);
+    for role in [ui::Role::Viewer, ui::Role::Commenter] {
+        app.set_role(role);
+        app.settle();
+        for control in ["agent-models-add-anthropic", &save, &key, &toggle, &remove] {
+            assert_eq!(
+                rendered_enabled(app.harness().root_widget(), control),
+                Some(false),
+                "{control}"
+            );
+            app.harness().click_named(control).unwrap();
+            app.settle();
+        }
+        assert_eq!(config(&mut app), original);
+    }
+    app.set_role(ui::Role::Owner);
+    app.settle();
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &save),
+        Some(true)
+    );
+    app.harness().click_named(&toggle).unwrap();
+    app.settle();
+    assert!(!config(&mut app).profiles[0].enabled);
+    app.harness().click_named(&remove).unwrap();
+    app.settle();
+    assert_eq!(
+        config(&mut app).profiles.len(),
+        1,
+        "removal requires confirmation"
+    );
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
+    assert!(config(&mut app).profiles.is_empty());
+    assert!(backend.state.lock_recover().config.profiles.is_empty());
+    assert!(backend.state.lock_recover().keys.is_empty());
+}
+
+#[test]
+fn mounted_rendered_model_limits_save_and_clear_on_the_model_row() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
+    let widget_id = format!(
+        "{}-{}",
+        hex::encode(&profile.id),
+        hex::encode(&profile.models[0].id)
+    );
+    backend.state.lock_recover().config.upsert(profile);
+    let mut app = mount(backend.clone());
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    let save = format!("agent-model-limit-save-{widget_id}");
+    let clear = format!("agent-model-limit-clear-{widget_id}");
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &save),
+        Some(true)
+    );
+    for (field, value) in [
+        ("output", "4096"),
+        ("runtime", "32768"),
+        ("deadline", "45000"),
+    ] {
+        app.harness()
+            .click_named(&format!("agent-model-limit-{field}-{widget_id}"))
+            .unwrap();
+        app.harness().type_text(value);
+    }
+    assert!(
+        backend.state.lock_recover().config.profiles[0].models[0]
+            .request_limits
+            .is_none()
+    );
+    app.harness().click_named(&save).unwrap();
+    app.settle();
+    let limits = config(&mut app).profiles[0].models[0]
+        .request_limits
+        .clone()
+        .unwrap();
+    assert_eq!(limits.max_output_tokens, 4096);
+    assert_eq!(limits.runtime_context_tokens, Some(32768));
+    assert_eq!(limits.plan_timeout_ms, Some(45000));
+    app.set_role(ui::Role::Viewer);
+    app.settle();
+    for control in [&save, &clear] {
+        assert_eq!(
+            rendered_enabled(app.harness().root_widget(), control),
+            Some(false)
+        );
+    }
+    app.set_role(ui::Role::Owner);
+    app.settle();
+    app.harness().click_named(&clear).unwrap();
+    app.settle();
+    assert!(
+        config(&mut app).profiles[0].models[0]
+            .request_limits
+            .is_none()
+    );
+    assert!(
+        backend.state.lock_recover().config.profiles[0].models[0]
+            .request_limits
+            .is_none()
+    );
+}
+
 #[test]
 fn mounted_google_sign_in_never_offers_api_key_custody() {
     let backend = Arc::new(FakeAdminBackend::default());
@@ -18,7 +193,7 @@ fn mounted_google_sign_in_never_offers_api_key_custody() {
             provider: id.clone(),
         },
         ProviderEffect::MigrateProviderKey {
-            provider: id.clone(),
+            provider: id,
             original_endpoint: String::new(),
         },
     ] {

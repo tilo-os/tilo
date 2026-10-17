@@ -9,10 +9,6 @@
 //! [`AgentModelsEffect`].
 
 use agent_provider_config::management::CredentialStatus;
-#[cfg(test)]
-use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
-#[cfg(test)]
-use agent_provider_config::protocol::{ErrorKind, ModelError};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -233,7 +229,7 @@ pub enum AgentModelsEffect {
     },
     /// Save the Vertex AI provider being added, once signed in, or change
     /// an existing one's project, location and model.
-    #[effect(row)]
+    #[effect(job, device_only, row)]
     SetVertexProvider {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
@@ -244,6 +240,25 @@ pub enum AgentModelsEffect {
         #[param("The model, for example gemini-4-argon; the default when omitted")]
         model: Option<String>,
     },
+}
+
+/// Native sign-in actions augment the shared provider row at the same public door.
+fn vertex_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
+    row.operation(
+        SettingsEffect::from(AgentModelsEffect::SignInWithGoogle {
+            provider: Some(profile.id.clone()),
+        })
+        .bound(),
+    )
+    .operation(
+        SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
+            provider: Some(profile.id.clone()),
+            project: String::new(),
+            location: None,
+            model: None,
+        })
+        .bound_asking(&["project", "location", "model"]),
+    )
 }
 
 fn token(id: &str) -> String {
@@ -404,24 +419,6 @@ pub(crate) fn answer(
             }
         }
     }
-}
-
-/// Store `key`, or what `buffer` holds when it is `None`, as `provider`'s
-/// API key in the gateway's vault, erasing the buffer. Never on the UI
-/// thread: the gateway answers over its socket.
-fn save_key(buffer: &Mutex<String>, key: Option<String>, provider: &str) -> Result<(), String> {
-    let mut typed = buffer.lock_recover();
-    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
-    typed.zeroize();
-    drop(typed);
-    if value.trim().is_empty() {
-        return Err(t_args(
-            "agent-key-save-err",
-            &[("error", "the key is empty".into())],
-        ));
-    }
-    tilo_model_gateway::set_api_key(provider, value)
-        .map_err(|error| t_args("agent-key-save-err", &[("error", error.to_string().into())]))
 }
 
 /// What the model manager reported, or why it could not.
@@ -723,9 +720,7 @@ impl AgentModelsArea {
                         && row.id() == format!("settings.agent-provider:{}", profile.id)
                 });
             if let Some(profile) = profile {
-                row.operation(offer(AgentModelsEffect::SignInWithGoogle {
-                    provider: Some(profile.id.clone()),
-                }))
+                vertex_provider_row(row, profile)
             } else {
                 row
             }
@@ -795,9 +790,14 @@ impl AgentModelsModel {
                 )),
             ),
         };
+        let panel = ProviderPanel::new(
+            cx.clone(),
+            cx.provider_admin.clone(),
+            cx.follow::<AgentProviders>().get().config.clone(),
+        );
         let mut model = Self {
             providers: cx.follow::<AgentProviders>(),
-            cx: cx.clone(),
+            cx,
             control,
             snapshot,
             manager_available,
@@ -806,11 +806,7 @@ impl AgentModelsModel {
             reviewing_local: LocalState::new(None),
             revealed: None,
             last_poll: ui::time::now(),
-            panel: ProviderPanel::new(
-                cx.clone(),
-                cx.provider_admin.clone(),
-                cx.follow::<AgentProviders>().get().config.clone(),
-            ),
+            panel,
             snapshot_reads: Rereads::default(),
             vertex: None,
             vertex_fields: Mutex::new(HashMap::new()),
@@ -1087,24 +1083,22 @@ impl AgentModelsModel {
         }
     }
 
-    /// Remove `provider` from `config` with its credential on this device:
-    /// its API key, or its Google sign-in.
-    fn remove_provider(
+    /// Forget a signed-in provider locally. API-key providers are removed through
+    /// the shared administration capability, never through a UI-thread socket.
+    fn remove_vertex_provider(
         &mut self,
         config: &mut ProviderConfig,
         provider: &str,
     ) -> Result<(), String> {
-        let removed = config
-            .remove(provider)
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == provider)
             .ok_or_else(|| t("agent-provider-gone"))?;
-        if removed.sign_in.is_none() {
-            return tilo_model_gateway::remove_api_key(provider).map_err(|error| {
-                t_args(
-                    "agent-key-remove-err",
-                    &[("error", error.to_string().into())],
-                )
-            });
+        if profile.sign_in.is_none() {
+            return Err(t("agent-provider-offline"));
         }
+        let _ = config.remove(provider);
         // Forgotten here only: revoking at Google would end every grant of
         // Tilo's client for this person, Mail's included.
         if self
@@ -1243,7 +1237,7 @@ impl AgentModelsModel {
                     .any(|profile| profile.id == provider && profile.sign_in.is_some()) =>
             {
                 let mut config = self.providers.get().config.clone();
-                self.remove_provider(&mut config, &provider)?;
+                self.remove_vertex_provider(&mut config, &provider)?;
                 config.sanitised()
             }
             effect => {

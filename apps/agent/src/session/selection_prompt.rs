@@ -226,6 +226,7 @@ mod tests {
         runtime_collab::TaskRunEnvelope {
             version: 1,
             task_id: "task:1".into(),
+            presentation_version: None,
             title: "Tighten this".into(),
             instruction: Some("Tighten this sentence".into()),
             subject,

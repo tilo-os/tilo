@@ -253,12 +253,12 @@ fn validate_key_custody(
     snapshot: &ProviderSnapshot,
     effect: &ProviderEffect,
 ) -> Result<(), String> {
-    let provider = match effect {
-        ProviderEffect::SaveProviderKey { provider, .. }
-        | ProviderEffect::RemoveProviderKey { provider }
-        | ProviderEffect::RemoveLegacyProviderKey { provider }
-        | ProviderEffect::MigrateProviderKey { provider, .. } => provider,
-        _ => return Ok(()),
+    let (ProviderEffect::SaveProviderKey { provider, .. }
+    | ProviderEffect::RemoveProviderKey { provider }
+    | ProviderEffect::RemoveLegacyProviderKey { provider }
+    | ProviderEffect::MigrateProviderKey { provider, .. }) = effect
+    else {
+        return Ok(());
     };
     if snapshot
         .config

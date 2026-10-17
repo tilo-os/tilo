@@ -63,6 +63,7 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
     let envelope = TaskRunEnvelope {
         version: 1,
         task_id: "task:2".into(),
+        presentation_version: None,
         title: "Tighten this".into(),
         instruction: Some("Tighten the opening sentence".into()),
         subject: Some(subject.clone()),

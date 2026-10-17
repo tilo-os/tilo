@@ -168,7 +168,7 @@ pub fn cards(sections: Vec<SettingsSection>) -> El {
     Box::new(form(sections))
 }
 
-/// The same form inside either an existing Settings page or a standalone SDK FormPage.
+/// The same form inside either an existing Settings page or a standalone SDK `FormPage`.
 pub fn form(sections: Vec<SettingsSection>) -> Form {
     sections.into_iter().fold(
         Form::new().with_section_spacing(Some(spacing().rhythm.group)),

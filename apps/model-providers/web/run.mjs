@@ -91,7 +91,11 @@ try {
     };
     window.control=(id,action,value='')=>{
       const n=findControl(id); if(!n)throw Error('missing production control '+id);
-      if(mount.semantic(n.path,n.semantics?.action_target,action,value,0,0)!==true)throw Error('rejected '+id+' '+action);
+      // The editor's value operation belongs to the widget itself. A named
+      // semantic target addresses a synthetic child (such as its accessory).
+      const target=action==='value'&&['TextInput','MultilineTextInput'].includes(n.semantics?.role)
+        ? undefined : n.semantics?.action_target;
+      if(mount.semantic(n.path,target,action,value,0,0)!==true)throw Error('rejected '+id+' '+action);
     };
     window.privateSurface=()=>JSON.stringify({reports:publicReports,state:mount.state(),actions:mount.actions(),publications:mount.publications(),projection:mount.semantics.outerHTML,editorValues:[...mount.semantics.querySelectorAll('input,textarea')].map(e=>e.value)});
     return true;
@@ -100,19 +104,30 @@ try {
   const backend = async predicate => {
     const deadline = Date.now() + 30000;
     while (!predicate()) {
-      assert(Date.now() < deadline, 'production UI did not complete the expected HTTPS operation');
+      assert(Date.now() < deadline, 'production UI did not complete the expected HTTPS operation; ' + JSON.stringify({verbs:calls.map(c=>c.verb),profiles:config.profiles.map(p=>({label:p.label,default_model:p.default_model,endpoint:p.endpoint})),runtime:await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error})'),browserErrors:tab.log}));
       await sleep(25);
     }
   };
   const settled = () => wait('findControl("agent-models-refresh-providers")?.semantics?.state?.disabled === false');
   const control = async (id, action='activate', value='') => {
     try {
-      await wait(`!!findControl(${JSON.stringify(id)})`);
+      await wait(`!!findControl(${JSON.stringify(id)}) && !findControl(${JSON.stringify(id)}).semantics?.state?.disabled`);
     } catch(error) {
       const controls = await tab.evaluate(`(()=>{const out=[];const walk=n=>{if(!n)return;if(n.test_id)out.push({id:n.test_id,widget:n.widget,rect:n.rect});(n.children??[]).forEach(walk)};walk(mount.state()?.semantics?.root);return out;})()`);
       throw new Error(`${error.message}; production controls: ${JSON.stringify(controls)}; runtime: ${await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})')}; browser errors: ${tab.log.join('; ')}; browser: ${browser.diagnostics()}`, {cause:error});
     }
-    await tab.evaluate(`control(${JSON.stringify(id)},${JSON.stringify(action)},${JSON.stringify(value)})`);
+    // Catch inside the page so CDP never includes the expression (and a
+    // private editor's input) in its exception diagnostics.
+    const result = await tab.evaluate(`(()=>{try{control(${JSON.stringify(id)},${JSON.stringify(action)},${JSON.stringify(value)});return {ok:true};}catch(error){return {ok:false,type:typeof error,name:error instanceof Error?error.name:null};}})()`);
+    assert(result.ok, `production control ${id} ${action} failed: ${JSON.stringify(result)}`);
+    // Await the production presentation after each edit. The next control
+    // must use its current owner path, and Save must see synchronized buffers.
+    const before = await tab.evaluate('semanticDeliveries');
+    await tab.evaluate('mount.requestSemantics()');
+    await wait(`semanticDeliveries > ${before}`);
+    if (action === 'value' && !id.startsWith('agent-models-api-key-')) {
+      await wait(`findControl(${JSON.stringify(id)})?.semantics?.value === ${JSON.stringify(value)}`);
+    }
   };
   const noSecrets = async () => {
     const before = await tab.evaluate('semanticDeliveries');

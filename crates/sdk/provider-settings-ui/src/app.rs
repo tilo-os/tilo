@@ -1,10 +1,12 @@
 //! A resource-rooted standalone host for the same administration panel.
 use super::{PanelBindings, ProviderEffect, ProviderPanel, widgets};
+use agent_provider_config::ProviderConfig;
 use std::{collections::HashMap, rc::Rc};
 use ui::framework::{
     ActionControl, Actions, EffectAnswer, EffectCx, Effected, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
+use ui::models::ProviderAdministration;
 use ui::tilo_resource::{self, Binds, Model, resource};
 use ui::widget::{AppModel, Composed, Element, ModelPath, TaffyTreeExt, Widget};
 
@@ -26,7 +28,7 @@ impl ProviderSettingsApp {
     pub fn init(&mut self) {
         LAUNCHER_ADMIN.with(|slot| {
             *slot.borrow_mut() =
-                ui::models::ProviderAdministration::from_launcher().unwrap_or_default()
+                ui::models::ProviderAdministration::from_launcher().unwrap_or_default();
         });
     }
 }
@@ -73,7 +75,11 @@ pub(super) struct ProviderSurface {
 impl Default for ProviderSurface {
     fn default() -> Self {
         Self {
-            panel: ProviderPanel::new(Bindings::default(), Default::default(), Default::default()),
+            panel: ProviderPanel::new(
+                Bindings::default(),
+                ProviderAdministration::default(),
+                ProviderConfig::default(),
+            ),
             composed: Composed::default(),
             revision: 0,
             offset: Rc::default(),
@@ -148,7 +154,7 @@ impl ResourceSurface<Providers, ProviderEffect> for ProviderSurface {
                 actions: Some(cx.actions()),
             },
             administration,
-            Default::default(),
+            ProviderConfig::default(),
         );
     }
     fn effect(
