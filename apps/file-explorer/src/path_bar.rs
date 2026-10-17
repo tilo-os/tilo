@@ -114,7 +114,7 @@ impl PathBar {
         let sink = self.sink.clone();
         let goto = targets.clone();
         let edit = Rc::clone(&self.edit_requested);
-        self.crumbs = Breadcrumb::new(labels)
+        self.crumbs = Breadcrumb::new(labels.clone())
             .root_icon(breadcrumb_root_icon(
                 &self.current,
                 self.home.as_deref(),
@@ -127,7 +127,31 @@ impl PathBar {
             })
             // A click on the trail's empty space turns it into the editable
             // location.
-            .on_edit_requested(move || edit.set(true));
+            .on_edit_requested(move || edit.set(true))
+            // The `…` of a long trail offers the folders it hides.
+            .on_overflow({
+                let sink = self.sink.clone();
+                let hidden_labels = labels;
+                let hidden_targets = targets.clone();
+                move |hidden, rect| {
+                    let folders = hidden
+                        .into_iter()
+                        .filter_map(|index| {
+                            Some((
+                                hidden_labels.get(index)?.clone(),
+                                hidden_targets.get(index)?.clone(),
+                            ))
+                        })
+                        .collect();
+                    push(
+                        &sink,
+                        FileCommand::ShowPathMenu {
+                            folders,
+                            at: Point::new(rect.x0, rect.y1),
+                        },
+                    );
+                }
+            });
         self.targets = targets;
     }
 
@@ -144,6 +168,19 @@ impl PathBar {
         self.field
             .set_text(&format_path(&self.current, self.home.as_deref()));
         self.field.begin_edit();
+    }
+
+    /// Where each painted trail segment leads, with its rect: the folders a
+    /// drag can drop onto. None while the location is being typed.
+    pub fn crumb_targets(&self) -> Vec<(vello::kurbo::Rect, PathBuf)> {
+        if self.is_editing() {
+            return Vec::new();
+        }
+        self.crumbs
+            .segment_rects()
+            .into_iter()
+            .filter_map(|(index, rect)| Some((rect, self.targets.get(index)?.clone())))
+            .collect()
     }
 
     pub fn is_editing(&self) -> bool {

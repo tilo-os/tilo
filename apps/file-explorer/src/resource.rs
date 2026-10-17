@@ -957,6 +957,29 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
     Ok(())
 }
 
+/// A copy or move on a worker: its progress reaches the caller's job and
+/// the window, and the caller's cancel stops it.
+fn carry_out_tracked(
+    task: &FileTask,
+    reverting: Option<&[Change]>,
+    progress: &ui::framework::Progress,
+) -> Effected {
+    let report = |transfer: &crate::file_ops::LocalTransfer| {
+        use std::sync::atomic::Ordering;
+        if progress.is_cancelled() {
+            transfer.cancel.store(true, Ordering::Relaxed);
+        }
+        progress.report(
+            "copying",
+            Some(transfer.done.load(Ordering::Relaxed)),
+            Some(transfer.total.load(Ordering::Relaxed)),
+        );
+    };
+    Effected::settled(&crate::file_ops::execute_tracked(
+        &task.op, reverting, &report,
+    ))
+}
+
 fn carry_out(task: &FileTask, reverting: Option<&[Change]>) -> Effected {
     let outcome = crate::file_ops::execute(&task.op, reverting);
     Effected::settled(&outcome)
@@ -1078,6 +1101,19 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                             };
                             return Ok(cx.thread(
                                 move |progress| carry_out_source(&task, consent, progress),
+                                |(), answer, _| Ok(answer),
+                            ));
+                        }
+                        if matches!(
+                            task.op,
+                            FileOp::Copy { .. } | FileOp::Move { create: false, .. }
+                        ) {
+                            // Copies and moves can take minutes: off the UI
+                            // thread, with progress and Cancel.
+                            return Ok(cx.thread(
+                                move |progress| {
+                                    carry_out_tracked(&task, reverting.as_deref(), &progress)
+                                },
                                 |(), answer, _| Ok(answer),
                             ));
                         }
